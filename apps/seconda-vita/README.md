@@ -2,13 +2,13 @@
 
 _Il tuo usato, la sua seconda vita, sul sito del brand._
 
-**Stato manifest:** valido (validatore Python + contratto runtime)
+**Manifest status:** valid (schema validator + runtime contract)
 
-## Descrizione data all'app builder
+## Description given to the app builder (Italian)
 
 Ci serve Seconda Vita, un'app per brand di moda che vogliono vendere il proprio usato direttamente sul loro sito. I clienti del brand si registrano, scelgono un capo acquistato in passato (anche dallo storico ordini), caricano foto, indicano taglia, condizioni e prezzo desiderato. Un agente riconosce il modello confrontandolo con il catalogo storico del brand, suggerisce un prezzo in base a condizioni e domanda, e prepara la scheda. Il team del brand deve verificare l'autenticità e lo stato del capo, quando arriva in magazzino o dalle foto, e approvare la messa in vendita. Le schede approvate compaiono in una sezione dell'e-shop del brand. Chi compra paga con carta; la piattaforma divide l'incasso tra venditore, brand e commissione di servizio tramite Stripe Connect. In alternativa il venditore può scegliere un buono acquisto del brand di valore maggiore. Bisogna gestire spedizione, resi entro 14 giorni e rimborsi. Il brand vede tutte le transazioni e un report mensile su capi rivenduti e CO2 risparmiata; il cliente vede solo i suoi capi.
 
-## Funzioni non esprimibili oggi (spec.extensions)
+## Features not expressible today (spec.extensions)
 
 - **photo_upload**: Uploading photos is not available yet: the seller pastes photo links.
 - **shipping_returns_refunds**: Shipping labels, the 14-day return window and refunds are tracked only as order statuses; carrier integration and automatic Stripe refunds are not available yet and must be handled by the brand team.
@@ -16,7 +16,7 @@ Ci serve Seconda Vita, un'app per brand di moda che vogliono vendere il proprio 
 - **eshop_integration**: Showing approved items inside the brand's existing e-shop and importing order history requires a connector with the brand's platform; for now order_history is loaded by the brand team and the shop is a section of this app.
 - **notifications**: Email notifications (approval needed, item sold, return) are not available yet.
 
-## Screenshot (runtime interpretativo)
+## Screenshots (interpretive runtime)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)

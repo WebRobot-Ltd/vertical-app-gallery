@@ -2,13 +2,13 @@
 
 _Carico, rischio e performance degli atleti, dopo ogni sessione._
 
-**Stato manifest:** valido (validatore Python + contratto runtime)
+**Manifest status:** valid (schema validator + runtime contract)
 
-## Descrizione data all'app builder
+## Description given to the app builder (Italian)
 
 Mi serve Prestazione in Campo, la piattaforma di analisi per un servizio che misura la performance degli atleti con dispositivi indossabili e telecamere. Descrivo solo lo strato software di analisi e reportistica: i sensori, le telecamere e l'elaborazione video sono forniti a parte. Il preparatore atletico della squadra è admin e crea la rosa con ruolo, età, peso e storico infortuni. Dopo ogni allenamento o partita i dati dei dispositivi (distanza, velocità, accelerazioni, frequenza cardiaca, carico) dovrebbero arrivare in automatico; per ora si caricano come file esportati. Un agente calcola indicatori di carico acuto e cronico, confronta ogni atleta con la sua media, segnala chi è a rischio sovraccarico e propone come modulare il carico della settimana successiva. Lo staff tecnico riceve un report dopo ogni sessione e un riepilogo settimanale; in chat può chiedere confronti tra giocatori o tra partite. Il medico della squadra vede i dati sanitari, l'allenatore solo gli indicatori di prestazione, l'atleta solo i propri. Abbonamento stagionale per squadra, in italiano e inglese.
 
-## Funzioni non esprimibili oggi (spec.extensions)
+## Features not expressible today (spec.extensions)
 
 - **file_upload**: I dati dei dispositivi si incollano o si linkano: il caricamento di file non è ancora disponibile.
 - **auto_ingest**: L'arrivo automatico dei dati da dispositivi/telecamere richiede connettori non ancora disponibili; per ora inserimento manuale.
@@ -17,7 +17,7 @@ Mi serve Prestazione in Campo, la piattaforma di analisi per un servizio che mis
 - **per_team_tenancy**: Una installazione per squadra; più squadre nello stesso deployment richiedono un campo team su tutte le collezioni.
 - **notifications**: Invio automatico via email del report dopo ogni sessione e del riepilogo settimanale: notifiche non ancora disponibili, i report sono consultabili nell'app.
 
-## Screenshot (runtime interpretativo)
+## Screenshots (interpretive runtime)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)

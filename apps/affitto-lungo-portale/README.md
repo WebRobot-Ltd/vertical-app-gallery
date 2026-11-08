@@ -2,13 +2,13 @@
 
 _Cerca, candidati e prenota una visita: l'alloggio giusto per mesi o anni._
 
-**Stato manifest:** valido (validatore Python + contratto runtime)
+**Manifest status:** valid (schema validator + runtime contract)
 
-## Descrizione data all'app builder
+## Description given to the app builder (Italian)
 
 Descrivo solo lo strato software di un servizio di affitti a medio e lungo termine: il portale di ricerca, candidatura e gestione, non l'attivita di intermediazione immobiliare svolta dall'agenzia. L'inquilino in cerca compila un modulo con citta, budget, date, durata e preferenze; un agente propone gli alloggi compatibili tra quelli pubblicati sulla piattaforma dai gestori e spiega perche. L'inquilino salva i preferiti, invia la candidatura caricando i documenti richiesti e prenota una visita scegliendo uno slot. Il gestore dell'alloggio pubblica gli annunci con foto, prezzo e disponibilita, riceve le candidature, le valuta e conferma; un operatore umano dell'agenzia segue la trattativa e la firma del contratto fuori dalla piattaforma. Entrambe le parti comunicano in chat e ricevono aggiornamenti via email. Gli annunci provengono solo dai gestori che li caricano sulla piattaforma. L'inquilino vede le proprie candidature, il gestore i propri alloggi e le candidature ricevute, l'admin tutto. Monetizzazione: commissione sul contratto concluso. In italiano e inglese.
 
-## Funzioni non esprimibili oggi (spec.extensions)
+## Features not expressible today (spec.extensions)
 
 - **file_upload**: Document upload for applications and photo upload for listings are not available yet: tenants and managers paste links to documents and photos instead.
 - **email_updates**: Email updates to tenant and manager on application and viewing status are not available yet.
@@ -17,7 +17,7 @@ Descrivo solo lo strato software di un servizio di affitti a medio e lungo termi
 - **manager_scoped_visibility**: Managers seeing only their own listings and the applications to them (and the tenant only their own) needs per-record ownership across users; the current collections give tenants their own records and shared listings, and the admin sees everything.
 - **contract_commission**: The commission on concluded contracts is settled outside the platform by the agency operator after signing; the platform records the outcome only. Contract negotiation and signing are out of scope.
 
-## Screenshot (runtime interpretativo)
+## Screenshots (interpretive runtime)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)

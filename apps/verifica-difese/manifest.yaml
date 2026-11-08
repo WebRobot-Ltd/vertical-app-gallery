@@ -1,0 +1,738 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: verificadifese
+  displayName: VerificaDifese
+  tagline:
+    it: Controlla le tue applicazioni web prima che lo faccia qualcun altro.
+    en: Check your web applications before someone else does.
+  description:
+    it: 'Registra la tua applicazione, dimostra di controllarla, autorizza il test per iscritto: un agente esegue controlli
+      non distruttivi, un consulente di sicurezza rivede il report.'
+    en: 'Register your application, prove you control it, sign the written test authorisation: an agent runs non-destructive
+      checks and a security consultant reviews the report.'
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0f2a43'
+      accent: '#d9480f'
+      background: '#f6f8fa'
+      foreground: '#14202e'
+    fonts:
+      body: Inter
+      display: IBM Plex Sans
+    wordmark:
+    - text: Verifica
+      color: primary
+    - text: Difese
+      color: accent
+    button: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#how'
+    - label:
+        it: Cosa controlliamo
+        en: What we check
+      href: '#checks'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: consultant
+      label:
+        it: Consulente di sicurezza
+        en: Security consultant
+      assignedBy: admin
+    - key: user
+      label:
+        it: Cliente
+        en: Customer
+      assignedBy: signup
+  limits:
+  - action: agent:scanner
+    per: user
+    max: 5
+    window: day
+    roles:
+    - user
+  egress:
+    hosts:
+    - nvd.nist.gov
+    notes: NVD public CVE API, free reuse, used to match component versions with published vulnerabilities.
+  agents:
+  - key: app_manager
+    role: helper
+    description: Guides the customer to register an application, issues the verification code, checks it on the domain and
+      records the written authorisation.
+    profile:
+      inline:
+        display_name: VerificaDifese registrar
+        crews:
+        - id: registrar
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You register web applications for a security assessment service. Collect: application name, domain
+            (host only), environment (test or production), allowed time windows (days, hours, timezone) and any extra declared
+            hosts. Generate a verification code like ''vd-'' + 12 random lowercase alphanumerics and tell the customer to
+            publish it as plain text at https://<domain>/.well-known/verificadifese.txt. When they say it is published, fetch
+            ONLY that single URL with the webrobot tool and compare the content exactly; set verified=true only if it matches,
+            otherwise explain what was found. Then show the full text of the written authorisation to test (the customer declares
+            to own or be legally entitled to test the application; allows non-destructive, low-load checks on the declared
+            hosts only, in the declared windows; understands that production is tested at their risk) and ask for an explicit
+            ''I accept''. Only after acceptance set authorization_accepted=true and accepted_at=today. Save with the tool
+            write_applications. Never mark an application verified or authorised without the evidence above. Never test anything
+            yourself. Reply in the customer''s language.'
+    appTools:
+    - name: read_applications
+      description: Read the customer's applications
+      action: read
+      collection: applications
+      scope: user
+    - name: write_applications
+      description: Create or update the customer's application record
+      action: write
+      collection: applications
+      scope: user
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+      Customer: {message}
+
+      Reply in the language with ISO code {lang}. Today is {date}.'
+  - key: scanner
+    role: main
+    description: Runs non-destructive checks on a verified, authorised application and drafts the report for the consultant.
+    profile:
+      inline:
+        display_name: VerificaDifese scanner
+        crews:
+        - id: scanner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are a web application security assessor. FIRST read the application record with read_applications.
+            Refuse and explain (one short paragraph, no checks) unless verified=true AND authorization_accepted=true, and
+            unless the current time is inside the declared allowed windows. Work ONLY on the declared domain and declared
+            hosts, with passive, non-destructive, low-load requests (at most a few requests per second, no brute force, no
+            fuzzing, no exploitation, no credential guessing, no denial of service). Checks: 1) TLS configuration (protocol
+            versions, certificate validity, ciphers); 2) security headers (HSTS, CSP, X-Frame-Options, X-Content-Type-Options,
+            Referrer-Policy, Permissions-Policy, cookie flags); 3) component and version fingerprints visible in headers/pages,
+            matched with published CVEs via the NVD tool; report only what is evidenced; 4) exposure of common administrative
+            pages (check only whether they respond, never log in); 5) OWASP Top 10 good-practice conformance observable without
+            attack. For a production environment be even more conservative. Report format: level-1 title ''# Security assessment
+            — <domain> — <date>'', then ## Summary (counts per severity), ## Findings as a table-like list: ID, severity (Critical/High/Medium/Low/Info),
+            evidence, explanation, remediation for developers; ## Checks not performed; ## Scope and limits. Add a ```chart
+            bar block with finding counts per severity. Never invent findings or versions; state uncertainty. This is a draft:
+            save it with write_reports (status ''in_review'', application, domain, date, content), then call request_report_review
+            with the report id, and tell the customer the report is awaiting review by a security consultant and will appear
+            in ''My reports'' once approved. Do not show findings to the customer in your answer.'
+    appTools:
+    - name: read_applications
+      description: Read the customer's applications
+      action: read
+      collection: applications
+      scope: user
+    - name: write_reports
+      description: Save the draft report
+      action: write
+      collection: reports
+      scope: user
+    - name: nvd_search
+      description: Search published CVEs (NVD) by keyword or CPE
+      action: http
+      http:
+        method: GET
+        url: https://nvd.nist.gov/rest/json/cves/2.0
+        attribution: NVD, NIST, public domain data
+    awaits:
+    - report_review
+    goalTemplate: 'Application id/name: {application}
+
+      Check depth: {depth_label}
+
+      {?notes}Customer notes: {notes}{/notes}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+  - key: monthly
+    role: scheduled
+    description: Monthly check of one application, compared with the previous month.
+    memory: instance
+    profile:
+      inline:
+        display_name: VerificaDifese monthly
+        crews:
+        - id: monthly
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You run the monthly security check of one application, with the same rules, scope and checks as
+            the VerificaDifese scanner: read the application with read_applications; refuse unless verified and authorised
+            and inside the allowed windows; only passive, non-destructive, low-load checks on declared hosts; never invent
+            findings. Your memory holds last month''s findings: report ## New, ## Resolved, ## Still open, ## Trend (a ```chart
+            line block of findings per severity if you have history). Start with ''# Monthly check — <domain> — <month>''.
+            Save the draft with write_monthly_reports (status ''in_review''), call request_report_review, and at the end call
+            remember with the list of open findings (ID, severity, title). Do not publish findings in your answer.'
+    appTools:
+    - name: read_applications
+      description: Read the customer's applications
+      action: read
+      collection: applications
+      scope: user
+    - name: write_monthly_reports
+      description: Save the draft monthly report
+      action: write
+      collection: monthly_reports
+      scope: all
+    - name: nvd_search
+      description: Search published CVEs (NVD) by keyword or CPE
+      action: http
+      http:
+        method: GET
+        url: https://nvd.nist.gov/rest/json/cves/2.0
+        attribution: NVD, NIST, public domain data
+    awaits:
+    - report_review
+  - key: releaser
+    role: helper
+    description: Publishes a report after the consultant's decision.
+    profile:
+      inline:
+        display_name: VerificaDifese releaser
+        crews:
+        - id: releaser
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You receive an approval event in your task. If the decision is 'approved', set the referenced report's
+            status to 'published' (and add the consultant's notes) with the tool update_reports. If rejected, set status 'rejected'
+            with the consultant's notes. Change nothing else.
+    appTools:
+    - name: update_reports
+      description: Update the status of a report after the consultant's decision
+      action: write
+      collection: reports
+      scope: all
+  approvals:
+  - key: report_review
+    title:
+      it: Revisione del report di sicurezza
+      en: Security report review
+    description: A platform security consultant reviews findings, severities and remediation before the customer sees the
+      report.
+    role: consultant
+    decidedBy: role
+    fields:
+    - application
+    - domain
+    - content
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: on_review
+    'on':
+      approval: report_review
+      decision: any
+    start:
+      agent: releaser
+    goal: 'Apply the decision: {event}'
+    asUser: false
+  templates:
+  - key: monthly_check
+    title:
+      it: Verifica mensile
+      en: Monthly check
+    description:
+      it: Una verifica al mese di una tua applicazione, confrontata con la precedente.
+      en: A check every month of one of your applications, compared with the previous one.
+    agent: monthly
+    params:
+    - name: application
+      type: relation
+      relation: applications
+      required: true
+      label:
+        it: Applicazione
+        en: Application
+    goal: Monthly check of application {application} ("{instance}"). Today is {date}. Write in the language with ISO code
+      {lang}.
+    schedule:
+      cron: 0 2 1 * *
+      userCanChange: true
+    maxPerUser: 10
+    roles:
+    - user
+    cost:
+      perRun: 20
+  inputForm:
+    title:
+      it: Nuova verifica
+      en: New assessment
+    fields:
+    - name: application
+      type: relation
+      relation: applications
+      required: true
+      label:
+        it: Applicazione verificata
+        en: Verified application
+    - name: depth
+      type: select
+      required: true
+      default: standard
+      label:
+        it: Profondità
+        en: Depth
+      options:
+      - value: basic
+        label:
+          it: Base (TLS e intestazioni)
+          en: Basic (TLS and headers)
+      - value: standard
+        label:
+          it: Standard (tutti i controlli)
+          en: Standard (all checks)
+    - name: notes
+      type: textarea
+      maxLength: 500
+      label:
+        it: Note (facoltative)
+        en: Notes (optional)
+  data:
+    collections:
+    - name: applications
+      ownedBy: user
+      description: Customer applications with verification and authorisation status
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: domain
+        type: text
+        required: true
+      - name: environment
+        type: select
+        options:
+        - test
+        - production
+      - name: allowed_windows
+        type: textarea
+      - name: declared_hosts
+        type: textarea
+      - name: verification_code
+        type: text
+      - name: verified
+        type: boolean
+      - name: authorization_accepted
+        type: boolean
+      - name: accepted_at
+        type: date
+    - name: reports
+      ownedBy: user
+      description: Assessment reports; customers see only published ones
+      fields:
+      - name: application
+        type: text
+      - name: domain
+        type: text
+      - name: date
+        type: date
+      - name: status
+        type: select
+        options:
+        - in_review
+        - published
+        - rejected
+      - name: content
+        type: textarea
+      - name: reviewer_notes
+        type: textarea
+    - name: monthly_reports
+      ownedBy: instance
+      description: Monthly reports of each scheduled check
+      fields:
+      - name: date
+        type: date
+      - name: status
+        type: select
+        options:
+        - in_review
+        - published
+        - rejected
+      - name: content
+        type: textarea
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: VerificaDifese
+    sections:
+    - type: hero
+      title:
+        it: Controlla le tue applicazioni **prima** che lo faccia qualcun altro.
+        en: Check your applications **before** someone else does.
+      text:
+        it: Controlli di sicurezza non distruttivi, solo su domini che dimostri di possedere, con report rivisto da un consulente.
+        en: Non-destructive security checks, only on domains you prove you own, with a report reviewed by a consultant.
+      actions:
+      - label:
+          it: Inizia
+          en: Get started
+        href: /login
+        style: primary
+      band: true
+    - type: steps
+      id: how
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Registra e verifica
+          en: Register and verify
+        text:
+          it: Pubblica un codice sul tuo dominio per dimostrare che lo controlli.
+          en: Publish a code on your domain to prove you control it.
+      - title:
+          it: Autorizza
+          en: Authorise
+        text:
+          it: Accetta l'autorizzazione scritta al test e scegli ambiente e finestre orarie.
+          en: Accept the written test authorisation and choose environment and time windows.
+      - title:
+          it: Verifica
+          en: Assess
+        text:
+          it: L'agente esegue controlli a basso carico; un consulente rivede il report.
+          en: The agent runs low-load checks; a consultant reviews the report.
+      - title:
+          it: Confronta
+          en: Compare
+        text:
+          it: Pianifica una verifica mensile e segui i miglioramenti nel tempo.
+          en: Schedule a monthly check and track improvement over time.
+    - type: cards
+      id: checks
+      title:
+        it: Cosa controlliamo
+        en: What we check
+      items:
+      - title: TLS
+        text:
+          it: Protocolli, certificato, cifrari.
+          en: Protocols, certificate, ciphers.
+      - title:
+          it: Intestazioni
+          en: Headers
+        text:
+          it: HSTS, CSP, cookie e altre intestazioni di sicurezza.
+          en: HSTS, CSP, cookies and other security headers.
+      - title:
+          it: Componenti
+          en: Components
+        text:
+          it: Versioni con vulnerabilità note pubblicate.
+          en: Versions with published known vulnerabilities.
+      - title:
+          it: Pagine admin e OWASP
+          en: Admin pages and OWASP
+        text:
+          it: Esposizione di pagine amministrative e buone pratiche OWASP.
+          en: Exposed admin pages and OWASP good practices.
+    - type: note
+      content:
+        it: Nessuna analisi parte senza dominio verificato e autorizzazione accettata. Nessun test distruttivo.
+        en: No assessment starts without a verified domain and accepted authorisation. No destructive testing.
+  - key: register
+    type: chat
+    source: agent:app_manager
+    title:
+      it: Registra applicazione
+      en: Register application
+    placeholder:
+      it: Es. voglio registrare app.miaazienda.it
+      en: E.g. I want to register app.mycompany.com
+    examples:
+    - it: Registra una nuova applicazione
+      en: Register a new application
+    - it: Ho pubblicato il codice, verifica
+      en: I published the code, verify it
+    roles:
+    - user
+    - admin
+  - key: apps
+    type: table
+    title:
+      it: Le mie applicazioni
+      en: My applications
+    source: collection:applications
+    data:
+      display: table
+      fields:
+      - key: name
+        label:
+          it: Nome
+          en: Name
+      - key: domain
+        label: Domain
+      - key: environment
+        label:
+          it: Ambiente
+          en: Environment
+        format: badge
+      - key: verified
+        label:
+          it: Verificata
+          en: Verified
+        format: badge
+      - key: authorization_accepted
+        label:
+          it: Autorizzata
+          en: Authorised
+        format: badge
+    roles:
+    - user
+    - admin
+  - key: new
+    type: new_run
+    title:
+      it: Nuova verifica
+      en: New assessment
+    roles:
+    - user
+    - admin
+  - key: reports
+    type: table
+    title:
+      it: I miei report
+      en: My reports
+    source: collection:reports
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: domain
+        label: Domain
+      - key: status
+        label: Status
+        format: badge
+      - key: content
+        label: Report
+      filters:
+      - field: status
+        op: '='
+        value: published
+      sort:
+        field: date
+        dir: desc
+      limit: 100
+      empty:
+        it: Nessun report pubblicato.
+        en: No published reports.
+    roles:
+    - user
+    - admin
+  - key: watches
+    type: instances
+    template: monthly_check
+    title:
+      it: Verifiche mensili
+      en: Monthly checks
+    roles:
+    - user
+    - admin
+  - key: monthly_results
+    type: table
+    title:
+      it: Confronto nel tempo
+      en: Over time
+    source: collection:monthly_reports
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      - key: content
+        label: Report
+      filters:
+      - field: status
+        op: '='
+        value: published
+      sort:
+        field: date
+        dir: desc
+    roles:
+    - user
+    - admin
+  - key: review
+    type: approvals
+    title:
+      it: Revisione report
+      en: Report review
+    approvals:
+    - report_review
+    roles:
+    - consultant
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Subscription
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    - credits
+    signupCredits: 0
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:scanner:
+        estimate: 80
+        metered: true
+    packs:
+    - key: extra
+      credits: 1000
+      price: 10
+      label: Extra
+    plans:
+    - key: apps_1
+      price: 49
+      interval: month
+      label:
+        it: 1 applicazione
+        en: 1 application
+      includes:
+      - 1 verified application
+      - monthly check
+      credits: 500
+      creditsReset: monthly
+      roles:
+      - user
+    - key: apps_5
+      price: 179
+      interval: month
+      label:
+        it: Fino a 5 applicazioni
+        en: Up to 5 applications
+      includes:
+      - 5 verified applications
+      - monthly checks
+      credits: 2500
+      creditsReset: monthly
+      roles:
+      - user
+  extensions:
+  - key: email_delivery
+    description: 'Emailing the approved report to the customer is not available yet: the report appears in ''My reports''
+      once published.'
+  - key: app_limit_per_plan
+    description: Limiting the number of verified applications to the subscribed plan (1 or 5) needs custom logic; for now
+      it is a manual check by the owner.
+  - key: platform_domain_verification
+    description: Domain verification is performed by the registrar agent through the web tool; a deterministic platform check
+      and enforcement of time windows by the runtime are not available yet.

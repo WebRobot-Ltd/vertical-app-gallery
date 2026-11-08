@@ -2,13 +2,13 @@
 
 _Itinerari outdoor su misura, con meteo e traccia GPX._
 
-**Stato manifest:** valido (validatore Python + contratto runtime)
+**Manifest status:** valid (schema validator + runtime contract)
 
-## Descrizione data all'app builder
+## Description given to the app builder (Italian)
 
 SentieroAperto genera itinerari per escursioni, bici e attivita all'aperto. L'utente compila un modulo con zona, tipo di attivita, difficolta, durata o dislivello desiderato, periodo e punto di partenza. Un agente costruisce un itinerario usando i percorsi e i punti di interesse di OpenStreetMap, aggiunge la previsione meteo lungo il tracciato da Open-Meteo e avvisa se le condizioni sono sconsigliate. L'utente vede il percorso su una mappa interattiva con profilo altimetrico, tappe e tempi stimati, puo chiedere varianti in chat ("piu corto", "evita i tratti esposti", "adatto ai bambini") e scaricare la traccia in formato GPX per il navigatore. Un modello giornaliero ricalcola la fattibilita dei percorsi salvati in base al meteo e avvisa via email. Vorrei anche un'app nativa che funzioni offline in montagna, dove non c'e campo, con il GPS per seguire la traccia. Gratuito per gli itinerari base, abbonamento per tracce offline e avvisi meteo. In italiano, tedesco e inglese.
 
-## Funzioni non esprimibili oggi (spec.extensions)
+## Features not expressible today (spec.extensions)
 
 - **interactive_map**: Interactive map with the route and an elevation profile linked to the cursor is not available as a view yet: the report shows stages, a chart of the elevation profile and the waypoints.
 - **gpx_download**: The GPX track is delivered as a fenced gpx block inside the report; a one-click .gpx file download button is not available yet.
