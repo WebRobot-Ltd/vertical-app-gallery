@@ -1,0 +1,495 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: sapere-riservato
+  displayName: SapereRiservato
+  tagline:
+    it: L'assistente aziendale che risponde dai tuoi documenti, e solo a chi può leggerli.
+    en: The company assistant that answers from your documents, only for those allowed to read them.
+  description:
+    it: I dipendenti fanno domande in chat e ricevono risposte con la citazione del documento fonte, limitate ai documenti
+      dei gruppi a cui appartengono. Ogni mese l'amministratore riceve il report delle domande rimaste senza risposta.
+    en: Employees ask questions in chat and get answers citing the source document, limited to the documents of their groups.
+      Every month the admin gets a report of unanswered questions.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#1f2d3d'
+      accent: '#0f766e'
+      background: '#f6f7f9'
+      foreground: '#16202a'
+    fonts:
+      body: Inter
+      display: Source Serif 4
+    wordmark:
+    - text: Sapere
+      color: primary
+    - text: Riservato
+      color: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Riservatezza
+        en: Privacy
+      href: '#riservatezza'
+    - label:
+        it: Licenza
+        en: License
+      href: '#licenza'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label:
+        it: Dipendente
+        en: Employee
+      assignedBy: invite
+  limits:
+  - action: chat
+    per: user
+    max: 100
+    window: day
+    roles:
+    - user
+  agents:
+  - key: assistant
+    role: main
+    description: Answers employee questions only from the documents their group may read, citing the source.
+    profile:
+      inline:
+        display_name: SapereRiservato assistant
+        crews:
+        - id: assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the internal knowledge assistant of a company. You answer ONLY from the company''s internal
+            documents, never from general knowledge or the web.
+
+            Procedure for every message:
+
+            1. Call read_members to find the group(s) of the person asking (match their email). If the person is not listed,
+            answer that they have no access yet and ask them to contact the administrator; do not search.
+
+            2. Call search_documents with the key terms of the question. Consider ONLY documents whose ''groups'' field includes
+            one of the person''s groups. Ignore every other document entirely and never mention that they exist, nor their
+            titles or content.
+
+            3. Answer concisely in the user''s language, using only the allowed documents. After each claim cite the source
+            as [Document title, section/page if known]. End with a line ''Fonti / Sources:'' listing the documents used.
+
+            4. If the allowed documents do not contain the answer, say so plainly, do not guess, and call log_question once
+            with the question text, the person''s group and the reason (no_document or not_authorized_or_missing). Never reveal
+            that a document exists which the person cannot read.
+
+            Never invent policies, figures or clauses. For legal or contractual matters, quote the document and suggest confirming
+            with the competent office.'
+    context:
+    - key: user_email
+      from: user.email
+    goalTemplate: 'Employee email: {user_email}
+
+      Conversation so far:
+
+      {history}
+
+
+      New question: {message}
+
+      Answer in the language with ISO code {lang}.'
+    output: markdown
+    appTools:
+    - name: read_members
+      description: Read the list of employees and their groups
+      action: read
+      collection: members
+      scope: all
+    - name: search_documents
+      description: Search the internal documents (title, groups, content)
+      action: search
+      collection: documents
+      scope: all
+    - name: log_question
+      description: Record a question that could not be answered
+      action: append
+      collection: unanswered_questions
+      scope: all
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.3
+  - key: reporter
+    role: scheduled
+    description: Every month summarises the unanswered questions for the admin.
+    profile:
+      inline:
+        display_name: SapereRiservato monthly reporter
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare the monthly report for the administrator of a company knowledge base. Read the unanswered
+            questions of the last month with read_unanswered. Start with a level-1 title ''# Domande senza risposta — <month
+            year>''. Sections with ## headings: Sintesi (totals, only real counts), Temi ricorrenti (group similar questions,
+            with counts and the groups asking), Documenti mancanti o da aggiornare (concrete suggestions), Possibili problemi
+            di accesso (questions probably blocked by group permissions). Add a ```chart block (bar) of questions per theme
+            when there are at least 3 themes. Never invent numbers; if there are no records say so in one line.'
+    goalTemplate: Prepare the report for the month that just ended. Today is {date}. Write in the language with ISO code {lang}.
+    output: markdown
+    appTools:
+    - name: read_unanswered
+      description: Read the logged unanswered questions
+      action: read
+      collection: unanswered_questions
+      scope: all
+    writesTo:
+      collection: monthly_reports
+      parse: whole
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.4
+  data:
+    collections:
+    - name: members
+      ownedBy: shared
+      description: Employees and the group they belong to (managed by the admin)
+      fields:
+      - name: email
+        type: email
+        required: true
+        label: Email
+      - name: name
+        type: text
+        label:
+          it: Nome
+          en: Name
+      - name: group
+        type: text
+        required: true
+        label:
+          it: Gruppo (es. hr, legale, vendite)
+          en: Group (e.g. hr, legal, sales)
+    - name: documents
+      ownedBy: shared
+      searchable: true
+      description: Internal documents, pasted as text, with the groups allowed to read them
+      fields:
+      - name: title
+        type: text
+        required: true
+        label:
+          it: Titolo
+          en: Title
+      - name: kind
+        type: select
+        label:
+          it: Tipo
+          en: Type
+        options:
+        - value: procedure
+          label: Procedura
+        - value: contract
+          label: Contratto
+        - value: manual
+          label: Manuale
+        - value: other
+          label: Altro
+      - name: groups
+        type: text
+        required: true
+        label:
+          it: Gruppi autorizzati (separati da virgola)
+          en: Allowed groups (comma separated)
+      - name: content
+        type: textarea
+        required: true
+        label:
+          it: Testo del documento
+          en: Document text
+    - name: unanswered_questions
+      ownedBy: org
+      description: Questions the assistant could not answer
+      fields:
+      - name: question
+        type: text
+      - name: group
+        type: text
+      - name: reason
+        type: text
+    - name: monthly_reports
+      ownedBy: org
+      description: Monthly unanswered-questions reports for the admin
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: SapereRiservato
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow:
+        it: Assistente AI aziendale
+        en: Company AI assistant
+      title:
+        it: Le risposte dei tuoi documenti, **solo a chi può leggerli**.
+        en: Answers from your documents, **only for those allowed to read them**.
+      text:
+        it: Procedure, contratti e manuali restano in azienda. I dipendenti chiedono in chat e ricevono risposte con la citazione
+          della fonte.
+        en: Procedures, contracts and manuals stay in the company. Employees ask in chat and get answers citing the source.
+      actions:
+      - label:
+          it: Accedi
+          en: Sign in
+        href: /login
+        style: primary
+      - label:
+          it: Come funziona
+          en: How it works
+        href: '#come-funziona'
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: L'admin carica i documenti
+          en: Admin adds documents
+        text:
+          it: Testo dei documenti e gruppi autorizzati a leggerli.
+          en: Document text and the groups allowed to read it.
+        badge: 📄
+      - title:
+          it: Domande in chat
+          en: Ask in chat
+        text:
+          it: Ogni dipendente chiede e ottiene risposte solo dai documenti del proprio gruppo, con fonte citata.
+          en: Each employee asks and gets answers only from their group's documents, with the source cited.
+        badge: 💬
+      - title:
+          it: Report mensile
+          en: Monthly report
+        text:
+          it: L'admin vede le domande senza risposta e i documenti da aggiungere.
+          en: The admin sees unanswered questions and the documents to add.
+        badge: 📊
+    - type: cards
+      id: riservatezza
+      title:
+        it: Riservatezza
+        en: Privacy
+      items:
+      - title:
+          it: Accesso per gruppo
+          en: Group-based access
+        text:
+          it: Nessun documento viene mostrato fuori dai gruppi autorizzati.
+          en: No document is shown outside its authorised groups.
+      - title:
+          it: Solo documenti aziendali
+          en: Company documents only
+        text:
+          it: L'assistente non usa il web né conoscenze esterne.
+          en: The assistant uses no web or outside knowledge.
+    - type: cards
+      id: licenza
+      title:
+        it: Licenza annuale
+        en: Annual license
+      intro:
+        it: Prezzo per fascia di utenti. Dettagli nella sezione Licenza dopo l'accesso.
+        en: Priced by user band. Details in the License section after signing in.
+      items:
+      - title: Team · 25
+        text:
+          it: Fino a 25 utenti
+          en: Up to 25 users
+      - title: Business · 100
+        text:
+          it: Fino a 100 utenti
+          en: Up to 100 users
+      - title: Enterprise · 250
+        text:
+          it: Fino a 250 utenti
+          en: Up to 250 users
+    - type: note
+      content:
+        it: Le risposte si basano solo sui documenti caricati; per questioni legali conferma con l'ufficio competente.
+        en: Answers are based only on uploaded documents; for legal matters confirm with the competent office.
+  - key: chat
+    type: chat
+    title:
+      it: Chiedi ai documenti
+      en: Ask the documents
+    source: agent:assistant
+    examples:
+    - Qual è la procedura per le ferie?
+    - Quali sono i termini di recesso nel contratto fornitori?
+    placeholder:
+      it: Fai una domanda sui documenti aziendali…
+      en: Ask about company documents…
+    roles:
+    - user
+    - admin
+  - key: documents_admin
+    type: admin
+    title:
+      it: Documenti
+      en: Documents
+    source: collection:documents
+    roles:
+    - admin
+  - key: members_admin
+    type: admin
+    title:
+      it: Dipendenti e gruppi
+      en: Employees and groups
+    source: collection:members
+    roles:
+    - admin
+  - key: unanswered
+    type: table
+    title:
+      it: Domande senza risposta
+      en: Unanswered questions
+    source: collection:unanswered_questions
+    data:
+      display: table
+      fields:
+      - key: question
+        label:
+          it: Domanda
+          en: Question
+      - key: group
+        label:
+          it: Gruppo
+          en: Group
+        format: badge
+      - key: reason
+        label:
+          it: Motivo
+          en: Reason
+      limit: 100
+    roles:
+    - admin
+  - key: reports
+    type: list
+    title:
+      it: Report mensili
+      en: Monthly reports
+    source: collection:monthly_reports
+    printable: true
+    roles:
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Licenza
+      en: License
+    roles:
+    - admin
+  schedules:
+  - agent: reporter
+    action: run
+    cron: 0 6 1 * *
+    owner: app
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: team_25
+      price: 1500
+      interval: year
+      label: Team — fino a 25 utenti
+      includes:
+      - up to 25 users
+      - unlimited questions
+      - monthly unanswered-questions report
+      roles:
+      - admin
+    - key: business_100
+      price: 5000
+      interval: year
+      label: Business — fino a 100 utenti
+      includes:
+      - up to 100 users
+      - unlimited questions
+      - monthly unanswered-questions report
+      roles:
+      - admin
+    - key: enterprise_250
+      price: 10000
+      interval: year
+      label: Enterprise — fino a 250 utenti
+      includes:
+      - up to 250 users
+      - unlimited questions
+      - monthly unanswered-questions report
+      roles:
+      - admin
+  extensions:
+  - key: dedicated_llm
+    description: The language model running on the customer's dedicated infrastructure with no external services is a deployment
+      choice, not expressible in the manifest. This draft uses the platform's standard model.
+  - key: file_upload
+    description: 'Uploading files (PDF, Word) is not available yet: the admin pastes the document text into the documents
+      collection.'
+  - key: hard_group_enforcement
+    description: Group filtering is enforced by the assistant's instructions over a shared documents collection. Strict per-group
+      enforcement in the runtime (records filtered by group before the agent sees them) is needed for stronger guarantees.
+  - key: email_report
+    description: 'Emailing the monthly report to the admin is not available yet: the report appears in the Monthly reports
+      view.'
+  - key: seat_limit
+    description: The per-user-count license is modelled as three annual plans by user band; automatic enforcement of the seat
+      count is not available.

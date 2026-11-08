@@ -1,0 +1,579 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: comunita-energia
+  displayName: ComunitàEnergia
+  tagline: 'Gestisci la tua comunità energetica rinnovabile: ripartizione, incentivi e rendiconti mensili.'
+  description: 'Registra membri, punti di prelievo e impianti, carica i dati di produzione e consumo: un agente AI ripartisce
+    l''energia condivisa, calcola l''autoconsumo collettivo, stima il beneficio economico e prepara la bozza di distribuzione
+    degli incentivi, che approvi prima di comunicarla.'
+  langs:
+  - it
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0b3d2e'
+      accent: '#f2a900'
+      background: '#f6f9f4'
+      foreground: '#17231d'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Comunità
+      color: primary
+    - text: Energia
+      color: accent
+    button: primary
+  header:
+    links:
+    - label: Come funziona
+      href: '#come-funziona'
+    - label: Fonti e limiti
+      href: '#fonti'
+    cta:
+      label: Accedi
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Super admin
+      assignedBy: admin_emails
+    - key: community_admin
+      label: Amministratore della comunità
+      assignedBy: signup
+    - key: member
+      label: Membro
+      assignedBy: derived
+      from: collection:members.email
+  limits:
+  - action: run
+    per: user
+    max: 10
+    window: day
+    roles:
+    - community_admin
+  egress:
+    hosts:
+    - api.open-meteo.com
+    notes: 'Open-Meteo: previsioni meteo (irraggiamento, nuvolosità) per stimare la produzione fotovoltaica. API gratuita
+      per uso non commerciale; per uso commerciale serve un piano a pagamento o una chiave dedicata: verificare i termini
+      prima della pubblicazione. Licenza dati CC BY 4.0.'
+  agents:
+  - key: allocator
+    role: main
+    description: Ripartisce l'energia condivisa, calcola l'autoconsumo collettivo, stima i benefici e prepara la bozza degli
+      incentivi per approvazione.
+    awaits:
+    - incentive_split
+    profile:
+      inline:
+        display_name: Ripartitore CER
+        crews:
+        - id: allocator
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei un analista di comunità energetiche rinnovabili (CER) italiane. Lavori SOLO con i dati della
+            comunità che trovi negli strumenti: read_members (membri, POD, impianti, ruolo), read_readings (produzione, immissione,
+            prelievo per intervallo), read_rules (regole di distribuzione decise dalla comunità), più i dati incollati dall''amministratore
+            nel goal. Non inventare mai valori: se mancano dati per un membro o un intervallo, elencali in ''Dati mancanti''
+            e non stimarli come fatti.
+
+
+            Metodo: per ogni intervallo l''energia condivisa è il minimo tra energia immessa totale dagli impianti della comunità
+            e energia prelevata totale dai membri consumatori/prosumer; ripartiscila tra i membri in proporzione ai prelievi
+            (consumatori) e alle immissioni (produttori), secondo le regole. L''autoconsumo collettivo è energia condivisa
+            / energia immessa. Il beneficio economico usa SOLO le tariffe e i parametri incentivanti indicati dall''amministratore
+            o dalle regole; se mancano, dichiara che i valori in euro sono stime con parametri da confermare e non consulenza
+            fiscale o legale.
+
+
+            Per la stima della produzione futura usa lo strumento meteo_forecast (Open-Meteo, GET con query: latitude, longitude,
+            daily=shortwave_radiation_sum,cloud_cover_mean,sunshine_duration, forecast_days=7, timezone=Europe/Rome). Risposta
+            JSON con array daily. Indica l''incertezza, cita ''Meteo: Open-Meteo.com, CC BY 4.0''. Se non hai le coordinate
+            non chiamare lo strumento.
+
+
+            Struttura del report, in italiano, con titolo di livello 1 ''# Rendiconto di ripartizione — <comunità> — <periodo>'':
+            ## Sintesi (energia prodotta, immessa, prelevata, condivisa, % autoconsumo collettivo, beneficio stimato della
+            comunità); ## Ripartizione per intervallo (tabella); ## Quota per membro (tabella: membro, ruolo, kWh condivisi,
+            risparmio €, incentivo previsto €); ## Bozza distribuzione incentivi (applicando le regole, citando la regola
+            usata per ogni voce); ## Andamenti anomali (cali di produzione, prelievi anomali, intervalli senza dati); ## Previsione
+            produzione 7 giorni; ## Dati mancanti e ipotesi. Aggiungi un blocco ```chart con barre dei kWh condivisi per membro
+            (valori reali). Dopo aver scritto il report salva con write_member_share una riga per membro (member_email, period,
+            shared_kwh, savings_eur, payout_eur) e con write_alert gli eventuali andamenti anomali. Poi chiama request_incentive_split
+            con la bozza di distribuzione: la comunicazione ai membri avviene solo dopo l''approvazione dell''amministratore.
+            Non comunicare nulla ai membri prima.'
+          mcp_servers: []
+    appTools:
+    - name: read_members
+      description: Elenca i membri della comunità (ruolo, POD, impianto, coordinate)
+      action: read
+      collection: members
+      scope: user
+    - name: read_readings
+      description: Legge i dati di produzione e consumo per intervallo
+      action: read
+      collection: readings
+      scope: user
+    - name: read_rules
+      description: Legge le regole di distribuzione degli incentivi
+      action: read
+      collection: rules
+      scope: user
+    - name: write_member_share
+      description: Salva la quota di un membro per il periodo
+      action: write
+      collection: member_shares
+      scope: user
+    - name: write_alert
+      description: Registra un andamento anomalo
+      action: write
+      collection: alerts
+      scope: user
+    - name: meteo_forecast
+      description: Previsione meteo giornaliera Open-Meteo per coordinate (query)
+      action: http
+      http:
+        method: GET
+        url: https://api.open-meteo.com/v1/forecast
+        attribution: 'Meteo: Open-Meteo.com, CC BY 4.0'
+    goalTemplate: 'Comunità: {community}
+
+      Periodo: {period}
+
+      {?tariff}Tariffe e parametri incentivanti: {tariff}{/tariff}
+
+      {?latlon}Coordinate per le previsioni (lat, lon): {latlon}{/latlon}
+
+      {?readings_text}Dati di produzione e consumo incollati:
+
+      {readings_text}{/readings_text}
+
+      {!readings_text}Usa i dati già registrati con read_readings.{/readings_text}
+
+      Data di oggi: {date}. Scrivi in italiano.'
+    output: markdown
+    writesTo:
+      collection: statements
+      parse: whole
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 1.0
+  inputForm:
+    title: Nuovo rendiconto
+    fields:
+    - name: community
+      type: text
+      required: true
+      label: Nome della comunità
+    - name: period
+      type: text
+      required: true
+      label: Periodo
+      help: es. ottobre 2026
+    - name: tariff
+      type: textarea
+      maxLength: 600
+      label: Tariffe e incentivo (facoltativo)
+      help: es. tariffa premio €/MWh, valore ARERA, prezzo energia
+    - name: latlon
+      type: text
+      label: Coordinate della comunità (facoltativo)
+      help: es. 44.49, 11.34
+    - name: readings_text
+      type: textarea
+      maxLength: 8000
+      label: Dati di produzione e consumo (facoltativo)
+      help: 'Incolla le misure (CSV o testo) oppure incolla un link ai dati: il caricamento di file non è ancora disponibile'
+  data:
+    collections:
+    - name: members
+      ownedBy: user
+      description: Membri della CER con punti di prelievo e impianti
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Nome
+      - name: email
+        type: email
+        required: true
+        label: Email
+      - name: kind
+        type: select
+        required: true
+        label: Tipo
+        options:
+        - value: producer
+          label: Produttore
+        - value: consumer
+          label: Consumatore
+        - value: prosumer
+          label: Prosumer
+      - name: pod
+        type: text
+        label: POD
+      - name: plant_kwp
+        type: number
+        label: Potenza impianto (kWp)
+      - name: latlon
+        type: text
+        label: Coordinate impianto
+      sharing:
+      - viewer
+    - name: readings
+      ownedBy: user
+      description: Produzione e consumo per intervallo
+      fields:
+      - name: member_email
+        type: email
+        required: true
+        label: Membro
+      - name: interval
+        type: text
+        required: true
+        label: Intervallo
+      - name: fed_kwh
+        type: number
+        label: Immessa (kWh)
+      - name: withdrawn_kwh
+        type: number
+        label: Prelevata (kWh)
+      - name: produced_kwh
+        type: number
+        label: Prodotta (kWh)
+    - name: rules
+      ownedBy: user
+      description: Regole della comunità per distribuire gli incentivi
+      fields:
+      - name: title
+        type: text
+        required: true
+        label: Regola
+      - name: text
+        type: textarea
+        label: Descrizione
+        help: es. 50% ai produttori, 30% ai consumatori, 20% al fondo sociale
+    - name: statements
+      ownedBy: user
+      description: Rendiconti mensili generati
+      fields:
+      - name: title
+        type: text
+        label: Titolo
+      - name: content
+        type: textarea
+        label: Rendiconto
+    - name: member_shares
+      ownedBy: user
+      description: Quota, risparmio e pagamento previsto per membro e periodo
+      fields:
+      - name: member_email
+        type: email
+        label: Membro
+      - name: period
+        type: text
+        label: Periodo
+      - name: shared_kwh
+        type: number
+        label: Energia condivisa (kWh)
+      - name: savings_eur
+        type: number
+        label: Risparmio (€)
+      - name: payout_eur
+        type: number
+        label: Pagamento previsto (€)
+      sharing:
+      - viewer
+    - name: alerts
+      ownedBy: user
+      description: Avvisi su andamenti anomali
+      fields:
+      - name: member_email
+        type: email
+        label: Membro
+      - name: period
+        type: text
+        label: Periodo
+      - name: message
+        type: textarea
+        label: Avviso
+  approvals:
+  - key: incentive_split
+    title: Distribuzione incentivi del mese
+    description: Bozza di distribuzione degli incentivi tra i membri, da approvare prima di comunicarla.
+    decidedBy: requester
+    fields:
+    - period
+    - total_incentive
+    - split
+    timeoutMinutes: 10080
+  views:
+  - key: home
+    type: page
+    title: ComunitàEnergia
+    nav: false
+    sections:
+    - type: hero
+      eyebrow: Comunità energetiche rinnovabili
+      title: Dalla produzione alla **ripartizione degli incentivi**, ogni mese.
+      text: 'Registra membri e impianti, carica i dati di produzione e consumo: un agente AI ripartisce l''energia condivisa,
+        calcola l''autoconsumo collettivo e prepara la bozza degli incentivi. Tu approvi, poi comunichi.'
+      actions:
+      - label: Genera un rendiconto
+        href: /v/new_run
+        style: primary
+      - label: Accedi
+        href: /login
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title: Come funziona
+      items:
+      - title: Registra la comunità
+        text: Membri, POD, impianti e regole di distribuzione decise dalla comunità.
+        badge: 👥
+      - title: Carica i dati
+        text: Incolla le misure di produzione e consumo o un link ai dati.
+        badge: 📊
+      - title: L'agente calcola
+        text: Energia condivisa per intervallo, quota di autoconsumo collettivo, benefici per comunità e membri.
+        badge: ⚡
+      - title: Approvi e comunichi
+        text: Controlli la bozza degli incentivi, la approvi e i membri vedono la propria quota.
+        badge: ✅
+    - type: cards
+      id: fonti
+      title: Area membri, previsioni e limiti
+      items:
+      - title: Area per ogni membro
+        text: Ogni membro vede la propria quota di energia condivisa, i risparmi e i pagamenti previsti.
+      - title: Previsioni meteo
+        text: Open-Meteo aiuta a stimare la produzione dei prossimi giorni.
+      - title: Abbonamento annuale
+        text: Un abbonamento per comunità, in base al numero di membri.
+    - type: note
+      content: 'Supporto al calcolo, non consulenza fiscale, legale o regolatoria. I valori in euro dipendono dalle tariffe
+        e dai parametri GSE/ARERA in vigore, da verificare. Meteo: Open-Meteo.com, CC BY 4.0.'
+  - key: new_run
+    type: new_run
+    title: Nuovo rendiconto
+    roles:
+    - community_admin
+    - admin
+  - key: history
+    type: history
+    title: Rendiconti
+    source: run
+    roles:
+    - community_admin
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: members_list
+    type: list
+    title: Membri e impianti
+    source: collection:members
+    roles:
+    - community_admin
+    - admin
+  - key: readings_list
+    type: list
+    title: Dati di misura
+    source: collection:readings
+    roles:
+    - community_admin
+    - admin
+  - key: rules_list
+    type: list
+    title: Regole di distribuzione
+    source: collection:rules
+    roles:
+    - community_admin
+    - admin
+  - key: approvals
+    type: approvals
+    title: Approvazioni
+    approvals:
+    - incentive_split
+    roles:
+    - community_admin
+  - key: alerts_list
+    type: table
+    title: Andamenti anomali
+    source: collection:alerts
+    roles:
+    - community_admin
+    - admin
+    data:
+      display: table
+      fields:
+      - key: period
+        label: Periodo
+      - key: member_email
+        label: Membro
+      - key: message
+        label: Avviso
+      empty: Nessun andamento anomalo.
+  - key: community_shares
+    type: table
+    title: Quote della comunità
+    source: collection:member_shares
+    roles:
+    - community_admin
+    - admin
+    data:
+      display: table
+      fields:
+      - key: period
+        label: Periodo
+      - key: member_email
+        label: Membro
+      - key: shared_kwh
+        label: kWh condivisi
+        format: number
+      - key: savings_eur
+        label: Risparmio
+        format: money
+      - key: payout_eur
+        label: Pagamento previsto
+        format: money
+      sort:
+        field: period
+        dir: desc
+      limit: 200
+  - key: my_area
+    type: table
+    title: La mia area
+    source: collection:member_shares
+    roles:
+    - member
+    data:
+      display: table
+      fields:
+      - key: period
+        label: Periodo
+      - key: shared_kwh
+        label: kWh condivisi
+        format: number
+      - key: savings_eur
+        label: Risparmio
+        format: money
+      - key: payout_eur
+        label: Pagamento previsto
+        format: money
+      sort:
+        field: period
+        dir: desc
+      empty: Nessuna quota ancora comunicata.
+  - key: watches
+    type: instances
+    template: monthly_close
+    title: Chiusura mensile automatica
+    roles:
+    - community_admin
+  - key: account
+    type: account
+    title: Abbonamento
+    roles:
+    - community_admin
+  templates:
+  - key: monthly_close
+    title: Chiusura mensile
+    description: Ogni mese il rendiconto di ripartizione e la bozza degli incentivi della tua comunità.
+    agent: allocator
+    params:
+    - name: community
+      type: text
+      required: true
+      label: Nome della comunità
+    - name: latlon
+      type: text
+      label: Coordinate per le previsioni
+    - name: tariff
+      type: textarea
+      maxLength: 600
+      label: Tariffe e incentivo
+    goal: 'Chiusura mensile "{instance}" della comunità {community} per il mese appena concluso (oggi è {date}). Usa i dati
+      registrati con read_readings.
+
+      {?tariff}Tariffe: {tariff}{/tariff}
+
+      {?latlon}Coordinate: {latlon}{/latlon}
+
+      Scrivi in italiano.'
+    schedule:
+      cron: 0 6 3 * *
+      userCanChange: true
+    maxPerUser: 2
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: cer_20
+      price: 240
+      interval: year
+      label: Fino a 20 membri
+      includes:
+      - rendiconti mensili
+      - area per ogni membro
+      - previsioni meteo
+      roles:
+      - community_admin
+    - key: cer_60
+      price: 540
+      interval: year
+      label: Fino a 60 membri
+      includes:
+      - rendiconti mensili
+      - area per ogni membro
+      - previsioni meteo
+      roles:
+      - community_admin
+    - key: cer_150
+      price: 960
+      interval: year
+      label: Fino a 150 membri
+      includes:
+      - rendiconti mensili
+      - area per ogni membro
+      - previsioni meteo
+      roles:
+      - community_admin
+  extensions:
+  - key: email_reports
+    description: 'Invio via email dei rendiconti e degli avvisi sugli andamenti anomali: le notifiche non sono ancora disponibili.
+      Gli avvisi compaiono nella vista ''Andamenti anomali'' e il rendiconto nell''area dei membri.'
+  - key: file_upload
+    description: 'Caricamento di file di misure (CSV, export del distributore) non ancora disponibile: i dati si incollano
+      come testo o si registrano nella vista ''Dati di misura''. Il collegamento automatico ai portali dei distributori (credenziali
+      per comunità) non è disponibile.'
+  - key: member_visibility
+    description: 'I membri vedono solo le proprie righe grazie alla condivisione per record (viewer): l''amministratore deve
+      invitarli dalla scheda del membro.'

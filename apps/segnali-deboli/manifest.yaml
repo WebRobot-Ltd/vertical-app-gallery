@@ -1,0 +1,669 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: segnali-deboli
+  displayName: Segnali Deboli
+  tagline:
+    it: Vedi i trend prima che diventino ovvi.
+    en: See trends before they become obvious.
+  description:
+    it: Un team di agenti AI monitora ogni giorno fonti lecite e statistiche Wikipedia, riconosce i temi emergenti e li classifica
+      come nascenti, in crescita o maturi. Report mensili per settore e report su misura in chat.
+    en: A team of AI agents monitors lawful sources and Wikipedia statistics every day, spots emerging themes and ranks them
+      as nascent, growing or mature. Monthly sector reports and custom reports in chat.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#1f2a44'
+      accent: '#e4572e'
+      background: '#f7f6f2'
+      foreground: '#1a1d24'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Segnali
+      color: primary
+    - text: Deboli
+      color: accent
+    button: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Fonti
+        en: Sources
+      href: '#fonti'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      assignedBy: signup
+  limits:
+  - action: chat
+    per: user
+    max: 30
+    window: day
+    roles:
+    - user
+  - action: agent:advisor
+    per: user
+    max: 10
+    window: day
+    roles:
+    - user
+  egress:
+    hosts:
+    - wikimedia.org
+    notes: Wikimedia REST API, pageviews per article. Wikimedia data is free to reuse (CC0); a descriptive user agent is recommended.
+  agents:
+  - key: watcher
+    role: helper
+    description: 'Daily team: a collector gathers lawful content, an analyst measures growth and groups themes into trends.'
+    memory: instance
+    profile:
+      inline:
+        display_name: Segnali Deboli watcher
+        crews:
+        - id: collector
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You collect content for trend detection in one sector and one market. Use only lawful sources: trade
+            blogs, online magazines with public RSS feeds, press releases. Respect robots.txt and terms of service; never
+            scrape social networks or any site whose terms forbid it. Build and run the collection through the WebRobot MCP
+            (scrape the RSS feeds and pages). Output a list of the last 24-48 hours items: title, source, URL, date, a one-line
+            summary, and the candidate themes you see. Never invent items.'
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a trend analyst. From the collected items, identify emerging themes and group them into
+            trends. For each theme measure interest with the tool wikipedia_pageviews (path: /{lang}.wikipedia/all-access/user/{Article_Title}/daily/{YYYYMMDD}/{YYYYMMDD};
+            compare the last 30 days with the previous 30) and its spread (number of distinct sources mentioning it). Classify
+            each trend: nascent (low volume, few sources, rising), growing (fast rising, widening spread), mature (high stable
+            volume). Your memory holds yesterday''s trends: set accelerating=true only when growth clearly increased compared
+            with it. Use only real figures; say when data is missing. Write a level-1 title "# <Sector> · <Market> — signals
+            of <date>", a short Markdown summary per trend, then end with one fenced json block: {"date":"YYYY-MM-DD","trends":[{"name":"","stage":"nascent|growing|mature","growth_pct":0,"spread":0,"accelerating":false,"summary":""}]}.
+            Finally call remember once with the trends of today (they replace the old ones).'
+        orchestration:
+          type: dag
+          entry: collector
+          nodes:
+          - id: collector
+            crew: collector
+          - id: analyst
+            crew: analyst
+          edges:
+          - from: collector
+            to: analyst
+    appTools:
+    - name: wikipedia_pageviews
+      description: 'Daily Wikipedia page views of an article. Path: /{lang}.wikipedia/all-access/user/{Article_Title}/daily/{YYYYMMDD}/{YYYYMMDD}'
+      action: http
+      http:
+        method: GET
+        url: https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article
+        allowPath: true
+        attribution: Wikimedia Foundation, pageviews API, CC0
+    goalTemplate: Watch the sector and market given in the task. Today is {date}. Write in the language with ISO code {lang}.
+    output: markdown+json
+    resultSchema:
+      type: object
+      properties:
+        date:
+          type: string
+        trends:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              stage:
+                type: string
+              growth_pct:
+                type: number
+              spread:
+                type: number
+              accelerating:
+                type: boolean
+              summary:
+                type: string
+    writesTo:
+      collection: trends
+      parse: json_last
+      keyBy: date
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+  - key: reporter
+    role: helper
+    description: Writes the monthly sector report with examples, growth charts and business implications.
+    memory: none
+    profile:
+      inline:
+        display_name: Segnali Deboli monthly reporter
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the monthly trend report for one sector and one market, for marketing, design and innovation
+            teams. Read the last 30 days of daily trend records with the tool read_trends. Structure: a level-1 title "# <Sector>
+            · <Market> — trend report <month year>", then ## Summary, ## Nascent trends, ## Growing trends, ## Mature trends
+            (each trend with 2-3 concrete examples taken from the records and its stage), ## Implications for the business
+            (marketing, design, product), ## Watch next month. Add a growth chart as a fenced block ```chart {"type":"line"|"bar","title":"...","labels":[...],"series":[{"name":"...","values":[...]}],"unit":"%"}```
+            using only real figures from the records. Never invent figures; this is decision support, not a guarantee.'
+    appTools:
+    - name: read_trends
+      description: Daily trend records of the user's watches
+      action: read
+      collection: trends
+      scope: user
+    goalTemplate: Write the monthly report for the sector and market given in the task. Today is {date}. Write in the language
+      with ISO code {lang}.
+    output: markdown
+    writesTo:
+      collection: reports
+      parse: whole
+  - key: advisor
+    role: main
+    description: 'Chat assistant: custom trend reports on request (e.g. the future of non-alcoholic drinks in Germany).'
+    memory: user
+    profile:
+      inline:
+        display_name: Segnali Deboli advisor
+        chat_mode: true
+        crews:
+        - id: advisor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: You are a trend-forecasting advisor for marketing, design and innovation teams. When asked for a
+            custom report (a topic and a market), start from the user's tracked trends (read_trends), measure interest with
+            wikipedia_pageviews, and collect extra content from lawful public sources only (blogs, RSS magazines, press releases)
+            through the WebRobot MCP, respecting terms of service. Reports start with a level-1 title, then Summary, Trends
+            by stage (nascent, growing, mature) with examples and sources, a growth chart as a ```chart``` JSON block with
+            real figures only, and Business implications. For short questions, answer briefly. Never invent figures or sources;
+            state uncertainty.
+    appTools:
+    - name: read_trends
+      description: Daily trend records of the user's watches
+      action: read
+      collection: trends
+      scope: user
+    - name: wikipedia_pageviews
+      description: 'Daily Wikipedia page views of an article. Path: /{lang}.wikipedia/all-access/user/{Article_Title}/daily/{YYYYMMDD}/{YYYYMMDD}'
+      action: http
+      http:
+        method: GET
+        url: https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article
+        allowPath: true
+        attribution: Wikimedia Foundation, pageviews API, CC0
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New message: {message}
+
+      Answer in the language with ISO code {lang}. Today is {date}.'
+    output: markdown
+  templates:
+  - key: sector_watch
+    title:
+      it: Osservatorio di settore
+      en: Sector watch
+    description:
+      it: Ogni giorno raccoglie segnali e aggiorna i trend del settore e mercato scelti.
+      en: Every day it gathers signals and updates the trends of the chosen sector and market.
+    agent: watcher
+    params:
+    - name: sector
+      type: select
+      required: true
+      label:
+        it: Settore
+        en: Sector
+      options:
+      - value: food
+        label:
+          it: Cibo
+          en: Food
+      - value: fashion
+        label:
+          it: Moda
+          en: Fashion
+      - value: beauty
+        label:
+          it: Bellezza
+          en: Beauty
+      - value: home
+        label:
+          it: Casa
+          en: Home
+      - value: mobility
+        label:
+          it: Mobilità
+          en: Mobility
+    - name: market
+      type: country
+      required: true
+      label:
+        it: Mercato
+        en: Market
+    goal: 'Watch "{instance}": sector {sector}, market {market}. Today is {date}. Write in the language with ISO code {lang}.'
+    schedule:
+      cron: 0 5 * * *
+      userCanChange: false
+    maxPerUser: 10
+    cost:
+      perRun: 5
+  - key: monthly_report
+    title:
+      it: Report mensile
+      en: Monthly report
+    description:
+      it: Un report per settore il primo di ogni mese.
+      en: A sector report on the first of every month.
+    agent: reporter
+    params:
+    - name: sector
+      type: select
+      required: true
+      label:
+        it: Settore
+        en: Sector
+      options:
+      - value: food
+        label:
+          it: Cibo
+          en: Food
+      - value: fashion
+        label:
+          it: Moda
+          en: Fashion
+      - value: beauty
+        label:
+          it: Bellezza
+          en: Beauty
+      - value: home
+        label:
+          it: Casa
+          en: Home
+      - value: mobility
+        label:
+          it: Mobilità
+          en: Mobility
+    - name: market
+      type: country
+      required: true
+      label:
+        it: Mercato
+        en: Market
+    goal: 'Monthly report for "{instance}": sector {sector}, market {market}. Today is {date}. Write in the language with
+      ISO code {lang}.'
+    schedule:
+      cron: 0 6 1 * *
+      userCanChange: false
+    maxPerUser: 10
+    cost:
+      perRun: 20
+  data:
+    collections:
+    - name: trends
+      ownedBy: instance
+      description: Daily trend snapshot of each sector watch
+      fields:
+      - name: date
+        type: date
+      - name: trends
+        type: json
+    - name: reports
+      ownedBy: instance
+      description: Monthly sector reports of each report instance
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Segnali Deboli
+    sections:
+    - type: hero
+      eyebrow:
+        it: Previsione dei trend
+        en: Trend forecasting
+      title:
+        it: Vedi i **segnali deboli** prima che diventino ovvi.
+        en: See the **weak signals** before they become obvious.
+      text:
+        it: Ogni giorno un team di agenti AI legge fonti lecite e misura l'interesse su Wikipedia, poi classifica i trend
+          come nascenti, in crescita o maturi. Per uffici marketing, design e innovazione.
+        en: Every day a team of AI agents reads lawful sources and measures Wikipedia interest, then ranks trends as nascent,
+          growing or mature. For marketing, design and innovation teams.
+      actions:
+      - label:
+          it: Inizia
+          en: Get started
+        href: /login
+        style: primary
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Scegli settori e mercati
+          en: Pick sectors and markets
+        text:
+          it: Cibo, moda, bellezza, casa, mobilità, in uno o più paesi.
+          en: Food, fashion, beauty, home, mobility, in one or more countries.
+        badge: 🎯
+      - title:
+          it: Gli agenti raccolgono e analizzano
+          en: Agents collect and analyse
+        text:
+          it: Raccolta quotidiana, crescita e diffusione dei temi, raggruppati in trend.
+          en: Daily collection, growth and spread of themes, grouped into trends.
+        badge: 🔎
+      - title:
+          it: Dashboard, report e chat
+          en: Dashboard, reports and chat
+        text:
+          it: Report mensile per settore e report su misura in chat.
+          en: Monthly sector report and custom reports in chat.
+        badge: 📈
+    - type: cards
+      id: fonti
+      title:
+        it: Fonti
+        en: Sources
+      items:
+      - title:
+          it: Blog e riviste
+          en: Blogs and magazines
+        text:
+          it: Blog di settore e riviste online con feed RSS pubblici.
+          en: Trade blogs and online magazines with public RSS feeds.
+      - title:
+          it: Comunicati
+          en: Press releases
+        text:
+          it: Comunicati stampa di aziende e istituzioni.
+          en: Company and institution press releases.
+      - title: Wikipedia
+        text:
+          it: Statistiche di visualizzazione delle pagine come misura dell'interesse.
+          en: Page view statistics as a measure of interest.
+    - type: note
+      content:
+        it: Supporto alle decisioni, non una garanzia. Usiamo solo fonti il cui accesso è consentito dai termini del servizio.
+        en: Decision support, not a guarantee. We use only sources whose terms of service allow access.
+  - key: dashboard
+    type: page
+    title:
+      it: Dashboard trend
+      en: Trend dashboard
+    roles:
+    - user
+    - admin
+    sections:
+    - type: data
+      title:
+        it: Trend seguiti
+        en: Tracked trends
+      source: collection:trends
+      path: trends
+      display: table
+      fields:
+      - key: name
+        label:
+          it: Trend
+          en: Trend
+      - key: stage
+        label:
+          it: Fase
+          en: Stage
+        format: badge
+      - key: growth_pct
+        label:
+          it: Crescita %
+          en: Growth %
+        format: number
+      - key: spread
+        label:
+          it: Diffusione
+          en: Spread
+        format: number
+      - key: accelerating
+        label:
+          it: Accelera
+          en: Accelerating
+        format: badge
+      sort:
+        field: growth_pct
+        dir: desc
+      limit: 100
+      empty:
+        it: Crea un osservatorio per vedere i trend.
+        en: Create a watch to see trends.
+    - type: data
+      title:
+        it: 'Alert: trend in accelerazione'
+        en: 'Alerts: accelerating trends'
+      source: collection:trends
+      path: trends
+      display: cards
+      fields:
+      - key: name
+      - key: stage
+        format: badge
+      - key: growth_pct
+        format: number
+      - key: summary
+      filters:
+      - field: accelerating
+        op: '='
+        value: true
+      limit: 20
+      empty:
+        it: Nessun trend in accelerazione oggi.
+        en: No accelerating trend today.
+  - key: watches
+    type: instances
+    template: sector_watch
+    title:
+      it: I miei osservatori
+      en: My watches
+    roles:
+    - user
+    - admin
+  - key: report_plans
+    type: instances
+    template: monthly_report
+    title:
+      it: Report mensili
+      en: Monthly reports
+    roles:
+    - user
+    - admin
+  - key: reports
+    type: table
+    title:
+      it: Archivio report
+      en: Report archive
+    source: collection:reports
+    roles:
+    - user
+    - admin
+  - key: chat
+    type: chat
+    title:
+      it: Report su misura
+      en: Custom report
+    source: agent:advisor
+    placeholder:
+      it: Es. il futuro delle bevande analcoliche in Germania
+      en: E.g. the future of non-alcoholic drinks in Germany
+    examples:
+    - it: Report sul futuro delle bevande analcoliche in Germania
+      en: Report on the future of non-alcoholic drinks in Germany
+    - it: Quali trend nascenti nella mobilità urbana in Italia?
+      en: Which nascent trends in urban mobility in Italy?
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Plan
+    roles:
+    - user
+  schedules:
+  - action: settle
+    cron: '*/10 * * * *'
+    owner: app
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:advisor:
+        estimate: 40
+        metered: true
+    packs:
+    - key: credits_small
+      credits: 1000
+      price: 15
+      label: 1000 crediti
+    plans:
+    - key: sectors_1
+      price: 990
+      interval: year
+      label:
+        it: 1 settore
+        en: 1 sector
+      credits: 6000
+      creditsReset: monthly
+      includes:
+      - 1 sector watch
+      - monthly report
+      - chat
+    - key: sectors_3
+      price: 2490
+      interval: year
+      label:
+        it: 3 settori
+        en: 3 sectors
+      credits: 18000
+      creditsReset: monthly
+      includes:
+      - 3 sector watches
+      - monthly reports
+      - chat
+    - key: sectors_5
+      price: 3690
+      interval: year
+      label:
+        it: 5 settori
+        en: 5 sectors
+      credits: 30000
+      creditsReset: monthly
+      includes:
+      - 5 sector watches
+      - monthly reports
+      - chat
+  extensions:
+  - key: alerts_email
+    description: 'Notifications are not available yet: alerts on accelerating trends are shown in the dashboard, not sent
+      by email.'
+  - key: instagram_vision
+    description: 'Instagram images with vision models are left out: they would need an access allowed by the terms of service
+      (official API with the innovators'' consent). To add later if a licensed source is available.'
+  - key: plan_limits
+    description: The maximum number of sectors per plan is not enforced by the manifest (maxPerUser is a fixed 10); it needs
+      a check per plan.

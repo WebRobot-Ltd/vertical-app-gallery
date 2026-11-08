@@ -1,0 +1,933 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: bilancio-carbonio
+  displayName: Bilancio Carbonio
+  tagline:
+    it: Calcola le emissioni della tua PMI e prepara il report di sostenibilità.
+    en: Calculate your SME's emissions and prepare the sustainability report.
+  description:
+    it: Compili un modulo annuale; un agente AI applica i fattori ISPRA e DEFRA secondo il GHG Protocol, separa Scope 1, 2
+      e 3, controlla la coerenza con l'anno precedente e scrive il report con un piano di riduzione.
+    en: Fill in an annual form; an AI agent applies ISPRA and DEFRA factors per the GHG Protocol, splits Scope 1, 2 and 3,
+      checks consistency against last year and writes the report with a reduction plan.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#14452f'
+      accent: '#2f9e6b'
+      background: '#f6f8f4'
+      foreground: '#18231c'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Bilancio
+      color: primary
+    - text: Carbonio
+      color: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Metodo
+        en: Method
+      href: '#metodo'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label:
+        it: Referente aziendale
+        en: Company contact
+      assignedBy: signup
+    - key: esg_consultant
+      label:
+        it: Consulente ESG
+        en: ESG consultant
+      assignedBy: invite
+  limits:
+  - action: agent:analyst
+    per: user
+    max: 5
+    window: day
+    roles:
+    - user
+  slots:
+  - key: size_band
+    description: Company size band from employees and revenue
+    timeoutMs: 2000
+    example:
+      values:
+        employees: 35
+        revenue_eur: 6000000
+      lang: it
+    code: "def main(input):\n    v = input.get('values') or {}\n    try:\n        e = float(v.get('employees') or 0)\n   \
+      \ except Exception:\n        e = 0\n    if e < 10:\n        band = 'micro'\n    elif e < 50:\n        band = 'small'\n\
+      \    else:\n        band = 'medium'\n    return {'size_band': band}\n"
+  agents:
+  - key: analyst
+    role: main
+    description: Applies ISPRA/DEFRA factors per GHG Protocol, splits Scope 1/2/3, checks consistency, writes the report and
+      reduction plan.
+    profile:
+      inline:
+        display_name: Bilancio Carbonio analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 2.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are a corporate carbon accounting specialist for Italian SMEs, following the GHG Protocol Corporate
+            Standard and Scope 3 Standard.
+
+            EMISSION FACTORS: use official published factors only: ISPRA (Italian electricity grid, location-based, natural
+            gas, national fuels) for Italy and DEFRA/DESNZ GHG conversion factors (travel, freight, waste, commuting, purchased
+            goods proxies, non-Italian sites). Use the webrobot MCP to fetch the current factor tables from the official ISPRA
+            and DEFRA pages when needed. For every factor state the source, the year, the unit and the value. If a factor
+            cannot be found, say so and mark the line as ''estimate''; NEVER invent factors or figures.
+
+            SCOPES: Scope 1 = natural gas and other fuels burnt on site, company fleet fuels. Scope 2 = purchased electricity
+            (location-based; also market-based if the user says it is covered by guarantees of origin). Scope 3 = business
+            travel, waste, upstream/downstream shipping, purchased goods and services, employee commuting. Name the Scope
+            3 categories used and those excluded.
+
+            CONSISTENCY: use the app tool read_inventories to read last year''s inventory for this company (if any). Compare
+            each line year on year; flag as anomaly any value that changes by more than 40%, is zero when it was not, or is
+            implausible (e.g. kWh per m2, litres per vehicle, km per employee). List anomalies in a table with a question
+            for the user. Do not silently correct data.
+
+            REPORT STRUCTURE (Markdown, language of the goal): a level-1 title ''# Bilancio carbonio <year> — <company>''.
+            Then ## Sintesi (totals in tCO2e by scope, intensity per employee and per million EUR revenue), ## Emissioni per
+            Scope (tables per scope and category), ## Confronto con l''anno precedente, ## Anomalie e qualità dei dati, ##
+            Piano di riduzione (actions ordered by impact in tCO2e and cost band, with estimated saving, cost range, payback;
+            real-world levers only), ## Metodologia e fonti (factors with source/year), ## Limiti. Include at least two charts
+            as fenced blocks, for example ```chart
+
+            {"type":"pie","title":"Emissioni per Scope","labels":["Scope 1","Scope 2","Scope 3"],"series":[{"name":"tCO2e","values":[1,2,3]}],"unit":"tCO2e"}```
+            and a bar chart of the top categories. Real figures only.
+
+            At the very end output one fenced ```json block: {"year":<int>,"company":"...","scope1_t":n,"scope2_t":n,"scope3_t":n,"total_t":n,"per_employee_t":n,"per_meur_revenue_t":n,"anomalies":n}.
+
+            This is decision support, not certification: say the report should be validated by an ESG consultant before signing.
+            When the data is complete, you may ask for the consultant validation with the tool request_esg_validation.'
+    context:
+    - key: size_band
+      from: slot:size_band
+    goalTemplate: 'Company: {company_name}. Reporting year: {year}. Size band: {size_band}. Employees: {employees}. Revenue
+      (EUR): {revenue_eur}.
+
+      Sites and their electricity/gas consumption: {sites}
+
+      Company fleet: {fleet}
+
+      Business travel: {travel}
+
+      Waste: {waste}
+
+      Shipping: {shipping}
+
+      Main purchases: {purchases}
+
+      Employee commuting: {commute}
+
+      {?electricity_origin}Electricity origin note: {electricity_origin}{/electricity_origin}
+
+      {?notes}Notes: {notes}{/notes}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    output: markdown+json
+    resultSchema:
+      type: object
+      properties:
+        year:
+          type: integer
+        company:
+          type: string
+        scope1_t:
+          type: number
+        scope2_t:
+          type: number
+        scope3_t:
+          type: number
+        total_t:
+          type: number
+        per_employee_t:
+          type: number
+        per_meur_revenue_t:
+          type: number
+        anomalies:
+          type: integer
+    writesTo:
+      collection: inventories
+      parse: json_last
+      keyBy: year
+    appTools:
+    - name: read_inventories
+      description: Read this company's yearly inventories (totals by scope, intensity, anomalies)
+      action: read
+      collection: inventories
+      scope: user
+    awaits:
+    - esg_validation
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 2.0
+  - key: comparer
+    role: helper
+    description: Every January compares the latest two yearly inventories of one company.
+    memory: instance
+    profile:
+      inline:
+        display_name: Bilancio Carbonio yearly comparer
+        crews:
+        - id: comparer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You compare the yearly carbon inventories of one company. Read them with the app tool read_inventories.
+            Start with ''# Confronto emissioni <yearA> vs <yearB>''. Sections: ## Variazioni per Scope (table with absolute
+            and % change), ## Intensità (per employee and per million EUR), ## Cosa è cambiato di più, ## Prossimi passi.
+            Add a ```chart bar block comparing the scopes of the two years. If the inventory for the year that just ended
+            has not been entered yet, write ''# Promemoria: inserisci i dati del <year>'' and list what the user should gather
+            (electricity and gas bills, fleet fuel, travel, waste, shipping, purchases, headcount, commuting), then compare
+            the two latest available years. Never invent figures. Use remember with the key numbers at the end.'
+    appTools:
+    - name: read_inventories
+      description: Read this company's yearly inventories (totals by scope, intensity, anomalies)
+      action: read
+      collection: inventories
+      scope: user
+    writesTo:
+      collection: yearly_comparisons
+      parse: whole
+    goalTemplate: Compare the latest yearly inventories of this company. Today is {date}. Write in the language with ISO code
+      {lang}.
+  - key: offsets
+    role: helper
+    description: On request proposes certified carbon-offset projects for the residual emissions.
+    profile:
+      inline:
+        display_name: Bilancio Carbonio offset advisor
+        crews:
+        - id: offsets
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You advise an SME on offsetting its RESIDUAL emissions, after reduction. Read the company''s latest
+            inventory with read_inventories. Propose 3 to 5 projects listed in recognised registries (Gold Standard, Verra
+            VCS, Italian Carbon Registry or similar), found with the webrobot MCP on the registry pages. For each: registry,
+            project id, type (removal or avoidance), country, standard, vintage, link to the registry page. NEVER invent projects,
+            ids, prices or availability: if you cannot verify a price, say ''price to be requested from the provider''. Compute
+            tonnes to offset from the user''s request. Remind that offsets do not replace reductions and that claims like
+            ''carbon neutral'' need care (ISO 14068, EU Green Claims). The purchase happens with the provider linked in the
+            registry: you do not buy. Answer concisely in the user''s language.'
+    appTools:
+    - name: read_inventories
+      description: Read this company's yearly inventories (totals by scope, intensity, anomalies)
+      action: read
+      collection: inventories
+      scope: user
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+      New message: {message}
+
+      Today is {date}. Reply in the language with ISO code {lang}.'
+    output: markdown
+  inputForm:
+    title:
+      it: Dati annuali
+      en: Annual data
+    fields:
+    - name: year
+      type: number
+      required: true
+      label:
+        it: Anno di rendicontazione
+        en: Reporting year
+      default: 2025
+    - name: company_name
+      type: text
+      required: true
+      label:
+        it: Ragione sociale
+        en: Company name
+    - name: employees
+      type: number
+      required: true
+      label:
+        it: Numero di dipendenti
+        en: Employees
+    - name: revenue_eur
+      type: number
+      required: true
+      label:
+        it: Fatturato annuo (€)
+        en: Annual revenue (€)
+    - name: sites
+      type: array
+      required: true
+      label:
+        it: Sedi e consumi energetici
+        en: Sites and energy use
+      fields:
+      - name: name
+        type: text
+        label:
+          it: Sede
+          en: Site
+      - name: country
+        type: country
+        label:
+          it: Paese
+          en: Country
+      - name: area_m2
+        type: number
+        label: m²
+      - name: electricity_kwh
+        type: number
+        label:
+          it: Energia elettrica (kWh)
+          en: Electricity (kWh)
+      - name: gas_m3
+        type: number
+        label:
+          it: Gas naturale (Sm³)
+          en: Natural gas (Sm³)
+    - name: electricity_origin
+      type: text
+      label:
+        it: Origine elettricità (es. garanzie d'origine)
+        en: Electricity origin (e.g. guarantees of origin)
+    - name: fleet
+      type: array
+      label:
+        it: Carburanti della flotta
+        en: Fleet fuels
+      fields:
+      - name: fuel
+        type: select
+        label:
+          it: Carburante
+          en: Fuel
+        options:
+        - value: diesel
+          label: Diesel
+        - value: petrol
+          label:
+            it: Benzina
+            en: Petrol
+        - value: lpg
+          label: GPL
+        - value: cng
+          label:
+            it: Metano
+            en: CNG
+        - value: electric_kwh
+          label:
+            it: Elettrico (kWh)
+            en: Electric (kWh)
+      - name: quantity
+        type: number
+        label:
+          it: Quantità (litri/kg/kWh)
+          en: Quantity (l/kg/kWh)
+      - name: vehicles
+        type: number
+        label:
+          it: Veicoli
+          en: Vehicles
+    - name: travel
+      type: array
+      label:
+        it: Viaggi di lavoro
+        en: Business travel
+      fields:
+      - name: mode
+        type: select
+        label:
+          it: Mezzo
+          en: Mode
+        options:
+        - value: air_short
+          label:
+            it: Aereo breve
+            en: Short-haul flight
+        - value: air_long
+          label:
+            it: Aereo lungo
+            en: Long-haul flight
+        - value: train
+          label:
+            it: Treno
+            en: Train
+        - value: car
+          label:
+            it: Auto
+            en: Car
+        - value: hotel_nights
+          label:
+            it: Notti in hotel
+            en: Hotel nights
+      - name: amount
+        type: number
+        label:
+          it: km o notti
+          en: km or nights
+    - name: waste
+      type: array
+      label:
+        it: Rifiuti
+        en: Waste
+      fields:
+      - name: type
+        type: text
+        label:
+          it: Tipo
+          en: Type
+      - name: tonnes
+        type: number
+        label:
+          it: Tonnellate
+          en: Tonnes
+      - name: treatment
+        type: select
+        label:
+          it: Destino
+          en: Treatment
+        options:
+        - value: landfill
+          label:
+            it: Discarica
+            en: Landfill
+        - value: recycling
+          label:
+            it: Riciclo
+            en: Recycling
+        - value: incineration
+          label:
+            it: Termovalorizzazione
+            en: Incineration
+        - value: composting
+          label:
+            it: Compostaggio
+            en: Composting
+    - name: shipping
+      type: array
+      label:
+        it: Spedizioni
+        en: Shipping
+      fields:
+      - name: mode
+        type: select
+        label:
+          it: Modo
+          en: Mode
+        options:
+        - value: road
+          label:
+            it: Strada
+            en: Road
+        - value: sea
+          label:
+            it: Mare
+            en: Sea
+        - value: air
+          label:
+            it: Aereo
+            en: Air
+        - value: rail
+          label:
+            it: Ferrovia
+            en: Rail
+      - name: tonne_km
+        type: number
+        label:
+          it: tonnellate-km (o kg e km medi nelle note)
+          en: tonne-km (or kg and average km in notes)
+    - name: purchases
+      type: array
+      label:
+        it: Acquisti principali
+        en: Main purchases
+      fields:
+      - name: category
+        type: text
+        label:
+          it: Categoria (materie prime, servizi, IT…)
+          en: Category (raw materials, services, IT…)
+      - name: spend_eur
+        type: number
+        label:
+          it: Spesa (€)
+          en: Spend (€)
+      - name: quantity
+        type: text
+        label:
+          it: Quantità, se nota
+          en: Quantity, if known
+    - name: commute
+      type: array
+      label:
+        it: Pendolarismo dipendenti
+        en: Employee commuting
+      fields:
+      - name: mode
+        type: select
+        label:
+          it: Mezzo
+          en: Mode
+        options:
+        - value: car
+          label:
+            it: Auto
+            en: Car
+        - value: public
+          label:
+            it: Mezzi pubblici
+            en: Public transport
+        - value: bike
+          label:
+            it: Bici/a piedi
+            en: Bike/walk
+        - value: remote
+          label:
+            it: Smart working
+            en: Remote
+      - name: share_pct
+        type: number
+        label:
+          it: '% dipendenti'
+          en: '% of employees'
+      - name: km_one_way
+        type: number
+        label:
+          it: km medi solo andata
+          en: avg km one way
+      - name: days_year
+        type: number
+        label:
+          it: giorni/anno
+          en: days/year
+    - name: notes
+      type: textarea
+      maxLength: 800
+      label:
+        it: Note (facoltative)
+        en: Notes (optional)
+  data:
+    collections:
+    - name: inventories
+      ownedBy: user
+      description: Yearly inventory totals per company, one record per year
+      fields:
+      - name: year
+        type: number
+      - name: company
+        type: text
+      - name: scope1_t
+        type: number
+      - name: scope2_t
+        type: number
+      - name: scope3_t
+        type: number
+      - name: total_t
+        type: number
+      - name: per_employee_t
+        type: number
+      - name: per_meur_revenue_t
+        type: number
+      - name: anomalies
+        type: number
+    - name: yearly_comparisons
+      ownedBy: instance
+      description: The January year-on-year comparison of each company
+  templates:
+  - key: annual_comparison
+    title:
+      it: Confronto annuale di gennaio
+      en: January yearly comparison
+    description:
+      it: Ogni gennaio ricevi il promemoria per i nuovi dati e il confronto con l'anno precedente.
+      en: Every January you get the reminder for the new data and the comparison with last year.
+    agent: comparer
+    params:
+    - name: focus
+      type: select
+      label:
+        it: Focus
+        en: Focus
+      options:
+      - value: all
+        label:
+          it: Tutti gli Scope
+          en: All scopes
+      - value: scope3
+        label: Scope 3
+    goal: Yearly comparison for "{instance}", focus {focus}. Today is {date}. Write in the language with ISO code {lang}.
+    schedule:
+      cron: 0 7 5 1 *
+      userCanChange: false
+    maxPerUser: 1
+  approvals:
+  - key: esg_validation
+    title:
+      it: Validazione consulente ESG
+      en: ESG consultant validation
+    description: An invited ESG consultant reviews and validates the report before signature
+    role: esg_consultant
+    decidedBy: role
+    fields:
+    - year
+    - company
+    - total_t
+    timeoutMinutes: 10080
+    onTimeout: reject
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Bilancio Carbonio
+    sections:
+    - type: hero
+      title:
+        it: Il **bilancio carbonio** della tua PMI, pronto da firmare.
+        en: Your SME's **carbon footprint**, ready to sign.
+      text:
+        it: Compili un modulo all'anno. L'agente applica i fattori ISPRA e DEFRA secondo il GHG Protocol, separa Scope 1,
+          2 e 3 e scrive il report con un piano di riduzione.
+        en: Fill in one form a year. The agent applies ISPRA and DEFRA factors per the GHG Protocol, splits Scope 1, 2 and
+          3 and writes the report with a reduction plan.
+      actions:
+      - label:
+          it: Inizia
+          en: Get started
+        href: /login
+        style: primary
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Compila il modulo
+          en: Fill in the form
+        text:
+          it: Sedi, energia, flotta, viaggi, rifiuti, spedizioni, acquisti, dipendenti, pendolarismo.
+          en: Sites, energy, fleet, travel, waste, shipping, purchases, headcount, commuting.
+        badge: 📝
+      - title:
+          it: L'agente calcola e controlla
+          en: The agent calculates and checks
+        text:
+          it: Fattori ufficiali, confronto con l'anno precedente, segnalazione dei valori anomali.
+          en: Official factors, year-on-year check, anomaly flags.
+        badge: 🧮
+      - title:
+          it: Report e piano di riduzione
+          en: Report and reduction plan
+        text:
+          it: Grafici, intensità per dipendente e per fatturato, azioni ordinate per impatto e costo.
+          en: Charts, intensity per employee and revenue, actions ranked by impact and cost.
+        badge: 📊
+      - title:
+          it: Validazione e compensazione
+          en: Validation and offsetting
+        text:
+          it: Invita il tuo consulente ESG a validare il report; su richiesta, progetti di compensazione certificati.
+          en: Invite your ESG consultant to validate; offset projects on request.
+        badge: ✅
+    - type: cards
+      id: metodo
+      title:
+        it: Metodo e fonti
+        en: Method and sources
+      items:
+      - title: GHG Protocol
+        text:
+          it: Corporate Standard e Scope 3 Standard.
+          en: Corporate Standard and Scope 3 Standard.
+      - title: ISPRA
+        text:
+          it: Fattori nazionali per elettricità e combustibili.
+          en: National factors for electricity and fuels.
+      - title: DEFRA / DESNZ
+        text:
+          it: Viaggi, trasporti, rifiuti e altri fattori.
+          en: Travel, freight, waste and other factors.
+    - type: note
+      content:
+        it: Strumento di supporto, non certificazione. Il report va validato da un consulente prima della firma. Ogni azienda
+          vede solo i propri dati.
+        en: Decision support, not certification. The report should be validated by a consultant before signing. Each company
+          sees only its own data.
+  - key: new_inventory
+    type: new_run
+    title:
+      it: Nuovo bilancio
+      en: New inventory
+    roles:
+    - user
+    - admin
+  - key: inventories_history
+    type: history
+    title:
+      it: I miei bilanci
+      en: My inventories
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: trend
+    type: page
+    title:
+      it: Andamento
+      en: Trend
+    roles:
+    - user
+    - admin
+    sections:
+    - type: data
+      title:
+        it: Emissioni per anno (tCO2e)
+        en: Emissions per year (tCO2e)
+      source: collection:inventories
+      display: chart
+      chart: stacked
+      fields:
+      - key: year
+        label:
+          it: Anno
+          en: Year
+      - key: scope1_t
+        label: Scope 1
+      - key: scope2_t
+        label: Scope 2
+      - key: scope3_t
+        label: Scope 3
+      sort:
+        field: year
+        dir: asc
+      limit: 20
+      empty:
+        it: Nessun bilancio ancora.
+        en: No inventory yet.
+    - type: data
+      source: collection:inventories
+      display: table
+      fields:
+      - key: year
+        label:
+          it: Anno
+          en: Year
+      - key: total_t
+        label: tCO2e
+        format: number
+      - key: per_employee_t
+        label:
+          it: t / dipendente
+          en: t / employee
+        format: number
+      - key: per_meur_revenue_t
+        label:
+          it: t / M€ fatturato
+          en: t / M€ revenue
+        format: number
+      - key: anomalies
+        label:
+          it: Anomalie
+          en: Anomalies
+        format: number
+      sort:
+        field: year
+        dir: desc
+      limit: 20
+  - key: watches
+    type: instances
+    template: annual_comparison
+    title:
+      it: Confronto di gennaio
+      en: January comparison
+    roles:
+    - user
+    - admin
+  - key: offset_chat
+    type: chat
+    source: agent:offsets
+    title:
+      it: Compensazione
+      en: Offsetting
+    examples:
+    - it: Proponi progetti certificati per compensare le mie emissioni residue
+      en: Propose certified projects to offset my residual emissions
+    placeholder:
+      it: Quante tonnellate vuoi compensare?
+      en: How many tonnes do you want to offset?
+    roles:
+    - user
+    - admin
+  - key: validations
+    type: approvals
+    title:
+      it: Validazioni
+      en: Validations
+    approvals:
+    - esg_validation
+    roles:
+    - esg_consultant
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Subscription
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 20
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:analyst:
+        estimate: 10
+        metered: true
+      agent:offsets:
+        estimate: 5
+        metered: true
+    packs:
+    - key: extra
+      credits: 300
+      price: 9
+      label:
+        it: Pacchetto extra
+        en: Extra pack
+    plans:
+    - key: micro
+      price: 190
+      interval: year
+      label:
+        it: Micro (fino a 9 dipendenti)
+        en: Micro (up to 9 employees)
+      credits: 500
+      creditsReset: monthly
+      includes:
+      - 1 annual inventory
+      - consultant review
+    - key: small
+      price: 490
+      interval: year
+      label:
+        it: Piccola (10–49 dipendenti)
+        en: Small (10–49 employees)
+      credits: 1000
+      creditsReset: monthly
+      includes:
+      - annual inventory with comparison
+      - consultant review
+    - key: medium
+      price: 990
+      interval: year
+      label:
+        it: Media (50–249 dipendenti)
+        en: Medium (50–249 employees)
+      credits: 2000
+      creditsReset: monthly
+      includes:
+      - annual inventory with comparison
+      - consultant review
+      - multi-site
+  extensions:
+  - key: january_email_reminder
+    description: 'Email reminder to enter new data each January is not available yet: the app creates the January comparison/reminder
+      as a record in the user''s watch, visible in the app.'
+  - key: offset_purchase
+    description: 'Buying offsets inside the app is not available: the agent proposes verified registry projects and links
+      to the provider; payment happens with the provider.'
+  - key: file_upload
+    description: 'Uploading bills or spreadsheets is not available yet: users enter figures in the form or paste text in notes.'
+  - key: consultant_invite_scope
+    description: 'Inviting a consultant to a single company''s report: the consultant role is assigned by invite and validates
+      via the approvals view; per-company sharing of the report needs per-record invitations to be wired in the studio.'

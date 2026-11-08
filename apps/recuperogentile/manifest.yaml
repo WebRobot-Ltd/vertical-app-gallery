@@ -1,0 +1,470 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: recuperogentile
+  displayName: RecuperoGentile
+  tagline:
+    it: Solleciti di pagamento automatici, ma sempre rispettosi.
+  description:
+    it: 'Per PMI, studi professionali e utility: segmenta i debitori, sceglie la sequenza di contatto, legge le risposte e
+      fa approvare a un operatore ogni rateizzazione e contestazione. Solo sollecito stragiudiziale dell''azienda creditrice,
+      senza attività di agenzia di recupero.'
+  langs:
+  - it
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#1f3a5f'
+      accent: '#2f8f83'
+      background: '#f7f8fa'
+      foreground: '#1b2430'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Recupero
+      color: primary
+    - text: Gentile
+      color: accent
+  header:
+    links:
+    - label: Come funziona
+      href: '#come-funziona'
+    - label: Limiti
+      href: '#limiti'
+    cta:
+      label: Accedi
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin azienda creditrice
+      assignedBy: admin_emails
+    - key: operator
+      label: Operatore crediti
+      assignedBy: invite
+    - key: debtor
+      label: Debitore
+      assignedBy: derived
+      from: collection:cases.debtor_email
+  limits:
+  - action: agent:segmenter
+    per: user
+    max: 10
+    window: day
+  - action: agent:reply_analyst
+    per: user
+    max: 30
+    window: day
+  agents:
+  - key: segmenter
+    role: main
+    description: Segmenta i debitori per rischio e importo e sceglie la sequenza di contatto.
+    profile:
+      inline:
+        display_name: Segmentazione crediti
+        crews:
+        - id: segmenter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei un analista crediti per una PMI italiana. Lavori solo per conto dell''azienda creditrice: sollecito
+            stragiudiziale, mai attività di agenzia di recupero, mai minacce, mai citare azioni legali come intimidazione.
+            Leggi le fatture scadute (con lo strumento read_invoices) e per ogni debitore assegni: rischio (basso/medio/alto)
+            in base a giorni di ritardo, importo e storico pagamenti; e una sequenza di contatto: email cortese al primo ritardo,
+            promemoria a 15 giorni, proposta di piano di rientro a 30 giorni. Tono sempre rispettoso. Non inventare dati mancanti:
+            segnalali. Scrivi ogni pratica con lo strumento write_case (debtor_name, debtor_email, amount_due, days_overdue,
+            risk, next_step, status=aperta). Il report inizia con un titolo ''# Segmentazione solleciti — <data>'' e contiene:
+            ## Sintesi (tabella per rischio con numero pratiche e importo), ## Sequenza proposta, ## Casi da verificare. Aggiungi
+            un grafico ```chart``` a barre dell''importo per fascia di rischio, solo con cifre reali.'
+          mcp_servers: []
+    appTools:
+    - name: read_invoices
+      description: Legge le fatture scadute importate dall'azienda
+      action: read
+      collection: invoices
+      scope: user
+    - name: write_case
+      description: Crea o aggiorna una pratica
+      action: write
+      collection: cases
+      scope: user
+    goalTemplate: 'Oggi è {date}. Segmenta le fatture scadute dell''azienda e proponi la sequenza di contatto.
+
+      {?notes}Indicazioni dell''operatore: {notes}{/notes}
+
+      {?invoices_text}Fatture incollate:
+
+      {invoices_text}{/invoices_text}
+
+      Scrivi il report in italiano.'
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.5
+  - key: reply_analyst
+    role: helper
+    description: Classifica le risposte dei debitori e aggiorna la pratica; rateizzazioni e contestazioni passano dall'operatore.
+    awaits:
+    - reply_approval
+    profile:
+      inline:
+        display_name: Analisi risposte debitori
+        crews:
+        - id: reply_analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Leggi le risposte dei debitori (strumento read_replies) e per ciascuna classifica: contestazione,
+            richiesta di rateizzazione, promessa di pagamento, altro. Aggiorna la pratica con write_case (status, promised_date,
+            note). Per ogni contestazione e per ogni proposta di rateizzazione NON preparare un invio diretto: chiama request_reply_approval
+            con la bozza di risposta, cortese e chiara. Per promesse di pagamento puoi solo registrare la data. Solo sollecito
+            stragiudiziale, nessuna minaccia, nessuna consulenza legale. Non inventare importi. Il report inizia con ''# Risposte
+            analizzate — <data>'' e ha ## Riepilogo, ## In attesa di approvazione, ## Promesse di pagamento.'
+          mcp_servers: []
+    appTools:
+    - name: read_replies
+      description: Legge le risposte dei debitori registrate
+      action: read
+      collection: replies
+      scope: user
+    - name: write_case
+      description: Crea o aggiorna una pratica
+      action: write
+      collection: cases
+      scope: user
+    goalTemplate: Oggi è {date}. Analizza le nuove risposte dei debitori e aggiorna le pratiche. Scrivi in italiano.
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.4
+  approvals:
+  - key: reply_approval
+    title: Approva risposta al debitore
+    description: 'Rateizzazioni e contestazioni: l''operatore approva prima dell''invio.'
+    role: operator
+    fields:
+    - debtor_name
+    - kind
+    - draft
+    timeoutMinutes: 4320
+    onTimeout: reject
+  inputForm:
+    title: Nuova segmentazione
+    fields:
+    - name: invoices_text
+      type: textarea
+      label: Fatture scadute (incolla da gestionale, CSV o testo)
+      help: Debitore, email, telefono, importo, scadenza, giorni di ritardo, storico pagamenti. Il caricamento di file non
+        è ancora disponibile.
+      maxLength: 8000
+    - name: notes
+      type: textarea
+      label: Indicazioni (facoltative)
+      maxLength: 400
+  data:
+    collections:
+    - name: invoices
+      ownedBy: user
+      description: Fatture scadute importate
+      fields:
+      - name: debtor_name
+        type: text
+        label: Debitore
+      - name: debtor_email
+        type: email
+        label: Email
+      - name: phone
+        type: text
+        label: Telefono
+      - name: amount
+        type: number
+        label: Importo
+      - name: due_date
+        type: date
+        label: Scadenza
+      - name: days_overdue
+        type: number
+        label: Giorni di ritardo
+      - name: payment_history
+        type: textarea
+        label: Storico pagamenti
+    - name: cases
+      ownedBy: user
+      description: Pratiche di sollecito
+      fields:
+      - name: debtor_name
+        type: text
+      - name: debtor_email
+        type: email
+      - name: amount_due
+        type: number
+      - name: recovered
+        type: number
+      - name: days_overdue
+        type: number
+      - name: risk
+        type: select
+        options:
+        - basso
+        - medio
+        - alto
+      - name: next_step
+        type: text
+      - name: status
+        type: select
+        options:
+        - aperta
+        - contestata
+        - rateizzazione
+        - promessa
+        - pagata
+      - name: promised_date
+        type: date
+      - name: responded
+        type: boolean
+      - name: note
+        type: textarea
+    - name: replies
+      ownedBy: user
+      description: Risposte dei debitori (incollate dall'operatore)
+      fields:
+      - name: debtor_email
+        type: email
+      - name: received_at
+        type: date
+      - name: body
+        type: textarea
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: RecuperoGentile
+    sections:
+    - type: hero
+      title: Solleciti **gentili**, risultati concreti.
+      text: Segmenta i debitori, scegli il contatto giusto al momento giusto e lascia decidere a una persona rateizzazioni
+        e contestazioni.
+      actions:
+      - label: Accedi
+        href: /login
+        style: primary
+    - type: steps
+      id: come-funziona
+      title: Come funziona
+      items:
+      - title: Importa
+        text: Incolla le fatture scadute dal gestionale.
+        badge: 📥
+      - title: Segmenta
+        text: 'Un agente assegna rischio e sequenza: email cortese, promemoria a 15 giorni, piano di rientro a 30.'
+        badge: 🧭
+      - title: Leggi e approva
+        text: Un secondo agente classifica le risposte; l'operatore approva ogni risposta delicata.
+        badge: ✅
+      - title: Incassa
+        text: Il debitore vede solo il proprio debito in una pagina personale.
+        badge: 💳
+    - type: note
+      id: limiti
+      content: 'Solo sollecito stragiudiziale per conto dell''azienda creditrice: RecuperoGentile non svolge attività di agenzia
+        di recupero crediti e non fornisce consulenza legale.'
+  - key: dashboard
+    type: page
+    title: Cruscotto
+    roles:
+    - admin
+    - operator
+    sections:
+    - type: data
+      title: Indicatori
+      source: collection:cases
+      display: kpi
+      kpis:
+      - label: Incassato
+        agg: sum
+        field: recovered
+        format: money
+      - label: Pratiche totali
+        agg: count
+      - label: Importo da recuperare
+        agg: sum
+        field: amount_due
+        format: money
+    - type: data
+      title: Pratiche aperte
+      source: collection:cases
+      display: table
+      fields:
+      - key: debtor_name
+        label: Debitore
+      - key: amount_due
+        label: Importo
+        format: money
+      - key: days_overdue
+        label: Ritardo (gg)
+        format: number
+      - key: risk
+        label: Rischio
+        format: badge
+      - key: status
+        label: Stato
+        format: badge
+      - key: next_step
+        label: Prossimo passo
+      filters:
+      - field: status
+        op: '!='
+        value: pagata
+      sort:
+        field: days_overdue
+        dir: desc
+      limit: 100
+      empty: Nessuna pratica aperta.
+    - type: data
+      title: Stato pratiche
+      source: collection:cases
+      display: chart
+      chart: bar
+      fields:
+      - key: status
+        label: Stato
+      - key: amount_due
+        label: Importo
+      limit: 100
+  - key: new_run
+    type: new_run
+    title: Nuova segmentazione
+    roles:
+    - admin
+    - operator
+  - key: history
+    type: history
+    title: Storico report
+    source: run
+    roles:
+    - admin
+    - operator
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: approvals
+    type: approvals
+    title: Da approvare
+    roles:
+    - operator
+    - admin
+    approvals:
+    - reply_approval
+  - key: my_debt
+    type: page
+    title: Il mio debito
+    roles:
+    - debtor
+    sections:
+    - type: data
+      title: Il tuo debito
+      source: collection:cases
+      display: cards
+      fields:
+      - key: amount_due
+        label: Importo
+        format: money
+      - key: days_overdue
+        label: Giorni di ritardo
+        format: number
+      - key: status
+        label: Stato
+        format: badge
+      empty: Nessun debito aperto.
+    - type: note
+      content: 'Pagamento con carta e scelta del piano di rientro: in arrivo. Per ora rispondi all''email ricevuta.'
+  - key: account
+    type: account
+    title: Abbonamento
+    roles:
+    - admin
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:segmenter:
+        estimate: 10
+        metered: true
+      agent:reply_analyst:
+        estimate: 10
+        metered: true
+    packs:
+    - key: extra
+      credits: 1000
+      price: 10
+      label: 1000 crediti
+    plans:
+    - key: canone
+      price: 49
+      interval: month
+      label: Canone mensile
+      credits: 500
+      creditsReset: monthly
+      roles:
+      - admin
+  extensions:
+  - key: connettore_gestionale
+    description: 'Importazione automatica dal gestionale contabile e caricamento file non disponibili: per ora le fatture
+      si incollano come testo.'
+  - key: imap_inbox
+    description: 'La lettura della casella IMAP dedicata non è disponibile: le risposte vengono registrate nella collezione
+      replies (incolla/inoltro manuale) e l''agente le classifica.'
+  - key: invio_email_whatsapp_voce
+    description: 'Invio email, WhatsApp e chiamate vocali (e relative notifiche) non disponibili: la bozza approvata va inviata
+      fuori dall''app. Resta solo sollecito stragiudiziale, senza attività di agenzia di recupero.'
+  - key: pagina_debitore_e_pagamenti
+    description: 'Pagina personale con link, pagamento con carta verso il creditore e scelta del piano richiedono credenziali
+      Stripe del creditore e visibilità per-pratica del debitore: da sviluppare. Le pratiche sono ora per utente, la condivisione
+      tra admin e operatori è da definire.'
+  - key: percentuale_sul_recuperato
+    description: 'La percentuale sul recuperato non è esprimibile nel manifest: oggi solo canone mensile e crediti; la commissione
+      va fatturata a parte.'

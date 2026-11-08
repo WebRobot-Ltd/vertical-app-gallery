@@ -1,0 +1,717 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: partitaserena
+  displayName: PartitaSerena
+  tagline:
+    it: Il commercialista online per chi è in regime forfettario.
+  description:
+    it: PartitaSerena calcola in tempo reale imposta sostitutiva e contributi, ti dice quanto accantonare e quanto manca alla
+      soglia degli 85.000 €. Un agente prepara il calendario delle tue scadenze, la chat risponde sulla base della documentazione
+      dell'Agenzia delle Entrate e passa le domande complesse al commercialista assegnato. La dichiarazione è preparata in
+      bozza; l'invio telematico lo fa sempre il professionista abilitato.
+  langs:
+  - it
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#17405a'
+      accent: '#2a9d8f'
+      background: '#f6f9fa'
+      foreground: '#16232b'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Partita
+      color: primary
+    - text: Serena
+      color: accent
+    buttonShape: rounded
+  header:
+    links:
+    - label:
+        it: Come funziona
+      href: '#come-funziona'
+    - label:
+        it: Garanzie
+      href: '#garanzie'
+    cta:
+      label:
+        it: Accedi
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: commercialista
+      label:
+        it: Commercialista
+      assignedBy: invite
+    - key: user
+      label:
+        it: Cliente
+      assignedBy: signup
+  limits:
+  - action: run
+    per: user
+    max: 30
+    window: day
+    roles:
+    - user
+  - action: chat
+    per: user
+    max: 50
+    window: day
+    roles:
+    - user
+  slots:
+  - key: calcolo_forfettario
+    description: Stima di imposta sostitutiva, contributi, accantonamento e soglia residua per il regime forfettario.
+    timeoutMs: 2000
+    example:
+      args:
+        ricavi: 30000
+        ateco: 62.01.00
+        anno_apertura: 2024
+        cassa: gestione_separata
+    code: "import datetime\n\nRATE = {\"gestione_separata\": 0.2607, \"artigiani\": 0.24, \"commercialisti_altre_casse\":\
+      \ 0.0}\n\ndef coef(ateco):\n    digits = ateco.replace(\".\", \"\")\n    if digits[:4] in (\"4781\", \"4782\", \"4789\"\
+      ):\n        return 54\n    d = int(digits[:2]) if digits[:2].isdigit() else -1\n    if 10 <= d <= 33 or 41 <= d <= 43\
+      \ or d == 68 or d <= 9 and d >= 5:\n        return 86\n    if d in (45, 46, 47, 55, 56):\n        return 40\n    if\
+      \ 64 <= d <= 66 or 69 <= d <= 75 or 85 <= d <= 88:\n        return 78\n    return 67\n\ndef main(input):\n    a = input.get(\"\
+      args\") or input.get(\"values\") or {}\n    ricavi = float(a.get(\"ricavi\") or 0)\n    ateco = str(a.get(\"ateco\"\
+      ) or \"\")\n    cassa = str(a.get(\"cassa\") or \"gestione_separata\")\n    anno = int(a.get(\"anno_apertura\") or 0)\n\
+      \    oggi = datetime.date.today().year\n    c = coef(ateco)\n    aliq = 0.05 if anno and anno >= oggi - 4 else 0.15\n\
+      \    base = ricavi * c / 100.0\n    if cassa == \"commercianti\":\n        rate = 0.24\n    elif cassa == \"cassa_professionale\"\
+      :\n        rate = 0.15\n    else:\n        rate = RATE.get(cassa, 0.2607)\n    contributi = base * rate\n    imposta\
+      \ = max(0.0, base - contributi) * aliq\n    totale = imposta + contributi\n    soglia = 85000.0\n    note = []\n   \
+      \ if cassa == \"cassa_professionale\":\n        note.append(\"Aliquota della cassa professionale stimata al 15%: da\
+      \ verificare con la tua cassa.\")\n    if cassa in (\"artigiani\", \"commercianti\"):\n        note.append(\"Contributi\
+      \ calcolati senza minimale INPS: verificare.\")\n    if aliq == 0.05:\n        note.append(\"Aliquota 5% per i primi\
+      \ cinque anni, se sussistono i requisiti di legge.\")\n    if ricavi > 100000:\n        note.append(\"Ricavi oltre 100.000\
+      \ euro: uscita dal regime dall'anno stesso.\")\n    elif ricavi > soglia:\n        note.append(\"Soglia di 85.000 euro\
+      \ superata: uscita dal regime dall'anno successivo.\")\n    return {\n        \"ricavi\": round(ricavi, 2),\n      \
+      \  \"coefficiente_redditivita_pct\": c,\n        \"reddito_imponibile_lordo\": round(base, 2),\n        \"aliquota_imposta_pct\"\
+      : aliq * 100,\n        \"contributi\": round(contributi, 2),\n        \"imposta_sostitutiva\": round(imposta, 2),\n\
+      \        \"totale_dovuto\": round(totale, 2),\n        \"accantonare_pct\": round(totale / ricavi * 100, 1) if ricavi\
+      \ else 0,\n        \"soglia_residua\": round(soglia - ricavi, 2),\n        \"note\": note,\n    }\n"
+  agents:
+  - key: contabile
+    role: main
+    description: Registra profilo e fatture, calcola la posizione fiscale e prepara il calendario delle scadenze del cliente.
+    when: azione != 'bozza'
+    profile:
+      inline:
+        display_name: PartitaSerena contabile
+        crews:
+        - id: contabile
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei il contabile digitale di PartitaSerena per liberi professionisti in regime forfettario in Italia.
+            Lavori SOLO sui dati del cliente che ti sono accessibili con i tuoi strumenti. Azioni possibili:
+
+            - profilo: salva con salva_profilo codice ATECO, anno di apertura, cassa previdenziale, fatturato previsto; conferma
+            in breve.
+
+            - fattura: registra con registra_fattura importo, cliente e data; poi mostra in due righe il nuovo totale incassato
+            nell''anno e la soglia residua.
+
+            - posizione: leggi profilo (leggi_profilo) e fatture (leggi_fatture), somma gli importi dell''anno in corso, chiama
+            calcola_posizione con ricavi, ateco, anno_apertura e cassa e scrivi il report. Struttura: primo rigo ''# La tua
+            posizione fiscale — <data>''; poi ## In sintesi (ricavi, imposta, contributi, totale); ## Quanto accantonare (importo
+            e % dei ricavi, e per ogni 1.000 euro fatturati); ## Soglia degli 85.000 € (residuo e proiezione sul fatturato
+            previsto); ## Attenzione (le note restituite dal calcolo); ## Prossimi passi. Aggiungi un blocco ```chart con
+            un grafico a barre ricavi/imposta/contributi con valori reali.
+
+            - calendario: dal calcolo costruisci le scadenze personali dell''anno (saldo e primo acconto imposta sostitutiva
+            e contributi, secondo acconto, saldo INPS) con data e importo stimato; salvale una per una con salva_scadenza
+            (tipo, data, importo, descrizione) e riportale in una tabella. Il promemoria via email non è ancora attivo: dillo.
+
+            Non inventare cifre: usa solo i numeri del calcolo. Le cifre sono stime, non consulenza fiscale vincolante; dillo
+            in una riga finale. Scrivi in italiano.'
+          mcp_servers: []
+    goalTemplate: 'Azione: {azione_label}. Oggi è {date}.
+
+      {?codice_ateco}Codice ATECO: {codice_ateco}.{/codice_ateco}
+
+      {?anno_apertura}Anno di apertura: {anno_apertura}.{/anno_apertura}
+
+      {?cassa_label}Cassa previdenziale: {cassa_label}.{/cassa_label}
+
+      {?fatturato_previsto}Fatturato previsto: {fatturato_previsto} euro.{/fatturato_previsto}
+
+      {?importo}Fattura: importo {importo} euro, cliente {cliente_fattura}, data {data_fattura}.{/importo}'
+    appTools:
+    - name: leggi_profilo
+      description: Profilo fiscale del cliente
+      action: read
+      collection: profilo_fiscale
+      scope: user
+    - name: salva_profilo
+      description: Salva o aggiorna il profilo fiscale
+      action: write
+      collection: profilo_fiscale
+      scope: user
+    - name: leggi_fatture
+      description: Fatture registrate dal cliente
+      action: read
+      collection: fatture
+      scope: user
+    - name: registra_fattura
+      description: Registra una fattura emessa
+      action: append
+      collection: fatture
+      scope: user
+    - name: calcola_posizione
+      description: Calcola imposta, contributi, accantonamento e soglia residua
+      action: call
+      slot: calcolo_forfettario
+    - name: salva_scadenza
+      description: Salva una scadenza personale
+      action: append
+      collection: scadenze
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 14
+      maxBudgetUsd: 0.5
+  - key: bozza
+    role: main
+    description: Prepara la bozza della dichiarazione dei redditi e la sottopone al commercialista; non invia nulla.
+    when: azione == 'bozza'
+    profile:
+      inline:
+        display_name: PartitaSerena bozza dichiarazione
+        crews:
+        - id: bozza
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Prepari la BOZZA della dichiarazione dei redditi (quadro LM del modello Redditi PF) di un libero
+            professionista forfettario. Leggi profilo e fatture dell''anno richiesto, calcola con calcola_posizione e scrivi
+            la bozza. Struttura: primo rigo ''# Bozza dichiarazione redditi <anno>''; ## Dati anagrafici e attività (ATECO,
+            anno apertura, cassa); ## Ricavi e coefficiente; ## Reddito imponibile e contributi deducibili; ## Imposta sostitutiva,
+            acconti da verificare; ## Punti da verificare dal commercialista. Salva la bozza con salva_bozza, poi chiama request_revisione_dichiarazione
+            per far revisionare la bozza dal professionista abilitato. Spiega al cliente che la bozza NON è inviata: l''invio
+            telematico lo fa sempre il commercialista abilitato dopo la sua revisione. Non inventare dati mancanti: elencali.
+            Italiano.'
+          mcp_servers: []
+    goalTemplate: Prepara la bozza della dichiarazione dei redditi per l'anno d'imposta {anno_dichiarazione}. Oggi è {date}.
+    awaits:
+    - revisione_dichiarazione
+    appTools:
+    - name: leggi_profilo
+      description: Profilo fiscale del cliente
+      action: read
+      collection: profilo_fiscale
+      scope: user
+    - name: leggi_fatture
+      description: Fatture registrate dal cliente
+      action: read
+      collection: fatture
+      scope: user
+    - name: calcola_posizione
+      description: Calcola imposta, contributi, accantonamento e soglia residua
+      action: call
+      slot: calcolo_forfettario
+    - name: salva_bozza
+      description: Salva la bozza della dichiarazione
+      action: append
+      collection: bozze_dichiarazione
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  - key: assistente
+    role: helper
+    description: Chat fiscale basata sulla documentazione dell'Agenzia delle Entrate; passa le domande complesse al commercialista
+      assegnato.
+    awaits:
+    - consulenza
+    memory: user
+    profile:
+      inline:
+        display_name: PartitaSerena assistente fiscale
+        chat_mode: true
+        crews:
+        - id: assistente
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          system_prompt: 'Sei l''assistente fiscale di PartitaSerena per liberi professionisti in regime forfettario. Rispondi
+            in italiano, in modo chiaro e breve, basandoti sulla documentazione ufficiale dell''Agenzia delle Entrate (guide
+            e circolari su agenziaentrate.gov.it, consultate con gli strumenti WebRobot) e cita sempre la fonte (titolo e
+            link). Per domande sulla posizione del cliente usa leggi_profilo, leggi_fatture, leggi_scadenze e calcola_posizione:
+            non inventare cifre. Se non trovi la risposta nella documentazione, se la domanda è complessa (casi particolari,
+            uscita dal regime, più attività, operazioni con l''estero, accertamenti, dubbi sul quadro LM) o se il cliente
+            chiede un parere, NON improvvisare: chiama request_consulenza con la domanda e un riassunto della situazione,
+            e comunica che il commercialista assegnato risponderà entro 24 ore. Non dare mai consulenza fiscale come fatto
+            certo e non dire che hai inviato dichiarazioni: l''invio telematico spetta al professionista abilitato.'
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+    goalTemplate: 'Conversazione finora:
+
+      {history}
+
+
+      Nuovo messaggio del cliente: {message}
+
+      Oggi è {date}.'
+    appTools:
+    - name: leggi_profilo
+      description: Profilo fiscale del cliente
+      action: read
+      collection: profilo_fiscale
+      scope: user
+    - name: leggi_fatture
+      description: Fatture registrate dal cliente
+      action: read
+      collection: fatture
+      scope: user
+    - name: leggi_scadenze
+      description: Scadenze personali del cliente
+      action: read
+      collection: scadenze
+      scope: user
+    - name: calcola_posizione
+      description: Calcola imposta, contributi, accantonamento e soglia residua
+      action: call
+      slot: calcolo_forfettario
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.4
+  approvals:
+  - key: consulenza
+    title:
+      it: Domanda per il commercialista
+    description: Domanda complessa passata dalla chat al commercialista assegnato, risposta entro 24 ore.
+    role: commercialista
+    fields:
+    - domanda
+    - sintesi
+    timeoutMinutes: 1440
+    onTimeout: reject
+    decidedBy: role
+  - key: revisione_dichiarazione
+    title:
+      it: Revisione bozza dichiarazione
+    description: Il commercialista abilitato rivede la bozza e provvede all'invio telematico.
+    role: commercialista
+    fields:
+    - anno
+    - sintesi
+    timeoutMinutes: 10080
+    onTimeout: reject
+    decidedBy: role
+  inputForm:
+    title:
+      it: Cosa vuoi fare?
+    fields:
+    - name: azione
+      type: select
+      required: true
+      label:
+        it: Azione
+      options:
+      - value: profilo
+        label:
+          it: Aggiorna il mio profilo
+      - value: fattura
+        label:
+          it: Registra una fattura
+      - value: posizione
+        label:
+          it: Calcola la mia posizione fiscale
+      - value: calendario
+        label:
+          it: Prepara il calendario scadenze
+      - value: bozza
+        label:
+          it: Prepara la bozza della dichiarazione
+    - name: codice_ateco
+      type: text
+      label:
+        it: Codice ATECO
+      visibleWhen: azione == 'profilo'
+    - name: anno_apertura
+      type: number
+      label:
+        it: Anno di apertura partita IVA
+      visibleWhen: azione == 'profilo'
+    - name: cassa
+      type: select
+      label:
+        it: Cassa previdenziale
+      visibleWhen: azione == 'profilo'
+      options:
+      - value: gestione_separata
+        label:
+          it: INPS Gestione separata
+      - value: artigiani
+        label:
+          it: INPS Artigiani
+      - value: commercianti
+        label:
+          it: INPS Commercianti
+      - value: cassa_professionale
+        label:
+          it: Cassa professionale
+    - name: fatturato_previsto
+      type: number
+      label:
+        it: Fatturato previsto (€)
+      visibleWhen: azione == 'profilo'
+    - name: importo
+      type: number
+      label:
+        it: Importo fattura (€)
+      visibleWhen: azione == 'fattura'
+    - name: cliente_fattura
+      type: text
+      label:
+        it: Cliente
+      visibleWhen: azione == 'fattura'
+    - name: data_fattura
+      type: date
+      label:
+        it: Data fattura
+      visibleWhen: azione == 'fattura'
+    - name: anno_dichiarazione
+      type: number
+      label:
+        it: Anno d'imposta
+      visibleWhen: azione == 'bozza'
+      default: 2025
+  data:
+    collections:
+    - name: profilo_fiscale
+      ownedBy: user
+      description: Profilo fiscale del cliente
+      fields:
+      - name: ateco
+        type: text
+      - name: anno_apertura
+        type: number
+      - name: cassa
+        type: text
+      - name: fatturato_previsto
+        type: number
+    - name: fatture
+      ownedBy: user
+      description: Fatture emesse dal cliente
+      fields:
+      - name: importo
+        type: number
+        required: true
+      - name: cliente
+        type: text
+        required: true
+      - name: data
+        type: date
+        required: true
+    - name: scadenze
+      ownedBy: user
+      description: Scadenze personali con importo stimato
+      fields:
+      - name: tipo
+        type: text
+      - name: data
+        type: date
+      - name: importo
+        type: number
+      - name: descrizione
+        type: text
+    - name: bozze_dichiarazione
+      ownedBy: user
+      description: Bozze della dichiarazione dei redditi
+      fields:
+      - name: anno
+        type: number
+      - name: contenuto
+        type: textarea
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: PartitaSerena
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow:
+        it: Per liberi professionisti in regime forfettario
+      title:
+        it: Il tuo commercialista online, **sempre aggiornato** sulle tue fatture.
+      text:
+        it: Registra le fatture, vedi in tempo reale quanto accantonare per tasse e contributi e quanto manca alla soglia
+          degli 85.000 €. Un commercialista vero risponde quando serve.
+      actions:
+      - label:
+          it: Inizia ora
+        href: /login
+        style: primary
+      - label:
+          it: Come funziona
+        href: '#come-funziona'
+        style: ghost
+      aside:
+        it: '<div style="padding:16px"><b>La tua posizione</b><br>Ricavi 2026: 31.400 €<br>Da accantonare: 22%<br>Soglia residua:
+          53.600 €</div>'
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+      items:
+      - title:
+          it: Ti iscrivi
+        text:
+          it: Codice ATECO, anno di apertura, cassa previdenziale e fatturato previsto.
+        badge: 📝
+      - title:
+          it: Registri le fatture
+        text:
+          it: 'Importo, cliente e data: la posizione si aggiorna subito.'
+        badge: 🧾
+      - title:
+          it: Sai quanto accantonare
+        text:
+          it: Imposta sostitutiva, contributi e soglia residua, con il calendario delle tue scadenze.
+        badge: 📅
+      - title:
+          it: Chiedi in chat
+        text:
+          it: Risposte basate sulla documentazione dell'Agenzia delle Entrate; le domande complesse vanno al tuo commercialista,
+            che risponde entro 24 ore.
+        badge: 💬
+    - type: cards
+      id: garanzie
+      title:
+        it: Garanzie
+      items:
+      - title:
+          it: Dati solo tuoi
+        text:
+          it: Tu vedi solo la tua posizione; il commercialista vede i suoi clienti.
+      - title:
+          it: Invio sempre umano
+        text:
+          it: La dichiarazione è preparata in bozza; l'invio telematico lo fa il professionista abilitato.
+      - title:
+          it: Abbonamento annuale
+        text:
+          it: Un prezzo annuale, senza sorprese.
+    - type: note
+      content:
+        it: Le cifre sono stime di supporto alle decisioni, non consulenza fiscale vincolante. PartitaSerena · powered by
+          WebRobot.
+  - key: nuova
+    type: new_run
+    title:
+      it: Operazioni
+    roles:
+    - user
+  - key: posizioni
+    type: history
+    title:
+      it: Le mie posizioni e report
+    source: run
+    roles:
+    - user
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: fatture_lista
+    type: table
+    title:
+      it: Le mie fatture
+    source: collection:fatture
+    roles:
+    - user
+    data:
+      display: table
+      fields:
+      - key: data
+        label:
+          it: Data
+        format: date
+      - key: cliente
+        label:
+          it: Cliente
+      - key: importo
+        label:
+          it: Importo
+        format: money
+      sort:
+        field: data
+        dir: desc
+      kpis:
+      - label:
+          it: Totale fatturato
+        agg: sum
+        field: importo
+        format: money
+      - label:
+          it: Numero fatture
+        agg: count
+      empty:
+        it: Nessuna fattura registrata.
+  - key: scadenze_lista
+    type: table
+    title:
+      it: Le mie scadenze
+    source: collection:scadenze
+    roles:
+    - user
+    data:
+      display: table
+      fields:
+      - key: data
+        label:
+          it: Data
+        format: date
+      - key: tipo
+        label:
+          it: Tipo
+        format: badge
+      - key: descrizione
+        label:
+          it: Descrizione
+      - key: importo
+        label:
+          it: Importo stimato
+        format: money
+      sort:
+        field: data
+        dir: asc
+      empty:
+        it: Genera il calendario dalla pagina Operazioni.
+  - key: bozze_lista
+    type: table
+    title:
+      it: Bozze dichiarazione
+    source: collection:bozze_dichiarazione
+    roles:
+    - user
+    data:
+      display: table
+      fields:
+      - key: anno
+        label:
+          it: Anno
+      - key: contenuto
+        label:
+          it: Bozza
+  - key: chat
+    type: chat
+    title:
+      it: Chiedi al commercialista
+    source: agent:assistente
+    roles:
+    - user
+    examples:
+    - it: Quanto devo accantonare questo mese?
+    - it: Quando scade il saldo dell'imposta sostitutiva?
+    - it: Cosa succede se supero gli 85.000 euro?
+    placeholder:
+      it: Scrivi la tua domanda fiscale…
+  - key: richieste
+    type: approvals
+    title:
+      it: Richieste dei clienti
+    approvals:
+    - consulenza
+    - revisione_dichiarazione
+    roles:
+    - commercialista
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: annuale
+      price: 189
+      interval: year
+      label:
+        it: PartitaSerena annuale
+      includes:
+      - Calcolo in tempo reale di tasse e contributi
+      - Calendario scadenze
+      - Chat fiscale con passaggio al commercialista
+      - Bozza della dichiarazione
+      roles:
+      - user
+  extensions:
+  - key: promemoria_email
+    description: 'Le email di promemoria con l''importo dieci giorni prima di ogni scadenza non sono ancora disponibili (notifiche
+      non supportate): per ora il cliente vede le scadenze nella pagina ''Le mie scadenze''.'
+  - key: vista_commercialista
+    description: L'assegnazione di ciascun cliente a un commercialista e la vista del commercialista sui dati (profilo, fatture,
+      scadenze) dei soli suoi clienti richiedono un accesso per assegnazione non esprimibile con i ruoli attuali; per ora
+      il commercialista riceve nella vista 'Richieste dei clienti' la sintesi del caso.
+  - key: risposta_commercialista
+    description: La risposta scritta del commercialista alla richiesta della chat passa dalla decisione/nota dell'approvazione;
+      un canale di risposta testuale nella conversazione è da sviluppare.
+  - key: invio_telematico
+    description: L'invio telematico della dichiarazione è sempre svolto fuori dall'app dal professionista abilitato; l'app
+      prepara solo la bozza e la sua revisione.
+  - key: caricamento_file
+    description: 'Il caricamento di fatture o documenti (file) non è disponibile: le fatture si registrano con importo, cliente
+      e data.'

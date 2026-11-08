@@ -1,0 +1,602 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: taxiinsieme
+  displayName: TaxiInsieme
+  tagline:
+    it: Taxi con prezzo massimo garantito, e meno se condividi la corsa.
+    en: Taxi with a guaranteed maximum price, and less if you share the ride.
+  description:
+    it: 'Inserisci partenza, destinazione e orario: TaxiInsieme calcola il prezzo massimo dalle tariffe comunali e ti propone
+      uno sconto se condividi la corsa. Le richieste compatibili vengono raggruppate e passate alle cooperative taxi partner.'
+    en: 'Enter pickup, destination and time: TaxiInsieme computes the maximum price from municipal tariffs and offers a discount
+      if you share the ride. Compatible requests are grouped and sent to partner taxi cooperatives.'
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1b2a41'
+      accent: '#f2a900'
+      background: '#fbf9f4'
+      foreground: '#17202b'
+    fonts:
+      body: Inter
+      display: Poppins
+    wordmark:
+    - text: Taxi
+      color: primary
+    - text: Insieme
+      color: accent
+    button: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Prezzi
+        en: Prices
+      href: '#prezzi'
+    cta:
+      label:
+        it: Chiedi un preventivo
+        en: Get a quote
+      href: /v/new_ride
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      label:
+        it: Passeggero
+        en: Passenger
+      assignedBy: signup
+    - key: cooperative
+      label:
+        it: Cooperativa taxi
+        en: Taxi cooperative
+      assignedBy: invite
+  limits:
+  - action: agent:quoter
+    per: user
+    max: 20
+    window: day
+    roles:
+    - user
+  agents:
+  - key: quoter
+    role: main
+    description: Estimates the distance, applies the municipal tariff and writes the guaranteed maximum price and the shared
+      price; asks the passenger to confirm.
+    awaits:
+    - confirm_ride
+    profile:
+      inline:
+        display_name: TaxiInsieme quoter
+        crews:
+        - id: quoter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the pricing assistant of TaxiInsieme, a taxi service with a guaranteed maximum price and
+            optional ride sharing. You receive pickup, destination, time, city and the municipal tariff parameters (base fare,
+            price per km, minimum fare, surcharge for the time slot, shared-ride discount). Steps: 1) estimate the road distance
+            in km between pickup and destination from your own knowledge of the city, giving a range and the value you use
+            (round up to the next 0.5 km); 2) compute the maximum price = max(minimum fare, base + km*per_km) + time surcharge,
+            then add the safety margin given in the goal and round up to the next euro; 3) if the passenger accepts sharing,
+            compute the shared price = maximum price reduced by the shared discount, and say clearly it applies only if at
+            least one compatible passenger is matched, otherwise the maximum price still holds. Never invent tariffs: use
+            only the numbers provided, and say they are indicative and to be checked against the published municipal tariff.
+            Never promise a pickup time. Output Markdown starting with a level-1 title "# Preventivo <pickup> → <destination>".
+            Sections with ##: Percorso (distance and assumptions), Prezzo massimo garantito, Prezzo condiviso (only if sharing),
+            Come funziona la condivisione, Note. Include one small table with the computation steps. Write in the language
+            with ISO code given in the goal. At the end, if the passenger asked to book, call the tool request_confirm_ride
+            once with the pickup, destination, time, city, shared yes/no, maximum price and shared price.'
+          mcp_servers: []
+    goalTemplate: 'City: {city_label}
+
+      Pickup: {pickup}
+
+      Destination: {destination}
+
+      When: {when_date} {when_time}
+
+      Share the ride: {share_label}
+
+      Passengers: {seats}
+
+      Tariff (indicative, EUR): base {base}, per km {per_km}, minimum {min_fare}, time-slot surcharge {surcharge}, shared
+      discount {shared_discount_pct}%, safety margin {margin_pct}%.
+
+      Today is {date}. Write the quote in the language with ISO code {lang}. The passenger {?book}wants to book: ask for confirmation{/book}{!book}only
+      wants a quote{/book}.'
+    context:
+    - key: tariff
+      from: slot:tariff
+    - key: base
+      from: slot:tariff
+    - key: per_km
+      from: slot:tariff
+    - key: min_fare
+      from: slot:tariff
+    - key: surcharge
+      from: slot:tariff
+    - key: shared_discount_pct
+      from: slot:tariff
+    - key: margin_pct
+      from: slot:tariff
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.3
+  - key: dispatcher
+    role: helper
+    description: After the passenger confirms, groups the ride with compatible requests in the pool and queues it for the
+      partner cooperatives.
+    awaits:
+    - accept_job
+    appTools:
+    - name: search_pool
+      description: Open requests waiting in the dispatch pool
+      action: search
+      collection: dispatch_pool
+      scope: all
+    - name: add_to_pool
+      description: Add or update a request in the dispatch pool
+      action: write
+      collection: dispatch_pool
+      scope: all
+    - name: save_ride
+      description: Save the passenger's own ride
+      action: write
+      collection: rides
+      scope: user
+    profile:
+      inline:
+        display_name: TaxiInsieme dispatcher
+        crews:
+        - id: dispatcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You dispatch confirmed TaxiInsieme rides. For the confirmed ride in the goal: 1) save it with save_ride
+            (status ''queued''); 2) if the passenger agreed to share, call search_pool for open shared requests in the same
+            city, within 20 minutes of the requested time, with a similar pickup area and the same direction (destination
+            in the same area, or on the way); 3) if a compatible request exists, add the ride to the same group (same group_id),
+            up to 3 rides and 4 seats in total; otherwise create a new group; 4) call add_to_pool with: group_id, ride summary,
+            city, pickup, destination, when, seats, shared, max_price, status ''open''; 5) call request_accept_job once for
+            the group, so that the partner cooperatives can accept it from their queue. Never share the passenger''s name
+            or contact beyond pickup point and seats. Never change the guaranteed maximum price. Answer with a short Markdown
+            note starting with "# Corsa in coda" saying what was grouped.'
+    goalTemplate: 'Dispatch the confirmed ride described in the task. Today is {date}. Language: {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.3
+  inputForm:
+    title:
+      it: Dove vai?
+      en: Where to?
+    fields:
+    - name: city
+      type: select
+      required: true
+      label:
+        it: Città
+        en: City
+      options:
+      - value: roma
+        label: Roma
+      - value: milano
+        label: Milano
+      - value: torino
+        label: Torino
+      - value: bologna
+        label: Bologna
+      - value: napoli
+        label: Napoli
+    - name: pickup
+      type: text
+      required: true
+      maxLength: 200
+      label:
+        it: Partenza
+        en: Pickup
+    - name: destination
+      type: text
+      required: true
+      maxLength: 200
+      label:
+        it: Destinazione
+        en: Destination
+    - name: when_date
+      type: date
+      required: true
+      label:
+        it: Data
+        en: Date
+    - name: when_time
+      type: text
+      required: true
+      maxLength: 5
+      label:
+        it: Orario (HH:MM)
+        en: Time (HH:MM)
+      help:
+        it: es. 18:30
+        en: e.g. 18:30
+    - name: seats
+      type: select
+      required: true
+      default: '1'
+      label:
+        it: Passeggeri
+        en: Passengers
+      options:
+      - '1'
+      - '2'
+      - '3'
+      - '4'
+    - name: share
+      type: select
+      required: true
+      default: 'yes'
+      label:
+        it: Condividere la corsa?
+        en: Share the ride?
+      options:
+      - value: 'yes'
+        label:
+          it: Sì, prezzo ridotto
+          en: Yes, reduced price
+      - value: 'no'
+        label:
+          it: No, corsa privata
+          en: No, private ride
+    - name: book
+      type: boolean
+      default: true
+      label:
+        it: Voglio prenotare, non solo il preventivo
+        en: I want to book, not only a quote
+  slots:
+  - key: tariff
+    description: Indicative municipal tariff parameters from the city and the time slot
+    timeoutMs: 2000
+    example:
+      values:
+        city: roma
+        when_time: '23:30'
+      lang: it
+    code: "# Indicative values: to be checked against each municipality's published tariff before launch.\nT = {\n  'roma':\
+      \ (3.0, 1.1, 9.0, 3.5),\n  'milano': (3.4, 1.2, 11.0, 3.5),\n  'torino': (3.5, 1.3, 8.0, 3.0),\n  'bologna': (3.5, 1.2,\
+      \ 9.0, 3.0),\n  'napoli': (3.5, 1.0, 7.0, 3.0),\n}\n\ndef main(input):\n    v = input.get('values') or {}\n    base,\
+      \ per_km, min_fare, night = T.get(v.get('city'), T['roma'])\n    try:\n        h = int(str(v.get('when_time', '12:00')).split(':')[0])\n\
+      \    except Exception:\n        h = 12\n    surcharge = night if (h >= 22 or h < 6) else 0.0\n    return {'base': base,\
+      \ 'per_km': per_km, 'min_fare': min_fare, 'surcharge': surcharge, 'shared_discount_pct': 25, 'margin_pct': 10}\n"
+  approvals:
+  - key: confirm_ride
+    title:
+      it: Conferma la corsa
+      en: Confirm your ride
+    description: The passenger confirms the quote before it is queued
+    decidedBy: requester
+    fields:
+    - pickup
+    - destination
+    - when
+    - shared
+    - max_price
+    - shared_price
+    timeoutMinutes: 60
+    onTimeout: reject
+  - key: accept_job
+    title:
+      it: Accetta corsa
+      en: Accept ride
+    description: A partner cooperative accepts the group from its queue
+    role: cooperative
+    decidedBy: role
+    fields:
+    - city
+    - pickup
+    - destination
+    - when
+    - seats
+    - max_price
+    timeoutMinutes: 30
+    onTimeout: reject
+  triggers:
+  - key: dispatch_on_confirm
+    description: When the passenger confirms, group and queue the ride
+    'on':
+      approval: confirm_ride
+      decision: approved
+    start:
+      agent: dispatcher
+    goal: 'Dispatch this confirmed ride: {event}'
+    asUser: true
+  data:
+    collections:
+    - name: rides
+      ownedBy: user
+      description: The passenger's own rides
+      fields:
+      - name: city
+        type: text
+      - name: pickup
+        type: text
+      - name: destination
+        type: text
+      - name: when
+        type: text
+      - name: seats
+        type: number
+      - name: shared
+        type: boolean
+      - name: max_price
+        type: number
+      - name: shared_price
+        type: number
+      - name: status
+        type: text
+      - name: group_id
+        type: text
+    - name: dispatch_pool
+      ownedBy: app
+      description: Anonymised requests waiting for a cooperative, grouped by direction
+      fields:
+      - name: group_id
+        type: text
+      - name: city
+        type: text
+      - name: pickup
+        type: text
+      - name: destination
+        type: text
+      - name: when
+        type: text
+      - name: seats
+        type: number
+      - name: shared
+        type: boolean
+      - name: max_price
+        type: number
+      - name: status
+        type: text
+    - name: cooperatives
+      ownedBy: shared
+      description: Partner taxi cooperatives
+      fields:
+      - name: name
+        type: text
+      - name: city
+        type: text
+      - name: email
+        type: email
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: TaxiInsieme
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow:
+        it: Taxi · prezzo massimo garantito
+        en: Taxi · guaranteed maximum price
+      title:
+        it: Sai prima **quanto pagherai al massimo**. Se condividi, ancora meno.
+        en: Know up front **the most you will pay**. Share the ride, pay even less.
+      text:
+        it: 'Inserisci partenza, destinazione e orario: calcoliamo il prezzo massimo dalle tariffe comunali e raggruppiamo
+          le richieste compatibili per le cooperative taxi partner.'
+        en: 'Enter pickup, destination and time: we compute the maximum price from municipal tariffs and group compatible
+          requests for partner taxi cooperatives.'
+      actions:
+      - label:
+          it: Chiedi un preventivo
+          en: Get a quote
+        href: /v/new_ride
+        style: primary
+      - label:
+          it: Accedi
+          en: Sign in
+        href: /login
+        style: ghost
+      aside: '<div style="padding:16px"><b>Roma · 18:30</b><br>Stazione Termini → Fiumicino<br><br>Prezzo massimo garantito:
+        <b>€ 58</b><br>Se condividi: <b>€ 43</b></div>'
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Preventivo
+          en: Quote
+        text:
+          it: Distanza e tariffe comunali danno il prezzo massimo garantito.
+          en: Distance and municipal tariffs give the guaranteed maximum price.
+        badge: 🧮
+      - title:
+          it: Condividi (facoltativo)
+          en: Share (optional)
+        text:
+          it: Se accetti di condividere con chi va nella stessa direzione, il prezzo scende.
+          en: If you agree to share with people going the same way, the price drops.
+        badge: 🤝
+      - title:
+          it: Una cooperativa accetta
+          en: A cooperative accepts
+        text:
+          it: Le richieste raggruppate arrivano nella coda delle cooperative partner.
+          en: Grouped requests reach the partner cooperatives' queue.
+        badge: 🚕
+    - type: cards
+      id: prezzi
+      title:
+        it: Prezzi
+        en: Prices
+      items:
+      - title:
+          it: Prezzo massimo garantito
+          en: Guaranteed maximum
+        text:
+          it: Mai di più del preventivo accettato.
+          en: Never more than the quote you accepted.
+      - title:
+          it: Prezzo condiviso
+          en: Shared price
+        text:
+          it: Sconto se si forma un gruppo; altrimenti vale il massimo.
+          en: Discount when a group forms; otherwise the maximum applies.
+      - title:
+          it: Commissione
+          en: Fee
+        text:
+          it: Una commissione per corsa, inclusa nel prezzo mostrato.
+          en: One fee per ride, included in the price shown.
+    - type: note
+      content:
+        it: Le tariffe sono indicative e vanno verificate sulle tariffe comunali pubblicate. Il prezzo condiviso vale solo
+          se si forma un gruppo.
+        en: Tariffs are indicative and must be checked against the published municipal tariffs. The shared price applies only
+          if a group forms.
+  - key: new_ride
+    type: new_run
+    title:
+      it: Nuova corsa
+      en: New ride
+    roles:
+    - user
+    - admin
+  - key: confirm
+    type: approvals
+    title:
+      it: Da confermare
+      en: To confirm
+    approvals:
+    - confirm_ride
+    roles:
+    - user
+  - key: my_rides
+    type: table
+    title:
+      it: Le mie corse
+      en: My rides
+    source: collection:rides
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: when
+        label:
+          it: Quando
+          en: When
+      - key: pickup
+        label:
+          it: Partenza
+          en: Pickup
+      - key: destination
+        label:
+          it: Destinazione
+          en: Destination
+      - key: max_price
+        label:
+          it: Prezzo max
+          en: Max price
+        format: money
+      - key: status
+        label:
+          it: Stato
+          en: Status
+        format: badge
+      sort:
+        field: when
+        dir: desc
+      limit: 100
+      empty:
+        it: Nessuna corsa ancora.
+        en: No rides yet.
+  - key: quotes
+    type: history
+    title:
+      it: I miei preventivi
+      en: My quotes
+    source: run
+    roles:
+    - user
+    - admin
+  - key: quote
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: coop_queue
+    type: approvals
+    title:
+      it: Coda corse
+      en: Ride queue
+    approvals:
+    - accept_job
+    roles:
+    - cooperative
+    - admin
+  billing:
+    modes:
+    - per_transaction
+    currency: eur
+    transactionFeePct: 12
+    sellers: collection:cooperatives
+  extensions:
+  - key: routing_distance
+    description: Distance is estimated by the agent from its own knowledge. A routing/geocoding API with terms allowing commercial
+      reuse is needed for a truly guaranteed price.
+  - key: municipal_tariffs
+    description: Tariffs in the slot are indicative placeholders; real published tariffs per municipality must be entered
+      and kept updated.
+  - key: email_confirmation
+    description: Confirmation email to the passenger is not available yet (no notifications); the confirmation is shown in
+      the app (My rides).
+  - key: card_payment_per_ride
+    description: Card payment of each ride with the platform fee requires the owner to connect Stripe and each cooperative
+      to have a Connect account; checkout at ride acceptance is to be configured.

@@ -1,0 +1,623 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: plant-sensor-cockpit
+  displayName: Plant Sensor Cockpit
+  tagline:
+    it: 'I dati dei tuoi sensori, interpretati: semaforo per campo e consigli sull''irrigazione.'
+    en: 'Your sensor data, interpreted: a traffic light per field and irrigation advice.'
+  description:
+    it: 'Il software di monitoraggio delle piante: le centraline inviano le misure via webhook, un agente AI analizza stress
+      idrico, temperatura e umidità, le incrocia con le previsioni Open-Meteo e ti dice cosa fare. Non include i sensori hardware.'
+    en: 'Plant monitoring software: stations send measurements by webhook, an AI agent analyses water stress, temperature
+      and humidity, cross-checks them with Open-Meteo forecasts and tells you what to do. Hardware sensors are not included.'
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#1f4d2e'
+      accent: '#e0a526'
+      background: '#f6f8f3'
+      foreground: '#18241c'
+    fonts:
+      body: Inter
+      display: Fraunces
+    tokens:
+      ok: '#2e7d4f'
+      warn: '#e0a526'
+      alert: '#b3392b'
+    wordmark:
+    - text: Plant
+      color: primary
+    - text: Sensor
+      color: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#how'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label:
+        it: Azienda agricola
+        en: Farm
+      assignedBy: signup
+    - key: consultant
+      label:
+        it: Consulente
+        en: Consultant
+      assignedBy: invite
+  limits:
+  - action: agent:analyst
+    per: user
+    max: 20
+    window: day
+  egress:
+    hosts:
+    - api.open-meteo.com
+    notes: 'Open-Meteo weather forecast API: free for non-commercial use; commercial use requires an Open-Meteo API subscription,
+      CC BY 4.0 attribution.'
+  agents:
+  - key: analyst
+    role: scheduled
+    description: Daily analysis of one field's sensor series, crossed with the Open-Meteo forecast; writes the traffic light
+      and advice.
+    memory: instance
+    profile:
+      inline:
+        display_name: Plant stress analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are an agronomy analyst. For one field you read the stations'' time series (tools read_stations,
+            read_readings: plant water status, air/soil temperature, humidity) and the weather forecast (tool open_meteo_forecast,
+            GET with query latitude, longitude, daily=temperature_2m_max,temperature_2m_min,precipitation_sum,et0_fao_evapotranspiration,
+            forecast_days=5, timezone=auto). Detect plant stress conditions, anomalous drops and sensors that went silent;
+            compare with the field''s thresholds if present; cross with the forecast (heat, no rain, frost) to anticipate
+            problems in the next 5 days. Never invent figures: if data are missing, say so and use status unknown. Irrigation
+            and treatment advice is guidance to be verified by the agronomist. Start with a level-1 title ''# <Field> — <date>''.
+            Sections: ## Status, ## Anomalies, ## Forecast risks, ## Advice. Cite Open-Meteo (CC BY 4.0). If a chart helps,
+            add a ```chart block with real figures. The LAST thing in the answer is a fenced ```json block: {"field":"<name>","date":"YYYY-MM-DD","status":"green|yellow|red|unknown","water_stress":<0-100
+            or null>,"temp_avg":<number or null>,"humidity_avg":<number or null>,"alert":true|false,"advice":"<one sentence>"}.
+            status red = parameter out of threshold or stress now; yellow = risk in the forecast. Your memory holds the last
+            status: mention changes. At the end call remember with the 5 key points.'
+          mcp_servers: []
+    appTools:
+    - name: read_stations
+      description: List the user's stations (id, field, sensor types, thresholds)
+      action: read
+      collection: stations
+      scope: user
+    - name: read_readings
+      description: Read the user's sensor readings (station, time, parameter, value)
+      action: search
+      collection: readings
+      scope: user
+    - name: open_meteo_forecast
+      description: Daily weather forecast from Open-Meteo for a latitude/longitude
+      action: http
+      http:
+        method: GET
+        url: https://api.open-meteo.com/v1/forecast
+        attribution: Weather data by Open-Meteo.com, CC BY 4.0
+    output: markdown+json
+    writesTo:
+      collection: field_status
+      parse: json_last
+      keyBy: date
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  - key: reporter
+    role: scheduled
+    description: Weekly summary of one field's trend.
+    memory: instance
+    profile:
+      inline:
+        display_name: Weekly plant report
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the weekly report on one field from the sensor data (tools read_stations, read_readings,
+            read_field_status). Start with ''# <Field> — week of <date>''. Sections: ## Summary (traffic light of the week),
+            ## Trend (water status, temperature, humidity vs previous week), ## Alerts of the week, ## Recommended actions.
+            Add a ```chart block (line) with the daily averages. Real figures only; if data are missing say so. Advice is
+            guidance for the agronomist, not a guarantee. Under 400 words.'
+          mcp_servers: []
+    appTools:
+    - name: read_stations
+      description: List the user's stations (id, field, sensor types, thresholds)
+      action: read
+      collection: stations
+      scope: user
+    - name: read_readings
+      description: Read the user's sensor readings (station, time, parameter, value)
+      action: search
+      collection: readings
+      scope: user
+    - name: read_field_status
+      description: Read daily statuses of fields
+      action: search
+      collection: field_status
+      scope: all
+    output: markdown
+    writesTo:
+      collection: weekly_reports
+      parse: whole
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.4
+  templates:
+  - key: field_watch
+    title:
+      it: Monitoraggio campo
+      en: Field watch
+    description:
+      it: Analisi giornaliera di un campo con semaforo e consigli.
+      en: Daily analysis of a field with traffic light and advice.
+    agent: analyst
+    params:
+    - name: field_name
+      type: text
+      required: true
+      label:
+        it: Nome campo
+        en: Field name
+    - name: crop
+      type: text
+      label:
+        it: Coltura
+        en: Crop
+    - name: latitude
+      type: number
+      required: true
+      label:
+        it: Latitudine
+        en: Latitude
+    - name: longitude
+      type: number
+      required: true
+      label:
+        it: Longitudine
+        en: Longitude
+    - name: thresholds
+      type: textarea
+      maxLength: 400
+      label:
+        it: Soglie (facoltative)
+        en: Thresholds (optional)
+      help:
+        it: es. umidità suolo < 25%, temperatura > 35°C
+        en: e.g. soil moisture < 25%, temperature > 35°C
+    schedule:
+      cron: 0 6 * * *
+      userCanChange: true
+    maxPerUser: 20
+    goal: 'Analyse the field "{field_name}" (crop: {crop}) at latitude {latitude}, longitude {longitude}. Thresholds: {thresholds}.
+      Today is {date}. Write in the language with ISO code {lang}.'
+  - key: weekly_watch
+    title:
+      it: Report settimanale
+      en: Weekly report
+    description:
+      it: Un report ogni settimana sull'andamento del campo.
+      en: A report every week on the field's trend.
+    agent: reporter
+    params:
+    - name: field_name
+      type: text
+      required: true
+      label:
+        it: Nome campo
+        en: Field name
+    schedule:
+      cron: 0 7 * * 1
+      userCanChange: true
+    maxPerUser: 20
+    goal: Write the weekly report for the field "{field_name}". Today is {date}. Write in the language with ISO code {lang}.
+  triggers: []
+  data:
+    collections:
+    - name: fields
+      ownedBy: user
+      sharing:
+      - viewer
+      description: The user's plots; share with a consultant to let them follow it
+      fields:
+      - name: name
+        type: text
+        required: true
+        label:
+          it: Nome
+          en: Name
+      - name: crop
+        type: text
+        label:
+          it: Coltura
+          en: Crop
+      - name: latitude
+        type: number
+        label:
+          it: Latitudine
+          en: Latitude
+      - name: longitude
+        type: number
+        label:
+          it: Longitudine
+          en: Longitude
+      - name: area_ha
+        type: number
+        label:
+          it: Ettari
+          en: Hectares
+    - name: stations
+      ownedBy: user
+      sharing:
+      - viewer
+      description: Sensor stations connected to the platform
+      fields:
+      - name: code
+        type: text
+        required: true
+        label:
+          it: Codice centralina
+          en: Station code
+      - name: field
+        type: relation
+        relation: fields
+        label:
+          it: Campo
+          en: Field
+      - name: thresholds
+        type: textarea
+        label:
+          it: Soglie
+          en: Thresholds
+    - name: readings
+      ownedBy: user
+      description: Measurements received by webhook
+      fields:
+      - name: station
+        type: text
+      - name: time
+        type: date
+      - name: parameter
+        type: text
+      - name: value
+        type: number
+    - name: field_status
+      ownedBy: instance
+      description: Daily status of each field (traffic light)
+      fields:
+      - name: field
+        type: text
+      - name: date
+        type: date
+      - name: status
+        type: text
+      - name: water_stress
+        type: number
+      - name: temp_avg
+        type: number
+      - name: humidity_avg
+        type: number
+      - name: alert
+        type: boolean
+      - name: advice
+        type: text
+    - name: weekly_reports
+      ownedBy: instance
+      description: Weekly reports
+      fields:
+      - name: content
+        type: textarea
+  inputForm:
+    title:
+      it: Nuovo campo
+      en: New field
+    fields: []
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Plant Sensor Cockpit
+    sections:
+    - type: hero
+      eyebrow:
+        it: Monitoraggio piante
+        en: Plant monitoring
+      title:
+        it: Sai **come stanno le piante** prima che lo dicano le foglie.
+        en: Know **how your plants are** before the leaves tell you.
+      text:
+        it: Le tue centraline inviano i dati, un agente AI li interpreta con le previsioni meteo e ti dà un semaforo per campo
+          e consigli su irrigazione e interventi.
+        en: Your stations send data, an AI agent interprets them with weather forecasts and gives you a traffic light per
+          field and irrigation and intervention advice.
+      actions:
+      - label:
+          it: Accedi
+          en: Sign in
+        href: /login
+        style: primary
+      - label:
+          it: Come funziona
+          en: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Registra campi e centraline
+          en: Register fields and stations
+        text:
+          it: Inserisci i tuoi appezzamenti e le centraline; i dati arrivano via webhook.
+          en: Add your plots and stations; data arrives by webhook.
+        badge: '1'
+      - title:
+          it: L'agente analizza
+          en: The agent analyses
+        text:
+          it: Stress idrico, temperatura, umidità, cali anomali, incrociati con Open-Meteo.
+          en: Water stress, temperature, humidity, anomalous drops, crossed with Open-Meteo.
+        badge: '2'
+      - title:
+          it: Decidi
+          en: Decide
+        text:
+          it: Dashboard con semaforo, consigli e report settimanale.
+          en: Dashboard with traffic light, advice and weekly report.
+        badge: '3'
+    - type: note
+      content:
+        it: 'Questo servizio è il solo software: sensori e installazione sono un prodotto a parte. I consigli sono un supporto,
+          da verificare dall''agronomo. Dati meteo: Open-Meteo.com (CC BY 4.0).'
+        en: 'This service is software only: sensors and installation are a separate product. Advice is decision support, to
+          be verified by the agronomist. Weather data: Open-Meteo.com (CC BY 4.0).'
+  - key: dashboard
+    type: page
+    title:
+      it: Cruscotto
+      en: Dashboard
+    roles:
+    - user
+    - consultant
+    - admin
+    sections:
+    - type: data
+      title:
+        it: Semaforo dei campi
+        en: Field traffic light
+      source: collection:field_status
+      display: table
+      fields:
+      - key: field
+        label:
+          it: Campo
+          en: Field
+      - key: status
+        label:
+          it: Stato
+          en: Status
+        format: badge
+      - key: water_stress
+        label:
+          it: Stress idrico
+          en: Water stress
+        format: number
+      - key: temp_avg
+        label:
+          it: Temp. media
+          en: Avg temp
+        format: number
+      - key: humidity_avg
+        label:
+          it: Umidità
+          en: Humidity
+        format: number
+      - key: advice
+        label:
+          it: Consiglio
+          en: Advice
+      - key: date
+        label: Data
+        format: date
+      sort:
+        field: date
+        dir: desc
+      limit: 50
+      empty:
+        it: 'Nessun dato ancora: crea un monitoraggio campo.'
+        en: 'No data yet: create a field watch.'
+    - type: data
+      title:
+        it: Andamento
+        en: Trend
+      source: collection:field_status
+      display: chart
+      chart: line
+      fields:
+      - key: date
+      - key: water_stress
+        label:
+          it: Stress idrico
+          en: Water stress
+      - key: temp_avg
+        label:
+          it: Temperatura
+          en: Temperature
+      - key: humidity_avg
+        label:
+          it: Umidità
+          en: Humidity
+      sort:
+        field: date
+        dir: asc
+      limit: 60
+    - type: data
+      title:
+        it: Allarmi
+        en: Alerts
+      source: collection:field_status
+      display: list
+      fields:
+      - key: field
+      - key: advice
+      filters:
+      - field: alert
+        op: '='
+        value: true
+      sort:
+        field: date
+        dir: desc
+      limit: 20
+  - key: fields
+    type: table
+    title:
+      it: Campi
+      en: Fields
+    source: collection:fields
+    roles:
+    - user
+    - consultant
+    - admin
+  - key: stations
+    type: table
+    title:
+      it: Centraline
+      en: Stations
+    source: collection:stations
+    roles:
+    - user
+    - consultant
+    - admin
+  - key: watches
+    type: instances
+    template: field_watch
+    title:
+      it: Monitoraggi campo
+      en: Field watches
+    roles:
+    - user
+    - admin
+  - key: weekly
+    type: instances
+    template: weekly_watch
+    title:
+      it: Report settimanali
+      en: Weekly reports
+    roles:
+    - user
+    - admin
+  - key: weekly_list
+    type: list
+    title:
+      it: Archivio report
+      en: Report archive
+    source: collection:weekly_reports
+    roles:
+    - user
+    - consultant
+    - admin
+    printable: true
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Plan
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: station_10
+      price: 290
+      interval: year
+      label:
+        it: Fino a 10 centraline
+        en: Up to 10 stations
+      includes:
+      - 10 stations
+      - daily analysis
+      - weekly report
+      roles:
+      - user
+    - key: station_50
+      price: 1190
+      interval: year
+      label:
+        it: Fino a 50 centraline
+        en: Up to 50 stations
+      includes:
+      - 50 stations
+      - daily analysis
+      - weekly report
+      roles:
+      - user
+  extensions:
+  - key: sensor_webhook
+    description: 'Ingestion of sensor measurements: a webhook per station (token mapped to the owner user) that writes records
+      into readings without an agent run. Not expressible in the manifest yet.'
+  - key: email_alerts
+    description: 'Email alert when a parameter exceeds the threshold: notifications are not available yet. For now alerts
+      appear in the dashboard (alert flag).'
+  - key: per_station_pricing
+    description: 'Annual subscription priced per connected station: modelled as tiers (10 / 50 stations); per-unit quantity
+      billing and the station limit enforcement are not available yet.'
+  - key: consultant_clients
+    description: The consultant sees clients' fields through per-record viewer invitations on fields and stations; automatic
+      aggregation across followed clients is not available yet.

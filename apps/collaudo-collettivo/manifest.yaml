@@ -1,0 +1,662 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: collaudo-collettivo
+  displayName: Collaudo Collettivo
+  tagline:
+    it: 'Crowdtesting gestito: tester giusti, bug verificati, report pronto.'
+    en: 'Managed crowdtesting: the right testers, verified bugs, a ready report.'
+  description:
+    it: 'Strato di gestione per il crowdtesting: il cliente crea una campagna, un agente seleziona e invita i tester, un agente
+      controlla le segnalazioni, un project manager approva e il cliente vede dashboard e report finale.'
+    en: 'Management layer for crowdtesting: the client creates a campaign, an agent picks and invites testers, an agent checks
+      bug reports, a project manager approves and the client sees a dashboard and a final report.'
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f2a44'
+      accent: '#e4572e'
+      background: '#f6f7fb'
+      foreground: '#161a24'
+    fonts:
+      body: Inter
+      display: Space Grotesk
+    wordmark:
+    - text: Collaudo
+      color: primary
+    - text: Collettivo
+      color: accent
+    button: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    cta:
+      label:
+        it: Crea una campagna
+        en: Create a campaign
+      href: /v/new_campaign
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: pm
+      label: Project manager
+      assignedBy: admin
+    - key: client
+      label:
+        it: Cliente
+        en: Client
+      assignedBy: signup
+    - key: tester
+      label: Tester
+      assignedBy: derived
+      from: collection:testers.email
+  limits:
+  - action: agent:matcher
+    per: user
+    max: 10
+    window: day
+    roles:
+    - client
+  agents:
+  - key: matcher
+    role: main
+    description: Selects suitable testers for a campaign and prepares the invitations.
+    profile:
+      inline:
+        display_name: Tester matcher
+        crews:
+        - id: matcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You select testers for a crowdtesting campaign. Use search_testers to find candidates matching the
+            required devices, operating systems and countries, ranking by experience and past approval rate. Pick enough testers
+            to cover every requested device/OS/country combination at least twice, and add 30% spare. For each selected tester
+            write one record with write_invitation (campaign, tester_email, device, os, country, status ''invited''). Never
+            invent testers: use only the database. Final output: a level-1 title "# Selezione tester — <product>", then ##
+            Testers invited (table: tester, device, OS, country, experience), ## Coverage (matrix of device/OS by country
+            with counts), ## Gaps (combinations you could not cover). Add a ```chart bar block with invited testers per country.
+            Real figures only. Email delivery is not available: invitations are records testers see in the app.'
+    goalTemplate: 'New campaign. Product: {product}. Link/build: {target_url}. Devices: {devices}. Operating systems: {os_list}.
+      Countries: {countries}. Scenarios:
+
+      {scenarios}
+
+      Deadline: {deadline}. Testers wanted: {tester_count}.
+
+      Write the report in the language with ISO code {lang}. Today is {date}.'
+    output: markdown
+    appTools:
+    - name: search_testers
+      description: Search the tester database
+      action: search
+      collection: testers
+      scope: all
+    - name: write_invitation
+      description: Create an invitation for a tester
+      action: write
+      collection: invitations
+      scope: all
+    - name: write_campaign
+      description: Record the campaign
+      action: write
+      collection: campaigns
+      scope: user
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.5
+  - key: triage
+    role: analyst
+    description: 'Checks each bug report: duplicates, completeness, priority, summary.'
+    awaits:
+    - bug_review
+    profile:
+      inline:
+        display_name: Bug triage
+        crews:
+        - id: triage
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You triage one bug report of a crowdtesting campaign; the goal gives you the report as JSON. Use
+            read_reports to compare it with the other reports of the same campaign. Decide: duplicate (name the original),
+            incomplete (list missing steps/evidence: title, reproduction steps, expected vs actual, device/OS, screenshot
+            or video link), or valid. For valid reports assign priority P1-P4 from severity and impact, and write a 3-line
+            summary. Save the verdict with write_triage, setting the report''s status to ''triaged'' (never ''submitted''),
+            then call request_bug_review for valid reports so the project manager can approve. Output: "# Triage — <bug title>",
+            then ## Verdict, ## Missing information, ## Priority, ## Summary. Never invent steps or evidence the tester did
+            not give.'
+    goalTemplate: Triage the bug report you were given. Language ISO code {lang}. Today is {date}.
+    output: markdown
+    appTools:
+    - name: read_reports
+      description: Read bug reports
+      action: read
+      collection: bug_reports
+      scope: all
+    - name: write_triage
+      description: Save the triage verdict on the report
+      action: write
+      collection: bug_reports
+      scope: all
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.4
+  - key: reporter
+    role: helper
+    description: Writes the final campaign report for the client.
+    profile:
+      inline:
+        display_name: Campaign reporter
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the final report of a crowdtesting campaign from approved bug reports (read_reports, only
+            those with status approved) and invitations (read_invitations). Start with "# Report finale — <product>". Sections:
+            ## Sintesi, ## Bug per gravità (with a ```chart bar block), ## Copertura dispositivi (table device/OS/country:
+            testers invited, testers who reported), ## Bug P1/P2 in dettaglio, ## Raccomandazioni. Use only real figures from
+            the data; say clearly when data is missing. Do not give legal or release-approval advice as fact.'
+    goalTemplate: Write the final report for the most recent campaign of user {user}. Language ISO code {lang}. Today is {date}.
+    output: markdown
+    appTools:
+    - name: read_reports
+      description: Read bug reports
+      action: read
+      collection: bug_reports
+      scope: all
+    - name: read_invitations
+      description: Read invitations
+      action: read
+      collection: invitations
+      scope: all
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.4
+  inputForm:
+    title:
+      it: Nuova campagna di test
+      en: New test campaign
+    fields:
+    - name: product
+      type: text
+      required: true
+      label:
+        it: Prodotto
+        en: Product
+    - name: target_url
+      type: url
+      required: true
+      label:
+        it: Link o build da provare
+        en: Link or build to test
+    - name: devices
+      type: multiselect
+      required: true
+      label:
+        it: Dispositivi
+        en: Devices
+      options:
+      - value: iphone
+        label: iPhone
+      - value: android_phone
+        label: Android phone
+      - value: ipad
+        label: iPad
+      - value: android_tablet
+        label: Android tablet
+      - value: windows
+        label: Windows PC
+      - value: mac
+        label: Mac
+    - name: os_list
+      type: text
+      required: true
+      label:
+        it: Sistemi operativi e versioni
+        en: Operating systems and versions
+      help:
+        it: es. iOS 18, Android 14, Windows 11
+        en: e.g. iOS 18, Android 14, Windows 11
+    - name: countries
+      type: text
+      required: true
+      label:
+        it: Paesi dei tester
+        en: Tester countries
+      help:
+        it: es. Italia, Germania
+        en: e.g. Italy, Germany
+    - name: tester_count
+      type: number
+      required: true
+      default: 10
+      label:
+        it: Numero di tester
+        en: Number of testers
+    - name: scenarios
+      type: textarea
+      required: true
+      maxLength: 3000
+      label:
+        it: Scenari da eseguire
+        en: Scenarios to run
+    - name: deadline
+      type: date
+      required: true
+      label:
+        it: Scadenza
+        en: Deadline
+  data:
+    collections:
+    - name: campaigns
+      ownedBy: user
+      description: Test campaigns of each client
+      fields:
+      - name: product
+        type: text
+      - name: target_url
+        type: url
+      - name: devices
+        type: text
+      - name: os_list
+        type: text
+      - name: countries
+        type: text
+      - name: scenarios
+        type: textarea
+      - name: deadline
+        type: date
+      - name: status
+        type: text
+    - name: testers
+      ownedBy: org
+      description: Tester database (kept in sync with the community platform, staff only)
+      fields:
+      - name: email
+        type: email
+      - name: country
+        type: country
+      - name: devices
+        type: text
+      - name: os_list
+        type: text
+      - name: experience
+        type: number
+      - name: approval_rate
+        type: number
+    - name: invitations
+      ownedBy: app
+      description: Invitations of testers to campaigns
+      fields:
+      - name: campaign
+        type: text
+      - name: tester_email
+        type: email
+      - name: device
+        type: text
+      - name: os
+        type: text
+      - name: country
+        type: country
+      - name: status
+        type: text
+    - name: bug_reports
+      ownedBy: app
+      description: Bug reports from testers with triage verdict (new reports have status submitted)
+      fields:
+      - name: campaign
+        type: text
+      - name: tester_email
+        type: email
+      - name: title
+        type: text
+        required: true
+      - name: steps
+        type: textarea
+        required: true
+      - name: severity
+        type: select
+        options:
+        - critical
+        - high
+        - medium
+        - low
+      - name: device
+        type: text
+      - name: os
+        type: text
+      - name: evidence_url
+        type: url
+        help: Link to screenshot or screen recording
+      - name: verdict
+        type: text
+      - name: priority
+        type: text
+      - name: summary
+        type: textarea
+      - name: status
+        type: text
+  triggers:
+  - key: on_bug
+    'on':
+      collection: bug_reports
+      op: insert
+      where:
+        status: submitted
+    start:
+      agent: triage
+    goal: 'Triage this bug report: {event}'
+    asUser: false
+  approvals:
+  - key: bug_review
+    title:
+      it: Approva segnalazione
+      en: Approve bug report
+    role: pm
+    fields:
+    - title
+    - steps
+    - severity
+    - priority
+    - summary
+    timeoutMinutes: 4320
+  views:
+  - key: home
+    type: page
+    nav: false
+    sections:
+    - type: hero
+      eyebrow:
+        it: Crowdtesting gestito
+        en: Managed crowdtesting
+      title:
+        it: Tester umani veri, **bug verificati**, report pronto.
+        en: Real human testers, **verified bugs**, a ready report.
+      text:
+        it: 'Descrivi la campagna: un agente sceglie i tester giusti per dispositivo e paese, un altro controlla ogni segnalazione
+          e un project manager approva.'
+        en: 'Describe the campaign: an agent picks the right testers by device and country, another checks every report and
+          a project manager approves.'
+      actions:
+      - label:
+          it: Crea una campagna
+          en: Create a campaign
+        href: /v/new_campaign
+        style: primary
+      - label:
+          it: Accedi
+          en: Sign in
+        href: /login
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Crea la campagna
+          en: Create the campaign
+        text:
+          it: Prodotto, build, dispositivi, paesi, scenari e scadenza.
+          en: Product, build, devices, countries, scenarios and deadline.
+        badge: 📝
+      - title:
+          it: Tester selezionati
+          en: Testers selected
+        text:
+          it: L'agente sceglie dal database e prepara gli inviti.
+          en: The agent picks from the database and prepares invitations.
+        badge: 🎯
+      - title:
+          it: Bug controllati
+          en: Bugs checked
+        text:
+          it: Duplicati eliminati, passi verificati, priorità assegnata, approvazione del PM.
+          en: Duplicates removed, steps verified, priority set, PM approval.
+        badge: 🐞
+      - title:
+          it: Dashboard e report
+          en: Dashboard and report
+        text:
+          it: Bug per gravità, copertura dispositivi e report finale.
+          en: Bugs by severity, device coverage and final report.
+        badge: 📊
+    - type: note
+      content:
+        it: Il pagamento dei tester è gestito a parte. Il cliente paga a campagna.
+        en: Tester payouts are handled separately. The client pays per campaign.
+  - key: new_campaign
+    type: new_run
+    title:
+      it: Nuova campagna
+      en: New campaign
+    roles:
+    - client
+    - admin
+  - key: campaigns
+    type: history
+    title:
+      it: Le mie campagne
+      en: My campaigns
+    source: run
+    roles:
+    - client
+    - admin
+  - key: campaign_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: dashboard
+    type: dashboard
+    title: Dashboard
+    children:
+    - bugs_by_severity
+    - device_coverage
+    - bug_list
+    roles:
+    - client
+    - pm
+    - admin
+  - key: bugs_by_severity
+    type: chart
+    source: collection:bug_reports
+    nav: false
+    data:
+      display: chart
+      chart: bar
+      fields:
+      - key: severity
+        label:
+          it: Gravità
+          en: Severity
+      - key: title
+        label:
+          it: Bug
+          en: Bugs
+      filters:
+      - field: status
+        op: '='
+        value: approved
+  - key: device_coverage
+    type: table
+    title:
+      it: Copertura dispositivi
+      en: Device coverage
+    source: collection:invitations
+    nav: false
+    columns:
+    - campaign
+    - device
+    - os
+    - country
+    - status
+  - key: bug_list
+    type: table
+    title:
+      it: Bug approvati
+      en: Approved bugs
+    source: collection:bug_reports
+    nav: false
+    columns:
+    - title
+    - severity
+    - priority
+    - device
+    - os
+    - summary
+    - evidence_url
+    query: status = approved
+  - key: my_campaigns
+    type: cards
+    title:
+      it: Le mie campagne di test
+      en: My test campaigns
+    source: collection:invitations
+    columns:
+    - campaign
+    - device
+    - os
+    - status
+    roles:
+    - tester
+  - key: report_bug
+    type: table
+    title:
+      it: Segnalazioni
+      en: Bug reports
+    source: collection:bug_reports
+    columns:
+    - campaign
+    - title
+    - severity
+    - status
+    roles:
+    - tester
+  - key: reviews
+    type: approvals
+    title:
+      it: Segnalazioni da approvare
+      en: Reports to approve
+    approvals:
+    - bug_review
+    roles:
+    - pm
+    - admin
+  - key: testers_db
+    type: table
+    title: Tester
+    source: collection:testers
+    columns:
+    - email
+    - country
+    - devices
+    - os_list
+    - experience
+    - approval_rate
+    roles:
+    - pm
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Crediti
+      en: Credits
+    roles:
+    - client
+  billing:
+    modes:
+    - credits
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:matcher:
+        estimate: 10
+        metered: true
+    packs:
+    - key: campaign
+      credits: 1000
+      price: 10
+      label:
+        it: Pacchetto campagna
+        en: Campaign pack
+    - key: large
+      credits: 5000
+      price: 45
+      label:
+        it: Pacchetto grande
+        en: Large pack
+  extensions:
+  - key: bug_submission_form
+    description: Testers file bugs through a form that writes to bug_reports with the tester's email and status 'submitted';
+      uploading screenshots or videos is not available yet, so testers paste a link to the file.
+  - key: jira_export
+    description: Pushing approved bugs to the client's Jira needs each client's own credentials, which are not available yet.
+      For now approved bugs are shown in the dashboard and can be copied into the ticketing system.
+  - key: tester_invitation_email
+    description: 'Email notifications are not available: testers see invitations in the app after signing in.'
+  - key: per_tester_scoping
+    description: Showing each tester only their own campaigns and each client only their own bugs needs per-user filtering
+      on app-owned records, which the manifest cannot express yet.
+  - key: tester_payout
+    description: Per-approved-bug tester payouts are handled outside this app, by the community platform.

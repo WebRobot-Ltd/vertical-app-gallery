@@ -1,0 +1,485 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: docestratto
+  displayName: DocEstratto
+  tagline:
+    it: Dai documenti ai dati strutturati, con revisione umana dove serve.
+    en: From documents to structured data, with human review where needed.
+  description:
+    it: 'Definisci il tipo di documento e i campi da estrarre: un agente legge il documento, normalizza date, importi e codici
+      fiscali, verifica la coerenza interna e manda in revisione i casi dubbi.'
+    en: 'Define the document type and the fields to extract: an agent reads the document, normalises dates, amounts and tax
+      codes, checks internal consistency and sends doubtful cases to review.'
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#17324d'
+      accent: '#0f8b8d'
+      background: '#f6f8fa'
+      foreground: '#18222d'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Doc
+      color: primary
+    - text: Estratto
+      color: accent
+    width: wide
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Cosa estrae
+        en: What it extracts
+      href: '#cosa-estrae'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      label:
+        it: Operatore
+        en: Operator
+      assignedBy: signup
+  limits:
+  - action: agent:extractor
+    per: user
+    max: 200
+    window: day
+    roles:
+    - user
+  agents:
+  - key: extractor
+    role: main
+    description: Reads one document (link or pasted text), extracts the requested fields, normalises and validates them, asks
+      for human review when confidence is low.
+    profile:
+      inline:
+        display_name: DocEstratto extractor
+        crews:
+        - id: extractor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are a document data-extraction agent for administrative offices, insurers and professional firms.
+            You receive a document type, the list of fields to extract (name, format, validation rules) and either a link
+            to the document (image, scan or PDF) or its pasted text. If you have a link, fetch it and read it with the WebRobot
+            tools (OCR); if the page cannot be read, say so and do not guess.
+
+
+            Procedure: 1) extract every requested field exactly as printed; 2) normalise: dates to ISO 8601, amounts as numbers
+            with a dot decimal and a separate currency, Italian codice fiscale / partita IVA uppercase without spaces; 3)
+            apply the validation rules and the internal consistency checks (e.g. taxable amount + VAT = total, VAT = rate
+            x taxable, codice fiscale format and check character, due date after issue date); 4) give each field a confidence
+            from 0 to 1; a missing or illegible field is null with confidence 0, NEVER invent values.
+
+
+            Output format: start with a level-1 title "# <document type> — <main identifier or filename>". Then a ## Extracted
+            fields table (field, value, confidence), a ## Checks section (each check: passed / failed, with the figures),
+            a ## Notes section for anomalies (skewed, cropped or unreadable parts). Finish with ONE fenced ```json block containing
+            {"doc_type":…, "source":…, "fields":{name:value}, "confidence":{name:number}, "overall_confidence":number, "checks_passed":boolean,
+            "status":"ok"|"needs_review"}. Use status needs_review if overall_confidence < 0.85 or any check failed; in that
+            case also call the tool request_review once with a short reason and the fields at doubt. Reply in the language
+            with ISO code given in the goal.'
+    context:
+    - key: fields_spec
+      from: collection:doc_types.fields_spec
+    goalTemplate: 'Document type: {doc_type}
+
+      Fields to extract and rules:
+
+      {fields_spec}
+
+      {?source_url}Document link: {source_url}{/source_url}
+
+      {?source_text}Document text:
+
+      {source_text}{/source_text}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    output: markdown+json
+    writesTo:
+      collection: documents
+      parse: json_last
+    awaits:
+    - review
+    limits:
+      maxTurns: 20
+      maxBudgetUsd: 0.5
+  approvals:
+  - key: review
+    title:
+      it: Revisione documento
+      en: Document review
+    description: 'Low-confidence extraction: the operator checks the document next to the fields and corrects them.'
+    decidedBy: requester
+    fields:
+    - doc_type
+    - source
+    - fields
+    - confidence
+    - reason
+    timeoutMinutes: 10080
+    onTimeout: reject
+  inputForm:
+    title:
+      it: Elabora un documento
+      en: Process a document
+    fields:
+    - name: doc_type
+      type: relation
+      relation: doc_types
+      required: true
+      label:
+        it: Tipo di documento
+        en: Document type
+    - name: source_url
+      type: url
+      label:
+        it: Link al documento (immagine, scansione, PDF)
+        en: Link to the document (image, scan, PDF)
+    - name: source_text
+      type: textarea
+      maxLength: 8000
+      label:
+        it: Oppure incolla il testo
+        en: Or paste the text
+  data:
+    collections:
+    - name: doc_types
+      ownedBy: user
+      description: Document types defined by the organisation and the fields to extract
+      fields:
+      - name: name
+        type: text
+        required: true
+        label:
+          it: Nome
+          en: Name
+      - name: fields_spec
+        type: textarea
+        required: true
+        label:
+          it: Campi, formati e regole
+          en: Fields, formats and rules
+        help:
+          it: 'Una riga per campo: nome | formato | regola. Es. totale | importo | = imponibile + IVA'
+          en: 'One line per field: name | format | rule. E.g. total | amount | = taxable + VAT'
+      - name: retention_days
+        type: number
+        label:
+          it: Conservazione (giorni)
+          en: Retention (days)
+      - name: webhook_url
+        type: url
+        label:
+          it: Webhook gestionale
+          en: Webhook URL
+    - name: documents
+      ownedBy: user
+      description: Extracted documents with fields, confidence and status
+      fields:
+      - name: doc_type
+        type: text
+        label:
+          it: Tipo
+          en: Type
+      - name: source
+        type: text
+        label:
+          it: Origine
+          en: Source
+      - name: fields
+        type: json
+        label:
+          it: Campi
+          en: Fields
+      - name: confidence
+        type: json
+        label:
+          it: Confidenza
+          en: Confidence
+      - name: overall_confidence
+        type: number
+        label:
+          it: Confidenza globale
+          en: Overall confidence
+      - name: checks_passed
+        type: boolean
+        label:
+          it: Controlli
+          en: Checks
+      - name: status
+        type: text
+        label: Status
+      searchable: true
+  views:
+  - key: home
+    type: page
+    title: DocEstratto
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow:
+        it: Per uffici amministrativi, assicurazioni e studi
+        en: For admin offices, insurers and firms
+      title:
+        it: Dai documenti ai **dati strutturati**, senza ricopiare nulla.
+        en: From documents to **structured data**, no retyping.
+      text:
+        it: Definisci i campi da estrarre, un agente legge il documento, normalizza e controlla la coerenza. I casi dubbi
+          vanno in revisione.
+        en: Define the fields to extract; an agent reads the document, normalises and checks consistency. Doubtful cases go
+          to review.
+      actions:
+      - label:
+          it: Elabora un documento
+          en: Process a document
+        href: /v/new_run
+        style: primary
+      - label:
+          it: Accedi
+          en: Sign in
+        href: /login
+        style: ghost
+      aside: <div style="padding:16px"><strong>Fattura n. 2026/118</strong><br>Imponibile 1.000,00 · IVA 220,00 · Totale 1.220,00<br><span
+        style="color:#0f8b8d">✔ Coerenza verificata · confidenza 0,97</span></div>
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Definisci il tipo
+          en: Define the type
+        text:
+          it: 'Fattura, bolla, documento d''identità, perizia, busta paga: scegli i campi, i formati e le regole.'
+          en: 'Invoice, delivery note, ID, appraisal, payslip: choose fields, formats and rules.'
+        badge: '1'
+      - title:
+          it: Elabora
+          en: Process
+        text:
+          it: Indica il link del documento o incolla il testo. L'agente legge, normalizza e verifica.
+          en: Give the document link or paste the text. The agent reads, normalises and checks.
+        badge: '2'
+      - title:
+          it: Rivedi ed esporta
+          en: Review and export
+        text:
+          it: Correggi i casi a bassa confidenza e consulta i risultati in tabella.
+          en: Fix low-confidence cases and browse results in a table.
+        badge: '3'
+    - type: cards
+      id: cosa-estrae
+      title:
+        it: Cosa estrae
+        en: What it extracts
+      items:
+      - title:
+          it: Date e importi
+          en: Dates and amounts
+        text:
+          it: Normalizzati in formato standard.
+          en: Normalised to standard formats.
+        badge: 📅
+      - title:
+          it: Codici fiscali e P.IVA
+          en: Tax codes and VAT numbers
+        text:
+          it: Formato e carattere di controllo verificati.
+          en: Format and check character verified.
+        badge: 🧾
+      - title:
+          it: Coerenza interna
+          en: Internal consistency
+        text:
+          it: Imponibile + IVA = totale e altre regole.
+          en: Taxable + VAT = total and other rules.
+        badge: ✅
+    - type: note
+      content:
+        it: Ogni organizzazione vede solo i propri documenti. Si paga a consumo, con crediti per elaborazione.
+        en: Each organisation sees only its own documents. Pay as you go, with credits per processing.
+  - key: new_run
+    type: new_run
+    title:
+      it: Elabora
+      en: Process
+    roles:
+    - user
+    - admin
+  - key: doc_types
+    type: list
+    title:
+      it: Tipi di documento
+      en: Document types
+    source: collection:doc_types
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label:
+          it: Nome
+          en: Name
+      - key: fields_spec
+        label:
+          it: Campi
+          en: Fields
+      - key: retention_days
+        label:
+          it: Giorni
+          en: Days
+        format: number
+      limit: 100
+  - key: documents
+    type: table
+    title:
+      it: Documenti estratti
+      en: Extracted documents
+    source: collection:documents
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: doc_type
+        label:
+          it: Tipo
+          en: Type
+      - key: source
+        label:
+          it: Origine
+          en: Source
+      - key: fields
+        label:
+          it: Campi
+          en: Fields
+      - key: overall_confidence
+        label:
+          it: Confidenza
+          en: Confidence
+        format: number
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: overall_confidence
+        dir: asc
+      limit: 200
+  - key: review_queue
+    type: approvals
+    title:
+      it: Coda di revisione
+      en: Review queue
+    approvals:
+    - review
+    roles:
+    - user
+    - admin
+  - key: history
+    type: history
+    title:
+      it: Le mie elaborazioni
+      en: My runs
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: account
+    type: account
+    title:
+      it: Crediti
+      en: Credits
+    roles:
+    - user
+  billing:
+    modes:
+    - credits
+    currency: eur
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:extractor:
+        estimate: 10
+        metered: true
+    packs:
+    - key: starter
+      credits: 1000
+      price: 10
+      label: Starter
+    - key: pro
+      credits: 6000
+      price: 50
+      label: Pro
+  extensions:
+  - key: file_upload
+    description: 'Uploading scans, photos and batches of hundreds of files is not available yet: for now the user gives a
+      link or pastes the text, one document per run.'
+  - key: email_ingest
+    description: Dedicated email address per organisation that receives documents is not available (needs inbound email).
+  - key: side_by_side_review
+    description: Review shows the extracted fields and the source link; the image next to the fields requires file storage
+      and a custom view.
+  - key: export_csv_excel
+    description: CSV/Excel export of the documents table is not declarable yet; the table is browsable in the app.
+  - key: customer_webhook
+    description: Sending results to each customer's own webhook (webhook_url on the document type) needs per-customer outbound
+      calls, not available with the fixed egress list.
+  - key: retention
+    description: Automatic deletion after retention_days chosen per document type is not enforced by the runtime yet.

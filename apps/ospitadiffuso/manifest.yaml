@@ -1,0 +1,940 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: ospitadiffuso
+  displayName: OspitaDiffuso
+  tagline:
+    it: Una rete di alloggi diffusi nei borghi, gestita come un unico hotel.
+    en: A network of scattered stays in small villages, run like a single hotel.
+    de: Ein Netz verstreuter Unterkünfte in kleinen Dörfern, geführt wie ein einziges Hotel.
+  description:
+    it: 'Software per la rete OspitaDiffuso: i proprietari registrano gli alloggi, i gestori locali li approvano dopo il sopralluogo,
+      gli ospiti cercano e prenotano con un concierge AI. Pulizie e accoglienza fisica restano ai partner locali.'
+    en: 'Software for the OspitaDiffuso network: owners register their stays, local managers approve them after an inspection,
+      guests search and book with an AI concierge. Cleaning and on-site welcome stay with local partners.'
+    de: 'Software für das OspitaDiffuso-Netz: Eigentümer erfassen Unterkünfte, lokale Manager genehmigen sie nach einer Besichtigung,
+      Gäste suchen und buchen mit einem KI-Concierge. Reinigung und Empfang vor Ort bleiben bei lokalen Partnern.'
+  langs:
+  - it
+  - en
+  - de
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#4a3b2a'
+      accent: '#b5532f'
+      background: '#faf6ef'
+      foreground: '#231d16'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Ospita
+      color: primary
+    - text: Diffuso
+      color: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+        de: So funktioniert's
+      href: '#come-funziona'
+    - label:
+        it: Alloggi
+        en: Stays
+        de: Unterkünfte
+      href: /v/search
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+        de: Anmelden
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+      - search
+    roles:
+    - key: admin
+      label: Admin rete
+      assignedBy: admin_emails
+    - key: manager
+      label:
+        it: Gestore locale
+        en: Local manager
+        de: Lokaler Manager
+      assignedBy: invite
+    - key: owner
+      label:
+        it: Proprietario
+        en: Owner
+        de: Eigentümer
+      assignedBy: invite
+    - key: guest
+      label:
+        it: Ospite
+        en: Guest
+        de: Gast
+      assignedBy: signup
+  limits:
+  - action: chat
+    per: user
+    max: 60
+    window: day
+    roles:
+    - guest
+  - action: agent:pricer
+    per: user
+    max: 10
+    window: day
+    roles:
+    - owner
+  egress:
+    hosts: []
+    notes: 'No direct API calls: municipal public pages (events, opening hours, restaurants) are read through the WebRobot
+      MCP scraper, respecting each site''s terms.'
+  agents:
+  - key: registrar
+    role: main
+    when: mode == 'register'
+    description: Helps the owner register a property and asks the local manager for the inspection approval.
+    awaits:
+    - listing_review
+    profile:
+      inline:
+        display_name: OspitaDiffuso registrar
+        crews:
+        - id: registrar
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          system_prompt: 'You help a property owner of the OspitaDiffuso network register a stay. From the form data, write
+            a clean listing record (title, village, beds, amenities, house rules, photo links, availability notes, base price)
+            without inventing anything: if something is missing, list it as ''to complete''. Save the record with the tool
+            save_property, then call request_listing_review so the local manager can approve it after the on-site inspection.
+            Tell the owner that the stay goes online only after the inspection. Report: start with a level-1 ''# '' title
+            ''<property> — registration'', then ## Summary, ## Missing information, ## Next steps. End with a JSON block with
+            the fields name, village, beds, amenities, rules, photos, availability, base_price, status ''pending_inspection''.'
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+    goalTemplate: 'Register this property. Name: {name}. Village: {village}. Beds: {beds}. Amenities: {amenities}. Rules:
+      {rules}. Photo links: {photos}. Availability: {availability}. Base price per night: {base_price} EUR. Language ISO:
+      {lang}.'
+    output: markdown+json
+    appTools:
+    - name: save_property
+      description: Save the owner's property record
+      action: write
+      collection: properties
+      scope: user
+    writesTo:
+      collection: properties
+      parse: json_last
+      keyBy: name
+  - key: pricer
+    role: main
+    when: mode == 'price'
+    description: Suggests the nightly price from seasonality and local events; the owner always confirms.
+    awaits:
+    - price_confirm
+    profile:
+      inline:
+        display_name: OspitaDiffuso pricing advisor
+        crews:
+        - id: pricer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          system_prompt: 'You suggest nightly prices for the owner''s stay. Read the property with read_property, check seasonality
+            and local events (fairs, festivals, holidays) for the village in the period using the WebRobot MCP on public municipal
+            sources, then propose a price per night for each week of the period, with a short reason each. Never invent events:
+            cite the source. The final price is ALWAYS decided by the owner: call request_price_confirm with the proposed
+            prices and wait; call save_price only after the owner approved. Report: level-1 ''# '' title ''<property> — price
+            proposal'', ## Proposed prices (table), ## Events and seasonality, ## Assumptions. Add a ```chart block (bar)
+            with the weekly prices. No guarantee of revenue.'
+          max_turns: 25
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+    mcpServers:
+    - name: webrobot
+      url: https://mcp-full.webrobot.eu/mcp
+      allow: all
+    goalTemplate: 'Property: {property}. Period: from {from_date} to {to_date}. {?notes}Owner notes: {notes}{/notes} Today
+      is {date}. Language ISO: {lang}.'
+    output: markdown
+    appTools:
+    - name: read_property
+      description: Read the owner's properties
+      action: read
+      collection: properties
+      scope: user
+    - name: save_price
+      description: Save the confirmed price
+      action: write
+      collection: properties
+      scope: user
+  - key: concierge
+    role: helper
+    description: 'Chat concierge for guests: stay info, territory, local experiences.'
+    profile:
+      inline:
+        display_name: OspitaDiffuso concierge
+        chat_mode: true
+        crews:
+        - id: concierge
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          system_prompt: You are the concierge of OspitaDiffuso, a network of scattered stays in small villages run like one
+            hotel. Answer in the guest's language. Use read_listing for the stay (rules, services, arrival) and read_booking
+            for the guest's own booking. For the territory (opening hours, restaurants, events) use the WebRobot MCP on public
+            municipal sources and cite them; if you do not find it, say so. Propose local experiences relevant to the dates.
+            Never invent hours, prices or availability, and never reveal other guests' data. Access codes appear only from
+            the guest's own booking record. For emergencies, point to the local manager's phone on the booking. Keep answers
+            short.
+          max_turns: 10
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+    mcpServers:
+    - name: webrobot
+      url: https://mcp-full.webrobot.eu/mcp
+      allow: all
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+      New guest message: {message}
+
+      Language ISO: {lang}. Today is {date}.'
+    memory: user
+    appTools:
+    - name: read_listing
+      description: Search the published stays
+      action: search
+      collection: listings
+      scope: all
+    - name: read_booking
+      description: The guest's own bookings
+      action: read
+      collection: bookings
+      scope: user
+  - key: publisher
+    role: helper
+    description: Publishes an approved property to the public catalogue.
+    profile:
+      inline:
+        display_name: OspitaDiffuso publisher
+        crews:
+        - id: publisher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          system_prompt: An approved listing request arrives as an event. Copy the public fields (name, village, beds, amenities,
+            rules, photos, base_price, coordinates if given) into the catalogue with the tool publish_listing. Do not copy
+            owner contact data. Answer with one line.
+          max_turns: 3
+          max_budget_usd: 0.1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+    appTools:
+    - name: publish_listing
+      description: Write a listing in the public catalogue
+      action: write
+      collection: listings
+      scope: all
+    goalTemplate: 'Publish this approved request: {message}'
+  - key: ops_planner
+    role: helper
+    description: Turns each new booking into the local manager's tasks (check-in, cleaning).
+    profile:
+      inline:
+        display_name: OspitaDiffuso ops planner
+        crews:
+        - id: ops
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          system_prompt: 'For each new booking event, create tasks with the tool add_task: one check-in on arrival day (with
+            arrival time and guest name), one cleaning on departure day. Fields: kind (checkin|cleaning|issue), village, property,
+            date, details, status ''open''. Do not include payment data. Answer with one line.'
+          max_turns: 4
+          max_budget_usd: 0.1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+    appTools:
+    - name: add_task
+      description: Add a task for local managers
+      action: append
+      collection: tasks
+      scope: all
+    goalTemplate: 'New booking event: {message}'
+  triggers:
+  - key: on_listing_approved
+    'on':
+      approval: listing_review
+      decision: approved
+    start:
+      agent: publisher
+    goal: '{event}'
+    asUser: false
+  - key: on_booking
+    'on':
+      collection: bookings
+      op: insert
+    start:
+      agent: ops_planner
+    goal: '{event}'
+    asUser: false
+  approvals:
+  - key: listing_review
+    title:
+      it: Approvazione inserimento dopo sopralluogo
+      en: Listing approval after inspection
+      de: Freigabe nach Besichtigung
+    role: manager
+    fields:
+    - name
+    - village
+    - beds
+    - amenities
+    - rules
+    timeoutMinutes: 10080
+    onTimeout: reject
+  - key: price_confirm
+    title:
+      it: Conferma il prezzo per notte
+      en: Confirm the nightly price
+      de: Preis pro Nacht bestätigen
+    decidedBy: requester
+    fields:
+    - property
+    - prices
+  inputForm:
+    title:
+      it: Per proprietari
+      en: For owners
+      de: Für Eigentümer
+    fields:
+    - name: mode
+      type: select
+      required: true
+      label:
+        it: Cosa vuoi fare
+        en: What to do
+        de: Was möchten Sie tun
+      options:
+      - value: register
+        label:
+          it: Registrare un alloggio
+          en: Register a stay
+          de: Unterkunft erfassen
+      - value: price
+        label:
+          it: Suggerimento prezzo
+          en: Price suggestion
+          de: Preisvorschlag
+    - name: name
+      type: text
+      visibleWhen: mode == 'register'
+      label:
+        it: Nome alloggio
+        en: Stay name
+        de: Name
+    - name: village
+      type: text
+      visibleWhen: mode == 'register'
+      label:
+        it: Borgo
+        en: Village
+        de: Dorf
+    - name: beds
+      type: number
+      visibleWhen: mode == 'register'
+      label:
+        it: Posti letto
+        en: Beds
+        de: Betten
+    - name: amenities
+      type: textarea
+      visibleWhen: mode == 'register'
+      label:
+        it: Servizi
+        en: Amenities
+        de: Ausstattung
+    - name: rules
+      type: textarea
+      visibleWhen: mode == 'register'
+      label:
+        it: Regole della casa
+        en: House rules
+        de: Hausregeln
+    - name: photos
+      type: urls
+      visibleWhen: mode == 'register'
+      label:
+        it: Link alle foto
+        en: Photo links
+        de: Foto-Links
+      help:
+        it: 'Il caricamento file non è ancora disponibile: incolla i link'
+        en: 'File upload is not available yet: paste links'
+        de: 'Datei-Upload noch nicht verfügbar: Links einfügen'
+    - name: availability
+      type: textarea
+      visibleWhen: mode == 'register'
+      label:
+        it: Disponibilità
+        en: Availability
+        de: Verfügbarkeit
+    - name: base_price
+      type: number
+      visibleWhen: mode == 'register'
+      label:
+        it: Prezzo base per notte (€)
+        en: Base price per night (€)
+        de: Grundpreis pro Nacht (€)
+    - name: property
+      type: relation
+      relation: properties
+      visibleWhen: mode == 'price'
+      label:
+        it: Immobile
+        en: Property
+        de: Objekt
+    - name: from_date
+      type: date
+      visibleWhen: mode == 'price'
+      label:
+        it: Dal
+        en: From
+        de: Von
+    - name: to_date
+      type: date
+      visibleWhen: mode == 'price'
+      label:
+        it: Al
+        en: To
+        de: Bis
+    - name: notes
+      type: textarea
+      maxLength: 400
+      visibleWhen: mode == 'price'
+      label:
+        it: Note
+        en: Notes
+        de: Notizen
+  data:
+    collections:
+    - name: properties
+      ownedBy: user
+      description: The owner's own properties (private)
+      fields:
+      - name: name
+        type: text
+      - name: village
+        type: text
+      - name: beds
+        type: number
+      - name: amenities
+        type: textarea
+      - name: rules
+        type: textarea
+      - name: photos
+        type: urls
+      - name: availability
+        type: textarea
+      - name: base_price
+        type: number
+      - name: status
+        type: text
+    - name: listings
+      ownedBy: shared
+      searchable: true
+      description: Approved stays visible to every guest
+      fields:
+      - name: name
+        type: text
+      - name: village
+        type: text
+      - name: beds
+        type: number
+      - name: amenities
+        type: textarea
+      - name: rules
+        type: textarea
+      - name: photos
+        type: urls
+      - name: base_price
+        type: number
+    - name: bookings
+      ownedBy: user
+      sharing:
+      - viewer
+      description: The guest's bookings, shared as viewer with the owner and local manager of the stay
+      fields:
+      - name: property
+        type: text
+      - name: village
+        type: text
+      - name: check_in
+        type: date
+      - name: check_out
+        type: date
+      - name: guests
+        type: number
+      - name: amount
+        type: number
+      - name: commission
+        type: number
+      - name: access_code
+        type: text
+      - name: status
+        type: text
+    - name: tasks
+      ownedBy: org
+      description: Daily tasks and issues for local managers and occupancy figures for admins
+      fields:
+      - name: kind
+        type: text
+      - name: village
+        type: text
+      - name: property
+        type: text
+      - name: date
+        type: date
+      - name: details
+        type: textarea
+      - name: status
+        type: text
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: OspitaDiffuso
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      title:
+        it: Dormi nel borgo, **come in un unico hotel**.
+        en: Stay in the village, **as in a single hotel**.
+        de: Übernachten im Dorf, **wie in einem einzigen Hotel**.
+      text:
+        it: Alloggi diffusi nei piccoli borghi, accoglienza dei partner locali e un concierge AI che risponde alle tue domande.
+        en: Scattered stays in small villages, welcomed by local partners and an AI concierge that answers your questions.
+        de: Verstreute Unterkünfte in kleinen Dörfern, Empfang durch lokale Partner und ein KI-Concierge für Ihre Fragen.
+      actions:
+      - label:
+          it: Cerca un alloggio
+          en: Find a stay
+          de: Unterkunft suchen
+        href: /v/search
+        style: primary
+      - label:
+          it: Accedi
+          en: Sign in
+          de: Anmelden
+        href: /login
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+        de: So funktioniert's
+      items:
+      - title:
+          it: Cerca
+          en: Search
+          de: Suchen
+        text:
+          it: Scegli borgo e date.
+          en: Pick village and dates.
+          de: Dorf und Daten wählen.
+        badge: 🔎
+      - title:
+          it: Prenota e paga
+          en: Book and pay
+          de: Buchen und bezahlen
+        text:
+          it: Pagamento con carta; istruzioni e codice di accesso per l'arrivo.
+          en: Card payment; arrival instructions and access code.
+          de: Kartenzahlung; Anreisehinweise und Zugangscode.
+        badge: 💳
+      - title:
+          it: Chiedi al concierge
+          en: Ask the concierge
+          de: Concierge fragen
+        text:
+          it: Orari, ristoranti, eventi ed esperienze locali.
+          en: Hours, restaurants, events and local experiences.
+          de: Zeiten, Restaurants, Events und lokale Erlebnisse.
+        badge: 💬
+    - type: cards
+      title:
+        it: Per chi ospita
+        en: For hosts
+        de: Für Gastgeber
+      items:
+      - title:
+          it: Proprietari
+          en: Owners
+          de: Eigentümer
+        text:
+          it: Registra l'immobile, ricevi un suggerimento di prezzo e confermalo tu.
+          en: Register your property, get a price suggestion and confirm it yourself.
+          de: Objekt erfassen, Preisvorschlag erhalten und selbst bestätigen.
+      - title:
+          it: Gestori locali
+          en: Local managers
+          de: Lokale Manager
+        text:
+          it: Approvi dopo il sopralluogo e vedi le attività del giorno.
+          en: Approve after inspection and see the day's tasks.
+          de: Nach der Besichtigung freigeben und Tagesaufgaben sehen.
+    - type: note
+      content:
+        it: 'OspitaDiffuso è lo strato software: pulizie e accoglienza sul posto sono dei partner locali. Sulle prenotazioni
+          è applicata una commissione.'
+        en: 'OspitaDiffuso is the software layer: cleaning and on-site welcome are provided by local partners. A commission
+          applies to bookings.'
+        de: 'OspitaDiffuso ist die Software-Ebene: Reinigung und Empfang vor Ort erfolgen durch lokale Partner. Auf Buchungen
+          fällt eine Provision an.'
+  - key: search
+    type: cards
+    title:
+      it: Alloggi
+      en: Stays
+      de: Unterkünfte
+    source: collection:listings
+    param: village
+    data:
+      display: cards
+      fields:
+      - key: name
+        label:
+          it: Alloggio
+          en: Stay
+          de: Unterkunft
+      - key: village
+        label:
+          it: Borgo
+          en: Village
+          de: Dorf
+        format: badge
+      - key: beds
+        label:
+          it: Posti letto
+          en: Beds
+          de: Betten
+        format: number
+      - key: base_price
+        label:
+          it: Da €/notte
+          en: From €/night
+          de: Ab €/Nacht
+        format: money
+      sort:
+        field: village
+        dir: asc
+      limit: 60
+      empty:
+        it: Nessun alloggio pubblicato.
+        en: No stays published yet.
+        de: Noch keine Unterkünfte.
+  - key: concierge_chat
+    type: chat
+    title: Concierge
+    source: agent:concierge
+    placeholder:
+      it: Chiedi al concierge…
+      en: Ask the concierge…
+      de: Fragen Sie den Concierge…
+    examples:
+    - it: A che ora è il check-in?
+      en: What time is check-in?
+      de: Wann ist der Check-in?
+    - it: Dove si cena stasera in paese?
+      en: Where can I have dinner tonight?
+      de: Wo kann ich heute Abend essen?
+    - it: Che eventi ci sono questo fine settimana?
+      en: Any events this weekend?
+      de: Gibt es Events am Wochenende?
+    roles:
+    - guest
+    - admin
+  - key: my_bookings
+    type: table
+    title:
+      it: Le mie prenotazioni
+      en: My bookings
+      de: Meine Buchungen
+    source: collection:bookings
+    roles:
+    - guest
+    data:
+      display: table
+      fields:
+      - key: property
+        label:
+          it: Alloggio
+          en: Stay
+          de: Unterkunft
+      - key: check_in
+        label: Check-in
+        format: date
+      - key: check_out
+        label: Check-out
+        format: date
+      - key: amount
+        label:
+          it: Importo
+          en: Amount
+          de: Betrag
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: check_in
+        dir: desc
+  - key: owner_area
+    type: new_run
+    title:
+      it: Area proprietario
+      en: Owner area
+      de: Eigentümerbereich
+    roles:
+    - owner
+    - admin
+  - key: owner_history
+    type: history
+    title:
+      it: Le mie attività
+      en: My activity
+      de: Meine Aktivitäten
+    source: run
+    roles:
+    - owner
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: my_properties
+    type: table
+    title:
+      it: I miei immobili
+      en: My properties
+      de: Meine Objekte
+    source: collection:properties
+    roles:
+    - owner
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Nome
+      - key: village
+        label: Borgo
+      - key: beds
+        label: Posti letto
+        format: number
+      - key: base_price
+        label: €/notte
+        format: money
+      - key: status
+        label: Status
+        format: badge
+  - key: earnings
+    type: dashboard
+    title:
+      it: Incassi
+      en: Earnings
+      de: Einnahmen
+    children:
+    - earnings_kpi
+    roles:
+    - owner
+  - key: earnings_kpi
+    type: table
+    nav: false
+    source: collection:bookings
+    roles:
+    - owner
+    data:
+      display: kpi
+      kpis:
+      - label:
+          it: Prenotazioni
+          en: Bookings
+          de: Buchungen
+        agg: count
+      - label:
+          it: Incassi lordi
+          en: Gross revenue
+          de: Bruttoumsatz
+        agg: sum
+        field: amount
+        format: money
+      - label:
+          it: Commissioni
+          en: Commission
+          de: Provision
+        agg: sum
+        field: commission
+        format: money
+  - key: approvals
+    type: approvals
+    title:
+      it: Approvazioni
+      en: Approvals
+      de: Freigaben
+    approvals:
+    - listing_review
+    - price_confirm
+    roles:
+    - manager
+    - owner
+    - admin
+  - key: today
+    type: table
+    title:
+      it: Attività del giorno
+      en: Today's tasks
+      de: Aufgaben heute
+    source: collection:tasks
+    roles:
+    - manager
+    - admin
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Data
+        format: date
+      - key: kind
+        label: Tipo
+        format: badge
+      - key: village
+        label: Borgo
+      - key: property
+        label: Alloggio
+      - key: details
+        label: Dettagli
+      - key: status
+        label: Status
+        format: badge
+      filters:
+      - field: status
+        op: '='
+        value: open
+      sort:
+        field: date
+        dir: asc
+      limit: 100
+  - key: occupancy
+    type: chart
+    title:
+      it: Occupazione
+      en: Occupancy
+      de: Auslastung
+    source: collection:tasks
+    roles:
+    - admin
+    data:
+      display: chart
+      chart: bar
+      fields:
+      - key: village
+        label: Borgo
+      - key: kind
+        label: Check-in
+      filters:
+      - field: kind
+        op: '='
+        value: checkin
+      limit: 200
+  billing:
+    modes:
+    - per_transaction
+    currency: eur
+    transactionFeePct: 12
+    sellers: collection:properties
+  extensions:
+  - key: booking_checkout
+    description: Booking by dates with availability check and card payment per stay (Stripe Connect to the owner, network
+      commission) is not expressible yet.
+  - key: arrival_email
+    description: 'Email with arrival instructions and access code: notifications are not available yet; for now the code appears
+      in the guest''s booking record and the concierge.'
+  - key: map_view
+    description: Map of the stays is not available; the search shows cards by village.
+  - key: photo_upload
+    description: Photo upload is not available; owners paste links.
+  - key: cross_user_views
+    description: Owner and local manager read bookings via per-record viewer invitations; a derived per-property visibility
+      and daily task digest may need runtime support.
+  - key: manager_task_issues
+    description: 'Guest issue reports reaching managers as tasks: a report form is still to be added.'

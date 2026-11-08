@@ -1,0 +1,611 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: menuparlante
+  displayName: MenuParlante
+  tagline:
+    it: Il menu digitale che parla la lingua dei tuoi clienti.
+    en: The digital menu that speaks your guests' language.
+  description:
+    it: Inserisci i piatti, un agente li traduce in 5 lingue, il cliente inquadra il QR del tavolo, filtra per allergie e
+      chatta con un cameriere virtuale che non inventa nulla.
+    en: Add your dishes, an agent translates them into 5 languages, guests scan the table QR, filter by allergies and chat
+      with a virtual waiter that never invents anything.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#3b1f14'
+      accent: '#c4501f'
+      background: '#fbf6ee'
+      foreground: '#241913'
+    fonts:
+      body: Inter
+      display: Playfair Display
+    wordmark:
+    - text: Menu
+      color: primary
+    - text: Parlante
+      color: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Prezzi
+        en: Pricing
+      href: '#prezzi'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+      - menu
+      - waiter_chat
+      agents:
+      - waiter
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: owner
+      label:
+        it: Ristoratore
+        en: Restaurateur
+      assignedBy: signup
+  limits:
+  - action: chat
+    per: ip
+    max: 40
+    window: hour
+    roles:
+    - anonymous
+  - action: agent:translator
+    per: user
+    max: 10
+    window: day
+    roles:
+    - owner
+  agents:
+  - key: translator
+    role: main
+    description: Translates the whole menu of one restaurant into EN, DE, FR, ES, ZH, keeping typical dish names with an explanation.
+    profile:
+      inline:
+        display_name: MenuParlante translator
+        crews:
+        - id: translator
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a professional food translator for restaurant menus. Read all dishes of the given restaurant
+            with the tool read_dishes. For every dish write, with the tool write_dishes, the field translations = {"en":{"name","description","note"},"de":{...},"fr":{...},"es":{...},"zh":{...}}.
+            Keep typical Italian/local dish names in the original language (e.g. ''Tagliatelle al ragù'') and put a short
+            explanation of the dish in the translated name line or in ''note''. Translate only what the restaurateur wrote:
+            never add ingredients, allergens or claims. Translate category names consistently. Do not touch other fields.
+            Finish with a report: a level-1 title ''# Traduzioni — <restaurant>'' then a table with dish, languages done,
+            and a list of anything ambiguous the restaurateur should check.'
+    appTools:
+    - name: read_dishes
+      description: Read the dishes of the menu, with ingredients, allergens, pairings, availability and translations
+      action: read
+      collection: dishes
+      scope: all
+    - name: write_dishes
+      description: Update a dish (translations field)
+      action: write
+      collection: dishes
+      scope: all
+    goalTemplate: 'Restaurant code: {restaurant}. Translate its entire menu into English, German, French, Spanish and Chinese.
+      {?only_new}Translate only dishes with no translations yet.{/only_new} Today is {date}. Write the final report in the
+      language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 1.0
+  - key: waiter
+    role: helper
+    description: 'Virtual waiter for guests: answers only from the menu, in the guest''s language.'
+    profile:
+      inline:
+        display_name: MenuParlante virtual waiter
+        chat_mode: true
+        crews:
+        - id: waiter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You are the friendly virtual waiter of a restaurant. Always call read_dishes first and use ONLY the
+            dishes of the restaurant code you are given that are not sold out (available is not false). Answer in the guest's
+            language. Recommend dishes and, using the pairings written by the restaurateur, wines or drinks, according to
+            the guest's tastes. For ingredients and allergens quote exactly what the menu says; if the menu does not say,
+            answer 'I don't have that information, please ask the staff' — never invent ingredients, allergens, prices, dishes
+            or wines. For serious allergies always add that the staff must confirm. Keep answers short (under 120 words),
+            warm, no medical advice.
+    appTools:
+    - name: read_dishes
+      description: Read the dishes of the menu, with ingredients, allergens, pairings, availability and translations
+      action: read
+      collection: dishes
+      scope: all
+    context:
+    - key: restaurant
+      from: page
+    goalTemplate: 'Restaurant code: {restaurant}
+
+      Conversation so far:
+
+      {history}
+
+      Guest message: {message}
+
+      Reply in the guest''s language (default ISO code {lang}).'
+    output: markdown
+  - key: digest
+    role: scheduled
+    description: Weekly summary of a restaurant's menu.
+    memory: instance
+    writesTo:
+      collection: weekly_reports
+    profile:
+      inline:
+        display_name: MenuParlante weekly digest
+        crews:
+        - id: digest
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the weekly summary for a restaurateur. Start with ''# Riepilogo settimanale — <restaurant>
+            — <date>''. Sections: ## Stato del menu (dishes, sold out dishes, dishes missing translations or photos, read
+            with read_dishes), ## Piatti più visti, ## Domande frequenti, ## Consigli. Visit and question statistics are not
+            yet available to you: if you have no real figures, say plainly that the data is not yet collected; never invent
+            numbers. Under 250 words.'
+    appTools:
+    - name: read_dishes
+      description: Read the dishes of the menu, with ingredients, allergens, pairings, availability and translations
+      action: read
+      collection: dishes
+      scope: all
+  inputForm:
+    title:
+      it: Traduci il menu
+      en: Translate the menu
+    fields:
+    - name: restaurant
+      type: text
+      required: true
+      label:
+        it: Codice del locale
+        en: Restaurant code
+      help:
+        it: Lo stesso codice usato nei piatti e nel QR
+        en: The same code used in dishes and the QR
+    - name: only_new
+      type: boolean
+      label:
+        it: Solo i piatti non ancora tradotti
+        en: Only dishes not yet translated
+      default: true
+  templates:
+  - key: weekly_digest
+    title:
+      it: Riepilogo settimanale
+      en: Weekly summary
+    agent: digest
+    params:
+    - name: restaurant
+      type: text
+      required: true
+      label:
+        it: Codice del locale
+        en: Restaurant code
+    goal: 'Write this week''s summary for restaurant code {restaurant} ({instance}). Today is {date}. Language: ISO code {lang}.'
+    schedule:
+      cron: 0 18 * * 0
+      userCanChange: false
+    maxPerUser: 3
+    roles:
+    - owner
+    - admin
+  data:
+    collections:
+    - name: restaurants
+      ownedBy: user
+      description: The restaurant profile of each subscriber
+      fields:
+      - name: code
+        type: text
+        required: true
+        label: Codice / Code
+      - name: name
+        type: text
+        required: true
+        label: Nome / Name
+      - name: address
+        type: text
+      - name: tables
+        type: number
+        label: Tavoli / Tables
+    - name: dishes
+      ownedBy: shared
+      description: Dishes of every restaurant, keyed by restaurant code; read by guests without login
+      searchable: true
+      fields:
+      - name: restaurant
+        type: text
+        required: true
+        label: Codice locale
+      - name: name
+        type: text
+        required: true
+        label:
+          it: Nome
+          en: Name
+      - name: description
+        type: textarea
+      - name: price
+        type: number
+        required: true
+        label:
+          it: Prezzo (€)
+          en: Price (€)
+      - name: category
+        type: select
+        required: true
+        options:
+        - value: antipasti
+          label: Antipasti
+        - value: primi
+          label: Primi
+        - value: secondi
+          label: Secondi
+        - value: contorni
+          label: Contorni
+        - value: dolci
+          label: Dolci
+        - value: bevande
+          label: Bevande
+        - value: vini
+          label: Vini
+      - name: allergens
+        type: multiselect
+        options:
+        - gluten
+        - crustaceans
+        - eggs
+        - fish
+        - peanuts
+        - soy
+        - milk
+        - nuts
+        - celery
+        - mustard
+        - sesame
+        - sulphites
+        - lupin
+        - molluscs
+      - name: ingredients
+        type: textarea
+      - name: photo
+        type: url
+        label:
+          it: Link alla foto
+          en: Photo link
+      - name: pairings
+        type: textarea
+        label:
+          it: Abbinamenti consigliati
+          en: Recommended pairings
+      - name: vegetarian
+        type: boolean
+      - name: gluten_free
+        type: boolean
+      - name: available
+        type: boolean
+        default: true
+        label:
+          it: Disponibile (togli la spunta se esaurito)
+          en: Available (untick when sold out)
+      - name: translations
+        type: json
+    - name: weekly_reports
+      ownedBy: instance
+      description: Weekly summaries of each restaurant
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: MenuParlante
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow:
+        it: Menu digitale per ristoranti
+        en: Digital menu for restaurants
+      title:
+        it: Il tuo menu, **in ogni lingua**, con un cameriere virtuale.
+        en: Your menu, **in every language**, with a virtual waiter.
+      text:
+        it: Il cliente inquadra il QR del tavolo, senza registrarsi vede il menu nella sua lingua, filtra per allergie e chiede
+          consigli.
+        en: Guests scan the table QR, see the menu in their language with no sign-up, filter by allergies and ask for advice.
+      actions:
+      - label:
+          it: Inizia con il tuo locale
+          en: Start with your restaurant
+        href: /login
+        style: primary
+      - label:
+          it: Vedi un menu
+          en: See a menu
+        href: /v/menu
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Inserisci i piatti
+          en: Add dishes
+        text:
+          it: Nome, descrizione, prezzo, categoria, allergeni, ingredienti, foto e abbinamenti.
+          en: Name, description, price, category, allergens, ingredients, photo and pairings.
+        badge: 🍝
+      - title:
+          it: Traduzione automatica
+          en: Automatic translation
+        text:
+          it: Inglese, tedesco, francese, spagnolo e cinese; i nomi tipici restano, con una spiegazione.
+          en: English, German, French, Spanish and Chinese; typical names stay, with an explanation.
+        badge: 🌍
+      - title:
+          it: QR per ogni tavolo
+          en: A QR per table
+        text:
+          it: Menu, filtri e cameriere virtuale senza registrazione.
+          en: Menu, filters and virtual waiter with no sign-up.
+        badge: 📱
+      - title:
+          it: Esaurito in un tocco
+          en: Sold out in one tap
+        text:
+          it: Cambia subito per tutti i clienti.
+          en: Changes instantly for every guest.
+        badge: ⛔
+    - type: cards
+      id: prezzi
+      title:
+        it: Prezzi
+        en: Pricing
+      items:
+      - title:
+          it: Abbonamento per locale
+          en: Per-restaurant subscription
+        text:
+          it: 29 € al mese per locale, personale incluso.
+          en: €29 per month per restaurant, staff included.
+    - type: note
+      content:
+        it: 'Le informazioni sugli allergeni sono quelle inserite dal ristorante: in caso di allergie gravi chiedi sempre
+          conferma al personale.'
+        en: 'Allergen information is entered by the restaurant: for serious allergies always confirm with the staff.'
+  - key: menu
+    type: page
+    nav: false
+    title:
+      it: Menu
+      en: Menu
+    param: r
+    sections:
+    - type: text
+      title:
+        it: Menu
+        en: Menu
+      content:
+        it: 'Scansiona il QR del tavolo: il menu appare nella tua lingua. Usa i filtri vegetariano / senza glutine e controlla
+          gli allergeni di ogni piatto.'
+        en: 'Scan the table QR: the menu appears in your language. Use the vegetarian / gluten-free filters and check each
+          dish''s allergens.'
+    - type: data
+      id: piatti
+      source: collection:dishes
+      display: cards
+      fields:
+      - key: name
+        label: Piatto
+      - key: description
+      - key: price
+        format: money
+      - key: category
+        format: badge
+      - key: allergens
+      - key: ingredients
+      - key: vegetarian
+        format: badge
+      - key: gluten_free
+        format: badge
+      - key: photo
+        format: link
+      filters:
+      - field: available
+        op: '!='
+        value: false
+      sort:
+        field: category
+        dir: asc
+      limit: 200
+      empty:
+        it: Nessun piatto disponibile.
+        en: No dishes available.
+    - type: view
+      title:
+        it: Chiedi al cameriere virtuale
+        en: Ask the virtual waiter
+      view: waiter_chat
+  - key: waiter_chat
+    type: chat
+    source: agent:waiter
+    nav: false
+    title:
+      it: Cameriere virtuale
+      en: Virtual waiter
+    placeholder:
+      it: Cosa ti piace? Hai allergie?
+      en: What do you like? Any allergies?
+    examples:
+    - Sono vegetariano, cosa mi consigli?
+    - Is the carbonara gluten free?
+    - Welchen Wein empfehlen Sie zum Fisch?
+  - key: dish_list
+    type: table
+    title:
+      it: I miei piatti
+      en: My dishes
+    source: collection:dishes
+    columns:
+    - name
+    - category
+    - price
+    - available
+    - vegetarian
+    - gluten_free
+    roles:
+    - owner
+    - admin
+  - key: restaurant
+    type: table
+    title:
+      it: Il mio locale
+      en: My restaurant
+    source: collection:restaurants
+    columns:
+    - code
+    - name
+    - address
+    - tables
+    roles:
+    - owner
+    - admin
+  - key: translate
+    type: new_run
+    title:
+      it: Traduci il menu
+      en: Translate the menu
+    roles:
+    - owner
+    - admin
+  - key: runs
+    type: history
+    title:
+      it: Traduzioni
+      en: Translations
+    source: run
+    roles:
+    - owner
+    - admin
+  - key: run_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: digests
+    type: instances
+    template: weekly_digest
+    title:
+      it: Riepilogo settimanale
+      en: Weekly summary
+    roles:
+    - owner
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Subscription
+    roles:
+    - owner
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: locale
+      price: 29
+      interval: month
+      label:
+        it: Per locale
+        en: Per restaurant
+      includes:
+      - unlimited dishes
+      - translations in 5 languages
+      - virtual waiter
+      - weekly summary
+      roles:
+      - owner
+  extensions:
+  - key: qr_codes
+    description: 'Printable QR code per table pointing to /v/menu?r=<restaurant code>&t=<table>: the manifest cannot generate
+      QR images yet; for now the owner builds them from that link.'
+  - key: photo_upload
+    description: 'File upload is not available: photos are given as a link.'
+  - key: email_digest
+    description: 'Notifications are not available: the weekly summary is saved in the app (Weekly summary view), not sent
+      by email.'
+  - key: menu_analytics
+    description: 'Counting dish views and guest questions is not available to anonymous visitors yet: the digest cannot report
+      real figures until the runtime logs them.'
+  - key: restaurant_isolation
+    description: Dishes are in one shared collection (so guests can read them without login) keyed by restaurant code. Restricting
+      editing to the staff of the owning restaurant, picking the restaurant from the QR parameter, and the interactive allergy/vegetarian/gluten-free
+      and language switch filters need runtime support.

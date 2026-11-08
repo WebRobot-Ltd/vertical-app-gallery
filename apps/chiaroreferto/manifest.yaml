@@ -1,0 +1,515 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: chiaroreferto
+  displayName: ChiaroReferto
+  tagline:
+    it: Il referto spiegato bene, dopo la revisione del tuo medico.
+  description:
+    it: 'ChiaroReferto aiuta strutture sanitarie e medici di base a trasformare un referto in una spiegazione in linguaggio
+      semplice e in una bozza di piano di cura. Nulla arriva al paziente prima che il medico abbia letto, corretto e approvato.
+      Strumento informativo e gestionale: non sostituisce il medico, non si integra con i sistemi ospedalieri e non legge
+      immagini diagnostiche.'
+  langs:
+  - it
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0b3c5d'
+      accent: '#1b9aaa'
+      background: '#f6fafb'
+      foreground: '#14232e'
+    fonts:
+      body: Inter
+      display: Source Serif 4
+    wordmark:
+    - text: Chiaro
+      color: primary
+    - text: Referto
+      color: accent
+    byline: by WebRobot
+  header:
+    links:
+    - label:
+        it: Come funziona
+      href: '#come-funziona'
+    - label:
+        it: Sicurezza
+      href: '#sicurezza'
+    cta:
+      label:
+        it: Accedi
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label:
+        it: Admin struttura
+      assignedBy: admin_emails
+    - key: medico
+      label:
+        it: Medico
+      assignedBy: invite
+    - key: paziente
+      label:
+        it: Paziente
+      assignedBy: signup
+  limits:
+  - action: agent:analista
+    per: user
+    max: 20
+    window: day
+  - action: chat
+    per: user
+    max: 40
+    window: day
+    roles:
+    - paziente
+  agents:
+  - key: analista
+    role: main
+    description: Legge il referto, estrae valori e indicazioni, li confronta con i range riportati e prepara spiegazione per
+      il paziente e bozza di piano per il medico. Chiede l'approvazione del medico.
+    awaits:
+    - approva_bozza
+    writesTo:
+      collection: bozze
+      parse: markdown_sections
+    profile:
+      inline:
+        display_name: ChiaroReferto analista
+        crews:
+        - id: analista
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei un assistente informativo per strutture sanitarie italiane. NON sei un medico: non diagnostichi,
+            non prescrivi, non modifichi terapie. Lavori solo sul testo del referto fornito (esami del sangue, ecografie,
+            visite specialistiche). Non inventare mai valori, diagnosi, range o date: se un dato manca scrivi ''non riportato
+            nel referto''. Usa SOLO i range di riferimento presenti nel referto.
+
+
+            Produci un documento Markdown con un titolo di livello 1 ''# Bozza referto — <tipo> — <iniziali paziente>'' e
+            queste sezioni ## in quest''ordine:
+
+            ## Valori estratti (tabella: parametro, valore, unità, range del referto, esito: nella norma / sopra / sotto /
+            non valutabile)
+
+            ## Diagnosi e indicazioni del referto (elenco fedele al testo)
+
+            ## Spiegazione per il paziente (linguaggio semplice, rassicurante ma onesto, max 300 parole, senza termini non
+            spiegati, senza consigli terapeutici; termina con: ''Per qualsiasi decisione sulla tua salute rivolgiti al tuo
+            medico.'')
+
+            ## Bozza di piano di cura (per il medico: controlli suggeriti dal referto con scadenza indicativa, punti da verificare,
+            dubbi o incongruenze nel referto)
+
+            ## Controlli e scadenze (elenco ''data o intervallo — controllo'' solo se deducibile dal referto o come proposta
+            chiaramente marcata ''da confermare'')
+
+            ## Note per il medico (qualità del testo, valori ambigui)
+
+            Se il referto è un grafico a barre di valori confrontabili puoi aggiungere un blocco chart reale. Alla fine chiama
+            il tool request_approva_bozza: il paziente non deve ricevere nulla prima dell''approvazione del medico.'
+    goalTemplate: 'Paziente (email): {paziente_email}
+
+      Tipo di referto: {tipo_label}
+
+      Consenso esplicito del paziente al trattamento dei dati: {consenso}
+
+      Testo del referto:
+
+      {testo}
+
+      {?note}Note del medico: {note}{/note}
+
+      Data odierna: {date}. Scrivi in italiano.'
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.5
+  - key: finalizzatore
+    role: helper
+    description: Dopo l'approvazione, pubblica nel fascicolo del paziente la versione approvata.
+    writesTo:
+      collection: fascicolo
+      parse: markdown_sections
+    appTools:
+    - name: leggi_bozze
+      description: Legge le bozze approvate dal medico
+      action: read
+      collection: bozze
+      scope: all
+    profile:
+      inline:
+        display_name: ChiaroReferto pubblicazione
+        crews:
+        - id: finalizzatore
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Ricevi l''evento di approvazione di una bozza. Leggi la bozza approvata con leggi_bozze e riproduci
+            ESATTAMENTE, senza aggiungere né cambiare nulla, solo le parti destinate al paziente. Formato: titolo ''# Il tuo
+            referto — <tipo> — <data>'', poi ''## Spiegazione'' (testo per il paziente approvato) e ''## Controlli'' (controlli
+            e scadenze approvati). Non includere mai il piano di cura riservato né le note per il medico.'
+    goalTemplate: 'Pubblica la bozza approvata. Evento: {event}'
+  - key: assistente
+    role: helper
+    description: Risponde alle domande del paziente solo sul testo approvato del suo fascicolo.
+    appTools:
+    - name: leggi_fascicolo
+      description: Legge il fascicolo approvato dell'utente
+      action: read
+      collection: fascicolo
+      scope: user
+    profile:
+      inline:
+        display_name: ChiaroReferto assistente
+        chat_mode: true
+        crews:
+        - id: assistente
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Rispondi in italiano, in modo semplice e breve, alle domande del paziente SOLO in base ai documenti
+            approvati dal medico che leggi con leggi_fascicolo. Non sei un medico: non diagnosticare, non consigliare farmaci
+            o cambi di terapia, non interpretare nuovi esami. Se la risposta non è nel testo approvato, dillo e invita a contattare
+            il medico. In caso di sintomi gravi o urgenti invita a chiamare il 112 o il medico. Chiudi ogni risposta ricordando
+            che per ogni decisione ci si deve rivolgere al medico.'
+    goalTemplate: 'Conversazione finora:
+
+      {history}
+
+
+      Nuovo messaggio del paziente: {message}
+
+      Rispondi in italiano.'
+  inputForm:
+    title:
+      it: Nuovo referto
+    fields:
+    - name: paziente_email
+      type: email
+      required: true
+      label:
+        it: Email del paziente
+    - name: tipo
+      type: select
+      required: true
+      label:
+        it: Tipo di referto
+      options:
+      - value: sangue
+        label:
+          it: Esami del sangue
+      - value: ecografia
+        label:
+          it: Ecografia
+      - value: visita
+        label:
+          it: Visita specialistica
+    - name: testo
+      type: textarea
+      required: true
+      maxLength: 12000
+      label:
+        it: Testo del referto
+      help:
+        it: 'Incolla il testo del referto (il caricamento di PDF non è ancora disponibile: incolla il testo estratto).'
+    - name: consenso
+      type: boolean
+      required: true
+      label:
+        it: Confermo il consenso esplicito del paziente al trattamento dei suoi dati sanitari
+    - name: note
+      type: textarea
+      maxLength: 600
+      label:
+        it: Note (facoltative)
+  data:
+    collections:
+    - name: bozze
+      ownedBy: user
+      sharing:
+      - editor
+      description: Bozze generate dall'agente in attesa di revisione del medico
+      fields:
+      - name: titolo
+        type: text
+      - name: valori_estratti
+        type: textarea
+      - name: spiegazione_per_il_paziente
+        type: textarea
+      - name: bozza_di_piano_di_cura
+        type: textarea
+      - name: controlli_e_scadenze
+        type: textarea
+    - name: fascicolo
+      ownedBy: user
+      sharing:
+      - viewer
+      description: Documenti approvati dal medico, visibili al paziente
+      fields:
+      - name: titolo
+        type: text
+      - name: spiegazione
+        type: textarea
+      - name: controlli
+        type: textarea
+  approvals:
+  - key: approva_bozza
+    title:
+      it: Approvazione della bozza da parte del medico
+    description: Il medico legge, corregge e approva la bozza prima che il paziente la veda.
+    role: medico
+    decidedBy: role
+    fields:
+    - titolo
+    - spiegazione_per_il_paziente
+    - bozza_di_piano_di_cura
+    - controlli_e_scadenze
+  triggers:
+  - key: pubblica_approvata
+    description: Alla approvazione pubblica nel fascicolo
+    'on':
+      approval: approva_bozza
+      decision: approved
+    start:
+      agent: finalizzatore
+    goal: 'Pubblica la bozza approvata. Evento: {event}'
+    asUser: true
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: ChiaroReferto
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow:
+        it: Per strutture sanitarie e medici di base
+      title:
+        it: Il referto, **spiegato bene**. Sempre dopo il tuo medico.
+      text:
+        it: Un agente AI estrae valori e indicazioni dal referto, li confronta con i range riportati e prepara una spiegazione
+          semplice per il paziente e una bozza di piano di cura per il medico. Nulla arriva al paziente prima dell'approvazione
+          del medico.
+      actions:
+      - label:
+          it: Accedi
+        href: /login
+        style: primary
+      - label:
+          it: Come funziona
+        href: '#come-funziona'
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+      items:
+      - title:
+          it: Carica il referto
+        text:
+          it: Il medico, o il paziente dopo il consenso esplicito, incolla il testo del referto.
+        badge: 📄
+      - title:
+          it: L'agente prepara due documenti
+        text:
+          it: Spiegazione in linguaggio semplice e bozza di piano di cura con controlli e scadenze.
+        badge: 🤖
+      - title:
+          it: Il medico approva
+        text:
+          it: Il medico legge, corregge e approva. Solo allora il paziente vede il fascicolo.
+        badge: ✅
+      - title:
+          it: Il paziente segue il fascicolo
+        text:
+          it: Spiegazione, calendario dei controlli e domande in chat sul testo approvato.
+        badge: 💬
+    - type: cards
+      id: sicurezza
+      title:
+        it: Sicurezza e limiti
+      items:
+      - title:
+          it: Ognuno vede il suo
+        text:
+          it: Il paziente vede solo i propri referti, il medico solo i propri pazienti.
+      - title:
+          it: Consenso esplicito
+        text:
+          it: Nessun referto viene elaborato senza il consenso del paziente.
+      - title:
+          it: Fuori ambito
+        text:
+          it: Nessuna integrazione con i sistemi ospedalieri e nessuna lettura automatica di immagini diagnostiche.
+    - type: note
+      content:
+        it: 'ChiaroReferto è uno strumento informativo e gestionale: non sostituisce il medico e non fornisce diagnosi né
+          terapie. Per ogni decisione sulla salute rivolgersi al proprio medico.'
+  - key: nuovo_referto
+    type: new_run
+    title:
+      it: Nuovo referto
+    roles:
+    - medico
+    - paziente
+  - key: referti
+    type: history
+    title:
+      it: I miei referti
+    source: run
+    roles:
+    - medico
+    - paziente
+  - key: referto
+    type: report
+    source: run
+    printable: true
+    nav: false
+    roles:
+    - medico
+  - key: da_approvare
+    type: approvals
+    title:
+      it: Bozze da approvare
+    approvals:
+    - approva_bozza
+    roles:
+    - medico
+  - key: fascicolo_view
+    type: cards
+    title:
+      it: Il mio fascicolo
+    source: collection:fascicolo
+    roles:
+    - paziente
+    data:
+      display: cards
+      fields:
+      - key: titolo
+        label:
+          it: Referto
+      - key: spiegazione
+        label:
+          it: Spiegazione
+      - key: controlli
+        label:
+          it: Controlli
+      empty:
+        it: Nessun referto approvato al momento.
+  - key: calendario
+    type: table
+    title:
+      it: Calendario dei controlli
+    source: collection:fascicolo
+    roles:
+    - paziente
+    data:
+      display: table
+      fields:
+      - key: titolo
+        label:
+          it: Referto
+      - key: controlli
+        label:
+          it: Controlli e scadenze
+      empty:
+        it: Nessun controllo in programma.
+  - key: chat
+    type: chat
+    title:
+      it: Domande sul mio referto
+    source: agent:assistente
+    placeholder:
+      it: Chiedi qualcosa sul tuo referto approvato…
+    examples:
+    - it: Cosa significa questo valore?
+    - it: Quando devo ripetere il controllo?
+    roles:
+    - paziente
+  - key: account
+    type: account
+    title:
+      it: Licenza
+    roles:
+    - admin
+  - key: admin
+    type: admin
+    title:
+      it: Amministrazione struttura
+    roles:
+    - admin
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: licenza_struttura
+      price: 199
+      interval: month
+      label:
+        it: Licenza per struttura
+      includes:
+      - medici e pazienti della struttura
+      - analisi referti, approvazioni e chat
+      roles:
+      - admin
+  extensions:
+  - key: upload_pdf
+    description: 'Caricamento di referti in PDF: non ancora disponibile; per ora il testo del referto si incolla nel modulo.'
+  - key: promemoria_email
+    description: 'Promemoria via email dei controlli al paziente: le notifiche non sono ancora disponibili; per ora il calendario
+      è consultabile nel fascicolo.'
+  - key: registro_accessi
+    description: 'Registro degli accessi ai dati sanitari da esporre all''admin della struttura: da verificare con il runtime.'
+  - key: collegamento_medico_paziente
+    description: 'Assegnazione dei pazienti al medico e revisione/correzione della bozza prima dell''approvazione: da rifinire
+      nello Studio (la correzione dell''editor non è espressa dal manifest).'

@@ -1,0 +1,532 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: contratto-chiaro
+  displayName: ContrattoChiaro
+  tagline:
+    it: Crea e rivedi i tuoi contratti in parole semplici.
+  description:
+    it: ContrattoChiaro aiuta le piccole imprese a redigere bozze di contratto, a individuare clausole sbilanciate nei contratti
+      ricevuti, a chiedere la revisione di un avvocato convenzionato e a tenere sotto controllo le scadenze.
+  langs:
+  - it
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1d3557'
+      accent: '#2a7f62'
+      background: '#f7f8fa'
+      foreground: '#1c2530'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Contratto
+      color: primary
+    - text: Chiaro
+      color: accent
+  header:
+    links:
+    - label: Come funziona
+      href: '#come-funziona'
+    - label: Prezzi
+      href: '#prezzi'
+    cta:
+      label: Inizia
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Amministratore
+      assignedBy: admin_emails
+    - key: lawyer
+      label: Avvocato convenzionato
+      assignedBy: invite
+    - key: user
+      label: Impresa
+      assignedBy: signup
+  limits:
+  - action: run
+    per: user
+    max: 20
+    window: day
+    roles:
+    - user
+  egress:
+    hosts:
+    - www.normattiva.it
+    notes: 'Normattiva (Istituto Poligrafico e Zecca dello Stato): sola lettura di testi normativi vigenti per verificare
+      i riferimenti. Verificare i termini di riuso prima della pubblicazione.'
+  agents:
+  - key: drafter
+    role: main
+    when: mode == 'create'
+    description: Genera la bozza del contratto dai modelli e verifica i riferimenti normativi su Normattiva.
+    profile:
+      inline:
+        display_name: Redattore contratti
+        crews:
+        - id: drafter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei un redattore di contratti per piccole imprese italiane. Produci una bozza in italiano chiaro,
+            partendo da una struttura standard per il tipo di contratto richiesto (NDA, fornitura, agenzia, consulenza, locazione
+            commerciale). Usa lo strumento normattiva_search per verificare ogni riferimento normativo (articoli del Codice
+            civile, D.Lgs., L. 392/1978 per le locazioni commerciali, ecc.) e cita solo norme che hai verificato; se non riesci
+            a verificarne una, scrivilo. Formato: primo rigo ''# <Tipo di contratto> — <Parte A> / <Parte B>''. Poi: ## Parti,
+            ## Premesse, ## Oggetto, ## Durata e recesso, ## Corrispettivo e pagamenti, ## Penali, ## Altre clausole del tipo,
+            ## Foro competente, ## Firme, ## Riferimenti normativi verificati, ## Note per l''utente (punti da completare
+            o da far controllare). Non inventare dati mancanti: usa segnaposto [DA COMPLETARE]. Non presentare la bozza come
+            consulenza legale; consiglia la revisione di un avvocato per importi o rischi rilevanti. Se l''utente ha richiesto
+            la revisione legale, chiama request_lawyer_review con la bozza.'
+    goalTemplate: 'Crea la bozza di un contratto di tipo: {contract_type_label}.
+
+      Parti: {parties}
+
+      Oggetto: {subject}
+
+      Durata: {duration}
+
+      Corrispettivo: {fee}
+
+      {?penalties}Penali: {penalties}{/penalties}{!penalties}Penali: proponi tu una clausola equilibrata.{/penalties}
+
+      Foro competente: {court}
+
+      {?lawyer}L''utente richiede la revisione di un avvocato convenzionato.{/lawyer}
+
+      Data: {date}. Scrivi in italiano.'
+    appTools:
+    - name: normattiva_search
+      description: Cerca e legge testi normativi vigenti su Normattiva (GET, query di ricerca o URN nel percorso)
+      action: http
+      http:
+        method: GET
+        url: https://www.normattiva.it/uri-res/N2Ls
+        allowPath: true
+        attribution: Normattiva, Istituto Poligrafico e Zecca dello Stato
+    awaits:
+    - lawyer_review
+    output: markdown
+    writesTo:
+      collection: contracts
+      parse: whole
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.8
+  - key: reviewer
+    role: main
+    when: mode == 'review'
+    description: Rivede il contratto ricevuto dalla controparte e segnala clausole sbilanciate o mancanti.
+    profile:
+      inline:
+        display_name: Revisore contratti
+        crews:
+        - id: reviewer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei un revisore di contratti per piccole imprese italiane. Ricevi il testo di un contratto ricevuto
+            dalla controparte (incollato dall''utente o raggiungibile da un link; se non riesci a leggerlo, chiedi di incollarlo).
+            Usa normattiva_search per verificare i riferimenti normativi che citi. Formato: primo rigo ''# Revisione — <tipo
+            e controparte>''. Poi: ## Sintesi (3-5 righe e un livello di rischio basso/medio/alto), ## Clausole critiche:
+            per ciascuna una tabella o elenco con Clausola | Perché è sbilanciata o rischiosa (in parole semplici) | Proposta
+            di modifica (testo alternativo), ## Clausole mancanti, ## Cosa va bene, ## Prossimi passi. Non inventare clausole
+            che non sono nel testo, cita il numero dell''articolo/clausola. Non dare consulenza legale come fatto certo; per
+            rischio alto suggerisci la revisione dell''avvocato. Se l''utente la richiede, chiama request_lawyer_review.'
+    goalTemplate: 'Revisiona il contratto ricevuto dalla controparte.
+
+      {?our_role}Il nostro ruolo: {our_role}.{/our_role}
+
+      {?concerns}Preoccupazioni dell''utente: {concerns}{/concerns}
+
+      {?contract_link}Link al documento: {contract_link}{/contract_link}
+
+      {?contract_text}Testo del contratto:
+
+      {contract_text}{/contract_text}
+
+      {?lawyer}L''utente richiede la revisione di un avvocato convenzionato.{/lawyer}
+
+      Data: {date}. Scrivi in italiano.'
+    appTools:
+    - name: normattiva_search
+      description: Cerca e legge testi normativi vigenti su Normattiva (GET, query di ricerca o URN nel percorso)
+      action: http
+      http:
+        method: GET
+        url: https://www.normattiva.it/uri-res/N2Ls
+        allowPath: true
+        attribution: Normattiva, Istituto Poligrafico e Zecca dello Stato
+    awaits:
+    - lawyer_review
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.8
+  - key: deadline_watch
+    role: helper
+    description: Controlla le scadenze di un contratto e dice cosa fare e entro quando.
+    memory: instance
+    writesTo:
+      collection: deadline_alerts
+    profile:
+      inline:
+        display_name: Promemoria scadenze
+        crews:
+        - id: deadline_watch
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 3
+          max_budget_usd: 0.1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: Controlli le scadenze di un contratto. Inizia con '# <Contratto> — stato scadenze'. Indica i giorni
+            mancanti a scadenza e al termine di preavviso/disdetta, lo stato (ok / in arrivo / urgente) e l'azione consigliata
+            (disdire, rinnovare, rinegoziare). Calcola le date solo da quelle fornite, non inventarne. Massimo 120 parole.
+  templates:
+  - key: contract_deadline
+    title: Scadenza contratto
+    description: Un promemoria settimanale sulla scadenza e sul preavviso di un tuo contratto.
+    agent: deadline_watch
+    params:
+    - name: contract_name
+      type: text
+      required: true
+      label: Contratto
+    - name: end_date
+      type: date
+      required: true
+      label: Data di scadenza
+    - name: notice_days
+      type: number
+      label: Giorni di preavviso per la disdetta
+    - name: auto_renew
+      type: boolean
+      label: Rinnovo automatico
+    goal: 'Contratto "{instance}" ({contract_name}). Scadenza: {end_date}. Preavviso: {notice_days} giorni. Rinnovo automatico:
+      {auto_renew}. Oggi è {date}. Scrivi in italiano.'
+    schedule:
+      cron: 0 7 * * 1
+      userCanChange: true
+    maxPerUser: 30
+    cost:
+      perRun: 1
+  approvals:
+  - key: lawyer_review
+    title: Revisione dell'avvocato
+    description: L'avvocato convenzionato rivede la bozza e la approva o la respinge con note.
+    role: lawyer
+    fields:
+    - draft
+    - notes
+    timeoutMinutes: 10080
+    onTimeout: reject
+    decidedBy: role
+  inputForm:
+    title: Nuova pratica
+    fields:
+    - name: mode
+      type: select
+      required: true
+      label: Cosa vuoi fare
+      default: create
+      options:
+      - value: create
+        label: Creare un contratto
+      - value: review
+        label: Revisionare un contratto ricevuto
+    - name: contract_type
+      type: select
+      required: true
+      label: Tipo di contratto
+      visibleWhen: mode == 'create'
+      options:
+      - value: nda
+        label: NDA (riservatezza)
+      - value: fornitura
+        label: Fornitura
+      - value: agenzia
+        label: Agenzia
+      - value: consulenza
+        label: Consulenza
+      - value: locazione
+        label: Locazione commerciale
+    - name: parties
+      type: textarea
+      label: Parti (ragione sociale, sede, P.IVA)
+      visibleWhen: mode == 'create'
+      maxLength: 600
+    - name: subject
+      type: textarea
+      label: Oggetto
+      visibleWhen: mode == 'create'
+      maxLength: 800
+    - name: duration
+      type: text
+      label: Durata
+      visibleWhen: mode == 'create'
+    - name: fee
+      type: text
+      label: Corrispettivo
+      visibleWhen: mode == 'create'
+    - name: penalties
+      type: textarea
+      label: Penali (facoltative)
+      visibleWhen: mode == 'create'
+      maxLength: 400
+    - name: court
+      type: text
+      label: Foro competente
+      visibleWhen: mode == 'create'
+    - name: our_role
+      type: text
+      label: Il tuo ruolo nel contratto (es. fornitore, committente)
+      visibleWhen: mode == 'review'
+    - name: contract_link
+      type: url
+      label: Link al contratto (PDF/Word in cloud)
+      visibleWhen: mode == 'review'
+      help: 'Il caricamento diretto dei file non è ancora disponibile: incolla un link o il testo qui sotto.'
+    - name: contract_text
+      type: textarea
+      label: Oppure incolla il testo del contratto
+      visibleWhen: mode == 'review'
+      maxLength: 20000
+    - name: concerns
+      type: textarea
+      label: Cosa ti preoccupa (facoltativo)
+      visibleWhen: mode == 'review'
+      maxLength: 500
+    - name: lawyer
+      type: boolean
+      label: Richiedi la revisione di un avvocato convenzionato (a pagamento)
+  data:
+    collections:
+    - name: contracts
+      ownedBy: user
+      description: Archivio delle bozze e dei contratti dell'impresa
+      fields:
+      - name: title
+        type: text
+      - name: status
+        type: select
+        options:
+        - bozza
+        - in_revisione
+        - approvato
+        - inviato
+        - firmato
+      - name: counterparty_email
+        type: email
+      - name: end_date
+        type: date
+    - name: deadline_alerts
+      ownedBy: instance
+      description: Promemoria settimanali sulle scadenze di ogni contratto
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: ContrattoChiaro
+    sections:
+    - type: hero
+      title: Contratti **chiari**, per la tua impresa.
+      text: Crea la bozza di un contratto, scopri le clausole sbilanciate di quello ricevuto e, se serve, fallo approvare
+        da un avvocato convenzionato. Ogni impresa vede solo i propri documenti.
+      actions:
+      - label: Inizia ora
+        href: /login
+        style: primary
+      - label: Come funziona
+        href: '#come-funziona'
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title: Come funziona
+      items:
+      - title: Crea o carica
+        text: Scegli il tipo di contratto e compila il modulo, oppure incolla il contratto ricevuto.
+        badge: 📝
+      - title: L'agente lavora
+        text: Bozza da modelli con riferimenti verificati su Normattiva, oppure clausole critiche spiegate in parole semplici
+          con proposta di modifica.
+        badge: 🔍
+      - title: Revisione legale (opzionale)
+        text: Un avvocato convenzionato rivede la bozza e la approva.
+        badge: ⚖️
+      - title: Scadenze sotto controllo
+        text: Promemoria settimanali su scadenze e preavvisi di disdetta.
+        badge: ⏰
+    - type: cards
+      id: prezzi
+      title: Prezzi
+      items:
+      - title: Abbonamento mensile
+        text: Un numero di contratti incluso ogni mese.
+        badge: 📄
+      - title: Revisione dell'avvocato
+        text: A pagamento, per singola pratica.
+        badge: ⚖️
+    - type: note
+      content: ContrattoChiaro fornisce supporto alla redazione e non sostituisce la consulenza di un avvocato. Verifica sempre
+        i contenuti prima di firmare.
+  - key: new_run
+    type: new_run
+    title: Nuova pratica
+    roles:
+    - user
+    - admin
+  - key: history
+    type: history
+    title: Le mie pratiche
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: archive
+    type: table
+    title: Archivio contratti
+    source: collection:contracts
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Contratto
+      - key: status
+        label: Stato
+        format: badge
+      - key: counterparty_email
+        label: Controparte
+      - key: end_date
+        label: Scadenza
+        format: date
+      sort:
+        field: end_date
+        dir: asc
+      empty: Nessun contratto in archivio.
+  - key: deadlines
+    type: instances
+    template: contract_deadline
+    title: Scadenze
+    roles:
+    - user
+    - admin
+  - key: lawyer_inbox
+    type: approvals
+    title: Pratiche da rivedere
+    approvals:
+    - lawyer_review
+    roles:
+    - lawyer
+    - admin
+  - key: account
+    type: account
+    title: Abbonamento e crediti
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 20
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:drafter:
+        estimate: 10
+        metered: true
+      agent:reviewer:
+        estimate: 10
+        metered: true
+    plans:
+    - key: pro
+      price: 29
+      interval: month
+      label: Pro — 10 contratti al mese
+      credits: 1000
+      creditsReset: monthly
+      includes:
+      - 10 contratti inclusi al mese
+      - archivio documenti
+      - promemoria scadenze
+      roles:
+      - user
+    packs:
+    - key: revisione_avvocato
+      price: 89
+      credits: 0
+      label: Revisione di un avvocato (per pratica)
+      unlocks:
+      - lawyer
+    - key: crediti
+      price: 10
+      credits: 1000
+      label: 1000 crediti
+  extensions:
+  - key: firma_elettronica_avanzata
+    description: 'Firma elettronica avanzata (FEA) nell''app e archivio dei documenti firmati: richiede un provider di firma
+      e non è ancora disponibile.'
+  - key: invio_email_controparte
+    description: 'Invio del contratto via email alla controparte e promemoria via email: le notifiche non sono ancora disponibili.
+      Le scadenze compaiono nella vista Scadenze.'
+  - key: upload_file
+    description: 'Caricamento di PDF/Word non disponibile: l''utente incolla il testo o un link.'
+  - key: assegnazione_avvocato
+    description: 'Assegnazione di una pratica a uno specifico avvocato e visibilità limitata alle pratiche assegnate: oggi
+      tutti gli avvocati invitati vedono le richieste di revisione.'

@@ -1,0 +1,430 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: affittosubito
+  displayName: AffittoSubito
+  tagline:
+    it: Ricevi in anticipo i canoni futuri del tuo affitto.
+    en: Get your future rent paid in advance.
+  description:
+    it: 'Il proprietario inserisce i dati del contratto registrato e le ultime ricevute; un agente AI controlla la coerenza,
+      verifica la regolarità dei pagamenti e calcola un''offerta di anticipo con lo sconto applicato. Un analista del partner
+      finanziario autorizzato approva o rifiuta: il finanziamento è erogato dal partner, non dall''app.'
+    en: 'The landlord enters the registered lease data and recent receipts; an AI agent checks consistency, verifies payment
+      regularity and computes an advance offer with the discount applied. An analyst of the authorised financial partner approves
+      or rejects: funding is provided by the partner, not by the app.'
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12343b'
+      accent: '#e08e2b'
+      background: '#f8f6f1'
+      foreground: '#1c2326'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Affitto
+      color: primary
+    - text: Subito
+      color: accent
+    button: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Importante
+        en: Important
+      href: '#avvertenze'
+    cta:
+      label:
+        it: Richiedi un anticipo
+        en: Request an advance
+      href: /v/new_practice
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: analyst
+      label:
+        it: Analista del partner finanziario
+        en: Financial partner analyst
+      assignedBy: invite
+    - key: user
+      label:
+        it: Proprietario
+        en: Landlord
+      assignedBy: signup
+  limits:
+  - action: agent:evaluator
+    per: user
+    max: 5
+    window: day
+    roles:
+    - user
+  slots:
+  - key: advance_calc
+    description: Advance amount, discount and fee from rent, remaining months and requested months, returned as one summary
+      line
+    timeoutMs: 2000
+    example:
+      values:
+        monthly_rent: 800
+        contract_end: '2027-12-31'
+        months_requested: 12
+      lang: it
+    code: "import datetime\n\nANNUAL_RATE = 0.08\nFEE_PCT = 2.0\nMAX_MONTHS = 24\n\ndef main(input):\n    v = input.get('values')\
+      \ or {}\n    try:\n        rent = float(v.get('monthly_rent') or 0)\n        req = int(float(v.get('months_requested')\
+      \ or 0))\n    except Exception:\n        return 'calculation ok=no (invalid numbers)'\n    try:\n        end = datetime.date.fromisoformat(str(v.get('contract_end')))\n\
+      \    except Exception:\n        return 'calculation ok=no (invalid contract end date)'\n    today = datetime.date.today()\n\
+      \    remaining = (end.year - today.year) * 12 + (end.month - today.month)\n    n = max(0, min(req, remaining, MAX_MONTHS))\n\
+      \    r = ANNUAL_RATE / 12\n    gross = rent * n\n    net = sum(rent / (1 + r) ** i for i in range(1, n + 1))\n    discount\
+      \ = gross - net\n    fee = net * FEE_PCT / 100\n    pct = round(100 * discount / gross, 2) if gross else 0\n    ok =\
+      \ 'yes' if n > 0 else 'no'\n    return ('calculation ok=%s; months remaining=%d; months advanced=%d; gross=%.2f; discount=%.2f\
+      \ (%s%%, annual rate %.1f%%); net=%.2f; fee=%.1f%% = %.2f; landlord receives=%.2f'\n            % (ok, remaining, n,\
+      \ gross, discount, pct, ANNUAL_RATE * 100, net, FEE_PCT, fee, net - fee))\n"
+  approvals:
+  - key: partner_review
+    title:
+      it: Revisione offerta di anticipo
+      en: Advance offer review
+    description: The analyst of the authorised financial partner accepts or rejects the offer.
+    role: analyst
+    decidedBy: role
+    fields:
+    - landlord
+    - property
+    - months_advanced
+    - net_amount
+    - discount_amount
+    - fee_amount
+    - risk_level
+    - summary
+    timeoutMinutes: 10080
+    onTimeout: reject
+  agents:
+  - key: evaluator
+    role: main
+    description: Checks documents, payment regularity, computes the offer and submits it to the partner's analyst.
+    awaits:
+    - partner_review
+    profile:
+      inline:
+        display_name: AffittoSubito evaluator
+        crews:
+        - id: evaluator
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the underwriting assistant of AffittoSubito, a service that lets landlords receive future
+            rent in advance. The advance is funded by an authorised financial partner, never by this app, and the final decision
+            belongs to the partner''s analyst.
+
+
+            You receive the registered lease data, the text (or a link) of the contract, the text of the latest payment receipts,
+            and a pre-computed offer (months advanced, gross, discount, net, fee). Use ONLY these figures: never recompute
+            or invent numbers, dates, names or registration data.
+
+
+            Tasks: 1) check coherence between the form data and the documents (parties, property, rent, start/end dates, registration
+            number, payment account); list each mismatch. 2) Assess payment regularity from the receipts: months covered,
+            lateness, partial payments, gaps. 3) Assign a risk level: low, medium or high, with reasons. 4) If the calculation
+            is not ok, or documents are missing, unreadable or inconsistent in a material way, recommend NOT submitting and
+            explain what to fix. Otherwise call the tool request_partner_review with landlord, property, months_advanced,
+            net_amount, discount_amount, fee_amount, risk_level and a short summary.
+
+
+            Output format (Markdown): start with a level-1 title "# Pratica anticipo — <property/address> — <date>". Sections
+            ##: Esito del controllo (submitted to the partner / not submitted), Coerenza dei documenti, Regolarità dei pagamenti,
+            Offerta (table: months advanced, gross rent, discount % and amount, net amount, AffittoSubito fee, amount received
+            by the landlord), Rischi e punti da verificare, Prossimi passi. State clearly that the offer is indicative until
+            approved by the partner''s analyst, that the funding is provided by the partner, and that this is not legal or
+            financial advice. Write in the language requested. Never ask for or repeat bank details or full tax codes.'
+    context:
+    - key: offer_summary
+      from: slot:advance_calc
+    goalTemplate: 'Landlord: {user}. Date: {date}.
+
+      Property: {property_address}
+
+      Tenant: {tenant_name}
+
+      Lease registration number: {registration_number}
+
+      Lease start: {contract_start}; end: {contract_end}
+
+      Monthly rent: {monthly_rent}
+
+      Months of advance requested: {months_requested}
+
+      Contract (text or link): {contract_text}
+
+      {?contract_link}Contract link: {contract_link}{/contract_link}
+
+      Latest payment receipts (text or link): {receipts_text}
+
+      {?receipts_link}Receipts link: {receipts_link}{/receipts_link}
+
+
+      Pre-computed offer: {offer_summary}.
+
+      Write the report in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.6
+  inputForm:
+    title:
+      it: Nuova richiesta di anticipo
+      en: New advance request
+    fields:
+    - name: property_address
+      type: text
+      required: true
+      label:
+        it: Indirizzo dell'immobile
+        en: Property address
+    - name: tenant_name
+      type: text
+      required: true
+      label:
+        it: Nome dell'inquilino
+        en: Tenant name
+    - name: registration_number
+      type: text
+      required: true
+      label:
+        it: Estremi di registrazione del contratto
+        en: Lease registration details
+    - name: contract_start
+      type: date
+      required: true
+      label:
+        it: Inizio contratto
+        en: Lease start
+    - name: contract_end
+      type: date
+      required: true
+      label:
+        it: Fine contratto
+        en: Lease end
+    - name: monthly_rent
+      type: number
+      required: true
+      label:
+        it: Canone mensile (€)
+        en: Monthly rent (€)
+    - name: months_requested
+      type: number
+      required: true
+      label:
+        it: Mesi da anticipare
+        en: Months to advance
+      default: 12
+    - name: contract_text
+      type: textarea
+      required: true
+      maxLength: 8000
+      label:
+        it: Testo del contratto
+        en: Contract text
+      help:
+        it: 'Il caricamento di file non è ancora disponibile: incolla le clausole principali.'
+        en: 'File upload is not available yet: paste the main clauses.'
+    - name: contract_link
+      type: url
+      label:
+        it: Link al contratto (facoltativo)
+        en: Contract link (optional)
+    - name: receipts_text
+      type: textarea
+      required: true
+      maxLength: 6000
+      label:
+        it: Ultime ricevute di pagamento
+        en: Latest payment receipts
+      help:
+        it: Incolla data, importo e causale di ogni ricevuta.
+        en: Paste date, amount and reference of each receipt.
+    - name: receipts_link
+      type: url
+      label:
+        it: Link alle ricevute (facoltativo)
+        en: Receipts link (optional)
+  data:
+    collections: []
+  views:
+  - key: home
+    type: page
+    title: AffittoSubito
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow:
+        it: Per proprietari
+        en: For landlords
+      title:
+        it: Incassa **subito** i canoni futuri del tuo affitto.
+        en: Collect your future rent **now**.
+      text:
+        it: 'Inserisci i dati del contratto registrato e le ultime ricevute: un agente AI controlla i documenti e calcola
+          un''offerta di anticipo con lo sconto applicato. Un analista del partner finanziario autorizzato la approva o la
+          rifiuta.'
+        en: 'Enter your registered lease data and recent receipts: an AI agent checks the documents and computes an advance
+          offer with the discount shown. An analyst of the authorised financial partner approves or rejects it.'
+      actions:
+      - label:
+          it: Richiedi un anticipo
+          en: Request an advance
+        href: /v/new_practice
+        style: primary
+      - label:
+          it: Accedi
+          en: Sign in
+        href: /login
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Inserisci i dati
+          en: Enter your data
+        text:
+          it: Dati del contratto registrato, testo del contratto e ricevute recenti.
+          en: Registered lease data, contract text and recent receipts.
+        badge: 📝
+      - title:
+          it: Controllo dell'agente
+          en: Agent check
+        text:
+          it: Coerenza dei documenti, regolarità dei pagamenti e offerta con sconto.
+          en: Document consistency, payment regularity and an offer with discount.
+        badge: 🔎
+      - title:
+          it: Decisione del partner
+          en: Partner decision
+        text:
+          it: Un analista del partner finanziario accetta o rifiuta l'offerta.
+          en: A financial partner analyst accepts or rejects the offer.
+        badge: ✅
+      - title:
+          it: Segui la pratica
+          en: Track your case
+        text:
+          it: 'Vedi lo stato di ogni pratica nel tuo spazio: solo tu vedi le tue pratiche.'
+          en: 'See the status of each case in your space: only you see your cases.'
+        badge: 📊
+    - type: note
+      id: avvertenze
+      content:
+        it: Il finanziamento è erogato dal partner finanziario autorizzato, non da AffittoSubito. L'offerta è indicativa fino
+          all'approvazione dell'analista. Commissione di AffittoSubito sull'importo anticipato, indicata nell'offerta. Non
+          è consulenza legale o finanziaria.
+        en: Funding is provided by the authorised financial partner, not by AffittoSubito. The offer is indicative until approved
+          by the analyst. AffittoSubito's fee on the advanced amount is shown in the offer. Not legal or financial advice.
+  - key: new_practice
+    type: new_run
+    title:
+      it: Nuova richiesta
+      en: New request
+    roles:
+    - user
+    - admin
+  - key: practices
+    type: history
+    title:
+      it: Le mie pratiche
+      en: My cases
+    source: run
+    roles:
+    - user
+    - admin
+  - key: practice
+    type: report
+    title:
+      it: Pratica
+      en: Case
+    source: run
+    printable: true
+    nav: false
+  - key: reviews
+    type: approvals
+    title:
+      it: Offerte da approvare
+      en: Offers to review
+    approvals:
+    - partner_review
+    roles:
+    - analyst
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Crediti
+      en: Credits
+    roles:
+    - user
+  billing:
+    modes:
+    - credits
+    currency: eur
+    signupCredits: 20
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:evaluator:
+        estimate: 10
+        metered: true
+    packs:
+    - key: small
+      credits: 200
+      price: 5
+      label: Small
+    - key: medium
+      credits: 1000
+      price: 20
+      label: Medium
+  extensions:
+  - key: file_upload
+    description: 'Uploading the contract and receipt files is not available yet: the owner pastes the text or gives a link.'
+  - key: email_outcome
+    description: 'Email notification of the outcome (approved/rejected) to the landlord is not available yet: the landlord
+      follows the status in ''My cases''.'
+  - key: fee_on_advanced_amount
+    description: The fee (2% of the net advanced amount) is computed in the offer; its collection is settled with the financial
+      partner outside the app, since funding does not pass through the app.

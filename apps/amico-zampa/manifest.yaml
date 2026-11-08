@@ -1,0 +1,694 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: pappa-su-misura
+  displayName: Pappa su Misura
+  tagline:
+    it: Il piano alimentare del tuo cane, calcolato per lui e in abbonamento.
+  description:
+    it: Descrivi il tuo cane, un agente AI calcola fabbisogno e razioni e ti propone un piano con i prodotti giusti. Confermi,
+      scegli la frequenza delle forniture e gestisci calendario, pause e modifiche da qui.
+  langs:
+  - it
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#3b2a1e'
+      accent: '#e07a2f'
+      background: '#fffaf3'
+      foreground: '#2a2119'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: 'Pappa su '
+      color: primary
+    - text: Misura
+      color: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+      href: '#come-funziona'
+    - label:
+        it: Abbonamento
+      href: '#abbonamento'
+    cta:
+      label:
+        it: Inizia
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label:
+        it: Padrone
+      assignedBy: signup
+  limits:
+  - action: agent:nutritionist
+    per: user
+    max: 5
+    window: day
+    roles:
+    - user
+  agents:
+  - key: nutritionist
+    role: main
+    description: Calcola fabbisogno e razioni e propone il piano alimentare con i prodotti del catalogo.
+    profile:
+      inline:
+        display_name: Nutrizionista canino
+        crews:
+        - id: nutritionist
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei un nutrizionista canino che prepara piani alimentari personalizzati per un servizio di cibo
+            su abbonamento. Rispondi in italiano.
+
+            Prima leggi il catalogo con lo strumento read_products e usa SOLO prodotti presenti, senza allergeni indicati
+            dall''utente. Salva il cane con write_dogs.
+
+            Calcolo: RER = 70 x (peso kg)^0,75; fabbisogno giornaliero (MER) = RER x fattore (cucciolo <4 mesi 3,0; cucciolo
+            fino a 12 mesi 2,0; adulto sterilizzato 1,6; adulto non sterilizzato 1,8; attivita bassa -10%, alta +20%; dimagrimento
+            1,0 x RER del peso ideale stimato; senior 1,4). Mostra i passaggi.
+
+            Struttura del report, con titolo di primo livello "# Piano alimentare di <nome cane>" e poi sezioni ## : Profilo
+            del cane, Fabbisogno calorico e nutrizionale (tabella con kcal, proteine, grassi, fibre), Razioni giornaliere
+            (grammi per prodotto e pasti al giorno), Prodotti consigliati (con perche), Fornitura (grammi totali per la frequenza
+            scelta e numero di confezioni), Come monitorare e quando ricalcolare.
+
+            Spiega ogni scelta. Non inventare dati nutrizionali dei prodotti: usa quelli del catalogo e, se mancano, dillo.
+            Non sostituisci il veterinario: per patologie, gravidanza o allergie gravi invita a sentirlo. Alla fine chiama
+            request_confirm_plan con un riassunto del piano perche il padrone lo confermi.'
+          mcp_servers: []
+    goalTemplate: 'Cane: {dog_name}, razza {breed}, eta {age_months} mesi, peso {weight_kg} kg, sterilizzato: {neutered_label}.
+
+      Attivita: {activity_label}. Obiettivo: {goal_kind_label}.
+
+      {?allergies}Allergie o intolleranze: {allergies}{/allergies}{!allergies}Nessuna allergia dichiarata.{/allergies}
+
+      Frequenza forniture: {frequency_label}.
+
+      {?notes}Note: {notes}{/notes}
+
+      Data: {date}. Scrivi in italiano.'
+    appTools:
+    - name: read_products
+      description: Legge il catalogo prodotti
+      action: read
+      collection: products
+      scope: all
+    - name: write_dogs
+      description: Salva o aggiorna il cane del padrone
+      action: write
+      collection: dogs
+      scope: user
+    awaits:
+    - confirm_plan
+    output: markdown
+    writesTo:
+      collection: dog_plans
+      parse: whole
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.5
+  - key: manager
+    role: helper
+    description: Assistente per abbonamento, calendario consegne, pause e modifiche; ricalcola il piano quando il cane cambia.
+    memory: user
+    profile:
+      inline:
+        display_name: Gestore abbonamento
+        chat_mode: true
+        crews:
+        - id: manager
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei l''assistente che gestisce abbonamenti e consegne di un servizio di cibo per cani. Rispondi
+            in italiano, breve e chiaro.
+
+            Hai accesso ai soli dati del padrone che scrive. Puoi: creare l''abbonamento dopo che un piano e stato confermato
+            (write_subscriptions: dog_name, plan_id, frequency, status active, next_delivery) e generare il calendario delle
+            prossime 6 consegne (write_deliveries: subscription, date, items, status planned); mettere in pausa o riattivare
+            (status paused/active e consegne planned -> skipped/planned); cambiare frequenza o data; annullare. Leggi con
+            read_subscriptions, read_deliveries, read_dog_plans, read_products. Non puoi addebitare pagamenti: il pagamento
+            ricorrente si attiva dalla pagina Abbonamento. Se il padrone dice che il cane e cresciuto, ha cambiato peso, eta
+            o esigenze, chiedi i nuovi dati, ricalcola le razioni con la formula RER = 70 x peso^0,75 e un fattore adeguato,
+            spiega cosa cambia e salva il piano aggiornato con write_dog_plans. Non dare consigli veterinari. Ricorda con
+            remember i dati chiave (cane, peso, frequenza, stato).'
+          mcp_servers: []
+    goalTemplate: 'Conversazione finora:
+
+      {history}
+
+      Nuovo messaggio: {message}
+
+      Oggi: {date}.'
+    appTools:
+    - name: read_subscriptions
+      description: Legge gli abbonamenti del padrone
+      action: read
+      collection: subscriptions
+      scope: user
+    - name: write_subscriptions
+      description: Crea o modifica abbonamenti
+      action: write
+      collection: subscriptions
+      scope: user
+    - name: read_deliveries
+      description: Legge il calendario consegne
+      action: read
+      collection: deliveries
+      scope: user
+    - name: write_deliveries
+      description: Crea o modifica consegne previste
+      action: write
+      collection: deliveries
+      scope: user
+    - name: read_dog_plans
+      description: Legge i piani del padrone
+      action: read
+      collection: dog_plans
+      scope: user
+    - name: write_dog_plans
+      description: Salva un piano aggiornato
+      action: write
+      collection: dog_plans
+      scope: user
+    - name: read_products
+      description: Legge il catalogo prodotti
+      action: read
+      collection: products
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.4
+  inputForm:
+    title:
+      it: Il tuo cane
+    fields:
+    - name: dog_name
+      type: text
+      required: true
+      label:
+        it: Nome del cane
+    - name: breed
+      type: text
+      required: true
+      label:
+        it: Razza
+    - name: age_months
+      type: number
+      required: true
+      label:
+        it: Eta (mesi)
+    - name: weight_kg
+      type: number
+      required: true
+      label:
+        it: Peso (kg)
+    - name: neutered
+      type: select
+      required: true
+      label:
+        it: Sterilizzato
+      options:
+      - value: si
+        label:
+          it: Si
+      - value: 'no'
+        label:
+          it: 'No'
+    - name: activity
+      type: select
+      required: true
+      label:
+        it: Livello di attivita
+      options:
+      - value: low
+        label:
+          it: Basso
+      - value: medium
+        label:
+          it: Medio
+      - value: high
+        label:
+          it: Alto
+    - name: goal_kind
+      type: select
+      required: true
+      label:
+        it: Obiettivo
+      options:
+      - value: maintenance
+        label:
+          it: Mantenimento
+      - value: weight_loss
+        label:
+          it: Dimagrimento
+    - name: allergies
+      type: textarea
+      maxLength: 400
+      label:
+        it: Allergie o intolleranze
+    - name: frequency
+      type: select
+      required: true
+      label:
+        it: Frequenza forniture
+      options:
+      - value: 2w
+        label:
+          it: Ogni 2 settimane
+      - value: 4w
+        label:
+          it: Ogni 4 settimane
+      - value: 6w
+        label:
+          it: Ogni 6 settimane
+    - name: notes
+      type: textarea
+      maxLength: 400
+      label:
+        it: Note (facoltative)
+  data:
+    collections:
+    - name: dogs
+      ownedBy: user
+      description: I cani del padrone
+      fields:
+      - name: dog_name
+        type: text
+      - name: breed
+        type: text
+      - name: age_months
+        type: number
+      - name: weight_kg
+        type: number
+      - name: activity
+        type: text
+      - name: allergies
+        type: text
+      - name: goal_kind
+        type: text
+    - name: dog_plans
+      ownedBy: user
+      description: Piani alimentari proposti e confermati
+    - name: subscriptions
+      ownedBy: user
+      description: Abbonamenti del padrone
+      fields:
+      - name: dog_name
+        type: text
+      - name: plan_id
+        type: text
+      - name: frequency
+        type: text
+      - name: status
+        type: select
+        options:
+        - active
+        - paused
+        - cancelled
+      - name: next_delivery
+        type: date
+    - name: deliveries
+      ownedBy: user
+      description: Calendario delle consegne previste
+      fields:
+      - name: subscription
+        type: text
+      - name: date
+        type: date
+      - name: items
+        type: text
+      - name: status
+        type: select
+        options:
+        - planned
+        - skipped
+        - sent
+        - delivered
+    - name: products
+      ownedBy: shared
+      description: Catalogo prodotti gestito dall'admin
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: category
+        type: text
+      - name: kcal_per_100g
+        type: number
+      - name: protein_pct
+        type: number
+      - name: fat_pct
+        type: number
+      - name: fiber_pct
+        type: number
+      - name: allergens
+        type: text
+      - name: life_stage
+        type: text
+      - name: pack_g
+        type: number
+      - name: price
+        type: number
+      - name: active
+        type: boolean
+  approvals:
+  - key: confirm_plan
+    title:
+      it: Conferma il piano alimentare
+    decidedBy: requester
+    fields:
+    - riassunto
+  triggers:
+  - key: on_plan_confirmed
+    description: Alla conferma del piano crea l'abbonamento e il calendario consegne
+    'on':
+      approval: confirm_plan
+      decision: approved
+    start:
+      agent: manager
+    goal: 'Il padrone ha confermato il piano: {event}. Crea l''abbonamento e il calendario delle prossime 6 consegne secondo
+      la frequenza scelta, poi riassumi in 3 righe.'
+    asUser: true
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Pappa su Misura
+    sections:
+    - type: hero
+      eyebrow:
+        it: Cibo per cani in abbonamento
+      title:
+        it: Il piano alimentare **giusto per il tuo cane**, senza pensieri.
+      text:
+        it: 'Descrivi il tuo cane: un agente AI calcola calorie e razioni, ti consiglia i prodotti e ti spiega perche. Confermi,
+          scegli ogni quanto ricevere e gestisci tutto da qui.'
+      actions:
+      - label:
+          it: Crea il piano
+        href: /v/new_plan
+        style: primary
+      - label:
+          it: Accedi
+        href: /login
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+      items:
+      - title:
+          it: Racconta il tuo cane
+        text:
+          it: Razza, eta, peso, attivita, allergie e obiettivo.
+        badge: 🐕
+      - title:
+          it: Ricevi il piano
+        text:
+          it: Fabbisogno, razioni giornaliere e prodotti, con le spiegazioni.
+        badge: 📋
+      - title:
+          it: Conferma e abbonati
+        text:
+          it: Scegli la frequenza e paga con carta.
+        badge: 💳
+      - title:
+          it: Gestisci
+        text:
+          it: Calendario consegne, pausa, modifiche e piano aggiornato quando il cane cresce.
+        badge: 📅
+    - type: cards
+      id: abbonamento
+      title:
+        it: Abbonamento
+      items:
+      - title:
+          it: Ricorrente, senza vincoli
+        text:
+          it: Metti in pausa o modifica quando vuoi.
+      - title:
+          it: Sempre aggiornato
+        text:
+          it: Il piano si ricalcola quando cambiano peso, eta o esigenze.
+    - type: note
+      content:
+        it: Il piano non sostituisce il parere del veterinario. L'app gestisce prenotazione e calendario; produzione e consegna
+          fisica sono a cura del fornitore.
+  - key: new_plan
+    type: new_run
+    title:
+      it: Nuovo piano
+    roles:
+    - user
+    - admin
+  - key: plans
+    type: history
+    title:
+      it: I miei piani
+    source: run
+    roles:
+    - user
+    - admin
+  - key: plan
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: confirmations
+    type: approvals
+    title:
+      it: Conferme
+    approvals:
+    - confirm_plan
+    roles:
+    - user
+  - key: my_dogs
+    type: table
+    title:
+      it: I miei cani
+    source: collection:dogs
+    roles:
+    - user
+    data:
+      display: table
+      fields:
+      - key: dog_name
+        label:
+          it: Nome
+      - key: breed
+        label:
+          it: Razza
+      - key: age_months
+        label:
+          it: Eta (mesi)
+        format: number
+      - key: weight_kg
+        label:
+          it: Peso (kg)
+        format: number
+      - key: goal_kind
+        label:
+          it: Obiettivo
+  - key: my_subscriptions
+    type: table
+    title:
+      it: I miei abbonamenti
+    source: collection:subscriptions
+    roles:
+    - user
+    data:
+      display: table
+      fields:
+      - key: dog_name
+        label:
+          it: Cane
+      - key: frequency
+        label:
+          it: Frequenza
+      - key: status
+        label:
+          it: Stato
+        format: badge
+      - key: next_delivery
+        label:
+          it: Prossima consegna
+        format: date
+  - key: calendar
+    type: table
+    title:
+      it: Calendario consegne
+    source: collection:deliveries
+    roles:
+    - user
+    data:
+      display: table
+      fields:
+      - key: date
+        label:
+          it: Data
+        format: date
+      - key: items
+        label:
+          it: Prodotti
+      - key: status
+        label:
+          it: Stato
+        format: badge
+      sort:
+        field: date
+        dir: asc
+  - key: assistant
+    type: chat
+    title:
+      it: Gestisci abbonamento
+    source: agent:manager
+    examples:
+    - Metti in pausa l'abbonamento per un mese
+    - Passa a una fornitura ogni 6 settimane
+    - Il mio cane e ingrassato, aggiorna il piano
+    - Quando e la prossima consegna?
+    placeholder: Scrivi cosa vuoi cambiare
+    roles:
+    - user
+  - key: account
+    type: account
+    title:
+      it: Abbonamento e pagamenti
+    roles:
+    - user
+  - key: admin_products
+    type: table
+    title:
+      it: Prodotti (admin)
+    source: collection:products
+    roles:
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label:
+          it: Prodotto
+      - key: category
+        label:
+          it: Categoria
+      - key: kcal_per_100g
+        label: kcal/100g
+        format: number
+      - key: allergens
+        label:
+          it: Allergeni
+      - key: price
+        label:
+          it: Prezzo
+        format: money
+      - key: active
+        label:
+          it: Attivo
+        format: badge
+  - key: admin
+    type: admin
+    title: Admin
+    roles:
+    - admin
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 20
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:nutritionist:
+        estimate: 10
+        metered: true
+      agent:manager:
+        estimate: 3
+        metered: true
+    packs:
+    - key: ricalcoli
+      credits: 300
+      price: 5
+      label:
+        it: Pacchetto ricalcoli piano
+    plans:
+    - key: mensile
+      price: 19
+      interval: month
+      label:
+        it: Abbonamento mensile
+      includes:
+      - piano personalizzato
+      - ricalcoli illimitati
+      - gestione consegne
+      credits: 300
+      creditsReset: monthly
+      roles:
+      - user
+    - key: annuale
+      price: 190
+      interval: year
+      label:
+        it: Abbonamento annuale
+      includes:
+      - piano personalizzato
+      - ricalcoli illimitati
+      - gestione consegne
+      credits: 4000
+      creditsReset: monthly
+      roles:
+      - user
+  extensions:
+  - key: email_reminders
+    description: 'Promemoria email prima di ogni rinnovo e delle consegne: le notifiche email non sono ancora disponibili;
+      per ora il calendario consegne e visibile nell''app.'
+  - key: food_subscription_charges
+    description: Il pagamento ricorrente con carta e l'abbonamento al servizio (Stripe Connect); l'addebito del prezzo dei
+      prodotti per singola fornitura e la logistica restano fuori dall'app.

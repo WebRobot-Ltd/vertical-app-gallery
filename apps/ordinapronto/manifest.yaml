@@ -1,0 +1,550 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: ordinapronto
+  displayName: OrdinaPronto
+  tagline:
+    it: Ordini all'ingrosso in chat, approvati dal tuo agente di vendita.
+    fr: Commandes de gros par chat, validées par votre commercial.
+  description:
+    it: Il negoziante scrive l'ordine in modo libero, l'assistente AI abbina gli articoli al catalogo e prepara una bozza
+      modificabile. Un secondo agente controlla prezzi e fido; l'agente di vendita approva.
+    fr: Le commerçant écrit sa commande librement, l'assistant IA associe les articles au catalogue et prépare un brouillon
+      modifiable. Un second agent contrôle prix et encours; le commercial valide.
+  langs:
+  - it
+  - fr
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#16423c'
+      accent: '#e07a1f'
+      background: '#f7f6f2'
+      foreground: '#1c2421'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Ordina
+      color: primary
+    - text: Pronto
+      color: accent
+    button: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        fr: Comment ça marche
+      href: '#come-funziona'
+    cta:
+      label:
+        it: Accedi
+        fr: Connexion
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label:
+        it: Distributore
+        fr: Distributeur
+      assignedBy: admin_emails
+    - key: sales
+      label:
+        it: Agente di vendita
+        fr: Commercial
+      assignedBy: invite
+    - key: shop
+      label:
+        it: Negoziante
+        fr: Commerçant
+      assignedBy: signup
+  limits:
+  - action: chat
+    per: user
+    max: 100
+    window: day
+    roles:
+    - shop
+  agents:
+  - key: assistant
+    role: main
+    description: Understands free-text orders, matches the catalogue, proposes alternatives and builds the draft.
+    memory: user
+    delegates:
+    - checker
+    awaits:
+    - order_approval
+    profile:
+      inline:
+        display_name: OrdinaPronto assistant
+        chat_mode: true
+        crews:
+        - id: assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei l''assistente ordini di un distributore all''ingrosso (food, ferramenta, cosmetica). Parli con
+            un negoziante, nella sua lingua (italiano o francese). Il negoziante scrive in modo libero, anche incollando un
+            messaggio WhatsApp o un elenco copiato ("10 cartoni acqua naturale, 3 detersivo come la volta scorsa").
+
+            PROCEDURA: 1) leggi il profilo cliente (customer_read) per fascia prezzo e condizioni. 2) Per ogni riga cerca
+            nel catalogo con catalog_search; "come la volta scorsa" si risolve con orders_read. 3) Se un articolo è ambiguo,
+            chiedi; se manca o è senza giacenza, proponi 1-2 alternative reali del catalogo. 4) Rispetta unità di vendita
+            e minimo d''ordine. 5) Prezzi: solo quelli della fascia del cliente, mai inventati. 6) Salva la bozza con draft_write
+            (righe: sku, descrizione, quantità, unità, prezzo, totale riga; totale ordine) e mostrala in una tabella Markdown
+            che il cliente può correggere a parole. 7) Chiama ask_checker passando la bozza e riporta le anomalie in modo
+            chiaro. 8) Solo quando il cliente conferma, usa request_order_approval: l''ordine passa all''agente di vendita;
+            di'' al cliente che NON è ancora confermato finché non è approvato. Non scrivere mai nell''ERP e non promettere
+            consegne. Non inventare articoli, prezzi o giacenze. Alla fine chiama remember con gli articoli abituali del cliente.
+            Le foto/file non sono ancora supportati: se il cliente ne ha uno, chiedi di incollare il testo.'
+    goalTemplate: 'Cliente: {user}. Data: {date}. Lingua ISO: {lang}.
+
+      Conversazione finora:
+
+      {history}
+
+      Nuovo messaggio:
+
+      {message}'
+    appTools:
+    - name: catalog_search
+      description: Search the distributor catalogue (sku, description, unit, price tiers, stock, minimum order)
+      action: search
+      collection: catalog
+      scope: all
+    - name: customer_read
+      description: Read the signed-in customer's profile (price tier, credit limit and used credit)
+      action: read
+      collection: customers
+      scope: user
+    - name: orders_read
+      description: Read the customer's past orders
+      action: read
+      collection: orders
+      scope: user
+    - name: draft_write
+      description: Create or update the customer's order draft
+      action: write
+      collection: order_drafts
+      scope: user
+    - name: draft_show
+      description: Show the customer's order drafts in the reply
+      action: show
+      collection: order_drafts
+      scope: user
+    limits:
+      maxTurns: 14
+      maxBudgetUsd: 0.4
+  - key: checker
+    role: helper
+    description: Checks list prices and residual credit on a draft and flags anomalies.
+    profile:
+      inline:
+        display_name: OrdinaPronto checker
+        crews:
+        - id: checker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Controlli una bozza d''ordine. Per ogni riga confronta con catalog_search: prezzo vs listino della
+            fascia del cliente (customer_read), quantità vs giacenza e minimo d''ordine, unità di vendita. Calcola il totale
+            e confrontalo col fido residuo (limite meno utilizzato). Rispondi con un elenco breve: ANOMALIA (riga, problema,
+            valore atteso) oppure "Nessuna anomalia". Indica sempre se il fido residuo è superato. Usa solo dati letti; non
+            inventare valori e non modificare nulla.'
+    appTools:
+    - name: catalog_search
+      description: Search the catalogue
+      action: search
+      collection: catalog
+      scope: all
+    - name: customer_read
+      description: Read the customer's profile
+      action: read
+      collection: customers
+      scope: user
+    - name: draft_read
+      description: Read the customer's order drafts
+      action: read
+      collection: order_drafts
+      scope: user
+  - key: finalizer
+    role: helper
+    description: After approval, records the order as approved.
+    profile:
+      inline:
+        display_name: OrdinaPronto finalizer
+        crews:
+        - id: finalizer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Un agente di vendita ha approvato un ordine. Leggi la bozza del cliente con draft_read e registra
+            l''ordine con order_write: numero, week (formato AAAA-Wnn), righe, total, status "approved", approved_by. Rispondi
+            con un riepilogo di una riga. Non inventare dati.'
+    appTools:
+    - name: draft_read
+      description: Read the customer's drafts
+      action: read
+      collection: order_drafts
+      scope: user
+    - name: order_write
+      description: Write the approved order
+      action: write
+      collection: orders
+      scope: user
+  - key: loader
+    role: setup
+    description: Turns pasted catalogue rows into catalogue records.
+    profile:
+      inline:
+        display_name: OrdinaPronto catalogue loader
+        crews:
+        - id: loader
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Ricevi righe di catalogo incollate (copiate da Excel/CSV): codice articolo, descrizione, unità di
+            vendita, prezzi per fascia (A, B, C), giacenza, minimo d''ordine. Scrivi ogni riga con catalog_write usando sku
+            come chiave. Segnala righe incomplete senza inventare valori. Inizia la risposta con "# Caricamento catalogo"
+            e riassumi: righe caricate, scartate e motivo.'
+    appTools:
+    - name: catalog_write
+      description: Create or update catalogue items
+      action: write
+      collection: catalog
+      scope: all
+  inputForm:
+    title:
+      it: Carica catalogo
+      fr: Charger le catalogue
+    fields:
+    - name: rows
+      type: textarea
+      required: true
+      maxLength: 20000
+      label:
+        it: Righe del catalogo (incolla da Excel)
+        fr: Lignes du catalogue (coller depuis Excel)
+      help:
+        it: 'Colonne: codice, descrizione, unità, prezzo A/B/C, giacenza, minimo ordine'
+        fr: 'Colonnes: code, description, unité, prix A/B/C, stock, minimum de commande'
+  data:
+    collections:
+    - name: catalog
+      ownedBy: shared
+      searchable: true
+      description: Distributor catalogue
+      fields:
+      - name: sku
+        type: text
+        required: true
+      - name: description
+        type: text
+      - name: category
+        type: text
+      - name: unit
+        type: text
+      - name: price_a
+        type: number
+      - name: price_b
+        type: number
+      - name: price_c
+        type: number
+      - name: stock
+        type: number
+      - name: min_order
+        type: number
+    - name: customers
+      ownedBy: user
+      description: Shop profile with price tier and credit
+      fields:
+      - name: company
+        type: text
+      - name: tier
+        type: select
+        options:
+        - a
+        - b
+        - c
+      - name: credit_limit
+        type: number
+      - name: credit_used
+        type: number
+      - name: assigned_agent
+        type: email
+    - name: order_drafts
+      ownedBy: user
+      description: Editable order drafts
+      fields:
+      - name: lines
+        type: json
+      - name: total
+        type: number
+      - name: anomalies
+        type: text
+      - name: status
+        type: text
+    - name: orders
+      ownedBy: user
+      description: Approved orders and history
+      fields:
+      - name: number
+        type: text
+      - name: week
+        type: text
+      - name: lines
+        type: json
+      - name: total
+        type: number
+      - name: status
+        type: text
+      - name: approved_by
+        type: text
+  approvals:
+  - key: order_approval
+    title:
+      it: Approvazione ordine
+      fr: Validation de commande
+    role: sales
+    decidedBy: role
+    fields:
+    - lines
+    - total
+    - anomalies
+    timeoutMinutes: 2880
+    onTimeout: reject
+  triggers:
+  - key: on_order_approved
+    'on':
+      approval: order_approval
+      decision: approved
+    start:
+      agent: finalizer
+    goal: 'Order approved: record it. Event: {event}'
+    asUser: true
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: OrdinaPronto
+    sections:
+    - type: hero
+      title:
+        it: Ordina come scrivi su **WhatsApp**.
+        fr: Commandez comme sur **WhatsApp**.
+      text:
+        it: 'Scrivi o incolla il tuo ordine: l''assistente trova gli articoli, propone alternative e prepara la bozza. Il
+          tuo agente di vendita la approva.'
+        fr: 'Écrivez ou collez votre commande: l''assistant trouve les articles, propose des alternatives et prépare le brouillon.
+          Votre commercial le valide.'
+      actions:
+      - label:
+          it: Accedi e ordina
+          fr: Connexion et commande
+        href: /login
+        style: primary
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        fr: Comment ça marche
+      items:
+      - title:
+          it: Scrivi
+          fr: Écrivez
+        text:
+          it: Testo libero o messaggio incollato, anche "come la volta scorsa".
+          fr: Texte libre ou message collé, même «comme la dernière fois».
+        badge: 💬
+      - title:
+          it: Controlla
+          fr: Vérifiez
+        text:
+          it: Bozza modificabile, con prezzi di listino e controllo del fido.
+          fr: Brouillon modifiable, avec prix catalogue et contrôle de l'encours.
+        badge: ✅
+      - title:
+          it: Approvazione
+          fr: Validation
+        text:
+          it: Il tuo agente di vendita approva o corregge prima dell'invio.
+          fr: Votre commercial valide ou corrige avant l'envoi.
+        badge: 🤝
+    - type: note
+      content:
+        it: OrdinaPronto · powered by WebRobot. Un ordine è valido solo dopo l'approvazione dell'agente di vendita.
+        fr: OrdinaPronto · powered by WebRobot. Une commande n'est valable qu'après validation du commercial.
+  - key: chat
+    type: chat
+    title:
+      it: Nuovo ordine
+      fr: Nouvelle commande
+    source: agent:assistant
+    examples:
+    - 10 cartoni acqua naturale, 3 detersivo come la volta scorsa
+    - Mi serve olio di oliva 5 litri, 6 pezzi
+    placeholder:
+      it: Scrivi o incolla il tuo ordine…
+      fr: Écrivez ou collez votre commande…
+    roles:
+    - shop
+    - admin
+  - key: drafts
+    type: table
+    title:
+      it: Le mie bozze
+      fr: Mes brouillons
+    source: collection:order_drafts
+    roles:
+    - shop
+    - admin
+  - key: orders
+    type: table
+    title:
+      it: Storico ordini
+      fr: Historique
+    source: collection:orders
+    columns:
+    - number
+    - week
+    - total
+    - status
+    roles:
+    - shop
+    - admin
+  - key: queue
+    type: approvals
+    title:
+      it: Coda bozze
+      fr: File des brouillons
+    approvals:
+    - order_approval
+    roles:
+    - sales
+    - admin
+  - key: catalog_view
+    type: table
+    title:
+      it: Catalogo
+      fr: Catalogue
+    source: collection:catalog
+    roles:
+    - admin
+    - sales
+  - key: catalog_load
+    type: new_run
+    title:
+      it: Carica catalogo
+      fr: Charger le catalogue
+    roles:
+    - admin
+  - key: dashboard
+    type: page
+    title:
+      it: Ordinato per settimana
+      fr: Commandes par semaine
+    roles:
+    - admin
+    sections:
+    - type: data
+      title:
+        it: Ordinato per settimana
+        fr: Commandes par semaine
+      source: collection:orders
+      display: chart
+      chart: bar
+      fields:
+      - key: week
+        label: Settimana
+      - key: total
+        label: Totale
+        format: money
+      sort:
+        field: week
+        dir: asc
+      limit: 52
+      kpis:
+      - label: Totale ordinato
+        agg: sum
+        field: total
+        format: money
+      - label: Ordini
+        agg: count
+  - key: admin
+    type: admin
+    title: Admin
+    roles:
+    - admin
+  extensions:
+  - key: erp_connector
+    description: 'Nightly ERP catalogue sync and writing the approved order into the ERP need a connector with the distributor''s
+      credentials: not available yet. For now: paste catalogue rows (Excel upload is not available); approved orders are recorded
+      in the app only.'
+  - key: confirmation_email
+    description: 'Confirmation email to the customer after approval: notifications are not available yet.'
+  - key: photo_lists
+    description: 'Photographed lists / file upload are not available: customers paste text.'
+  - key: assigned_customers
+    description: 'Sales agents see only their assigned customers, the admin sees all orders, and the admin sets tier and credit
+      limit on customer records: needs cross-user visibility rules not expressible yet. Today the sales agent works from the
+      approval queue.'
+  - key: distributor_subscription
+    description: Monthly subscription paid by the distributor to WebRobot, tiered by number of active customers, is handled
+      at platform level, not in this manifest.

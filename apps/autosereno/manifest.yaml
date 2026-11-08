@@ -1,0 +1,671 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: autosereno
+  displayName: AutoSereno
+  tagline:
+    it: Polizze auto a consumo, con un punteggio di guida chiaro e sconti equi.
+  description:
+    it: 'Il software per compagnie e intermediari che gestiscono polizze auto a consumo: registrazione di assicurato, veicolo
+      e polizza, consenso ai dati di guida, prenotazione della scatola nera, punteggio mensile spiegato, proposta di sconto
+      al rinnovo approvata dall''agente e denuncia sinistri guidata.'
+  langs:
+  - it
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#0f3b5f'
+      accent: '#1f9d8a'
+      background: '#f6f9fb'
+      foreground: '#14212b'
+    fonts:
+      body: Inter
+      display: Poppins
+    wordmark:
+    - text: Auto
+      color: primary
+    - text: Sereno
+      color: accent
+  header:
+    links:
+    - label: Come funziona
+      href: '#come-funziona'
+    - label: Privacy
+      href: '#privacy'
+    cta:
+      label: Accedi
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Responsabile tecnico
+      assignedBy: admin_emails
+    - key: agente
+      label: Agente assicurativo
+      assignedBy: invite
+    - key: liquidatore
+      label: Liquidatore
+      assignedBy: invite
+    - key: user
+      label: Assicurato
+      assignedBy: signup
+  limits:
+  - action: run
+    per: user
+    max: 10
+    window: day
+    roles:
+    - user
+  agents:
+  - key: onboarding
+    role: main
+    description: Registra veicolo e polizza, il consenso ai dati di guida e la prenotazione dell'installazione.
+    when: mode == 'register'
+    profile:
+      inline:
+        display_name: AutoSereno onboarding
+        crews:
+        - id: onboarding
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei l''assistente di registrazione di AutoSereno. Con lo strumento write_policies salva UN record
+            con i dati ricevuti (targa in maiuscolo, veicolo, numero polizza, consenso, officina, data installazione richiesta,
+            email agente) e status "in_attesa_installazione". Se il consenso al trattamento dei dati di guida è falso, NON
+            salvare nulla e spiega che senza consenso la polizza a consumo non può partire. Non inventare dati mancanti. Rispondi
+            con un titolo "# Registrazione polizza <targa>" e le sezioni ## Dati registrati, ## Consenso, ## Installazione
+            scatola nera (officina e data richiesta, da confermare dall''officina), ## Prossimi passi. Massimo 200 parole,
+            in italiano.'
+    appTools:
+    - name: write_policies
+      description: Salva la polizza dell'assicurato
+      action: write
+      collection: policies
+      scope: user
+    goalTemplate: 'Registrazione. Targa: {plate}. Veicolo: {vehicle}. Polizza n.: {policy_number}. Consenso ai dati di guida:
+      {consent}. Officina: {workshop_label}. Data installazione desiderata: {install_date}. {?agent_email}Agente: {agent_email}.{/agent_email}
+      Oggi è {date}.'
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.3
+  - key: claim_intake
+    role: main
+    description: 'Denuncia sinistro guidata: struttura la pratica e la mette in coda al liquidatore.'
+    when: mode == 'claim'
+    awaits:
+    - claim_review
+    profile:
+      inline:
+        display_name: AutoSereno sinistri
+        crews:
+        - id: claim_intake
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei l''assistente che prepara le denunce di sinistro di AutoSereno. Leggi la polizza dell''assicurato
+            con read_policies. Ordina i fatti ricevuti (data, luogo, dinamica, feriti, controparte, link alle foto) senza
+            inventare nulla; elenca le informazioni mancanti. Salva la pratica con write_claims (status "in_coda") e poi chiama
+            request_claim_review una volta, così va in coda al liquidatore. Non stabilire colpe né importi di risarcimento.
+            Rispondi con "# Denuncia sinistro <targa>" e le sezioni ## Riepilogo, ## Informazioni mancanti, ## Cosa succede
+            ora. In italiano, massimo 250 parole.'
+    appTools:
+    - name: read_policies
+      description: Legge la polizza e il consenso dell'assicurato
+      action: read
+      collection: policies
+      scope: user
+    - name: write_claims
+      description: Salva la pratica di sinistro
+      action: write
+      collection: claims
+      scope: user
+    goalTemplate: 'Sinistro del {claim_date}. Luogo: {claim_place}. Descrizione: {claim_description}. {?photo_links}Link alle
+      foto: {photo_links}.{/photo_links} {?injuries}Ci sono feriti.{/injuries}'
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.4
+  - key: scorer
+    role: scheduled
+    description: Calcola ogni mese il punteggio di guida dell'assicurato, spiega i fattori e propone consigli.
+    memory: instance
+    writesTo:
+      collection: score_reports
+    profile:
+      inline:
+        display_name: AutoSereno punteggio di guida
+        crews:
+        - id: scorer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei l''analista dei dati di guida di AutoSereno. Leggi con read_trips i dati aggregati di viaggio
+            del mese (km, quota di km in fascia notturna, frenate brusche ogni 100 km, quota di km sopra i limiti) e con read_policies
+            il consenso. Se manca il consenso o non ci sono dati del mese, dillo e non calcolare nulla. Punteggio da 0 a 100:
+            parti da 100 e sottrai in modo trasparente per frenate brusche, eccesso di velocità e guida notturna; mostra la
+            formula usata con i numeri reali. Non inventare cifre. Formato: "# Punteggio di guida — <mese anno>", poi ## Punteggio
+            (numero e variazione rispetto al mese scorso, che trovi nella tua memoria), ## Cosa ha influito (tabella fattore,
+            valore, effetto), ## Consigli pratici (3 azioni concrete), ## Nota (il punteggio è informativo, lo sconto lo decide
+            la compagnia). Aggiungi un blocco ```chart barre con i fattori. Sii cordiale, in italiano, massimo 300 parole.
+            Alla fine chiama remember con punteggio e fattori.'
+    appTools:
+    - name: read_trips
+      description: Legge i dati aggregati di viaggio dell'assicurato
+      action: read
+      collection: trips
+      scope: user
+    - name: read_policies
+      description: Legge la polizza e il consenso dell'assicurato
+      action: read
+      collection: policies
+      scope: user
+    goalTemplate: Punteggio di guida mensile per la targa {plate}. Oggi è {date}.
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.3
+  - key: renewal
+    role: helper
+    description: Prepara la proposta di sconto al rinnovo, che l'agente approva prima dell'invio.
+    awaits:
+    - renewal_discount
+    writesTo:
+      collection: renewal_proposals
+    profile:
+      inline:
+        display_name: AutoSereno rinnovo
+        crews:
+        - id: renewal
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei lo specialista rinnovi di AutoSereno. Leggi con read_policies la polizza e con read_trips i
+            dati degli ultimi 12 mesi. Proponi uno sconto al rinnovo coerente con la media dei punteggi e con la fascia massima
+            consentita dalla compagnia, se indicata nella polizza (campo max_discount_pct); se non c''è, proponi una percentuale
+            prudente e segnalalo. Non inventare dati. Formato: "# Proposta di rinnovo — <targa>", ## Proposta (sconto in %),
+            ## Motivazioni (dati reali), ## Bozza del messaggio all''assicurato. Poi chiama request_renewal_discount una volta:
+            la proposta non va inviata prima dell''approvazione dell''agente. Italiano, massimo 300 parole.'
+    appTools:
+    - name: read_trips
+      description: Legge i dati aggregati di viaggio dell'assicurato
+      action: read
+      collection: trips
+      scope: user
+    - name: read_policies
+      description: Legge la polizza e il consenso dell'assicurato
+      action: read
+      collection: policies
+      scope: user
+    goalTemplate: Prepara la proposta di sconto al rinnovo per la polizza {policy_number}, targa {plate}. Oggi è {date}.
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.3
+  inputForm:
+    title: Nuova pratica
+    fields:
+    - name: mode
+      type: select
+      required: true
+      label: Cosa vuoi fare
+      options:
+      - value: register
+        label: Registrare veicolo e polizza
+      - value: claim
+        label: Denunciare un sinistro
+    - name: plate
+      type: text
+      label: Targa
+      maxLength: 10
+      visibleWhen: mode == 'register'
+    - name: vehicle
+      type: text
+      label: Veicolo (marca, modello, anno)
+      visibleWhen: mode == 'register'
+    - name: policy_number
+      type: text
+      label: Numero di polizza
+      visibleWhen: mode == 'register'
+    - name: agent_email
+      type: email
+      label: Email del tuo agente (facoltativa)
+      visibleWhen: mode == 'register'
+    - name: consent
+      type: boolean
+      label: Acconsento al trattamento dei dati di guida raccolti dalla scatola nera
+      visibleWhen: mode == 'register'
+    - name: workshop
+      type: select
+      label: Officina convenzionata
+      visibleWhen: mode == 'register'
+      options:
+      - value: milano
+        label: Officina convenzionata — Milano
+      - value: roma
+        label: Officina convenzionata — Roma
+      - value: napoli
+        label: Officina convenzionata — Napoli
+      - value: torino
+        label: Officina convenzionata — Torino
+    - name: install_date
+      type: date
+      label: Data desiderata per l'installazione
+      visibleWhen: mode == 'register'
+    - name: claim_date
+      type: date
+      label: Data del sinistro
+      visibleWhen: mode == 'claim'
+    - name: claim_place
+      type: text
+      label: Luogo
+      visibleWhen: mode == 'claim'
+    - name: claim_description
+      type: textarea
+      maxLength: 1500
+      label: Cosa è successo
+      visibleWhen: mode == 'claim'
+    - name: photo_links
+      type: urls
+      label: Link alle foto (caricamento file non ancora disponibile)
+      visibleWhen: mode == 'claim'
+    - name: injuries
+      type: boolean
+      label: Ci sono feriti
+      visibleWhen: mode == 'claim'
+  data:
+    collections:
+    - name: policies
+      ownedBy: user
+      sharing:
+      - viewer
+      description: Polizza, veicolo, consenso e installazione di ogni assicurato
+      fields:
+      - name: plate
+        type: text
+      - name: vehicle
+        type: text
+      - name: policy_number
+        type: text
+      - name: consent
+        type: boolean
+      - name: workshop
+        type: text
+      - name: install_date
+        type: date
+      - name: agent_email
+        type: email
+      - name: max_discount_pct
+        type: number
+      - name: status
+        type: select
+        options:
+        - in_attesa_installazione
+        - attiva
+        - rinnovo_in_corso
+        - scaduta
+    - name: trips
+      ownedBy: user
+      description: Dati aggregati mensili dalla piattaforma del partner telematico
+      fields:
+      - name: month
+        type: text
+      - name: km
+        type: number
+      - name: night_pct
+        type: number
+      - name: hard_brakes_per_100km
+        type: number
+      - name: over_speed_pct
+        type: number
+    - name: score_reports
+      ownedBy: instance
+      description: Punteggi di guida mensili con spiegazione
+    - name: renewal_proposals
+      ownedBy: user
+      description: Proposte di sconto al rinnovo, in attesa o approvate
+    - name: claims
+      ownedBy: user
+      description: Pratiche di sinistro
+      fields:
+      - name: plate
+        type: text
+      - name: claim_date
+        type: date
+      - name: summary
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - in_coda
+        - in_istruttoria
+        - chiusa
+  templates:
+  - key: score_watch
+    title: Il mio punteggio di guida
+    description: Ogni mese il punteggio di guida della tua auto, con cosa ha influito e consigli pratici.
+    agent: scorer
+    params:
+    - name: plate
+      type: text
+      required: true
+      label: Targa
+    schedule:
+      cron: 0 7 1 * *
+      userCanChange: false
+    maxPerUser: 3
+    goal: Punteggio di guida mensile per "{instance}", targa {plate}. Oggi è {date}. Scrivi in italiano.
+  triggers:
+  - key: on_renewal_due
+    description: Quando la polizza passa a rinnovo in corso, prepara la proposta di sconto
+    'on':
+      collection: policies
+      op: update
+      where:
+        status: rinnovo_in_corso
+    start:
+      agent: renewal
+    goal: Prepara la proposta di sconto al rinnovo per la polizza {record.policy_number}, targa {record.plate}.
+    asUser: true
+  approvals:
+  - key: renewal_discount
+    title: Sconto al rinnovo
+    description: L'agente approva la proposta prima dell'invio all'assicurato
+    role: agente
+    decidedBy: role
+    fields:
+    - plate
+    - policy_number
+    - discount_pct
+    - reasons
+    timeoutMinutes: 10080
+    onTimeout: reject
+  - key: claim_review
+    title: Pratica sinistro
+    description: Presa in carico della denuncia da parte del liquidatore
+    role: liquidatore
+    decidedBy: role
+    fields:
+    - plate
+    - claim_date
+    - summary
+    timeoutMinutes: 10080
+    onTimeout: reject
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: AutoSereno
+    sections:
+    - type: hero
+      title: Guida bene, **paghi il giusto**.
+      text: 'AutoSereno gestisce la tua polizza auto a consumo: registri veicolo e polizza, prenoti la scatola nera, ricevi
+        ogni mese un punteggio di guida spiegato e, al rinnovo, una proposta di sconto approvata dal tuo agente.'
+      eyebrow: Polizze auto a consumo
+      actions:
+      - label: Accedi e inizia
+        href: /login
+        style: primary
+      - label: Come funziona
+        href: '#come-funziona'
+        style: ghost
+      band: true
+    - type: steps
+      id: come-funziona
+      title: Come funziona
+      items:
+      - title: Registrati
+        text: Inserisci targa, veicolo e polizza e dai il consenso ai dati di guida.
+        badge: 📝
+      - title: Installa la scatola nera
+        text: Prenota l'installazione presso un'officina convenzionata.
+        badge: 🔧
+      - title: Ricevi il punteggio
+        text: Ogni mese un punteggio da 0 a 100, cosa ha influito e consigli pratici.
+        badge: 📊
+      - title: Sconto al rinnovo
+        text: Una proposta preparata dall'agente AI e approvata dal tuo agente assicurativo.
+        badge: 🤝
+      - title: Sinistro? Ti guidiamo
+        text: 'Denuncia guidata con descrizione e foto: la pratica va subito al liquidatore.'
+        badge: 🚗
+    - type: cards
+      title: Chi usa AutoSereno
+      items:
+      - title: Assicurato
+        text: Vede solo i propri dati e il proprio punteggio.
+      - title: Agente assicurativo
+        text: Segue i propri clienti e approva gli sconti.
+      - title: Responsabile tecnico
+        text: Controlla il portafoglio polizze.
+    - type: note
+      id: privacy
+      content: 'I dati di guida sono trattati solo con il tuo consenso esplicito, ai sensi del GDPR. Il punteggio è informativo:
+        lo sconto finale è deciso dalla compagnia.'
+  - key: new
+    type: new_run
+    title: Nuova pratica
+    roles:
+    - user
+    - admin
+  - key: policies_view
+    type: list
+    title: Le mie polizze
+    source: collection:policies
+    roles:
+    - user
+    - agente
+    - admin
+    data:
+      display: table
+      fields:
+      - key: plate
+        label: Targa
+      - key: vehicle
+        label: Veicolo
+      - key: policy_number
+        label: Polizza
+      - key: install_date
+        label: Installazione
+        format: date
+      - key: status
+        label: Stato
+        format: badge
+  - key: trips_view
+    type: table
+    title: I miei viaggi
+    source: collection:trips
+    roles:
+    - user
+    data:
+      display: chart
+      chart: bar
+      fields:
+      - key: month
+        label: Mese
+      - key: km
+        label: Km
+      - key: hard_brakes_per_100km
+        label: Frenate brusche /100 km
+  - key: scores
+    type: instances
+    template: score_watch
+    title: Punteggio di guida
+    roles:
+    - user
+  - key: renewals
+    type: list
+    title: Proposte di rinnovo
+    source: collection:renewal_proposals
+    roles:
+    - user
+    - agente
+  - key: claims_view
+    type: list
+    title: Sinistri
+    source: collection:claims
+    roles:
+    - user
+    - liquidatore
+    - admin
+    data:
+      display: table
+      fields:
+      - key: plate
+        label: Targa
+      - key: claim_date
+        label: Data
+        format: date
+      - key: summary
+        label: Riepilogo
+      - key: status
+        label: Stato
+        format: badge
+  - key: approve_discounts
+    type: approvals
+    title: Sconti da approvare
+    approvals:
+    - renewal_discount
+    roles:
+    - agente
+  - key: claims_queue
+    type: approvals
+    title: Coda sinistri
+    approvals:
+    - claim_review
+    roles:
+    - liquidatore
+    - admin
+  - key: portfolio
+    type: page
+    title: Portafoglio
+    roles:
+    - admin
+    sections:
+    - type: data
+      title: Polizze
+      source: collection:policies
+      display: kpi
+      kpis:
+      - label: Polizze
+        agg: count
+    - type: data
+      title: Stato polizze
+      source: collection:policies
+      display: table
+      fields:
+      - key: plate
+        label: Targa
+      - key: policy_number
+        label: Polizza
+      - key: status
+        label: Stato
+        format: badge
+      limit: 100
+    - type: data
+      title: Sinistri aperti
+      source: collection:claims
+      display: table
+      fields:
+      - key: plate
+        label: Targa
+      - key: status
+        label: Stato
+        format: badge
+      filters:
+      - field: status
+        op: '='
+        value: in_coda
+      limit: 50
+  - key: history
+    type: history
+    title: Le mie pratiche
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  billing:
+    modes:
+    - free
+  mobile:
+    appId: eu.autosereno.app
+  extensions:
+  - key: partner_telematics_ingest
+    description: I dati aggregati di viaggio arrivano dalla piattaforma del partner telematico (API/webhook con credenziali
+      della compagnia, non incluse). Servono un connettore che scriva la collection trips per ogni assicurato e l'host del
+      partner in spec.egress.
+  - key: email_notifications
+    description: Notifiche email (installazione confermata, punteggio mensile, sconto approvato, sinistro in lavorazione)
+      non ancora disponibili.
+  - key: claim_photos_upload
+    description: 'Il caricamento di foto non è ancora disponibile: l''assicurato indica link alle foto.'
+  - key: role_scoped_visibility
+    description: 'Vista dell''agente solo sui propri clienti (via invito per record su policies, campo agent_email) e dashboard
+      di portafoglio aggregata su tutti gli assicurati richiedono logica dedicata: oggi i dati utente sono visibili solo al
+      proprietario o agli invitati.'
+  - key: license_per_active_policy
+    description: 'Licenza alla compagnia per polizza attiva: contratto tra WebRobot e la compagnia, calcolato contando le
+      polizze con status attiva; fuori dal manifest.'
+  - key: native_mobile_app
+    description: App mobile tramite shell Capacitor intorno all'app web; funzioni native (push) non incluse.

@@ -1,0 +1,809 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: calcio-analytics
+  displayName: CalcioAnalytics
+  tagline:
+    it: Data intelligence per società calcistiche, osservatori e settori giovanili.
+    en: Data intelligence for football clubs, scouts and youth academies.
+  description:
+    it: 'Inserisci squadre, giocatori e dati delle partite: un agente calcola indicatori avanzati, li aggiorna dopo ogni giornata
+      e risponde alle tue domande in chat. Ogni società vede solo i propri dati.'
+    en: 'Enter teams, players and match data: an agent computes advanced indicators, updates them after every matchday and
+      answers your questions in chat. Each club sees only its own data.'
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#0b3d2e'
+      accent: '#1f9d55'
+      background: '#f6f8f7'
+      foreground: '#14211b'
+    fonts:
+      body: Inter
+      display: Barlow Condensed
+    wordmark:
+    - text: Calcio
+      color: primary
+    - text: Analytics
+      color: accent
+    width: wide
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#how'
+    - label:
+        it: Indicatori
+        en: Metrics
+      href: '#metrics'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      assignedBy: signup
+  limits:
+  - action: run
+    per: user
+    max: 20
+    window: day
+    roles:
+    - user
+  - action: chat
+    per: user
+    max: 60
+    window: day
+    roles:
+    - user
+  agents:
+  - key: importer
+    role: main
+    when: mode == 'import'
+    description: Reads the club's pasted data (teams, players, matches, events) and stores it as the club's records.
+    profile:
+      inline:
+        display_name: CalcioAnalytics importer
+        crews:
+        - id: importer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the data importer of CalcioAnalytics. The analyst pastes teams, players or match data (events,
+            minutes, results; CSV, tables or free text) that is licensed or owned by the club. Parse it and store it with
+            the tools write_team, write_player and write_match (one record per team, player, match). Never invent values:
+            if a field is missing leave it empty and say so. Do not handle wearable or biometric data: ignore and report it.
+            Finish with a level-1 title "# Import — <date>" and a short Markdown summary: records stored per type, rows skipped
+            and why.'
+    goalTemplate: 'Import kind: {kind_label}
+
+      Data provided by the analyst:
+
+      {data}
+
+      Today is {date}. Reply in the language with ISO code {lang}.'
+    appTools:
+    - name: write_team
+      description: Store or update a team
+      action: write
+      collection: teams
+      scope: user
+    - name: write_player
+      description: Store or update a player
+      action: write
+      collection: players
+      scope: user
+    - name: write_match
+      description: Store a match with its events and minutes
+      action: write
+      collection: matches
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.5
+  - key: analyst
+    role: main
+    when: mode == 'update'
+    description: Computes advanced indicators for each player and team after a matchday.
+    profile:
+      inline:
+        display_name: CalcioAnalytics analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a football performance analyst. Read the club''s matches, players and teams with the read
+            tools. For each player and team in scope compute, for the matchday and for rolling windows (last 5 matches, season):
+            expected contribution (xG + xA from the events provided; if events lack shot positions, use only what the data
+            supports and mark the figure ''estimated''), shot quality (xG per shot), minutes, output per 90, and a form trend
+            (up / stable / down, with the rule you used). Store each result with write_player_metric and write_team_metric
+            (keys: player or team + period). Never invent data or figures: if the data is insufficient, say so and skip. No
+            wearable data. Final report: start with "# Matchday update — <team/matchday>", then ## Summary, ## Players in
+            form (top risers), ## Players declining, ## Team indicators, ## Data limits. Include one chart as a fenced block
+            ```chart {"type":"bar","title":"...","labels":[...],"series":[{"name":"...","values":[...]}]} ``` comparing the
+            main players on real figures.'
+    goalTemplate: 'Update the indicators for: {?team}team {team}{/team}{!team}all teams{/team}.
+
+      {?matchday}Matchday/period: {matchday}{/matchday}{!matchday}Use all matches not yet processed.{/matchday}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    appTools:
+    - name: read_matches
+      description: Read the club's matches and events
+      action: read
+      collection: matches
+      scope: user
+    - name: read_players
+      description: Read the club's players
+      action: read
+      collection: players
+      scope: user
+    - name: read_teams
+      description: Read the club's teams
+      action: read
+      collection: teams
+      scope: user
+    - name: read_player_metrics
+      description: Read previously computed player metrics
+      action: read
+      collection: player_metrics
+      scope: user
+    - name: write_player_metric
+      description: Store a player's indicators for a period
+      action: write
+      collection: player_metrics
+      scope: user
+    - name: write_team_metric
+      description: Store a team's indicators for a period
+      action: write
+      collection: team_metrics
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 1.0
+  - key: assistant
+    role: helper
+    description: Chat assistant that answers questions on the club's players and teams from the stored indicators.
+    profile:
+      inline:
+        display_name: CalcioAnalytics assistant
+        chat_mode: true
+        crews:
+        - id: assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the analyst''s assistant in CalcioAnalytics. Answer only from the club''s stored data, read
+            with read_player_metrics, read_team_metrics, read_players and read_matches. Questions like ''show me midfielders
+            improving over the last five matches'': filter by position and trend and list players with the figures. Be concise,
+            use tables, and when comparing players or periods add a chart as a fenced block ```chart {"type":"bar|line","title":"...","labels":[...],"series":[{"name":"...","values":[...]}]}
+            ``` with real figures only. If the data is missing, say so and suggest importing it. Never invent figures. Answer
+            in the user''s language.'
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New message from the analyst: {message}
+
+      Today is {date}. Language: {lang}.'
+    appTools:
+    - name: read_players
+      description: Read the club's players
+      action: read
+      collection: players
+      scope: user
+    - name: read_matches
+      description: Read the club's matches
+      action: read
+      collection: matches
+      scope: user
+    - name: read_player_metrics
+      description: Read player indicators
+      action: read
+      collection: player_metrics
+      scope: user
+    - name: read_team_metrics
+      description: Read team indicators
+      action: read
+      collection: team_metrics
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.3
+  - key: weekly
+    role: scheduled
+    description: Weekly summary of squad form changes for one club squad.
+    memory: instance
+    writesTo:
+      collection: weekly_reports
+    profile:
+      inline:
+        display_name: CalcioAnalytics weekly
+        crews:
+        - id: weekly
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the weekly squad form summary. Read the stored indicators with read_player_metrics. Start
+            with "# Squad form — week of <date>". Sections: ## Biggest risers, ## Biggest drops, ## Team trend, ## Suggested
+            focus. Under 300 words, real figures only, compare with what your memory holds from last week and lead with the
+            differences. At the end call remember once with the 5 key points.'
+    appTools:
+    - name: read_player_metrics
+      description: Read player indicators
+      action: read
+      collection: player_metrics
+      scope: user
+    - name: read_team_metrics
+      description: Read team indicators
+      action: read
+      collection: team_metrics
+      scope: user
+    output: markdown
+  inputForm:
+    title:
+      it: Importa o aggiorna
+      en: Import or update
+    fields:
+    - name: mode
+      type: select
+      required: true
+      default: import
+      label:
+        it: Azione
+        en: Action
+      options:
+      - value: import
+        label:
+          it: Importa dati
+          en: Import data
+      - value: update
+        label:
+          it: Calcola indicatori dopo la giornata
+          en: Compute indicators after the matchday
+    - name: kind
+      type: select
+      visibleWhen: mode == 'import'
+      label:
+        it: Tipo di dati
+        en: Data type
+      options:
+      - value: teams_players
+        label:
+          it: Squadre e giocatori
+          en: Teams and players
+      - value: matches
+        label:
+          it: Partite ed eventi
+          en: Matches and events
+    - name: data
+      type: textarea
+      maxLength: 20000
+      visibleWhen: mode == 'import'
+      label:
+        it: Dati (testo, CSV o link al dataset licenziato)
+        en: Data (text, CSV or link to the licensed dataset)
+      help:
+        it: 'Il caricamento di file non è ancora disponibile: incolla il testo.'
+        en: 'File upload is not available yet: paste the text.'
+    - name: team
+      type: text
+      visibleWhen: mode == 'update'
+      label:
+        it: Squadra (vuoto = tutte)
+        en: Team (empty = all)
+    - name: matchday
+      type: text
+      visibleWhen: mode == 'update'
+      label:
+        it: Giornata / periodo
+        en: Matchday / period
+  data:
+    collections:
+    - name: teams
+      ownedBy: user
+      description: Teams followed by the club
+      fields:
+      - name: name
+        type: text
+        required: true
+        label:
+          it: Squadra
+          en: Team
+      - name: category
+        type: text
+        label:
+          it: Categoria
+          en: Category
+      - name: season
+        type: text
+        label:
+          it: Stagione
+          en: Season
+    - name: players
+      ownedBy: user
+      description: Players followed by the club
+      fields:
+      - name: name
+        type: text
+        required: true
+        label:
+          it: Giocatore
+          en: Player
+      - name: team
+        type: text
+        label:
+          it: Squadra
+          en: Team
+      - name: position
+        type: text
+        label:
+          it: Ruolo
+          en: Position
+      - name: birth_year
+        type: number
+        label:
+          it: Anno di nascita
+          en: Birth year
+    - name: matches
+      ownedBy: user
+      description: Matches with events, minutes and results provided by the club
+      fields:
+      - name: date
+        type: date
+        label: Date
+      - name: home
+        type: text
+      - name: away
+        type: text
+      - name: result
+        type: text
+      - name: events
+        type: json
+        label:
+          it: Eventi e minuti giocati
+          en: Game events and minutes played
+    - name: player_metrics
+      ownedBy: user
+      description: Advanced indicators per player and period
+      fields:
+      - name: player
+        type: text
+        label:
+          it: Giocatore
+          en: Player
+      - name: team
+        type: text
+        label:
+          it: Squadra
+          en: Team
+      - name: position
+        type: text
+        label:
+          it: Ruolo
+          en: Position
+      - name: period
+        type: text
+        label:
+          it: Periodo
+          en: Period
+      - name: minutes
+        type: number
+      - name: expected_contribution
+        type: number
+        label:
+          it: Contributo atteso
+          en: Expected contribution
+      - name: shot_quality
+        type: number
+        label:
+          it: Qualità conclusioni
+          en: Shot quality
+      - name: form_index
+        type: number
+        label:
+          it: Indice di forma
+          en: Form index
+      - name: trend
+        type: text
+        label:
+          it: Tendenza
+          en: Trend
+    - name: team_metrics
+      ownedBy: user
+      description: Advanced indicators per team and period
+      fields:
+      - name: team
+        type: text
+      - name: period
+        type: text
+      - name: xg_for
+        type: number
+      - name: xg_against
+        type: number
+      - name: form_index
+        type: number
+      - name: trend
+        type: text
+    - name: weekly_reports
+      ownedBy: instance
+      description: Weekly squad form summaries
+  templates:
+  - key: weekly_digest
+    title:
+      it: Report settimanale rosa
+      en: Weekly squad report
+    description:
+      it: Ogni lunedì un riepilogo delle variazioni di forma della rosa.
+      en: Every Monday a summary of squad form changes.
+    agent: weekly
+    params:
+    - name: squad
+      type: text
+      required: true
+      label:
+        it: Rosa / squadra
+        en: Squad / team
+    goal: 'Weekly squad form summary for "{instance}" ({squad}). Today is {date}. Language: {lang}.'
+    schedule:
+      cron: 0 6 * * 1
+      userCanChange: true
+    maxPerUser: 10
+    cost:
+      perRun: 10
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: CalcioAnalytics
+    sections:
+    - type: hero
+      band: true
+      eyebrow:
+        it: Per società, osservatori e settori giovanili
+        en: For clubs, scouts and youth academies
+      title:
+        it: Indicatori avanzati **per ogni giocatore**, aggiornati dopo ogni giornata.
+        en: Advanced indicators **for every player**, updated after every matchday.
+      text:
+        it: Importa i tuoi dati di gioco, confronta atleti e periodi, chiedi in chat chi è in crescita. I tuoi dati restano
+          solo tuoi.
+        en: Import your match data, compare athletes and periods, ask the chat who is rising. Your data stays yours.
+      actions:
+      - label:
+          it: Inizia
+          en: Get started
+        href: /login
+        style: primary
+    - type: steps
+      id: how
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Importa
+          en: Import
+        text:
+          it: Incolla squadre, giocatori e dati partita da fonti licenziate o tue.
+          en: Paste teams, players and match data from licensed or your own sources.
+      - title:
+          it: Calcola
+          en: Compute
+        text:
+          it: L'agente aggiorna gli indicatori dopo ogni giornata.
+          en: The agent updates the indicators after each matchday.
+      - title:
+          it: Decidi
+          en: Decide
+        text:
+          it: Dashboard, schede giocatore, chat e report settimanale.
+          en: Dashboards, player cards, chat and weekly report.
+    - type: cards
+      id: metrics
+      title:
+        it: Indicatori
+        en: Metrics
+      items:
+      - title:
+          it: Contributo atteso
+          en: Expected contribution
+        text:
+          it: xG e xA per giocatore, per 90 minuti.
+          en: xG and xA per player, per 90 minutes.
+      - title:
+          it: Qualità delle conclusioni
+          en: Shot quality
+        text:
+          it: Valore medio delle occasioni create e concluse.
+          en: Average value of chances created and taken.
+      - title:
+          it: Tendenze di rendimento
+          en: Form trends
+        text:
+          it: Su 5 partite e sulla stagione.
+          en: Over 5 matches and the season.
+    - type: note
+      content:
+        it: 'Solo strato software di analisi: nessun dato da dispositivi indossabili. I dati delle partite devono essere licenziati
+          o del cliente. Gli indicatori sono supporto alle decisioni.'
+        en: 'Software analysis layer only: no wearable device data. Match data must be licensed or the client''s own. Indicators
+          are decision support.'
+  - key: dashboard
+    type: page
+    title:
+      it: Dashboard
+      en: Dashboard
+    roles:
+    - user
+    - admin
+    sections:
+    - type: data
+      title:
+        it: Forma dei giocatori
+        en: Player form
+      source: collection:player_metrics
+      display: table
+      fields:
+      - key: player
+        label:
+          it: Giocatore
+          en: Player
+      - key: team
+        label:
+          it: Squadra
+          en: Team
+      - key: position
+        label:
+          it: Ruolo
+          en: Position
+      - key: period
+        label:
+          it: Periodo
+          en: Period
+      - key: expected_contribution
+        format: number
+        label:
+          it: Contributo atteso
+          en: Expected contribution
+      - key: shot_quality
+        format: number
+        label:
+          it: Qualità conclusioni
+          en: Shot quality
+      - key: form_index
+        format: number
+        label:
+          it: Forma
+          en: Form
+      - key: trend
+        format: badge
+        label:
+          it: Tendenza
+          en: Trend
+      sort:
+        field: form_index
+        dir: desc
+      limit: 100
+    - type: data
+      title:
+        it: Confronto indice di forma
+        en: Form index comparison
+      source: collection:player_metrics
+      display: chart
+      chart: bar
+      fields:
+      - key: player
+      - key: form_index
+      - key: expected_contribution
+      sort:
+        field: form_index
+        dir: desc
+      limit: 15
+    - type: data
+      title:
+        it: Squadre
+        en: Teams
+      source: collection:team_metrics
+      display: chart
+      chart: line
+      fields:
+      - key: period
+      - key: xg_for
+      - key: xg_against
+      limit: 30
+  - key: assistant_chat
+    type: chat
+    source: agent:assistant
+    title:
+      it: Chiedi ai dati
+      en: Ask the data
+    placeholder:
+      it: Es. mostrami i centrocampisti in crescita nelle ultime cinque partite
+      en: E.g. show me midfielders improving over the last five matches
+    examples:
+    - it: Mostrami i centrocampisti in crescita nelle ultime cinque partite
+      en: Show me midfielders improving over the last five matches
+    - it: Confronta due attaccanti per qualità delle conclusioni
+      en: Compare two forwards on shot quality
+    roles:
+    - user
+    - admin
+  - key: players
+    type: table
+    title:
+      it: Schede giocatore
+      en: Player cards
+    source: collection:players
+    data:
+      display: table
+      fields:
+      - key: name
+      - key: team
+      - key: position
+      - key: birth_year
+    roles:
+    - user
+    - admin
+  - key: new
+    type: new_run
+    title:
+      it: Importa / aggiorna
+      en: Import / update
+    roles:
+    - user
+    - admin
+  - key: runs
+    type: history
+    title:
+      it: Storico
+      en: History
+    source: run
+    roles:
+    - user
+    - admin
+  - key: run_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: watches
+    type: instances
+    template: weekly_digest
+    title:
+      it: Report settimanali
+      en: Weekly reports
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Subscription
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:importer:
+        estimate: 10
+        metered: true
+      agent:analyst:
+        estimate: 20
+        metered: true
+      chat:
+        estimate: 3
+        metered: true
+    packs:
+    - key: topup
+      credits: 1000
+      price: 10
+      label: Top-up
+    plans:
+    - key: season_3
+      price: 290
+      interval: year
+      label:
+        it: Stagione — fino a 3 squadre
+        en: Season — up to 3 teams
+      credits: 3000
+      creditsReset: monthly
+      roles:
+      - user
+    - key: season_10
+      price: 790
+      interval: year
+      label:
+        it: Stagione — fino a 10 squadre
+        en: Season — up to 10 teams
+      credits: 8000
+      creditsReset: monthly
+      roles:
+      - user
+  extensions:
+  - key: weekly_email
+    description: 'Weekly report by email is not available yet: the report is shown in the Weekly reports view.'
+  - key: file_upload
+    description: 'File upload for match data is not available yet: the analyst pastes text or a link.'
+  - key: team_limit
+    description: Enforcing the number of teams per season plan needs custom logic; for now the plan describes it.

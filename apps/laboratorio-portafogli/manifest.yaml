@@ -1,0 +1,741 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: laboratorio-portafogli
+  displayName: Laboratorio Portafogli
+  tagline:
+    it: Impara le criptovalute simulando portafogli modello, senza rischiare un euro.
+    en: Learn crypto by simulating model portfolios, without risking a euro.
+  description:
+    it: 'App didattica e informativa: portafogli modello, backtest su prezzi storici pubblici, grafici e lezioni. Non gestiamo
+      patrimoni, non custodiamo fondi, non eseguiamo ordini e non offriamo consulenza personalizzata.'
+    en: 'Educational, informational app: model portfolios, backtests on public historical prices, charts and lessons. We do
+      not manage assets, hold funds, execute orders or give personalised advice.'
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0f2740'
+      accent: '#d99a1c'
+      background: '#f6f7f9'
+      foreground: '#14202e'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: 'Laboratorio '
+      color: primary
+    - text: Portafogli
+      color: accent
+    button: primary
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Avvertenze
+        en: Disclaimer
+      href: '#avvertenze'
+    cta:
+      label:
+        it: Inizia
+        en: Start
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      assignedBy: signup
+  limits:
+  - action: agent:analyst
+    per: user
+    max: 20
+    window: day
+    roles:
+    - user
+  egress:
+    hosts:
+    - api.kraken.com
+    notes: Kraken public market-data endpoint (OHLC daily candles), used only to read historical prices for educational backtests.
+      Verify the current terms of use for reuse before publishing.
+  slots:
+  - key: params
+    description: Effective weights of the chosen portfolio and the start timestamp of the price history.
+    timeoutMs: 2000
+    example:
+      values:
+        portfolio: balanced
+        lookback: 1y
+      lang: it
+    code: "import time\nM = {\"conservative\": (25, 10, 60, 5), \"balanced\": (40, 25, 25, 10), \"dynamic\": (45, 30, 5, 20)}\n\
+      \ndef main(inp):\n    v = inp.get(\"values\") or {}\n    p = v.get(\"portfolio\") or \"balanced\"\n    if p == \"custom\"\
+      :\n        w = []\n        for k in (\"w_btc\", \"w_eth\", \"w_stable\", \"w_other\"):\n            try:\n         \
+      \       w.append(max(0.0, float(v.get(k) or 0)))\n            except Exception:\n                w.append(0.0)\n   \
+      \ else:\n        w = list(M.get(p, M[\"balanced\"]))\n    days = 700 if v.get(\"lookback\") == \"2y\" else 365\n   \
+      \ return {\"eff_btc\": w[0], \"eff_eth\": w[1], \"eff_stable\": w[2], \"eff_other\": w[3], \"eff_total\": sum(w), \"\
+      since_ts\": int(time.time()) - days * 86400}\n"
+  - key: backtest
+    description: Deterministic backtest of a weighted portfolio with periodic rebalancing versus Bitcoin only.
+    timeoutMs: 8000
+    example:
+      args:
+        series:
+          btc:
+          - - 1700000000
+            - 30000
+          - - 1700086400
+            - 31000
+        weights:
+          btc: 100
+        rebalance: monthly
+    code: "import math, time\n\ndef main(inp):\n    a = inp.get(\"args\") or inp\n    S = a.get(\"series\") or {}\n    W =\
+      \ {k: float(v) for k, v in (a.get(\"weights\") or {}).items() if float(v) > 0}\n    t = sum(W.values())\n    if t <=\
+      \ 0 or not S.get(\"btc\"):\n        return {\"error\": \"weights and btc series required\"}\n    W = {k: v / t for k,\
+      \ v in W.items()}\n    mode = a.get(\"rebalance\", \"monthly\")\n    rows = sorted([[int(r[0]), float(r[1])] for r in\
+      \ S[\"btc\"]])\n    days = [r[0] for r in rows]\n    if len(days) < 30:\n        return {\"error\": \"too few data points\"\
+      }\n    def px(k):\n        if k == \"stable\":\n            return [1.0] * len(days)\n        m = {int(r[0]) // 86400:\
+      \ float(r[1]) for r in S.get(k, [])}\n        out = []\n        last = None\n        for d in days:\n            last\
+      \ = m.get(d // 86400, last)\n            out.append(last)\n        first = next((x for x in out if x is not None), None)\n\
+      \        if first is None:\n            return None\n        return [first if x is None else x for x in out]\n    P\
+      \ = {}\n    for k in list(W) + [\"btc\"]:\n        p = px(k)\n        if p is None:\n            return {\"error\":\
+      \ \"missing series for \" + k}\n        P[k] = p\n    def per(ts):\n        g = time.gmtime(ts)\n        if mode ==\
+      \ \"monthly\":\n            return (g.tm_year, g.tm_mon)\n        if mode == \"quarterly\":\n            return (g.tm_year,\
+      \ (g.tm_mon - 1) // 3)\n        if mode == \"yearly\":\n            return (g.tm_year, 0)\n        return 0\n    hold\
+      \ = {k: W[k] / P[k][0] for k in W}\n    V = [1.0]\n    for i in range(1, len(days)):\n        v = sum(hold[k] * P[k][i]\
+      \ for k in W)\n        V.append(v)\n        if mode != \"none\" and per(days[i]) != per(days[i - 1]):\n            hold\
+      \ = {k: W[k] * v / P[k][i] for k in W}\n    B = [p / P[\"btc\"][0] for p in P[\"btc\"]]\n    def stats(x):\n       \
+      \ r = [x[i] / x[i - 1] - 1 for i in range(1, len(x))]\n        m = sum(r) / len(r)\n        sd = math.sqrt(sum((q -\
+      \ m) ** 2 for q in r) / max(len(r) - 1, 1))\n        pk = x[0]\n        dd = 0.0\n        for q in x:\n            pk\
+      \ = max(pk, q)\n            dd = min(dd, q / pk - 1)\n        yrs = max(len(r) / 365.0, 0.01)\n        return {\"total_return_pct\"\
+      : round((x[-1] / x[0] - 1) * 100, 1), \"annual_return_pct\": round(((x[-1] / x[0]) ** (1 / yrs) - 1) * 100, 1), \"volatility_pct\"\
+      : round(sd * math.sqrt(365) * 100, 1), \"max_drawdown_pct\": round(dd * 100, 1)}\n    labels = []\n    pv = []\n   \
+      \ bv = []\n    for i in range(len(days)):\n        if i == len(days) - 1 or time.gmtime(days[i]).tm_mon != time.gmtime(days[i\
+      \ + 1]).tm_mon:\n            labels.append(time.strftime(\"%Y-%m\", time.gmtime(days[i])))\n            pv.append(round(V[i]\
+      \ * 100, 1))\n            bv.append(round(B[i] * 100, 1))\n    return {\"portfolio\": stats(V), \"bitcoin_only\": stats(B),\
+      \ \"labels\": labels, \"portfolio_curve\": pv, \"bitcoin_curve\": bv, \"from\": time.strftime(\"%Y-%m-%d\", time.gmtime(days[0])),\
+      \ \"to\": time.strftime(\"%Y-%m-%d\", time.gmtime(days[-1])), \"days\": len(days)}\n"
+  agents:
+  - key: analyst
+    role: main
+    description: Downloads daily prices, runs the backtest of a model or custom portfolio and writes the educational report.
+    profile:
+      inline:
+        display_name: Laboratorio Portafogli analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are an educational analyst for a crypto learning app. The app is purely informational: it does
+            not manage assets, hold funds or execute orders, and you never give personalised investment advice or say what
+            the user should buy. Past performance does not predict the future: say so.
+
+
+            MODEL PORTFOLIOS (weights % BTC/ETH/stablecoins/other=SOL): conservative 25/10/60/5, balanced 40/25/25/10, dynamic
+            45/30/5/20. Rebalancing rules: the user''s chosen period (none, monthly, quarterly, yearly) restores the target
+            weights. Stablecoins are assumed to stay at constant value (a simplification you must mention).
+
+
+            PROCEDURE
+
+            1. Call the tool kraken_ohlc (GET) three times with query: pair=XBTEUR, pair=ETHEUR, pair=SOLEUR, each with interval=1440
+            and since=<since_ts from the goal>. Skip SOL if its weight is 0 and ETH if its weight is 0. The response is {"error":[],"result":{"<PAIR>":[[time,open,high,low,close,vwap,volume,count],...],"last":…}}.
+            For each asset keep only [time, close] with close as a number rounded to 2 decimals (4 for SOL if under 10). Do
+            not invent or interpolate prices; if a call fails say so and stop.
+
+            2. Call run_backtest once with {"series":{"btc":[[t,c],...],"eth":[...],"sol":[...]},"weights":{"btc":w,"eth":w,"stable":w,"sol":w},"rebalance":"<period>"}.
+            Use only the tool''s numbers: never compute or estimate figures yourself.
+
+            3. Write the report in the user''s language.
+
+
+            REPORT STRUCTURE: first line "# <Portfolio name> — backtest <from> / <to>". Then ## Il tuo profilo (restate horizon,
+            risk tolerance, experience from the questionnaire and say which model portfolio is the most coherent with it as
+            an educational example, not advice), ## Composizione e ribilanciamento (table of weights and rule), ## Risultati
+            (table: total return, annualised return, volatility, maximum drawdown for portfolio vs Bitcoin only), then a chart
+            block:
+
+            ```chart
+
+            {"type":"line","title":"Valore di 100 investiti","labels":[...],"series":[{"name":"Portafoglio","values":[...]},{"name":"Solo
+            Bitcoin","values":[...]}]}
+
+            ```
+
+            and a second chart (bar) comparing the four metrics, ## Cosa impariamo (3-5 plain-language lessons: diversification,
+            drawdown, rebalancing effect, stablecoin risk), ## Limiti del backtest (history length, no fees or taxes, simplifications),
+            ## Se vuoi investire davvero (this app cannot do it; use an operator authorised as crypto-asset service provider
+            under MiCA, check the ESMA register). Under 600 words outside tables. If total custom weights are 0, ask for valid
+            weights and stop.'
+          mcp_servers: []
+    context:
+    - key: eff_btc
+      from: slot:params
+    - key: eff_eth
+      from: slot:params
+    - key: eff_stable
+      from: slot:params
+    - key: eff_other
+      from: slot:params
+    - key: eff_total
+      from: slot:params
+    - key: since_ts
+      from: slot:params
+    appTools:
+    - name: kraken_ohlc
+      description: 'Daily OHLC candles from Kraken public API. Query: pair (XBTEUR, ETHEUR, SOLEUR), interval=1440, since=<unix
+        seconds>.'
+      action: http
+      http:
+        method: GET
+        url: https://api.kraken.com/0/public/OHLC
+        attribution: 'Price data: Kraken public market data'
+        maxBytes: 300000
+    - name: run_backtest
+      description: 'Runs the backtest slot. Args: series {btc,eth,sol: [[unix_time, close],...]}, weights {btc,eth,stable,sol},
+        rebalance none|monthly|quarterly|yearly. Returns metrics and monthly curves.'
+      action: call
+      slot: backtest
+    goalTemplate: 'Portfolio chosen: {portfolio_label}. Rebalancing: {rebalance_label}. History: {lookback_label}.
+
+      Effective weights %: BTC {eff_btc}, ETH {eff_eth}, stablecoins {eff_stable}, other (SOL) {eff_other} (sum {eff_total};
+      normalise if not 100).
+
+      since_ts for the price download: {since_ts}.
+
+      Questionnaire: time horizon {horizon_label}; risk tolerance {risk_label}; experience {experience_label}.
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    writesTo:
+      collection: simulations
+      parse: whole
+    output: markdown
+    limits:
+      maxTurns: 14
+      maxBudgetUsd: 2
+  - key: monthly
+    role: scheduled
+    description: Once a month, backtests the three model portfolios over the last year and explains in simple words what happened
+      on the market.
+    profile:
+      inline:
+        display_name: Laboratorio Portafogli monthly outlook
+        crews:
+        - id: monthly
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 16
+          max_budget_usd: 2.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the monthly educational outlook of a crypto learning app. Informational only: no advice,
+            no predictions, no invented figures. Model portfolios (weights % BTC/ETH/stablecoins/SOL): conservative 25/10/60/5,
+            balanced 40/25/25/10, dynamic 45/30/5/20, monthly rebalancing, stablecoins assumed constant.
+
+            Procedure: call kraken_ohlc (GET) for pair XBTEUR, ETHEUR and SOLEUR with interval=1440 and since=<since_ts of
+            the goal>; keep only [time, close] numbers, never invent prices. Then call run_backtest three times (one per model
+            portfolio) with {"series":{"btc":[[t,c]…],"eth":[…],"sol":[…]},"weights":{"btc":w,"eth":w,"stable":w,"sol":w},"rebalance":"monthly"}.
+            Use only the tool''s numbers.
+
+            Report in Italian, first line "# Andamento dei portafogli modello — <month year>", then ## In sintesi, a table
+            (portfolio, return, volatility, max drawdown, vs Bitcoin only), a ```chart block (line, labels from the tool,
+            one series per portfolio plus Solo Bitcoin), ## Cosa è successo sul mercato (simple explanation, based only on
+            the price data you read: say you do not know the causes of moves), ## Da ricordare (2 lessons) and a closing line
+            that the content is educational and not investment advice. Under 450 words.'
+    appTools:
+    - name: kraken_ohlc
+      description: 'Daily OHLC candles from Kraken public API. Query: pair (XBTEUR, ETHEUR, SOLEUR), interval=1440, since=<unix
+        seconds>.'
+      action: http
+      http:
+        method: GET
+        url: https://api.kraken.com/0/public/OHLC
+        attribution: 'Price data: Kraken public market data'
+        maxBytes: 300000
+    - name: run_backtest
+      description: 'Runs the backtest slot. Args: series {btc,eth,sol: [[unix_time, close],...]}, weights {btc,eth,stable,sol},
+        rebalance none|monthly|quarterly|yearly. Returns metrics and monthly curves.'
+      action: call
+      slot: backtest
+    context:
+    - key: since_ts
+      from: slot:params
+    goalTemplate: 'Write the monthly outlook. Today is {date}. since_ts for the price download: {since_ts} (use it as is;
+      if it is empty, use the unix time of one year before today).'
+    writesTo:
+      collection: monthly_outlook
+      parse: whole
+      keyBy: date
+    output: markdown
+    limits:
+      maxTurns: 16
+      maxBudgetUsd: 2.5
+  inputForm:
+    title:
+      it: Nuova simulazione
+      en: New simulation
+    fields:
+    - name: horizon
+      type: select
+      required: true
+      label:
+        it: Orizzonte temporale
+        en: Time horizon
+      options:
+      - value: short
+        label:
+          it: Breve (meno di 2 anni)
+          en: Short (under 2 years)
+      - value: medium
+        label:
+          it: Medio (2-5 anni)
+          en: Medium (2-5 years)
+      - value: long
+        label:
+          it: Lungo (oltre 5 anni)
+          en: Long (over 5 years)
+    - name: risk
+      type: select
+      required: true
+      label:
+        it: Tolleranza al rischio
+        en: Risk tolerance
+      help:
+        it: Come reagiresti a un calo del 40%?
+        en: How would you react to a 40% fall?
+      options:
+      - value: low
+        label:
+          it: 'Bassa: venderei'
+          en: 'Low: I would sell'
+      - value: mid
+        label:
+          it: 'Media: aspetterei'
+          en: 'Medium: I would wait'
+      - value: high
+        label:
+          it: 'Alta: comprerei ancora'
+          en: 'High: I would buy more'
+    - name: experience
+      type: select
+      required: true
+      label:
+        it: Esperienza
+        en: Experience
+      options:
+      - value: none
+        label:
+          it: Nessuna
+          en: None
+      - value: some
+        label:
+          it: Qualche esperienza
+          en: Some
+      - value: expert
+        label:
+          it: Esperto
+          en: Experienced
+    - name: portfolio
+      type: select
+      required: true
+      default: balanced
+      label:
+        it: Portafoglio
+        en: Portfolio
+      options:
+      - value: conservative
+        label:
+          it: Prudente (25% BTC, 10% ETH, 60% stablecoin, 5% altri)
+          en: Conservative (25/10/60/5)
+      - value: balanced
+        label:
+          it: Bilanciato (40% BTC, 25% ETH, 25% stablecoin, 10% altri)
+          en: Balanced (40/25/25/10)
+      - value: dynamic
+        label:
+          it: Dinamico (45% BTC, 30% ETH, 5% stablecoin, 20% altri)
+          en: Dynamic (45/30/5/20)
+      - value: custom
+        label:
+          it: Personalizzato (scegli i pesi)
+          en: Custom (choose weights)
+    - name: w_btc
+      type: number
+      label: Bitcoin %
+      default: 40
+      visibleWhen: portfolio == 'custom'
+    - name: w_eth
+      type: number
+      label: Ether %
+      default: 25
+      visibleWhen: portfolio == 'custom'
+    - name: w_stable
+      type: number
+      label:
+        it: Stablecoin %
+        en: Stablecoins %
+      default: 25
+      visibleWhen: portfolio == 'custom'
+    - name: w_other
+      type: number
+      label:
+        it: Altri asset (Solana) %
+        en: Other assets (Solana) %
+      default: 10
+      visibleWhen: portfolio == 'custom'
+    - name: rebalance
+      type: select
+      required: true
+      default: monthly
+      label:
+        it: Ribilanciamento
+        en: Rebalancing
+      options:
+      - value: none
+        label:
+          it: Mai
+          en: Never
+      - value: monthly
+        label:
+          it: Mensile
+          en: Monthly
+      - value: quarterly
+        label:
+          it: Trimestrale
+          en: Quarterly
+      - value: yearly
+        label:
+          it: Annuale
+          en: Yearly
+    - name: lookback
+      type: select
+      required: true
+      default: 1y
+      label:
+        it: Storico
+        en: History
+      options:
+      - value: 1y
+        label:
+          it: Ultimo anno
+          en: Last year
+      - value: 2y
+        label:
+          it: Ultimi due anni
+          en: Last two years
+  data:
+    collections:
+    - name: simulations
+      ownedBy: user
+      description: Each user's own backtest reports; nobody else can see them.
+      fields:
+      - name: title
+        type: text
+      - name: content
+        type: textarea
+    - name: monthly_outlook
+      ownedBy: app
+      description: Monthly performance of the model portfolios, written by the scheduled agent for everyone.
+      fields:
+      - name: title
+        type: text
+      - name: content
+        type: textarea
+      - name: date
+        type: date
+  schedules:
+  - agent: monthly
+    action: run
+    cron: 0 6 1 * *
+    owner: app
+  views:
+  - key: home
+    type: page
+    title: Laboratorio Portafogli
+    nav: false
+    sections:
+    - type: hero
+      eyebrow:
+        it: Educazione finanziaria sulle crypto
+        en: Crypto financial education
+      title:
+        it: Capisci come si comporta un **portafoglio crypto**, senza rischiare nulla.
+        en: Understand how a **crypto portfolio** behaves, risking nothing.
+      text:
+        it: 'Rispondi a un breve questionario, scegli un portafoglio modello (prudente, bilanciato, dinamico) o crea il tuo,
+          e guarda il backtest su prezzi storici pubblici: rendimento, volatilità, massima perdita e confronto con il solo
+          Bitcoin.'
+        en: 'Answer a short questionnaire, pick a model portfolio (conservative, balanced, dynamic) or build your own, and
+          see the backtest on public historical prices: return, volatility, maximum loss and comparison with Bitcoin alone.'
+      actions:
+      - label:
+          it: Registrati e inizia
+          en: Sign up and start
+        href: /login
+        style: primary
+      - label:
+          it: Come funziona
+          en: How it works
+        href: '#come-funziona'
+        style: ghost
+      note:
+        it: Solo uso informativo e didattico. Nessuna gestione di patrimoni, custodia di fondi o esecuzione di ordini.
+        en: Informational and educational use only. No asset management, custody of funds or order execution.
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Questionario
+          en: Questionnaire
+        text:
+          it: 'Orizzonte, tolleranza al rischio ed esperienza: servono a scegliere un esempio coerente.'
+          en: 'Horizon, risk tolerance and experience: they help pick a coherent example.'
+        badge: 📝
+      - title:
+          it: Portafoglio e regole
+          en: Portfolio and rules
+        text:
+          it: Pesi tra Bitcoin, Ether, stablecoin e altri asset, con ribilanciamento a tua scelta. Puoi cambiare i pesi e
+            rifare il test.
+          en: Weights across Bitcoin, Ether, stablecoins and other assets, with your choice of rebalancing. Change the weights
+            and rerun.
+        badge: ⚖️
+      - title:
+          it: Backtest e grafici
+          en: Backtest and charts
+        text:
+          it: Un agente scarica i prezzi giornalieri da una fonte pubblica e calcola le metriche con un calcolo deterministico.
+          en: An agent downloads daily prices from a public source and metrics are computed deterministically.
+        badge: 📈
+      - title:
+          it: Andamento mensile
+          en: Monthly outlook
+        text:
+          it: Ogni mese l'andamento dei portafogli modello con una spiegazione semplice.
+          en: Every month, the model portfolios' performance with a plain explanation.
+        badge: 🗓️
+    - type: cards
+      title:
+        it: Piani
+        en: Plans
+      items:
+      - title: Gratis
+        text:
+          it: Crediti di prova alla registrazione per qualche backtest.
+          en: Trial credits at signup for a few backtests.
+      - title: Pro
+        text:
+          it: 'Abbonamento mensile: backtest illimitati e tutte le lezioni.'
+          en: 'Monthly subscription: unlimited backtests and all lessons.'
+    - type: note
+      id: avvertenze
+      content:
+        it: '**Avvertenze.** Laboratorio Portafogli è un software informativo e didattico. Non è consulenza in materia di
+          investimenti, non gestisce patrimoni, non custodisce fondi e non esegue ordini. I backtest si basano su dati passati,
+          ignorano commissioni e tasse, e non garantiscono risultati futuri. Le crypto-attività sono molto volatili e si può
+          perdere tutto il capitale. Chi vuole investire deve rivolgersi a un prestatore di servizi per le cripto-attività
+          autorizzato (registro ESMA).'
+        en: '**Disclaimer.** Laboratorio Portafogli is educational, informational software. It is not investment advice, does
+          not manage assets, hold funds or execute orders. Backtests use past data, ignore fees and taxes, and do not guarantee
+          future results. Crypto-assets are highly volatile and you can lose all your capital. If you want to invest, use
+          an authorised crypto-asset service provider (ESMA register).'
+  - key: new
+    type: new_run
+    title:
+      it: Nuova simulazione
+      en: New simulation
+    roles:
+    - user
+    - admin
+  - key: history
+    type: history
+    title:
+      it: Le mie simulazioni
+      en: My simulations
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: outlook
+    type: table
+    title:
+      it: Andamento mensile
+      en: Monthly outlook
+    source: collection:monthly_outlook
+    data:
+      display: cards
+      fields:
+      - key: date
+        label:
+          it: Mese
+          en: Month
+        format: date
+      - key: content
+        label:
+          it: Andamento
+          en: Outlook
+      sort:
+        field: date
+        dir: desc
+      limit: 12
+      empty:
+        it: Il primo rapporto uscirà il primo del mese.
+        en: The first report comes out on the 1st of the month.
+    roles:
+    - user
+    - admin
+  - key: lessons
+    type: page
+    title:
+      it: Lezioni
+      en: Lessons
+    roles:
+    - user
+    - admin
+    sections:
+    - type: cards
+      title:
+        it: Lezioni di base
+        en: Basic lessons
+      items:
+      - title:
+          it: 1 · Diversificare
+          en: 1 · Diversifying
+        text:
+          it: Perché i pesi tra asset diversi cambiano rischio e rendimento.
+          en: Why weights across different assets change risk and return.
+      - title:
+          it: 2 · Volatilità e massima perdita
+          en: 2 · Volatility and maximum drawdown
+        text:
+          it: Cosa misurano e perché la massima perdita conta più del rendimento medio.
+          en: What they measure and why drawdown matters more than average return.
+      - title:
+          it: 3 · Ribilanciare
+          en: 3 · Rebalancing
+        text:
+          it: 'Riportare i pesi al target: quando aiuta e quando no.'
+          en: 'Restoring target weights: when it helps and when not.'
+      - title:
+          it: 4 · Stablecoin e rischi
+          en: 4 · Stablecoins and risks
+        text:
+          it: Cosa sono, il rischio di perdita di ancoraggio e di emittente.
+          en: What they are, de-peg and issuer risk.
+  - key: operators
+    type: page
+    title:
+      it: Voglio investire davvero
+      en: I want to invest for real
+    roles:
+    - user
+    - admin
+    sections:
+    - type: text
+      title:
+        it: Rivolgiti a un operatore autorizzato
+        en: Use an authorised operator
+      content:
+        it: 'Questa app non permette di comprare o vendere crypto-attività. Per investire usa un prestatore di servizi per
+          le cripto-attività (CASP) autorizzato ai sensi del regolamento MiCA: verifica l''operatore nel [registro dell''ESMA](https://www.esma.europa.eu/).
+          Non investire più di quanto puoi permetterti di perdere.'
+        en: 'This app cannot buy or sell crypto-assets. To invest, use a crypto-asset service provider (CASP) authorised under
+          MiCA: check the operator in the [ESMA register](https://www.esma.europa.eu/). Never invest more than you can afford
+          to lose.'
+  - key: account
+    type: account
+    title:
+      it: Abbonamento e crediti
+      en: Plan and credits
+    roles:
+    - user
+  billing:
+    modes:
+    - credits
+    - subscription
+    currency: eur
+    signupCredits: 30
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:analyst:
+        estimate: 10
+        metered: true
+    packs:
+    - key: small
+      credits: 500
+      price: 5
+      label: 500 crediti
+    plans:
+    - key: pro
+      price: 9
+      interval: month
+      label:
+        it: 'Pro: backtest illimitati e lezioni'
+        en: 'Pro: unlimited backtests and lessons'
+      includes:
+      - unlimited backtests
+      - all lessons
+      credits: 5000
+      creditsReset: monthly
+      roles:
+      - user
+  extensions:
+  - key: monthly_email
+    description: 'Email notifications are not available yet: the monthly outlook is published in the ''Andamento mensile''
+      view; the email digest with the same content must be added when notifications exist.'
+  - key: lessons_gating
+    description: Restricting the lessons to Pro subscribers is not expressible in the manifest yet; today the lessons page
+      is open to every signed-in user and the Pro plan unlocks unlimited backtests through credits.
+  - key: price_source_terms
+    description: Check that the Kraken public API terms allow this reuse before publishing; a different public source can
+      replace it by editing the egress host and the kraken_ohlc tool.
+  - key: regulatory_review
+    description: 'The app must stay informational: before launch have the texts, the questionnaire and the operator referral
+      reviewed by a legal advisor to confirm they do not amount to personalised advice or a referral service under MiCA.'

@@ -1,0 +1,669 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: primoimpiego
+  displayName: PrimoImpiego
+  tagline:
+    it: Il primo impiego giusto, per la Generazione Z e per chi la assume.
+    en: The right first job, for Gen Z and for the companies hiring them.
+  description:
+    it: PrimoImpiego mette in contatto giovani della Generazione Z e aziende che cercano stagisti e primi lavori. Un agente
+      AI calcola la compatibilità su interessi, competenze e valori. Gratis per i giovani, in abbonamento per le aziende.
+    en: PrimoImpiego connects Gen Z candidates with companies offering internships and first jobs. An AI agent scores compatibility
+      on interests, skills and values. Free for young people, subscription for companies.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#2b2a6f'
+      accent: '#ff6b4a'
+      background: '#faf8ff'
+      foreground: '#1c1b2e'
+    fonts:
+      body: Inter
+      display: Poppins
+    wordmark:
+    - text: Primo
+      color: primary
+    - text: Impiego
+      color: accent
+    buttonShape: pill
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Prezzi
+        en: Pricing
+      href: '#prezzi'
+    cta:
+      label:
+        it: Inizia
+        en: Start
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      assignedBy: signup
+  limits:
+  - action: run
+    per: user
+    max: 10
+    window: day
+    roles:
+    - user
+  agents:
+  - key: candidate_matcher
+    role: main
+    description: Saves the young person's profile and proposes the best positions.
+    when: mode == 'candidate'
+    profile:
+      inline:
+        display_name: PrimoImpiego candidate matcher
+        crews:
+        - id: candidate_matcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a career matcher for young people (Gen Z) looking for an internship or a first job. Steps:
+            1) Save the candidate''s own profile with the tool write on collection candidate_profiles (interests, skills,
+            values, CV summary, city, availability). 2) Only if the candidate gave consent (share_with_companies = true),
+            also write a PSEUDONYMOUS entry in talent_pool: a random candidate_ref, interests, skills, values, field, city,
+            availability, CV summary WITHOUT name, email, phone, links or any identifying detail. Without consent, write nothing
+            to talent_pool: companies must never see this person. 3) Read open_positions and score each against the candidate
+            from 0 to 100 on skills (40%), interests (30%), values/culture (30%). Use only data you actually read; never invent
+            positions, companies or figures. 4) Report: start with a level-1 title "# Le tue posizioni più adatte" (in the
+            report language), then a short profile summary, a table of the top 5 positions (position, company, score, why
+            it fits, what to improve), and a chart block ```chart {"type":"bar","title":"Compatibilità","labels":[...],"series":[{"name":"Score","values":[...]}],"unit":"%"}```
+            with real scores. 5) For each position the candidate likes, call request_interest to ask the candidate to confirm
+            their interest; on approval write a record in interest_signals {candidate_ref, position_id, side:''candidate''}.
+            Then check interest_signals: if the company already signalled the same pair, tell the candidate that the contact
+            is mutual. Be encouraging, concrete, concise. Never promise a job.'
+          mcp_servers: []
+    awaits:
+    - interest
+    goalTemplate: 'Candidate: {user}. Date {date}.
+
+      Field of interest: {field_label}
+
+      City / remote: {city}
+
+      Availability: {availability_label}
+
+      Interests: {interests}
+
+      Skills: {skills}
+
+      Values that matter at work: {values}
+
+      CV (pasted text or link): {cv}
+
+      Share my profile with companies (anonymous until I accept): {share_with_companies}
+
+      Write the report in the language with ISO code {lang}.'
+    appTools:
+    - name: write_my_profile
+      description: Save the candidate's own profile
+      action: write
+      collection: candidate_profiles
+      scope: user
+    - name: write_talent_pool
+      description: Publish the anonymous profile (only with consent)
+      action: write
+      collection: talent_pool
+      scope: all
+    - name: read_positions
+      description: Read open positions
+      action: search
+      collection: open_positions
+      scope: all
+    - name: read_signals
+      description: Read interest signals
+      action: search
+      collection: interest_signals
+      scope: all
+    - name: write_signal
+      description: Record a confirmed interest of one side for a candidate/position pair
+      action: write
+      collection: interest_signals
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  - key: company_matcher
+    role: main
+    description: Saves the company culture and positions and proposes a shortlist of consenting candidates.
+    when: mode == 'company'
+    profile:
+      inline:
+        display_name: PrimoImpiego company matcher
+        crews:
+        - id: company_matcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a recruiting matcher for companies hiring interns and first-job profiles from Gen Z. Steps:
+            1) Save the company profile (name, sector, size, culture, values) with write on companies. 2) Publish the position
+            with write on open_positions (position_id, company_name, title, type, required skills, interests, culture and
+            values, city, mode). Keep company_name and culture public: candidates see them. 3) Read talent_pool (only candidates
+            who consented are there; you never see anything else) and score each candidate for this position from 0 to 100:
+            skills 40%, interests 30%, values/culture 30%. Never invent candidates or figures; if the pool is empty say so
+            plainly. 4) Report: level-1 title "# Rosa di candidati — <position>", a table of the top 5 anonymous profiles
+            (candidate_ref, score, why, doubts to verify in interview) and a ```chart``` bar block of the scores. Never reveal
+            or guess names, emails or contacts: identity is shared only after both sides confirm interest. 5) For profiles
+            the company likes, call request_interest to have the company confirm; on approval write interest_signals {candidate_ref,
+            position_id, side:''company''}. If the candidate already signalled the same pair, state that the match is mutual.
+            Do not make discriminatory judgments (age, gender, origin, health): score only on skills, interests and values.'
+          mcp_servers: []
+    awaits:
+    - interest
+    goalTemplate: 'Company representative: {user}. Date {date}.
+
+      Company: {company_name}
+
+      Sector: {sector}
+
+      Culture and values: {culture}
+
+      Position: {position_title} ({position_type_label})
+
+      Required skills: {required_skills}
+
+      Description: {position_desc}
+
+      City / remote: {city}
+
+      Write the report in the language with ISO code {lang}.'
+    appTools:
+    - name: write_company
+      description: Save the company profile
+      action: write
+      collection: companies
+      scope: user
+    - name: write_position
+      description: Publish a position
+      action: write
+      collection: open_positions
+      scope: all
+    - name: read_talent_pool
+      description: Read anonymous profiles of consenting candidates
+      action: search
+      collection: talent_pool
+      scope: all
+    - name: read_signals
+      description: Read interest signals
+      action: search
+      collection: interest_signals
+      scope: all
+    - name: write_signal
+      description: Record a confirmed interest of one side for a candidate/position pair
+      action: write
+      collection: interest_signals
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 14
+      maxBudgetUsd: 0.6
+  approvals:
+  - key: interest
+    title:
+      it: Conferma il tuo interesse
+      en: Confirm your interest
+    description: The user confirms the interest the agent proposes for a candidate/position pair.
+    decidedBy: requester
+    fields:
+    - candidate_ref
+    - position_id
+    - summary
+    timeoutMinutes: 10080
+  inputForm:
+    title:
+      it: Trova il tuo match
+      en: Find your match
+    fields:
+    - name: mode
+      type: select
+      required: true
+      label:
+        it: Chi sei?
+        en: Who are you?
+      options:
+      - value: candidate
+        label:
+          it: Giovane in cerca di stage o primo lavoro
+          en: Young person looking for an internship or first job
+      - value: company
+        label:
+          it: Azienda
+          en: Company
+    - name: field
+      type: select
+      visibleWhen: mode == 'candidate'
+      label:
+        it: Settore di interesse
+        en: Field of interest
+      options:
+      - value: tech
+        label: Tech
+      - value: marketing
+        label: Marketing & Comunicazione
+      - value: design
+        label: Design
+      - value: finance
+        label: Finanza & Amministrazione
+      - value: sales
+        label: Vendite
+      - value: green
+        label: Sostenibilità
+      - value: other
+        label:
+          it: Altro
+          en: Other
+    - name: interests
+      type: textarea
+      maxLength: 600
+      visibleWhen: mode == 'candidate'
+      label:
+        it: I tuoi interessi
+        en: Your interests
+    - name: skills
+      type: textarea
+      maxLength: 600
+      visibleWhen: mode == 'candidate'
+      label:
+        it: Le tue competenze
+        en: Your skills
+    - name: values
+      type: textarea
+      maxLength: 400
+      visibleWhen: mode == 'candidate'
+      label:
+        it: Valori che contano per te al lavoro
+        en: Values that matter to you at work
+    - name: cv
+      type: textarea
+      maxLength: 4000
+      visibleWhen: mode == 'candidate'
+      label:
+        it: CV (incolla il testo o un link)
+        en: CV (paste text or a link)
+      help:
+        it: Il caricamento di file non è ancora disponibile.
+        en: File upload is not available yet.
+    - name: availability
+      type: select
+      visibleWhen: mode == 'candidate'
+      label:
+        it: Disponibilità
+        en: Availability
+      options:
+      - value: now
+        label:
+          it: Subito
+          en: Now
+      - value: 3m
+        label:
+          it: Entro 3 mesi
+          en: Within 3 months
+      - value: later
+        label:
+          it: Più avanti
+          en: Later
+    - name: share_with_companies
+      type: boolean
+      visibleWhen: mode == 'candidate'
+      default: true
+      label:
+        it: Accetto di essere proposto alle aziende (profilo anonimo)
+        en: I agree to be proposed to companies (anonymous profile)
+    - name: city
+      type: text
+      label:
+        it: Città / remoto
+        en: City / remote
+    - name: company_name
+      type: text
+      visibleWhen: mode == 'company'
+      label:
+        it: Nome azienda
+        en: Company name
+    - name: sector
+      type: text
+      visibleWhen: mode == 'company'
+      label:
+        it: Settore
+        en: Sector
+    - name: culture
+      type: textarea
+      maxLength: 800
+      visibleWhen: mode == 'company'
+      label:
+        it: Cultura e valori dell'azienda
+        en: Company culture and values
+    - name: position_title
+      type: text
+      visibleWhen: mode == 'company'
+      label:
+        it: Posizione
+        en: Position
+    - name: position_type
+      type: select
+      visibleWhen: mode == 'company'
+      label:
+        it: Tipo
+        en: Type
+      options:
+      - value: internship
+        label:
+          it: Stage
+          en: Internship
+      - value: first_job
+        label:
+          it: Primo lavoro
+          en: First job
+    - name: required_skills
+      type: textarea
+      maxLength: 600
+      visibleWhen: mode == 'company'
+      label:
+        it: Competenze richieste
+        en: Required skills
+    - name: position_desc
+      type: textarea
+      maxLength: 1000
+      visibleWhen: mode == 'company'
+      label:
+        it: Descrizione
+        en: Description
+  data:
+    collections:
+    - name: candidate_profiles
+      ownedBy: user
+      description: The candidate's own full profile (private)
+      fields:
+      - name: field
+        type: text
+      - name: interests
+        type: textarea
+      - name: skills
+        type: textarea
+      - name: values
+        type: textarea
+      - name: cv_summary
+        type: textarea
+      - name: city
+        type: text
+      - name: availability
+        type: text
+      - name: consent
+        type: boolean
+    - name: companies
+      ownedBy: user
+      description: The company's own profile
+      fields:
+      - name: company_name
+        type: text
+      - name: sector
+        type: text
+      - name: culture
+        type: textarea
+    - name: talent_pool
+      ownedBy: shared
+      description: Anonymous profiles of candidates who consented; no name or contact
+      fields:
+      - name: candidate_ref
+        type: text
+      - name: field
+        type: text
+      - name: interests
+        type: textarea
+      - name: skills
+        type: textarea
+      - name: values
+        type: textarea
+      - name: cv_summary
+        type: textarea
+      - name: city
+        type: text
+      - name: availability
+        type: text
+    - name: open_positions
+      ownedBy: shared
+      description: Published positions
+      fields:
+      - name: position_id
+        type: text
+      - name: company_name
+        type: text
+      - name: title
+        type: text
+      - name: type
+        type: text
+      - name: required_skills
+        type: textarea
+      - name: culture
+        type: textarea
+      - name: city
+        type: text
+      - name: description
+        type: textarea
+    - name: interest_signals
+      ownedBy: shared
+      description: Confirmed interest by pair, ids only
+      fields:
+      - name: candidate_ref
+        type: text
+      - name: position_id
+        type: text
+      - name: side
+        type: text
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: PrimoImpiego
+    sections:
+    - type: hero
+      eyebrow:
+        it: Per la Generazione Z
+        en: For Gen Z
+      title:
+        it: Il tuo **primo impiego**, trovato per compatibilità
+        en: Your **first job**, found by compatibility
+      text:
+        it: 'Racconta interessi, competenze e valori: un agente AI ti propone le posizioni più adatte. Le aziende ricevono
+          una rosa di profili, ma vedono solo chi ha accettato il contatto.'
+        en: 'Share your interests, skills and values: an AI agent proposes the best-fit positions. Companies get a shortlist
+          but only see candidates who accepted contact.'
+      actions:
+      - label:
+          it: Inizia
+          en: Get started
+        href: /login
+        style: primary
+      - label:
+          it: Come funziona
+          en: How it works
+        href: '#come-funziona'
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Registrati e racconta
+          en: Sign up and tell us
+        text:
+          it: Questionario breve e CV (testo o link). L'azienda descrive cultura e posizioni.
+          en: A short questionnaire and your CV (text or link). Companies describe culture and positions.
+        badge: 📝
+      - title:
+          it: L'agente calcola la compatibilità
+          en: The agent scores compatibility
+        text:
+          it: Competenze, interessi e valori, con la spiegazione del punteggio.
+          en: Skills, interests and values, with the score explained.
+        badge: 🤖
+      - title:
+          it: Interesse reciproco
+          en: Mutual interest
+        text:
+          it: I profili sono anonimi finché entrambi confermano l'interesse.
+          en: Profiles stay anonymous until both sides confirm interest.
+        badge: 🤝
+    - type: cards
+      id: prezzi
+      title:
+        it: Prezzi
+        en: Pricing
+      items:
+      - title:
+          it: Giovani
+          en: Young people
+        text:
+          it: Gratis, sempre.
+          en: Free, always.
+        badge: 🎓
+      - title:
+          it: Aziende
+          en: Companies
+        text:
+          it: 'Abbonamento mensile: posizioni, rose di candidati e contatti.'
+          en: 'Monthly subscription: positions, shortlists and contacts.'
+        badge: 🏢
+    - type: note
+      content:
+        it: 'Supporto alla selezione, non decisione automatica: la scelta resta alle persone. I profili sono valutati solo
+          su competenze, interessi e valori.'
+        en: 'Selection support, not automated decisions: people make the final choice. Profiles are scored only on skills,
+          interests and values.'
+  - key: new
+    type: new_run
+    title:
+      it: Trova match
+      en: Find matches
+    roles:
+    - user
+    - admin
+  - key: history
+    type: history
+    title:
+      it: I miei risultati
+      en: My results
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: my_profile
+    type: table
+    title:
+      it: Il mio profilo
+      en: My profile
+    source: collection:candidate_profiles
+    roles:
+    - user
+  - key: approvals
+    type: approvals
+    title:
+      it: Conferme di interesse
+      en: Interest confirmations
+    approvals:
+    - interest
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Plan
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 0
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:company_matcher:
+        estimate: 10
+        metered: true
+        requiresPlan: company_monthly
+    plans:
+    - key: company_monthly
+      price: 49
+      interval: month
+      label:
+        it: Azienda
+        en: Company
+      includes:
+      - positions
+      - candidate shortlists
+      - contacts after mutual interest
+      credits: 1000
+      creditsReset: monthly
+  extensions:
+  - key: mutual_chat
+    description: Direct chat between a candidate and a company once both confirmed interest is not available yet (the runtime
+      has no user-to-user messaging). For now mutual interest is recorded in interest_signals and the agent reports it; contact
+      exchange needs a custom extension.
+  - key: cv_upload
+    description: 'CV file upload is not available: candidates paste the text or a link.'
+  - key: notifications
+    description: Email notifications for new matches or mutual interest are not available yet.
+  - key: company_role
+    description: A separate 'company' role and onboarding are approximated by the mode field and the subscription plan; a
+      derived role would need a back-office collection.

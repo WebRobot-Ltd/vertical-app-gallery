@@ -1,0 +1,742 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: avanzozero
+  displayName: AvanzoZero
+  tagline:
+    it: Meno scarti in cucina, meno costi, meno emissioni.
+    en: Less kitchen waste, lower costs, fewer emissions.
+  description:
+    it: Il software che incrocia pesate degli scarti, menù e coperti, trova i piatti e i giorni critici, stima costi ed emissioni
+      evitabili e propone ogni settimana un piano di produzione da approvare.
+    en: Software that cross-checks waste weighings, menus and covers, finds critical dishes and days, estimates avoidable
+      cost and emissions, and proposes a weekly production plan for approval.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f4d3a'
+      accent: '#e07a2f'
+      background: '#f7f8f4'
+      foreground: '#18231e'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Avanzo
+      color: primary
+    - text: Zero
+      color: accent
+    button: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Per chi
+        en: Who it's for
+      href: '#per-chi'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: manager
+      label:
+        it: Responsabile cucina
+        en: Kitchen manager
+      assignedBy: signup
+    - key: staff
+      label:
+        it: Addetto
+        en: Kitchen staff
+      assignedBy: invite
+    - key: direction
+      label:
+        it: Direzione
+        en: Management
+      assignedBy: invite
+  limits:
+  - action: agent:analyst
+    per: user
+    max: 10
+    window: day
+  - action: chat
+    per: user
+    max: 100
+    window: day
+  agents:
+  - key: analyst
+    role: main
+    description: Cross-checks waste, menus and real covers; writes the analysis or monthly report.
+    profile:
+      inline:
+        display_name: AvanzoZero analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a food-waste analyst for canteens, restaurants and hotels. Use the tools to read the site''s
+            records (sites, menus with portions and cost per portion, waste_logs by category and dish, actual covers). Never
+            invent figures: if data is missing, say so and list what to record. Start with a level-1 title "# <Site> — Food
+            waste report <period>". Sections with ## headings: Summary (KPIs: total kg, kg per cover, trend vs previous period),
+            Most wasted dishes (table: dish, kg, kg per cover, share), Critical days (days well above the period average,
+            with possible causes from menu and covers), Economic cost (kg wasted x dish cost per portion / portion weight,
+            show the formula and assumptions), Avoidable emissions (kg CO2e: state the emission factor you use and that it
+            is an indicative estimate, not a certified figure), Recommendations, Data quality notes (manual vs device entries,
+            gaps). Add a chart block for kg per day or per dish: ```chart {"type":"bar","title":"...","labels":[...],"series":[{"name":"kg","values":[...]}],"unit":"kg"}
+            ``` with real figures only. For a monthly report, write it so management can reuse it in a sustainability statement.
+            Write in the requested language.'
+          mcp_servers: []
+    appTools:
+    - name: read_sites
+      description: Read the user's sites
+      action: read
+      collection: sites
+      scope: user
+    - name: read_menus
+      description: Read weekly menus with dishes, portions, cost per portion, expected covers
+      action: read
+      collection: menus
+      scope: user
+    - name: read_waste
+      description: Read waste weighings
+      action: read
+      collection: waste_logs
+      scope: user
+    goalTemplate: 'Site: {site}
+
+      Report type: {kind_label}
+
+      Period: {date_from} to {date_to}
+
+      {?notes}Notes: {notes}{/notes}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.8
+  - key: logger
+    role: helper
+    description: Quick waste entry by chat for kitchen staff.
+    profile:
+      inline:
+        display_name: AvanzoZero quick entry
+        crews:
+        - id: logger
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You help kitchen staff record food waste quickly. From each message extract: date (default today),
+            site, dish, category (preparation, plate_leftover, expired, other), weight_kg, actual covers if given. If the
+            site, dish or weight is missing, ask one short question. Then write one record with the tool add_waste and confirm
+            in one line with the values saved. Never guess weights. Reply in the user''s language.'
+    appTools:
+    - name: add_waste
+      description: Append a waste weighing record
+      action: append
+      collection: waste_logs
+      scope: user
+    - name: read_sites
+      description: Read the user's sites
+      action: read
+      collection: sites
+      scope: user
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+      New message: {message}
+
+      Today is {date}.'
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.1
+  - key: proposer
+    role: helper
+    description: Weekly corrections for one site, to be approved by the manager.
+    memory: instance
+    awaits:
+    - plan_approval
+    writesTo:
+      collection: weekly_proposals
+    profile:
+      inline:
+        display_name: AvanzoZero weekly planner
+        crews:
+        - id: proposer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You propose concrete weekly corrections to cut food waste for one site. Read the last 4 weeks of
+            waste_logs, the menus and the expected covers. Start with "# <Site> — Proposed plan week of <date>". Sections:
+            ## Portions to reduce (dish, current portion, proposed portion, expected kg saved), ## Quantities to prepare per
+            day for the next week (table by day and dish, based on real covers and past leftovers, never above what the menu
+            data supports), ## Dishes to replace (with the evidence), ## Expected savings (EUR and kg CO2e, formula and assumptions
+            shown, indicative). Never invent figures; flag low-data items. Your memory holds last week''s proposal and its
+            outcome: say what changed. After writing, call request_plan_approval once with a short summary. Call remember
+            with the 5 key points.'
+          mcp_servers: []
+    appTools:
+    - name: read_menus
+      description: Read weekly menus with dishes, portions, cost per portion, expected covers
+      action: read
+      collection: menus
+      scope: user
+    - name: read_waste
+      description: Read waste weighings
+      action: read
+      collection: waste_logs
+      scope: user
+    goalTemplate: 'Site: {site}. Today is {date}. Prepare the plan for the coming week. Write in the language with ISO code
+      {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.6
+  - key: plan_writer
+    role: helper
+    description: After approval, turns the approved proposal into the production plan.
+    writesTo:
+      collection: production_plan
+    profile:
+      inline:
+        display_name: AvanzoZero plan writer
+        crews:
+        - id: plan_writer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 3
+          max_budget_usd: 0.1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You receive an approved weekly proposal in the task. Rewrite it as a clean production plan for the
+            kitchen: start with "# Production plan — <Site> — week of <date>", then a table by day with dish, portion size
+            and quantity to prepare, then a short list of dishes to replace. Use only what is in the approved proposal.'
+    goalTemplate: An weekly proposal was approved. Write the production plan from it. Today is {date}. Write in the language
+      with ISO code {lang}.
+    output: markdown
+    limits:
+      maxTurns: 3
+      maxBudgetUsd: 0.1
+  approvals:
+  - key: plan_approval
+    title:
+      it: Approva il piano di produzione
+      en: Approve the production plan
+    decidedBy: requester
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: on_plan_approved
+    'on':
+      approval: plan_approval
+      decision: approved
+    start:
+      agent: plan_writer
+    goal: 'The manager approved this weekly proposal: {event}'
+    asUser: true
+  templates:
+  - key: site_weekly_plan
+    title:
+      it: Piano settimanale per sede
+      en: Weekly plan per site
+    description:
+      it: Ogni lunedì proposte di correzione per la tua sede, da approvare.
+      en: Every Monday, correction proposals for your site, for you to approve.
+    agent: proposer
+    params:
+    - name: site
+      type: text
+      required: true
+      label:
+        it: Sede
+        en: Site
+    goal: 'Site "{instance}": {site}. Today is {date}. Prepare the coming week''s plan. Write in the language with ISO code
+      {lang}.'
+    schedule:
+      cron: 0 5 * * 1
+      userCanChange: true
+    maxPerUser: 10
+    roles:
+    - manager
+    - admin
+    cost:
+      perRun: 10
+  inputForm:
+    title:
+      it: Nuova analisi
+      en: New analysis
+    fields:
+    - name: site
+      type: text
+      required: true
+      label:
+        it: Sede
+        en: Site
+    - name: kind
+      type: select
+      required: true
+      label:
+        it: Tipo
+        en: Type
+      options:
+      - value: analysis
+        label:
+          it: Analisi scarti
+          en: Waste analysis
+      - value: monthly
+        label:
+          it: Report mensile direzione
+          en: Monthly management report
+    - name: date_from
+      type: date
+      required: true
+      label:
+        it: Dal
+        en: From
+    - name: date_to
+      type: date
+      required: true
+      label:
+        it: Al
+        en: To
+    - name: notes
+      type: textarea
+      maxLength: 400
+      label:
+        it: Note (facoltative)
+        en: Notes (optional)
+  data:
+    collections:
+    - name: sites
+      ownedBy: user
+      sharing:
+      - viewer
+      - editor
+      description: Sites (canteens, restaurants, hotels)
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: type
+        type: select
+        options:
+        - school_canteen
+        - company_canteen
+        - restaurant
+        - hotel
+      - name: city
+        type: city
+    - name: menus
+      ownedBy: user
+      sharing:
+      - viewer
+      - editor
+      description: Weekly menu rows
+      fields:
+      - name: site
+        type: text
+        required: true
+      - name: week_start
+        type: date
+        required: true
+      - name: day
+        type: date
+        required: true
+      - name: dish
+        type: text
+        required: true
+      - name: portion_g
+        type: number
+      - name: cost_per_portion
+        type: number
+      - name: expected_covers
+        type: number
+    - name: waste_logs
+      ownedBy: user
+      sharing:
+      - viewer
+      - editor
+      description: Daily waste weighings
+      fields:
+      - name: date
+        type: date
+        required: true
+      - name: site
+        type: text
+        required: true
+      - name: dish
+        type: text
+      - name: category
+        type: select
+        options:
+        - preparation
+        - plate_leftover
+        - expired
+        - other
+      - name: weight_kg
+        type: number
+        required: true
+      - name: covers_actual
+        type: number
+      - name: source
+        type: select
+        options:
+        - device
+        - manual
+    - name: weekly_proposals
+      ownedBy: instance
+      description: Weekly proposals per site
+    - name: production_plan
+      ownedBy: user
+      description: Approved production plans
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: AvanzoZero
+    sections:
+    - type: hero
+      eyebrow:
+        it: Software anti-spreco per la ristorazione
+        en: Food-waste software for catering
+      title:
+        it: Meno **scarti** in cucina, ogni settimana.
+        en: Less **waste** in your kitchen, every week.
+      text:
+        it: 'Le pesate dei tuoi dispositivi (o inserite a mano) incrociate con menù e coperti: piatti critici, costi ed emissioni
+          evitabili, e un piano di produzione che approvi tu.'
+        en: 'Weighings from your devices (or entered by hand) cross-checked with menus and covers: critical dishes, avoidable
+          cost and emissions, and a production plan you approve.'
+      actions:
+      - label:
+          it: Inizia
+          en: Get started
+        href: /login
+        style: primary
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Registra
+          en: Record
+        text:
+          it: Sedi, menù con porzioni e costi, coperti previsti; pesate da dispositivo o da modulo rapido.
+          en: Sites, menus with portions and costs, expected covers; weighings from devices or a quick entry.
+        badge: 📋
+      - title:
+          it: Analizza
+          en: Analyse
+        text:
+          it: Piatti più avanzati, giorni critici, costo e CO2e evitabili.
+          en: Most wasted dishes, critical days, avoidable cost and CO2e.
+        badge: 📊
+      - title:
+          it: Correggi
+          en: Fix
+        text:
+          it: 'Ogni settimana proposte concrete: il responsabile approva e diventano piano di produzione.'
+          en: 'Every week concrete proposals: the manager approves and they become the production plan.'
+        badge: ✅
+    - type: cards
+      id: per-chi
+      title:
+        it: Per chi
+        en: Who it's for
+      items:
+      - title:
+          it: Responsabile cucina
+          en: Kitchen manager
+        text:
+          it: Menù, porzioni, approvazione del piano.
+          en: Menus, portions, plan approval.
+      - title:
+          it: Addetto
+          en: Kitchen staff
+        text:
+          it: Inserimento rapido degli scarti.
+          en: Quick waste entry.
+      - title:
+          it: Direzione
+          en: Management
+        text:
+          it: Dashboard per sede e report mensile in PDF.
+          en: Per-site dashboard and monthly PDF report.
+    - type: note
+      content:
+        it: 'Le emissioni sono stime indicative, non certificate. Bilance e cestini intelligenti sono hardware di terze parti:
+          qui arrivano solo i loro dati.'
+        en: 'Emissions are indicative estimates, not certified. Smart scales and bins are third-party hardware: only their
+          data reaches this app.'
+  - key: entry
+    type: chat
+    title:
+      it: Inserimento rapido scarti
+      en: Quick waste entry
+    source: agent:logger
+    placeholder:
+      it: Es. oggi 3,5 kg di pasta al ragù avanzata a pranzo
+      en: E.g. today 3.5 kg of leftover pasta at lunch
+    examples:
+    - Oggi 3,5 kg di pasta al ragù avanzata, 180 coperti
+    - Yesterday 2 kg of salad expired
+    roles:
+    - manager
+    - staff
+    - admin
+  - key: menus_view
+    type: table
+    title:
+      it: Menù
+      en: Menus
+    source: collection:menus
+    roles:
+    - manager
+    - admin
+  - key: sites_view
+    type: table
+    title:
+      it: Sedi
+      en: Sites
+    source: collection:sites
+    roles:
+    - manager
+    - admin
+  - key: new_analysis
+    type: new_run
+    title:
+      it: Nuova analisi
+      en: New analysis
+    roles:
+    - manager
+    - direction
+    - admin
+  - key: analyses
+    type: history
+    title:
+      it: Analisi e report
+      en: Analyses and reports
+    source: run
+    roles:
+    - manager
+    - direction
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: dashboard
+    type: page
+    title:
+      it: Andamento per sede
+      en: Trend per site
+    roles:
+    - manager
+    - direction
+    - admin
+    sections:
+    - type: data
+      title:
+        it: Totali
+        en: Totals
+      source: collection:waste_logs
+      display: kpi
+      kpis:
+      - label:
+          it: Scarti (kg)
+          en: Waste (kg)
+        agg: sum
+        field: weight_kg
+        format: number
+      - label:
+          it: Pesate
+          en: Weighings
+        agg: count
+    - type: data
+      title:
+        it: Scarti per sede (kg)
+        en: Waste per site (kg)
+      source: collection:waste_logs
+      display: chart
+      chart: bar
+      fields:
+      - key: site
+        label: Sede
+      - key: weight_kg
+        label: kg
+        format: number
+      limit: 200
+    - type: data
+      title:
+        it: Ultime pesate
+        en: Latest weighings
+      source: collection:waste_logs
+      display: table
+      fields:
+      - key: date
+        format: date
+      - key: site
+      - key: dish
+      - key: category
+        format: badge
+      - key: weight_kg
+        format: number
+      sort:
+        field: date
+        dir: desc
+      limit: 50
+  - key: weekly
+    type: instances
+    template: site_weekly_plan
+    title:
+      it: Piani settimanali
+      en: Weekly plans
+    roles:
+    - manager
+    - admin
+  - key: approve
+    type: approvals
+    title:
+      it: Approvazioni
+      en: Approvals
+    approvals:
+    - plan_approval
+    roles:
+    - manager
+    - admin
+  - key: plan_view
+    type: table
+    title:
+      it: Piano di produzione
+      en: Production plan
+    source: collection:production_plan
+    roles:
+    - manager
+    - staff
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Subscription
+    roles:
+    - manager
+    - admin
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 30
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:analyst:
+        estimate: 10
+        metered: true
+      agent:logger: 1
+    packs:
+    - key: small
+      credits: 500
+      price: 5
+      label: '500'
+    plans:
+    - key: site
+      price: 39
+      interval: month
+      label:
+        it: Per sede
+        en: Per site
+      includes:
+      - dashboard
+      - weekly plan
+      - monthly report
+      credits: 300
+      creditsReset: monthly
+      roles:
+      - manager
+  extensions:
+  - key: device_ingest
+    description: Automatic import of weighings from the supplier's scales and smart bins (API/webhook of each vendor) is not
+      available yet; for now data arrives via the quick-entry chat. A dedicated manual entry form and CSV/file upload are
+      also missing.
+  - key: per_site_subscription
+    description: Subscription is per account; one account per site is assumed. Chains with several sites under one account
+      and per-site seat billing need custom logic.
+  - key: monthly_pdf_email
+    description: Monthly report is generated on demand and printed to PDF; automatic emailing to management is not available
+      yet.

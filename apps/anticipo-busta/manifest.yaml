@@ -1,0 +1,386 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: anticipo-busta
+  displayName: Anticipo Busta
+  tagline:
+    it: Il tuo stipendio maturato, quando ti serve.
+  description:
+    it: 'Portale software per l''anticipo dello stipendio: il dipendente vede il maturato e richiede l''anticipo, un agente
+      verifica i limiti fissati dall''azienda e l''HR approva i casi fuori soglia. L''erogazione è svolta da un partner finanziario
+      autorizzato; il portale non eroga credito.'
+  langs:
+  - it
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12355b'
+      accent: '#1f9d8a'
+      background: '#f6f8fa'
+      foreground: '#17212b'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Anticipo
+      color: primary
+    - text: Busta
+      color: accent
+  header:
+    links:
+    - label: Come funziona
+      href: '#come-funziona'
+    - label: Per le aziende
+      href: '#aziende'
+    cta:
+      label: Accedi
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Amministratore
+      assignedBy: admin_emails
+    - key: hr
+      label: HR azienda
+      assignedBy: invite
+    - key: user
+      label: Dipendente
+      assignedBy: signup
+  limits:
+  - action: agent:checker
+    per: user
+    max: 5
+    window: day
+    roles:
+    - user
+  agents:
+  - key: checker
+    role: main
+    description: Verifica i limiti dell'anticipo, approva in automatico o chiede l'approvazione dell'HR.
+    profile:
+      inline:
+        display_name: Verificatore anticipi
+        crews:
+        - id: checker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei il verificatore delle richieste di anticipo sullo stipendio. Il portale calcola e istruisce
+            la richiesta; l''erogazione è eseguita da un partner finanziario autorizzato: non prometti mai l''erogazione e
+            non dai consulenza finanziaria.
+
+            Procedura: 1) leggi con lo strumento read_accruals il maturato del dipendente nel mese; 2) leggi con read_rules
+            le regole dell''azienda (percentuale massima del maturato, numero massimo di richieste al mese, soglia di approvazione
+            automatica); 3) leggi con read_requests le richieste già fatte nel mese; 4) calcola la capienza = maturato × percentuale
+            massima − anticipi già richiesti e non rifiutati. Non inventare mai cifre: se mancano maturato o regole, esito
+            ''non valutabile'' e spiega cosa manca.
+
+            Esiti: APPROVATA AUTOMATICAMENTE se importo ≤ capienza, richieste nel limite e importo ≤ soglia automatica; DA
+            APPROVARE DALL''HR se è nei limiti ma sopra la soglia automatica o se un limite è superato di poco (chiama request_hr_review);
+            RIFIUTATA se supera chiaramente capienza o numero richieste. Registra la richiesta con write_request (campi: importo,
+            stato, motivo, mese).
+
+            Scrivi il report in italiano. Inizia con un titolo di livello 1 ''# Richiesta di anticipo — <esito>''. Sezioni
+            ##: Riepilogo (tabella: maturato, percentuale massima, già anticipato, capienza, importo richiesto), Verifiche,
+            Esito, Prossimi passi (erogazione dal partner, conguaglio in busta a fine mese). Massimo 250 parole.'
+          mcp_servers: []
+    goalTemplate: 'Dipendente: {user}. Mese di riferimento: {date}.
+
+      Importo richiesto: {importo} EUR.
+
+      {?nota}Nota: {nota}{/nota}
+
+      Verifica la richiesta secondo le regole dell''azienda e rispondi in italiano ({lang}).'
+    appTools:
+    - name: read_accruals
+      description: Maturato del dipendente nel mese
+      action: read
+      collection: accruals
+      scope: user
+    - name: read_rules
+      description: Regole di anticipo dell'azienda
+      action: read
+      collection: company_rules
+      scope: all
+    - name: read_requests
+      description: Richieste già fatte dal dipendente
+      action: read
+      collection: advance_requests
+      scope: user
+    - name: write_request
+      description: Registra la richiesta con esito
+      action: append
+      collection: advance_requests
+      scope: user
+    awaits:
+    - hr_review
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.4
+  inputForm:
+    title: Richiedi un anticipo
+    fields:
+    - name: importo
+      type: number
+      required: true
+      label: Importo richiesto (€)
+      help: Non superiore a quanto indicato come disponibile
+    - name: nota
+      type: textarea
+      maxLength: 300
+      label: Nota (facoltativa)
+  data:
+    collections:
+    - name: accruals
+      ownedBy: user
+      description: Maturato mensile del dipendente, dai dati paghe dell'azienda
+      fields:
+      - name: mese
+        type: text
+        label: Mese
+      - name: maturato
+        type: number
+        label: Maturato (€)
+      - name: azienda
+        type: text
+        label: Azienda
+    - name: company_rules
+      ownedBy: app
+      description: Regole di anticipo fissate da ciascuna azienda
+      fields:
+      - name: azienda
+        type: text
+      - name: percentuale_max
+        type: number
+        label: '% massima del maturato'
+      - name: richieste_max_mese
+        type: number
+        label: Richieste max al mese
+      - name: soglia_automatica
+        type: number
+        label: Soglia approvazione automatica (€)
+    - name: advance_requests
+      ownedBy: user
+      description: Richieste di anticipo del dipendente
+      fields:
+      - name: mese
+        type: text
+      - name: importo
+        type: number
+      - name: stato
+        type: select
+        options:
+        - approvata
+        - da_approvare_hr
+        - rifiutata
+      - name: motivo
+        type: textarea
+  approvals:
+  - key: hr_review
+    title: Approvazione HR dell'anticipo
+    description: Richiesta fuori soglia da approvare
+    role: hr
+    fields:
+    - importo
+    - mese
+    - motivo
+    timeoutMinutes: 2880
+    onTimeout: reject
+    decidedBy: role
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Anticipo Busta
+    sections:
+    - type: hero
+      eyebrow: Anticipo sullo stipendio
+      title: Il tuo **maturato** del mese, quando ti serve.
+      text: Vedi quanto hai già maturato, richiedi un anticipo entro i limiti fissati dalla tua azienda e ricevi l'esito in
+        pochi minuti. L'erogazione è svolta da un partner finanziario autorizzato e l'importo viene conguagliato in busta.
+      actions:
+      - label: Richiedi un anticipo
+        href: /v/new_run
+        style: primary
+      - label: Accedi
+        href: /login
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title: Come funziona
+      items:
+      - title: Vedi il maturato
+        text: Il portale mostra quanto hai maturato nel mese e quanto puoi richiedere.
+        badge: 📊
+      - title: Invii la richiesta
+        text: Compili un modulo con l'importo.
+        badge: ✍️
+      - title: Verifica automatica
+        text: Un agente controlla percentuale massima, richieste già fatte e capienza. I casi fuori soglia vanno all'HR.
+        badge: ✅
+      - title: Conguaglio in busta
+        text: A fine mese l'importo anticipato viene trattenuto in busta.
+        badge: 🧾
+    - type: cards
+      id: aziende
+      title: Per le aziende
+      items:
+      - title: Regole tue
+        text: Percentuale massima, numero di richieste e soglia di approvazione automatica.
+      - title: HR in controllo
+        text: L'HR approva solo i casi fuori soglia e vede le richieste dell'azienda.
+      - title: Abbonamento o commissione
+        text: Abbonamento mensile dell'azienda o piccola commissione per anticipo.
+    - type: note
+      content: 'Anticipo Busta è il solo strato software di calcolo e richiesta. Non eroga credito: l''erogazione è un servizio
+        finanziario regolamentato svolto da un partner autorizzato. Non costituisce consulenza finanziaria.'
+  - key: maturato
+    type: table
+    title: Il mio maturato
+    source: collection:accruals
+    columns:
+    - mese
+    - maturato
+    - azienda
+    roles:
+    - user
+    data:
+      display: table
+      fields:
+      - key: mese
+        label: Mese
+      - key: maturato
+        label: Maturato (€)
+        format: money
+      - key: azienda
+        label: Azienda
+      sort:
+        field: mese
+        dir: desc
+      empty: Nessun dato di maturato ancora caricato dalla tua azienda.
+  - key: new_run
+    type: new_run
+    title: Richiedi anticipo
+    roles:
+    - user
+    - admin
+  - key: storico
+    type: history
+    title: Le mie richieste
+    source: run
+    roles:
+    - user
+    - admin
+  - key: richieste
+    type: table
+    title: Registro richieste
+    source: collection:advance_requests
+    roles:
+    - user
+    - hr
+    data:
+      display: table
+      fields:
+      - key: mese
+        label: Mese
+      - key: importo
+        label: Importo
+        format: money
+      - key: stato
+        label: Stato
+        format: badge
+      - key: motivo
+        label: Motivo
+      sort:
+        field: mese
+        dir: desc
+      limit: 100
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: approvazioni
+    type: approvals
+    title: Da approvare
+    approvals:
+    - hr_review
+    roles:
+    - hr
+  - key: account
+    type: account
+    title: Crediti e piano
+    roles:
+    - user
+    - hr
+  billing:
+    modes:
+    - credits
+    - subscription
+    currency: eur
+    signupCredits: 20
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:checker:
+        estimate: 10
+        metered: true
+    packs:
+    - key: piccolo
+      credits: 200
+      price: 5
+      label: 200 crediti
+    plans:
+    - key: azienda
+      price: 99
+      interval: month
+      label: Abbonamento azienda
+      credits: 5000
+      creditsReset: monthly
+      roles:
+      - hr
+      includes:
+      - Dipendenti illimitati
+      - Regole personalizzate
+      - Approvazioni HR
+  extensions:
+  - key: import_paghe
+    description: 'Il caricamento automatico dei dati di maturato da collegamento o file del sistema paghe non è disponibile
+      (nessun campo file né connettore con credenziali dell''azienda): per ora il maturato va inserito o incollato come testo.'
+  - key: vista_hr_azienda
+    description: 'La vista HR sulle richieste di tutti i dipendenti della stessa azienda richiede uno scope per azienda sulle
+      collezioni, oggi non espresso: le collezioni dei dipendenti sono per utente, quindi l''HR vede ora solo ciò che passa
+      dalle approvazioni.'
+  - key: erogazione_partner
+    description: L'erogazione è svolta dal partner finanziario autorizzato fuori dal portale; l'integrazione con il partner
+      e il conguaglio in busta non sono modellati.
+  - key: commissione_per_anticipo
+    description: La commissione per anticipo (modo per_transaction) va configurata con il partner e le regole di legge applicabili;
+      qui è previsto l'abbonamento aziendale più crediti.
+  - key: notifiche
+    description: Notifiche email di esito o di richiesta in attesa non sono disponibili.

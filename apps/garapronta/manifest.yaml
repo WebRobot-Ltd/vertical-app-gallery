@@ -1,0 +1,617 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: garapronta
+  displayName: GaraPronta
+  tagline:
+    it: Dal bando alla bozza di offerta, con ogni affermazione citata.
+  description:
+    it: GaraPronta cerca ogni giorno i nuovi bandi su TED adatti al profilo della tua azienda, analizza bando e documenti
+      di gara, verifica i requisiti e prepara la bozza della relazione tecnica riusando le tue offerte passate. L'invio dell'offerta
+      resta all'azienda.
+  langs:
+  - it
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12355b'
+      accent: '#1f8a70'
+      background: '#f6f8fb'
+      foreground: '#16202c'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Gara
+      color: primary
+    - text: Pronta
+      color: accent
+    byline: by WebRobot
+    buttonShape: rounded
+  header:
+    links:
+    - label: Come funziona
+      href: '#come-funziona'
+    - label: Fonti
+      href: '#fonti'
+    cta:
+      label: Accedi
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      label: Azienda
+      assignedBy: signup
+  limits:
+  - action: run
+    per: user
+    max: 10
+    window: day
+    roles:
+    - user
+  egress:
+    hosts:
+    - api.ted.europa.eu
+    notes: 'TED (Tenders Electronic Daily), Publications Office of the EU: API pubblica di ricerca avvisi, riuso gratuito
+      anche commerciale, CC BY 4.0.'
+  agents:
+  - key: watcher
+    role: scheduled
+    description: Ogni giorno cerca su TED i nuovi bandi italiani adatti al profilo di una azienda e li ordina per rilevanza.
+    memory: instance
+    profile:
+      inline:
+        display_name: GaraPronta osservatorio
+        crews:
+        - id: watcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei l''osservatorio bandi di GaraPronta. Ogni giorno cerchi su TED i nuovi avvisi di gara italiani
+            adatti al profilo di UNA azienda.
+
+
+            Usa lo strumento ted_search (POST) con un body JSON di questo tipo: {"query":"buyer-country=ITA AND (classification-cpv=33*
+            OR classification-cpv=336*) AND publication-date>=20261101","fields":["publication-number","notice-title","buyer-name","deadline-receipt-tender-date-lot","estimated-value-lot","classification-cpv","links"],"limit":50,"page":1}.
+            Costruisci la clausola CPV dai codici del profilo (usa il prefisso con * per le divisioni/gruppi). La data di
+            pubblicazione è nel formato AAAAMMGG: cerca dalla data dell''ultima ricerca ricordata in memoria, altrimenti dagli
+            ultimi 3 giorni. Usa solo i campi elencati: non inventarne altri. Se la risposta è paginata, leggi al massimo
+            3 pagine.
+
+
+            Filtra poi tu i risultati: regioni di interesse (deducile dall''ente e dal titolo; se non sei sicuro, includi
+            e scrivilo), importo tra minimo e massimo (se l''importo manca, includi e scrivi ''importo non indicato''), parole
+            chiave. Scarta i bandi già segnalati (vedi memoria). Ordina per rilevanza (0-100) e motiva in una riga ciascuno.
+            Mai inventare importi, lotti o scadenze: se un dato non c''è nella risposta di TED scrivi ''non indicato''. Scrivi
+            in italiano.
+
+
+            Formato: titolo "# Nuovi bandi — <data>", un paragrafo di sintesi, poi una tabella Markdown (rilevanza, bando,
+            ente, importo, lotti, scadenza, link TED). Chiudi con un blocco ```json contenente {"date":"AAAA-MM-GG","summary":"...","alerts":[{"publication_number":"","title":"","buyer":"","value":"","lots":"","deadline":"","relevance":0,"why":"","url":""}]}.
+            Se non ci sono bandi nuovi, alerts è vuoto e lo dici. Alla fine chiama una volta lo strumento remember con la
+            data dell''ultima ricerca e i numeri di pubblicazione già segnalati.'
+          mcp_servers: []
+    appTools:
+    - name: ted_search
+      description: Cerca avvisi di gara su TED (Publications Office of the EU)
+      action: http
+      http:
+        method: POST
+        url: https://api.ted.europa.eu/v3/notices/search
+        attribution: TED, Publications Office of the EU, CC BY 4.0
+    goalTemplate: Osservatorio "{instance}". Oggi è {date}.
+    output: markdown+json
+    resultSchema:
+      type: object
+      properties:
+        date:
+          type: string
+        summary:
+          type: string
+        alerts:
+          type: array
+          items:
+            type: object
+    writesTo:
+      collection: tender_alerts
+      parse: json_last
+      keyBy: date
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.5
+  - key: analyst
+    role: main
+    when: mode == 'analisi'
+    description: 'Analizza bando e documenti di gara: requisiti, punteggi, scadenze, incongruenze, quesiti, idoneità dell''azienda.'
+    profile:
+      inline:
+        display_name: GaraPronta analista
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei un analista di gare d''appalto pubbliche italiane (D.Lgs. 36/2023) per fornitori di dispositivi
+            medici e farmaci. Ricevi il numero del bando TED, eventuale testo dei documenti di gara incollato dall''utente
+            e link a documenti. Leggi il bando (ted_search con query publication-number=<numero> e i campi publication-number,
+            notice-title, buyer-name, deadline-receipt-tender-date-lot, estimated-value-lot, classification-cpv, links) e,
+            se servono, le pagine dei documenti di gara tramite gli strumenti WebRobot. Leggi il profilo dell''azienda con
+            company_profile_read.
+
+
+            Regola assoluta: ogni affermazione cita il documento da cui viene tra parentesi quadre, es. [Disciplinare, art.
+            7.2], [Bando TED 123456-2026], [Profilo azienda]. Se un''informazione non è nei documenti disponibili scrivi ''non
+            rilevabile dai documenti forniti''. Non inventare importi, date o requisiti. Non dare consulenza legale come fatto:
+            segnala cosa verificare.
+
+
+            Struttura: "# Analisi — <titolo breve del bando>" poi ## Sintesi (ente, oggetto, importo, lotti, scadenza), ##
+            Requisiti di partecipazione (tabella: requisito | fonte | l''azienda lo ha? Sì/No/Da verificare | motivo), ##
+            Criteri di punteggio (tabella con punti massimi), ## Scadenze e adempimenti, ## Incongruenze tra i documenti (citando
+            entrambi i documenti), ## Quesiti da porre alla stazione appaltante (bozze pronte, con riferimento all''articolo),
+            ## Esito: la tua azienda ha i requisiti? (verdetto motivato e cosa manca), ## Documenti letti (elenco; avvisa
+            se manca il disciplinare o il capitolato). Si ricorda che l''invio dell''offerta resta all''azienda.'
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+    appTools:
+    - name: ted_search
+      description: Cerca avvisi di gara su TED (Publications Office of the EU)
+      action: http
+      http:
+        method: POST
+        url: https://api.ted.europa.eu/v3/notices/search
+        attribution: TED, Publications Office of the EU, CC BY 4.0
+    - name: company_profile_read
+      description: Legge il profilo dell'azienda
+      action: read
+      collection: company_profile
+      scope: user
+    goalTemplate: 'Analizza il bando TED: {notice_id}
+
+      {?doc_links}Link ai documenti di gara: {doc_links}{/doc_links}
+
+      {?tender_docs}Testo dei documenti di gara incollato dall''utente:
+
+      {tender_docs}{/tender_docs}
+
+      {?notes}Note: {notes}{/notes}
+
+      Data: {date}. Scrivi in italiano.'
+    output: markdown
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 1.5
+  - key: drafter
+    role: main
+    when: mode == 'bozza'
+    description: Prepara la bozza della relazione tecnica riusando le offerte passate dell'azienda.
+    profile:
+      inline:
+        display_name: GaraPronta redattore
+        crews:
+        - id: drafter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei un redattore di relazioni tecniche per gare d''appalto pubbliche italiane. Prepari la BOZZA
+            della relazione tecnica per il bando indicato, riusando i testi delle offerte passate dell''azienda (past_offers_read)
+            e i dati del profilo (company_profile_read). Leggi i criteri di punteggio dal testo dei documenti di gara fornito
+            dall''utente e, se serve, dal bando su TED (ted_search con publication-number) o dai link tramite WebRobot.
+
+
+            Regole: ogni affermazione cita la fonte tra parentesi quadre: [Disciplinare, art. X] per i requisiti della gara,
+            [Offerta passata: <titolo, anno>] per i contenuti riusati, [Profilo azienda] per i dati aziendali. Non inventare
+            certificazioni, referenze, numeri, tempi di consegna o capacità: dove manca un dato metti il segnaposto «DA COMPLETARE:
+            <cosa serve>». Adatta i contenuti riusati al bando, non copiarli alla cieca, e segnala quando un testo passato
+            riguarda un contesto diverso.
+
+
+            Struttura: "# Bozza relazione tecnica — <bando>", poi una sezione ## per ciascun criterio di punteggio, nell''ordine
+            del disciplinare, con i punti massimi; in ogni sezione il testo proposto e una riga ''Fonti riusate''. Chiudi
+            con ## Elementi da completare (elenco) e ## Verifiche prima dell''invio. Ricorda che è una bozza: revisione e
+            invio dell''offerta restano all''azienda.'
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+    appTools:
+    - name: ted_search
+      description: Cerca avvisi di gara su TED (Publications Office of the EU)
+      action: http
+      http:
+        method: POST
+        url: https://api.ted.europa.eu/v3/notices/search
+        attribution: TED, Publications Office of the EU, CC BY 4.0
+    - name: company_profile_read
+      description: Legge il profilo dell'azienda
+      action: read
+      collection: company_profile
+      scope: user
+    - name: past_offers_read
+      description: Legge l'archivio delle offerte passate dell'azienda
+      action: search
+      collection: past_offers
+      scope: user
+    goalTemplate: 'Prepara la bozza della relazione tecnica per il bando TED: {notice_id}
+
+      {?doc_links}Link ai documenti di gara: {doc_links}{/doc_links}
+
+      {?tender_docs}Testo dei documenti di gara:
+
+      {tender_docs}{/tender_docs}
+
+      {?notes}Indicazioni: {notes}{/notes}
+
+      Data: {date}. Scrivi in italiano.'
+    output: markdown
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 2
+  templates:
+  - key: tender_watch
+    title: Osservatorio bandi
+    description: Ogni giorno i nuovi bandi TED adatti al tuo profilo, ordinati per rilevanza.
+    agent: watcher
+    params:
+    - name: cpv
+      type: text
+      required: true
+      label: Codici CPV
+      help: es. 33*, 336* (dispositivi medici, farmaci)
+    - name: regions
+      type: text
+      label: Regioni di interesse
+      help: vuoto = tutta Italia
+    - name: min_value
+      type: number
+      label: Importo minimo (€)
+    - name: max_value
+      type: number
+      label: Importo massimo (€)
+    - name: keywords
+      type: text
+      label: Parole chiave
+    goal: 'Osservatorio "{instance}". Oggi è {date}.
+
+      Profilo di ricerca — CPV: {cpv}. {?regions}Regioni: {regions}.{/regions}{!regions}Regioni: tutta Italia.{/regions} {?min_value}Importo
+      minimo: {min_value} €.{/min_value} {?max_value}Importo massimo: {max_value} €.{/max_value} {?keywords}Parole chiave:
+      {keywords}.{/keywords}
+
+      Cerca i bandi italiani nuovi su TED e scrivi l''avviso in italiano.'
+    schedule:
+      cron: 0 6 * * *
+      userCanChange: false
+    maxPerUser: 3
+    roles:
+    - user
+    - admin
+  inputForm:
+    title: Nuova richiesta
+    fields:
+    - name: mode
+      type: select
+      required: true
+      label: Cosa vuoi
+      default: analisi
+      options:
+      - value: analisi
+        label: Analisi del bando e dei requisiti
+      - value: bozza
+        label: Bozza della relazione tecnica
+    - name: notice_id
+      type: text
+      required: true
+      label: Numero di pubblicazione TED
+      help: es. 123456-2026
+    - name: doc_links
+      type: urls
+      label: Link ai documenti di gara
+      help: Disciplinare, capitolato (il caricamento di file non è ancora disponibile)
+    - name: tender_docs
+      type: textarea
+      maxLength: 60000
+      label: Testo dei documenti di gara
+      help: Incolla qui il testo di disciplinare e capitolato, indicando il nome di ciascun documento
+    - name: notes
+      type: textarea
+      maxLength: 600
+      label: Note (facoltative)
+  data:
+    collections:
+    - name: company_profile
+      ownedBy: user
+      description: Profilo dell'azienda
+      fields:
+      - name: company_name
+        type: text
+        required: true
+        label: Ragione sociale
+      - name: cpv_codes
+        type: text
+        label: Settori (CPV)
+      - name: regions
+        type: text
+        label: Regioni di interesse
+      - name: min_value
+        type: number
+        label: Importo minimo (€)
+      - name: max_value
+        type: number
+        label: Importo massimo (€)
+      - name: certifications
+        type: textarea
+        label: Certificazioni possedute
+        help: es. ISO 9001, ISO 13485, marcatura CE, GDP, autorizzazione AIFA
+      - name: keywords
+        type: text
+        label: Parole chiave
+      - name: turnover
+        type: text
+        label: Fatturato specifico ultimi 3 anni
+    - name: past_offers
+      ownedBy: user
+      description: Archivio delle offerte tecniche passate dell'azienda
+      fields:
+      - name: title
+        type: text
+        required: true
+        label: Gara / titolo
+      - name: year
+        type: number
+        label: Anno
+      - name: buyer
+        type: text
+        label: Stazione appaltante
+      - name: outcome
+        type: select
+        label: Esito
+        options:
+        - value: won
+          label: Aggiudicata
+        - value: lost
+          label: Non aggiudicata
+        - value: unknown
+          label: Non noto
+      - name: text
+        type: textarea
+        maxLength: 60000
+        label: Testo della relazione tecnica
+      - name: link
+        type: url
+        label: Link al documento
+    - name: tender_alerts
+      ownedBy: instance
+      description: Avvisi giornalieri dell'osservatorio, uno per giorno
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: GaraPronta
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: Per fornitori di dispositivi medici e farmaci
+      title: Dal bando alla **bozza di offerta**, con ogni affermazione citata.
+      text: Ogni giorno i nuovi bandi TED adatti alla tua azienda. Su quello scelto, un agente AI legge bando e documenti
+        di gara, estrae requisiti e punteggi, segnala incongruenze e ti dice se hai i requisiti. Poi prepara la bozza della
+        relazione tecnica dalle tue offerte passate.
+      actions:
+      - label: Inizia
+        href: /login
+        style: primary
+      - label: Come funziona
+        href: '#come-funziona'
+        style: ghost
+      note: L'invio dell'offerta resta sempre all'azienda.
+    - type: steps
+      id: come-funziona
+      title: Come funziona
+      items:
+      - title: 1 · Il profilo
+        text: Settori CPV, regioni, importi, certificazioni e parole chiave.
+        badge: 🏢
+      - title: 2 · L'osservatorio
+        text: 'Ogni mattina un avviso con i bandi adatti, ordinati per rilevanza: ente, importo, lotti, scadenza.'
+        badge: 🔔
+      - title: 3 · L'analisi
+        text: Requisiti, criteri di punteggio, scadenze, incongruenze e quesiti da porre alla stazione appaltante.
+        badge: 🔍
+      - title: 4 · La bozza
+        text: Relazione tecnica costruita sulle tue offerte passate, con le fonti citate e i punti da completare.
+        badge: ✍️
+    - type: cards
+      id: fonti
+      title: Fonti
+      items:
+      - title: TED
+        text: 'Tenders Electronic Daily, la banca dati europea degli appalti: API pubblica, CC BY 4.0. Altre fonti nazionali
+          in arrivo.'
+      - title: I tuoi documenti
+        text: Disciplinare e capitolato incollati o linkati da te, e il tuo archivio di offerte passate.
+    - type: note
+      content: 'GaraPronta è un supporto alla decisione, non consulenza legale. Verifica sempre i documenti ufficiali di gara.
+        Dati TED: © Unione europea, CC BY 4.0.'
+  - key: new
+    type: new_run
+    title: Nuova analisi o bozza
+    roles:
+    - user
+    - admin
+  - key: runs
+    type: history
+    title: Le mie richieste
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: watches
+    type: instances
+    template: tender_watch
+    title: Osservatorio bandi
+    roles:
+    - user
+    - admin
+  - key: alerts
+    type: table
+    title: Avvisi dei bandi
+    source: collection:tender_alerts
+    roles:
+    - user
+    - admin
+    data:
+      path: alerts
+      display: table
+      fields:
+      - key: relevance
+        label: Rilevanza
+        format: number
+      - key: title
+        label: Bando
+      - key: buyer
+        label: Ente
+      - key: value
+        label: Importo
+      - key: lots
+        label: Lotti
+      - key: deadline
+        label: Scadenza
+      - key: why
+        label: Perché
+      - key: url
+        label: TED
+        format: link
+      sort:
+        field: relevance
+        dir: desc
+      limit: 100
+      empty: 'Nessun avviso ancora: crea un osservatorio.'
+  - key: profile
+    type: list
+    title: Profilo azienda
+    source: collection:company_profile
+    roles:
+    - user
+    - admin
+  - key: archive
+    type: list
+    title: Archivio offerte
+    source: collection:past_offers
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title: Crediti e abbonamento
+    roles:
+    - user
+  schedules:
+  - agent: watcher
+    action: run
+    cron: 0 6 * * *
+    owner: app
+  billing:
+    modes:
+    - credits
+    - subscription
+    currency: eur
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:analyst:
+        estimate: 150
+        metered: true
+      agent:drafter:
+        estimate: 250
+        metered: true
+      agent:watcher:
+        estimate: 5
+        metered: true
+        requiresPlan: osservatorio
+    packs:
+    - key: starter
+      credits: 1000
+      price: 15
+      label: Starter
+    - key: pro
+      credits: 5000
+      price: 65
+      label: Pro
+    plans:
+    - key: osservatorio
+      price: 39
+      interval: month
+      label: Osservatorio giornaliero
+      includes:
+      - osservatorio bandi con avviso giornaliero
+      - fino a 3 profili di ricerca
+      credits: 0
+  extensions:
+  - key: file_upload
+    description: 'Il caricamento di file (disciplinare, capitolato, offerte passate) non è ancora disponibile: l''utente incolla
+      il testo o indica un link.'
+  - key: email_alerts
+    description: 'L''avviso giornaliero non può ancora essere inviato per email: si consulta nell''app.'
+  - key: italian_sources
+    description: 'Altre fonti ufficiali italiane (ANAC, portali regionali, MEPA) non hanno API riusabili configurate: per
+      ora solo TED.'

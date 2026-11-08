@@ -1,0 +1,517 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: noleggio-confronto
+  displayName: NoleggioConfronto
+  tagline:
+    it: Il noleggio auto a lungo termine che conviene davvero al tuo profilo.
+  description:
+    it: Confronta le offerte di noleggio a lungo termine provenienti solo da operatori e concessionari che ne autorizzano
+      l'uso. Classifica per canone, servizi inclusi, anticipo e costo totale, con spiegazione di quale conviene per te.
+  langs:
+  - it
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12355b'
+      accent: '#e07a1f'
+      background: '#f6f8fb'
+      foreground: '#162230'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Noleggio
+      color: primary
+    - text: Confronto
+      color: accent
+  header:
+    links:
+    - label: Come funziona
+      href: '#come-funziona'
+    - label: Fonti delle offerte
+      href: '#fonti'
+    cta:
+      label: Confronta ora
+      href: /v/new_search
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      assignedBy: signup
+  limits:
+  - action: agent:comparer
+    per: user
+    max: 15
+    window: day
+    roles:
+    - user
+  - action: chat
+    per: user
+    max: 30
+    window: day
+    roles:
+    - user
+  agents:
+  - key: comparer
+    role: main
+    description: Confronta le offerte autorizzate presenti nel catalogo e scrive la classifica per il profilo dell'utente.
+    profile:
+      inline:
+        display_name: Comparatore noleggio
+        crews:
+        - id: comparer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei un analista del noleggio auto a lungo termine (NLT). Usi SOLO le offerte del catalogo, che arrivano
+            da feed e accordi con operatori e concessionari autorizzati: cerca con il tool search_offers (filtri: categoria,
+            alimentazione, cambio, km annui, durata, tipo cliente privato/partita IVA). Non inventare mai offerte, canoni
+            o servizi; se non ci sono offerte adatte dillo chiaramente e suggerisci quali criteri allargare. Escludi le offerte
+            con anticipo sopra il massimo indicato e quelle scadute. Costo totale = anticipo + canone mensile x durata in
+            mesi (indica che eventuali spese di chiusura/penali non sono incluse se non note). Per partita IVA specifica se
+            i prezzi sono IVA esclusa e ricorda che la detraibilità dipende dal caso: non dare consulenza fiscale come fatto
+            certo. Struttura del report: titolo di primo livello ''# Noleggio <categoria> — classifica per il tuo profilo'';
+            poi ''## In sintesi'' (quale conviene e perché in 3 righe); ''## Classifica'' con tabella: posizione, operatore,
+            modello, canone mensile, anticipo, km/anno, durata, manutenzione, assicurazione, pneumatici, costo totale; ''##
+            Perché questa conviene per te'' (ragionamento sul profilo: km, durata, uso privato o P.IVA); ''## Cose da verificare''
+            (franchigie, penali km extra, restituzione); ''## Fonti'' con operatore e data di validità di ogni offerta. Aggiungi
+            un grafico dei costi totali:
+
+            ```chart
+
+            {"type":"bar","title":"Costo totale","labels":["A"],"series":[{"name":"Costo totale","values":[1]}],"unit":"€"}
+
+            ```
+
+            con valori reali. Scrivi in italiano, sotto 600 parole.'
+    appTools:
+    - name: search_offers
+      description: Cerca nel catalogo delle offerte autorizzate di noleggio a lungo termine
+      action: search
+      collection: offers
+      scope: all
+    goalTemplate: 'Cerco: categoria {category_label}, alimentazione {fuel_label}, cambio {gearbox_label}.
+
+      Chilometri annui: {km_year}. Durata: {months_label}. Anticipo massimo: {max_upfront} euro.
+
+      Uso: {use_type_label}.
+
+      {?notes}Note: {notes}{/notes}
+
+      Data di oggi: {date}. Scrivi in italiano.'
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  - key: watcher
+    role: scheduled
+    description: Controlla ogni giorno se esce un'offerta sotto la soglia di canone per la categoria scelta dall'utente.
+    memory: instance
+    writesTo:
+      collection: alert_hits
+    profile:
+      inline:
+        display_name: Avviso offerte
+        crews:
+        - id: watcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: Controlli per una persona se nel catalogo (tool search_offers) esistono offerte valide della categoria
+            indicata con canone mensile sotto la soglia. Non inventare offerte. Inizia con '# Avviso — <categoria> — <data>'.
+            Se ci sono offerte nuove rispetto a quelle ricordate in memoria, scrivi '## Nuove offerte sotto soglia' con tabella
+            (operatore, modello, canone, anticipo, durata, km/anno, servizi inclusi, valida fino a). Se non ce ne sono scrivi
+            'Nessuna nuova offerta sotto soglia oggi.' Alla fine chiama una volta il tool remember con gli identificativi
+            delle offerte già segnalate.
+    appTools:
+    - name: search_offers
+      description: Cerca nel catalogo delle offerte autorizzate
+      action: search
+      collection: offers
+      scope: all
+    output: markdown
+  - key: lead_taker
+    role: helper
+    description: Raccoglie il contatto di chi è interessato a un'offerta e lo registra per l'operatore.
+    profile:
+      inline:
+        display_name: Richiesta di contatto
+        crews:
+        - id: lead_taker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Aiuti chi è interessato a un''offerta di noleggio a lungo termine a lasciare una richiesta di contatto
+            per l''operatore. Chiedi in modo breve: operatore e modello dell''offerta, nome, telefono o email, orario preferito
+            per essere richiamato, e il consenso esplicito a trasmettere i dati a quell''operatore. Senza consenso non registrare
+            nulla. Quando hai tutto, usa il tool save_lead e conferma all''utente che l''operatore lo ricontatterà. Non promettere
+            prezzi o approvazioni: decide l''operatore. Rispondi in italiano.'
+    appTools:
+    - name: save_lead
+      description: Registra la richiesta di contatto dell'utente
+      action: write
+      collection: leads
+      scope: user
+    goalTemplate: 'Conversazione finora:
+
+      {history}
+
+      Nuovo messaggio dell''utente: {message}'
+    output: markdown
+  inputForm:
+    title: Nuova ricerca
+    fields:
+    - name: category
+      type: select
+      required: true
+      label: Categoria
+      options:
+      - value: city
+        label: Citycar
+      - value: compact
+        label: Berlina / compatta
+      - value: suv
+        label: SUV / crossover
+      - value: station
+        label: Station wagon
+      - value: van
+        label: Veicolo commerciale
+    - name: fuel
+      type: select
+      required: true
+      label: Alimentazione
+      options:
+      - value: any
+        label: Indifferente
+      - value: petrol
+        label: Benzina
+      - value: diesel
+        label: Diesel
+      - value: hybrid
+        label: Ibrida
+      - value: electric
+        label: Elettrica
+    - name: gearbox
+      type: select
+      required: true
+      label: Cambio
+      options:
+      - value: any
+        label: Indifferente
+      - value: manual
+        label: Manuale
+      - value: auto
+        label: Automatico
+    - name: km_year
+      type: number
+      required: true
+      label: Chilometri all'anno
+      help: es. 15000
+    - name: months
+      type: select
+      required: true
+      label: Durata del contratto
+      options:
+      - value: '24'
+        label: 24 mesi
+      - value: '36'
+        label: 36 mesi
+      - value: '48'
+        label: 48 mesi
+      - value: '60'
+        label: 60 mesi
+    - name: max_upfront
+      type: number
+      required: true
+      label: Anticipo massimo (€)
+      help: 0 se non vuoi anticipo
+    - name: use_type
+      type: select
+      required: true
+      label: Uso
+      options:
+      - value: private
+        label: Privato
+      - value: vat
+        label: Partita IVA
+    - name: notes
+      type: textarea
+      maxLength: 400
+      label: Note (facoltative)
+  data:
+    collections:
+    - name: offers
+      ownedBy: shared
+      searchable: true
+      description: Offerte di noleggio a lungo termine da feed e accordi con operatori e concessionari che ne autorizzano
+        l'uso
+      fields:
+      - name: operator
+        type: text
+        label: Operatore
+      - name: model
+        type: text
+        label: Modello
+      - name: category
+        type: text
+        label: Categoria
+      - name: fuel
+        type: text
+        label: Alimentazione
+      - name: gearbox
+        type: text
+        label: Cambio
+      - name: customer_type
+        type: text
+        label: Privato o P.IVA
+      - name: monthly_fee
+        type: number
+        label: Canone mensile
+      - name: upfront
+        type: number
+        label: Anticipo
+      - name: months
+        type: number
+        label: Durata (mesi)
+      - name: km_year
+        type: number
+        label: Km annui
+      - name: maintenance
+        type: boolean
+        label: Manutenzione
+      - name: insurance
+        type: boolean
+        label: Assicurazione
+      - name: tyres
+        type: boolean
+        label: Pneumatici
+      - name: valid_until
+        type: date
+        label: Valida fino al
+      - name: url
+        type: url
+        label: Pagina dell'operatore
+    - name: alert_hits
+      ownedBy: instance
+      description: Esiti dei controlli giornalieri di ogni avviso
+    - name: leads
+      ownedBy: user
+      description: Richieste di contatto dell'utente verso gli operatori
+      fields:
+      - name: name
+        type: text
+        label: Nome
+      - name: contact
+        type: text
+        label: Contatto
+      - name: operator
+        type: text
+        label: Operatore
+      - name: offer
+        type: text
+        label: Offerta
+      - name: callback_time
+        type: text
+        label: Orario
+      - name: consent
+        type: boolean
+        label: Consenso
+  templates:
+  - key: price_alert
+    title: Avviso di prezzo
+    description: Ti segnaliamo nell'app quando esce un'offerta sotto il canone che indichi per la categoria scelta.
+    agent: watcher
+    params:
+    - name: category
+      type: select
+      required: true
+      label: Categoria
+      options:
+      - value: city
+        label: Citycar
+      - value: compact
+        label: Berlina / compatta
+      - value: suv
+        label: SUV / crossover
+      - value: station
+        label: Station wagon
+      - value: van
+        label: Veicolo commerciale
+    - name: max_fee
+      type: number
+      required: true
+      label: Canone massimo al mese (€)
+      default: 300
+    - name: use_type
+      type: select
+      required: true
+      label: Uso
+      options:
+      - value: private
+        label: Privato
+      - value: vat
+        label: Partita IVA
+    goal: 'Avviso "{instance}": categoria {category}, uso {use_type}, cerca offerte con canone mensile sotto {max_fee} euro.
+      Oggi è {date}.'
+    schedule:
+      cron: 0 7 * * *
+      userCanChange: false
+    maxPerUser: 5
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: NoleggioConfronto
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: Noleggio a lungo termine
+      title: Trova il noleggio che **conviene davvero** al tuo profilo
+      text: Compili un modulo, un agente AI confronta le offerte autorizzate e ti restituisce una classifica con canone, servizi
+        inclusi, anticipo e costo totale. Gratis per te.
+      actions:
+      - label: Confronta ora
+        href: /v/new_search
+        style: primary
+      - label: Accedi
+        href: /login
+        style: ghost
+      aside: <div style="padding:16px"><strong>Esempio di classifica</strong><br>1. SUV ibrido 36 mesi — 289 €/mese, anticipo
+        1.500 €<br>2. SUV benzina 36 mesi — 305 €/mese, anticipo 0 €<br><small>Costo totale e servizi inclusi per ogni offerta.</small></div>
+    - type: steps
+      id: come-funziona
+      title: Come funziona
+      items:
+      - title: Descrivi cosa cerchi
+        text: Categoria, alimentazione, cambio, km annui, durata, anticipo massimo e uso privato o P.IVA.
+        badge: 📝
+      - title: L'agente confronta
+        text: Classifica con canone, manutenzione, assicurazione, pneumatici, anticipo e costo totale.
+        badge: ⚖️
+      - title: Salva e ricevi avvisi
+        text: Le ricerche restano nel tuo storico; imposta un avviso di prezzo per categoria.
+        badge: 🔔
+      - title: Lascia un contatto
+        text: Se un'offerta ti interessa, la tua richiesta passa all'operatore.
+        badge: 🤝
+    - type: cards
+      id: fonti
+      title: Da dove arrivano le offerte
+      items:
+      - title: Solo fonti autorizzate
+        text: Feed e accordi con operatori e concessionari che ne consentono l'uso.
+      - title: Nessuno scraping vietato
+        text: Verifichiamo i termini di servizio e non copiamo dati da siti che lo vietano.
+      - title: Le tue ricerche sono private
+        text: Vedi solo le tue ricerche e i tuoi avvisi.
+    - type: note
+      content: 'NoleggioConfronto è gratuito per l''utente; riceve una commissione dagli operatori sui contatti qualificati.
+        Le offerte sono indicative: le condizioni valide sono quelle del contratto dell''operatore. Supporto alla decisione,
+        non consulenza finanziaria o fiscale.'
+  - key: new_search
+    type: new_run
+    title: Nuova ricerca
+    roles:
+    - user
+    - admin
+  - key: searches
+    type: history
+    title: Le mie ricerche
+    source: run
+    roles:
+    - user
+    - admin
+  - key: result
+    type: report
+    title: Classifica
+    source: run
+    printable: true
+    nav: false
+  - key: alerts
+    type: instances
+    template: price_alert
+    title: I miei avvisi
+    roles:
+    - user
+    - admin
+  - key: alert_results
+    type: list
+    title: Esiti degli avvisi
+    source: collection:alert_hits
+    roles:
+    - user
+    - admin
+  - key: contact
+    type: chat
+    title: Lascia un contatto
+    source: agent:lead_taker
+    placeholder: Quale offerta ti interessa?
+    examples:
+    - Vorrei essere richiamato per la prima offerta della classifica
+    roles:
+    - user
+    - admin
+  billing:
+    modes:
+    - free
+  egress:
+    hosts:
+    - example.com
+    notes: 'Nessuna chiamata esterna: le offerte arrivano solo da feed e accordi autorizzati.'
+  extensions:
+  - key: offer_feeds
+    description: Importazione nel catalogo offers dei feed degli operatori e concessionari con accordo scritto. Prima di ogni
+      nuova fonte si verificano i termini di servizio; nessuno scraping di siti che lo vietano.
+  - key: email_alerts
+    description: 'Email quando scatta un avviso di prezzo: le notifiche email non sono ancora disponibili. Per ora l''esito
+      dell''avviso compare in ''Esiti degli avvisi''.'
+  - key: operator_handoff
+    description: 'Passaggio delle richieste di contatto all''operatore (invio, ruolo operatore, conteggio dei contatti qualificati
+      e commissione): non ancora disponibile. Le richieste sono salvate in leads, visibili solo all''utente.'

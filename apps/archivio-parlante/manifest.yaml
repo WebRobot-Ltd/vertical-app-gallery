@@ -1,0 +1,699 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: archivio-parlante
+  displayName: Archivio Parlante
+  tagline:
+    it: Chiedi ai manuali della tua azienda, ricevi la risposta e il passaggio esatto.
+    en: Ask your company's manuals, get the answer and the exact passage.
+  description:
+    it: 'Motore di ricerca interno in chat su manuali, procedure e documentazione: risponde in modo sintetico, cita il passaggio
+      con link, rispetta i gruppi autorizzati e registra le lacune.'
+    en: 'Internal chat search over manuals, procedures and documentation: concise answers, exact passage with link, group-based
+      access and knowledge-gap tracking.'
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#1f3a5f'
+      accent: '#e08a1e'
+      background: '#f7f8fa'
+      foreground: '#18212b'
+    fonts:
+      body: Inter
+      display: Source Serif 4
+    wordmark:
+    - text: Archivio
+      color: primary
+    - text: Parlante
+      color: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Assistenza clienti
+        en: Customer support
+      href: '#assistenza'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+      - public_chat
+      agents:
+      - public_assistant
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: employee
+      label:
+        it: Dipendente
+        en: Employee
+      assignedBy: invite
+  limits:
+  - action: chat
+    per: user
+    max: 100
+    window: day
+    roles:
+    - employee
+  - action: chat
+    per: ip
+    max: 20
+    window: hour
+    roles:
+    - anonymous
+  agents:
+  - key: indexer
+    role: main
+    description: Registers a document (pasted text or link) in the archive with department and allowed groups.
+    profile:
+      inline:
+        display_name: Archivio indexer
+        crews:
+        - id: indexer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You register documents in the company archive. With the tool save_document create ONE record from
+            the admin''s input: title, department, groups, visibility, source_url, content (the pasted text, cleaned and split
+            in sections with their headings, never invented or summarised away), updated_at (today''s date unless given) and
+            review_due. If visibility is public use save_public_document instead. Then answer with a level-1 title "# Documento
+            registrato: <title>" and a short list of what was stored. If the content is empty, say that only a link was stored
+            and the text must be pasted to make it searchable. Never invent content.'
+    goalTemplate: 'Register this document. Title: {title}. Department: {department}. Allowed groups: {groups}. Visibility:
+      {visibility_label}. Link: {source_url}. Review due: {review_due}. Today is {date}.
+
+      Content:
+
+      {content}'
+    appTools:
+    - name: save_document
+      description: Save an internal document record
+      action: write
+      collection: documents
+      scope: all
+    - name: save_public_document
+      description: Save a public document record
+      action: write
+      collection: public_documents
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.3
+  - key: assistant
+    role: helper
+    description: Answers employees' questions using only the documents they may see; logs gaps.
+    profile:
+      inline:
+        display_name: Archivio assistant
+        chat_mode: true
+        crews:
+        - id: assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You are the internal documentation assistant of a company. Always call search_documents first (and
+            read_document for the full text). Use ONLY records whose groups include the user's role/group or whose groups
+            are empty or 'all'; ignore and never mention any other document. Answer concisely in the user's language, then
+            add a section "Fonte / Source" with the document title, the exact quoted passage (short) and the source_url link.
+            Never answer from general knowledge, never invent figures such as torque values or amounts. If a document is older
+            than its review_due, warn that it may be obsolete. If you find no answer, say so clearly, call log_gap with the
+            question and department guess, and suggest who to ask. Every question must also be recorded once with log_question
+            (question, answered true/false, document title).
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+      User ({user}, role {role}) asks: {message}
+
+      Today is {date}. Reply in the language with ISO code {lang}.'
+    appTools:
+    - name: search_documents
+      description: Search internal documents
+      action: search
+      collection: documents
+      scope: all
+    - name: read_document
+      description: Read an internal document
+      action: read
+      collection: documents
+      scope: all
+    - name: log_gap
+      description: Record an unanswered question as a knowledge gap
+      action: append
+      collection: knowledge_gaps
+      scope: all
+    - name: log_question
+      description: Record each question asked
+      action: append
+      collection: question_log
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.3
+  - key: public_assistant
+    role: helper
+    description: After-sales assistant for customers, public documents only.
+    profile:
+      inline:
+        display_name: Archivio public assistant
+        chat_mode: true
+        crews:
+        - id: public_assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You are the after-sales assistant for customers. Use ONLY search_public_documents. Answer briefly
+            in the customer's language, quote the exact passage and give the document link. If nothing is found, say you cannot
+            answer and invite the customer to contact support. Never invent technical values and never reveal anything about
+            internal documents.
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+      Customer asks: {message}
+
+      Reply in the language with ISO code {lang}.'
+    appTools:
+    - name: search_public_documents
+      description: Search public documents
+      action: search
+      collection: public_documents
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.2
+  - key: analyst
+    role: scheduled
+    description: 'Weekly: top questions, gaps and obsolete documents.'
+    profile:
+      inline:
+        display_name: Archivio analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You analyse the usage of the company archive. Read question_log, knowledge_gaps and documents with
+            the tools. Write a report starting with "# Archivio — settimana <date>", then ## Domande più frequenti (grouped
+            by topic, with counts), ## Domande senza risposta (grouped, with suggested document to write), ## Documenti obsoleti
+            (review_due passed or very old updated_at, with department). Use real counts only; never invent. Add a ```chart
+            block (bar) of the top topics.'
+    goalTemplate: Prepare the weekly archive report. Today is {date}. Write in the language with ISO code {lang}.
+    appTools:
+    - name: read_questions
+      description: Read question log
+      action: read
+      collection: question_log
+      scope: all
+    - name: read_gaps
+      description: Read knowledge gaps
+      action: read
+      collection: knowledge_gaps
+      scope: all
+    - name: read_docs
+      description: Read documents
+      action: read
+      collection: documents
+      scope: all
+    writesTo:
+      collection: weekly_insights
+      parse: whole
+      keyBy: date
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.4
+  inputForm:
+    title:
+      it: Aggiungi documento
+      en: Add document
+    fields:
+    - name: title
+      type: text
+      required: true
+      label:
+        it: Titolo
+        en: Title
+    - name: department
+      type: text
+      required: true
+      label:
+        it: Reparto
+        en: Department
+    - name: groups
+      type: text
+      label:
+        it: Gruppi autorizzati (separati da virgola, vuoto = tutti)
+        en: Allowed groups (comma separated, empty = all)
+    - name: visibility
+      type: select
+      required: true
+      label:
+        it: Visibilità
+        en: Visibility
+      options:
+      - value: internal
+        label:
+          it: Interno
+          en: Internal
+      - value: public
+        label:
+          it: Pubblico (assistenza clienti)
+          en: Public (customer support)
+    - name: source_url
+      type: url
+      label:
+        it: Link al documento
+        en: Document link
+    - name: review_due
+      type: date
+      label:
+        it: Da rivedere entro
+        en: Review by
+    - name: content
+      type: textarea
+      maxLength: 20000
+      label:
+        it: Testo del documento
+        en: Document text
+      help:
+        it: Incolla il testo estratto dal PDF/Word/PowerPoint/Excel
+        en: Paste the text extracted from the PDF/Word/PowerPoint/Excel
+  data:
+    collections:
+    - name: documents
+      ownedBy: shared
+      searchable: true
+      description: Internal documents with department and allowed groups
+      fields:
+      - name: title
+        type: text
+        required: true
+      - name: department
+        type: text
+      - name: groups
+        type: text
+      - name: visibility
+        type: text
+      - name: source_url
+        type: url
+      - name: content
+        type: textarea
+      - name: updated_at
+        type: date
+      - name: review_due
+        type: date
+    - name: public_documents
+      ownedBy: shared
+      searchable: true
+      description: Documents safe for customers
+      fields:
+      - name: title
+        type: text
+        required: true
+      - name: department
+        type: text
+      - name: source_url
+        type: url
+      - name: content
+        type: textarea
+      - name: updated_at
+        type: date
+    - name: knowledge_gaps
+      ownedBy: app
+      description: Questions with no answer
+      fields:
+      - name: question
+        type: text
+      - name: department
+        type: text
+      - name: asked_at
+        type: date
+    - name: question_log
+      ownedBy: app
+      description: All questions asked
+      fields:
+      - name: question
+        type: text
+      - name: answered
+        type: boolean
+      - name: document
+        type: text
+      - name: asked_at
+        type: date
+    - name: weekly_insights
+      ownedBy: app
+      description: Weekly admin report
+      fields:
+      - name: date
+        type: date
+      - name: content
+        type: textarea
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Archivio Parlante
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow:
+        it: Per aziende con documentazione sparsa
+        en: For companies with scattered documentation
+      title:
+        it: Chiedi ai tuoi **manuali**, non cercare nei file.
+        en: Ask your **manuals**, stop hunting through files.
+      text:
+        it: I dipendenti fanno una domanda in chat e ricevono una risposta sintetica con il passaggio esatto del documento
+          e il link. Solo i documenti che sono autorizzati a vedere.
+        en: Employees ask in chat and get a concise answer with the exact passage and a link, only from documents they are
+          allowed to see.
+      actions:
+      - label:
+          it: Accedi
+          en: Sign in
+        href: /login
+        style: primary
+      - label:
+          it: Assistenza clienti
+          en: Customer support
+        href: '#assistenza'
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: L'admin carica
+          en: Admin adds documents
+        text:
+          it: Testo e link dei documenti, con reparto e gruppi autorizzati.
+          en: Document text and link, with department and allowed groups.
+        badge: 📄
+      - title:
+          it: I dipendenti chiedono
+          en: Employees ask
+        text:
+          it: Domande in linguaggio naturale, risposte con fonte citata.
+          en: Natural-language questions, answers with a cited source.
+        badge: 💬
+      - title:
+          it: Le lacune emergono
+          en: Gaps surface
+        text:
+          it: Le domande senza risposta e i documenti obsoleti finiscono nella dashboard.
+          en: Unanswered questions and obsolete documents show up in the dashboard.
+        badge: 📊
+    - type: text
+      id: assistenza
+      title:
+        it: Assistenza post vendita
+        en: After-sales support
+      content:
+        it: 'Chiedi al nostro assistente: risponde solo con la documentazione pubblica.'
+        en: 'Ask our assistant: it answers only from public documentation.'
+    - type: view
+      view: public_chat
+    - type: note
+      content:
+        it: Le risposte provengono dai documenti dell'azienda; verifica sempre i valori critici sulla fonte.
+        en: Answers come from company documents; always verify critical values against the source.
+  - key: public_chat
+    type: chat
+    source: agent:public_assistant
+    title:
+      it: Assistenza clienti
+      en: Customer support
+    nav: false
+    examples:
+    - Come registro il prodotto?
+    - How do I reset the device?
+    placeholder:
+      it: Scrivi la tua domanda…
+      en: Type your question…
+  - key: chat
+    type: chat
+    source: agent:assistant
+    title:
+      it: Chiedi all'archivio
+      en: Ask the archive
+    roles:
+    - employee
+    - admin
+    examples:
+    - Come si richiede un rimborso trasferta?
+    - Qual è la coppia di serraggio per il modello X?
+    placeholder:
+      it: Fai una domanda sui documenti…
+      en: Ask about the documents…
+  - key: add_doc
+    type: new_run
+    title:
+      it: Aggiungi documento
+      en: Add document
+    roles:
+    - admin
+  - key: docs
+    type: table
+    title:
+      it: Documenti
+      en: Documents
+    source: collection:documents
+    columns:
+    - title
+    - department
+    - groups
+    - updated_at
+    - review_due
+    roles:
+    - admin
+  - key: dashboard
+    type: page
+    title:
+      it: Dashboard
+      en: Dashboard
+    roles:
+    - admin
+    sections:
+    - type: data
+      title:
+        it: Report settimanale
+        en: Weekly report
+      source: collection:weekly_insights
+      display: list
+      fields:
+      - key: date
+        label: Data
+        format: date
+      - key: content
+        label: Report
+      sort:
+        field: date
+        dir: desc
+      limit: 4
+    - type: data
+      title:
+        it: Domande senza risposta
+        en: Unanswered questions
+      source: collection:knowledge_gaps
+      display: table
+      fields:
+      - key: question
+        label: Domanda
+      - key: department
+        label: Reparto
+      - key: asked_at
+        label: Data
+        format: date
+      sort:
+        field: asked_at
+        dir: desc
+      limit: 50
+    - type: data
+      title:
+        it: Documenti più datati
+        en: Oldest documents
+      source: collection:documents
+      display: table
+      fields:
+      - key: title
+        label: Titolo
+      - key: department
+        label: Reparto
+      - key: updated_at
+        label: Aggiornato
+        format: date
+      - key: review_due
+        label: Revisione
+        format: date
+      sort:
+        field: updated_at
+        dir: asc
+      limit: 20
+    - type: data
+      title:
+        it: Domande recenti
+        en: Recent questions
+      source: collection:question_log
+      display: table
+      fields:
+      - key: question
+        label: Domanda
+      - key: answered
+        label: Risposta trovata
+      - key: document
+        label: Documento
+      sort:
+        field: asked_at
+        dir: desc
+      limit: 50
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Plan
+    roles:
+    - admin
+  schedules:
+  - agent: analyst
+    cron: 0 6 * * 1
+    action: run
+    owner: app
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:indexer:
+        estimate: 10
+        metered: true
+      agent:assistant:
+        estimate: 5
+        metered: true
+      agent:public_assistant:
+        estimate: 5
+        metered: true
+    packs:
+    - key: extra
+      credits: 2000
+      price: 20
+      label: Extra
+    plans:
+    - key: starter
+      price: 49
+      interval: month
+      label: Starter
+      includes:
+      - fino a 200 documenti
+      - fino a 25 utenti
+      credits: 3000
+      creditsReset: monthly
+      roles:
+      - admin
+    - key: business
+      price: 149
+      interval: month
+      label: Business
+      includes:
+      - fino a 2000 documenti
+      - fino a 150 utenti
+      - chat incorporabile per clienti
+      credits: 12000
+      creditsReset: monthly
+      roles:
+      - admin
+  extensions:
+  - key: file_upload
+    description: 'Il caricamento di PDF, Word, PowerPoint ed Excel non è ancora disponibile: l''admin incolla il testo estratto
+      e il link al documento.'
+  - key: drive_sharepoint_sync
+    description: 'La sincronizzazione notturna di Google Drive / SharePoint richiede credenziali per cliente: non disponibile
+      ancora.'
+  - key: sso_login
+    description: 'Login aziendale (SSO/SAML): oggi solo magic link via email; gli utenti si invitano per ruolo.'
+  - key: group_acl
+    description: I gruppi per documento sono un campo 'groups' rispettato dall'agente; un'autorizzazione per gruppo applicata
+      dal runtime e il limite di documenti/utenti per piano non sono ancora disponibili. Per i clienti i documenti pubblici
+      sono in una collezione separata.
+  - key: embed_widget
+    description: 'Incorporare la chat nel portale clienti (iframe/widget) non è ancora disponibile: usare il link alla vista
+      pubblica.'

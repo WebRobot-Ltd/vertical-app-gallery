@@ -1,0 +1,487 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: fan-swap
+  displayName: FanSwap
+  tagline:
+    it: Biglietti tra fan, mai oltre il prezzo originale.
+  description:
+    it: Il portale dove chi non può più andare a un evento rivende il biglietto a chi lo cerca, a un prezzo non superiore
+      a quello originale. Un agente controlla il prezzo, un operatore modera, il pagamento passa dalla piattaforma.
+    en: 'A fan-to-fan ticket resale portal: tickets are resold at face value or less, checked by an agent and moderated by
+      an operator.'
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1d2b53'
+      accent: '#e4572e'
+      background: '#f7f6f3'
+      foreground: '#1a1d23'
+    fonts:
+      body: Inter
+      display: Poppins
+    wordmark:
+    - text: Fan
+      color: primary
+    - text: Swap
+      color: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+      href: '#come-funziona'
+    - label:
+        it: Regole
+      href: '#regole'
+    cta:
+      label:
+        it: Accedi
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+      - listings
+    roles:
+    - key: admin
+      label: Operatore
+      assignedBy: admin_emails
+    - key: user
+      label:
+        it: Utente
+      assignedBy: signup
+  limits:
+  - action: agent:checker
+    per: user
+    max: 10
+    window: day
+    roles:
+    - user
+  agents:
+  - key: checker
+    role: main
+    description: Verifica che il prezzo richiesto non superi quello originale e segnala le inserzioni sospette all'operatore.
+    awaits:
+    - moderation
+    profile:
+      inline:
+        display_name: FanSwap checker
+        crews:
+        - id: checker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei il controllore delle inserzioni di FanSwap, portale di rivendita di biglietti tra fan a prezzo
+            non superiore a quello originale. Ricevi i dati di un biglietto. Produci un report che inizia con un titolo di
+            livello 1 "# Verifica inserzione — <evento>". Sezioni ## Esito (APPROVABILE, DA RIVEDERE o RIFIUTATA), ## Controllo
+            prezzo (prezzo richiesto contro prezzo originale, differenza in euro e percentuale; se il richiesto supera l''originale
+            l''esito è RIFIUTATA), ## Segnali di sospetto (data nel passato, dati del titolo incompleti o incoerenti, prezzo
+            anomalo, testo promozionale, contatti esterni), ## Nota per l''operatore. Non inventare informazioni sull''evento
+            e non verificare ciò che non puoi verificare: dillo. Se l''esito è APPROVABILE o DA RIVEDERE chiama lo strumento
+            request_moderation con un riepilogo; se è RIFIUTATA non chiamarlo. Chiudi con un blocco ```json {"verdict":"...","event":"...","event_date":"...","sector":"...","face_price":0,"asking_price":0}
+            ```.'
+    goalTemplate: 'Evento: {event}
+
+      Data evento: {event_date}
+
+      Settore: {sector}
+
+      Prezzo originale pagato: {face_price} EUR
+
+      Prezzo richiesto: {asking_price} EUR
+
+      Dati del titolo (riferimento, senza dati personali): {ticket_ref}
+
+      Oggi è {date}. Rispondi in italiano.'
+    output: markdown+json
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.3
+  - key: publisher
+    role: helper
+    description: Dopo l'approvazione dell'operatore pubblica l'inserzione nel catalogo.
+    profile:
+      inline:
+        display_name: FanSwap publisher
+        crews:
+        - id: publisher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 3
+          max_budget_usd: 0.1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: Ricevi un'inserzione approvata. Rispondi con un titolo "# <evento>" e un solo blocco ```json con
+            i campi event, event_date, sector, asking_price, status:"available". Nessun dato personale, nessun altro testo.
+    goalTemplate: 'Inserzione approvata: {event}'
+    output: json
+    writesTo:
+      collection: published_listings
+      parse: json_last
+      keyBy: event
+  - key: matcher
+    role: scheduled
+    description: Cerca biglietti disponibili per l'evento di un avviso.
+    memory: instance
+    writesTo:
+      collection: alert_matches
+    appTools:
+    - name: search_listings
+      description: Cerca inserzioni pubblicate
+      action: search
+      collection: published_listings
+      scope: all
+    profile:
+      inline:
+        display_name: FanSwap alert
+        crews:
+        - id: matcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: Controlli ogni giorno se esistono biglietti disponibili per l'evento di un avviso. Usa search_listings.
+            Inizia con "# <evento> — <data>". Elenca le inserzioni trovate (settore, prezzo) rispettando il prezzo massimo
+            dell'utente, oppure scrivi che non ci sono novità. Non inventare inserzioni. Con remember salva quelle già segnalate
+            e non ripeterle.
+  templates:
+  - key: ticket_alert
+    title:
+      it: Avviso biglietto
+    description:
+      it: Ti avvisiamo quando compare un biglietto per l'evento che cerchi.
+    agent: matcher
+    params:
+    - name: event
+      type: text
+      required: true
+      label:
+        it: Evento
+    - name: max_price
+      type: number
+      label:
+        it: Prezzo massimo (EUR)
+    goal: 'Avviso "{instance}": cerca biglietti per {event}{?max_price}, prezzo massimo {max_price} EUR{/max_price}. Oggi
+      è {date}. Rispondi in italiano.'
+    schedule:
+      cron: 0 8 * * *
+      userCanChange: false
+    maxPerUser: 5
+    cost:
+      perRun: 1
+  approvals:
+  - key: moderation
+    title:
+      it: Moderazione inserzione
+    description: L'operatore approva o rifiuta l'inserzione prima della pubblicazione.
+    role: admin
+    decidedBy: role
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: publish_on_approval
+    'on':
+      approval: moderation
+      decision: approved
+    start:
+      agent: publisher
+    goal: 'Pubblica l''inserzione approvata: {event}'
+    asUser: true
+  inputForm:
+    title:
+      it: Metti in vendita un biglietto
+    fields:
+    - name: event
+      type: text
+      required: true
+      label:
+        it: Evento
+    - name: event_date
+      type: date
+      required: true
+      label:
+        it: Data dell'evento
+    - name: sector
+      type: text
+      required: true
+      label:
+        it: Settore / posto
+    - name: face_price
+      type: number
+      required: true
+      label:
+        it: Prezzo originale pagato (EUR)
+    - name: asking_price
+      type: number
+      required: true
+      label:
+        it: Prezzo richiesto (EUR)
+      help:
+        it: Non può superare il prezzo originale.
+    - name: ticket_ref
+      type: textarea
+      required: true
+      maxLength: 500
+      label:
+        it: Dati del titolo
+      help:
+        it: Codice o riferimento del biglietto, senza dati personali. Il caricamento di file non è ancora disponibile.
+  data:
+    collections:
+    - name: published_listings
+      ownedBy: shared
+      description: Inserzioni approvate e pubblicate
+      searchable: true
+      fields:
+      - name: event
+        type: text
+      - name: event_date
+        type: date
+      - name: sector
+        type: text
+      - name: asking_price
+        type: number
+      - name: status
+        type: text
+    - name: orders
+      ownedBy: user
+      description: Operazioni di acquisto e vendita di ciascun utente
+      fields:
+      - name: event
+        type: text
+      - name: price
+        type: number
+      - name: status
+        type: text
+    - name: alert_matches
+      ownedBy: instance
+      description: Risultati giornalieri di ciascun avviso
+  views:
+  - key: home
+    type: page
+    title: FanSwap
+    nav: false
+    sections:
+    - type: hero
+      title:
+        it: Il biglietto che non usi, a chi lo cerca. **Mai oltre il prezzo originale.**
+      text:
+        it: Vendi o cerca biglietti tra fan. Un agente controlla il prezzo, un operatore modera, il pagamento passa dalla
+          piattaforma.
+      actions:
+      - label:
+          it: Vendi un biglietto
+        href: /v/new_listing
+        style: primary
+      - label:
+          it: Vedi i biglietti
+        href: '#biglietti'
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+      items:
+      - title:
+          it: Registra
+        text:
+          it: Inserisci evento, settore, prezzo pagato e dati del titolo.
+        badge: 🎫
+      - title:
+          it: Controllo e moderazione
+        text:
+          it: L'agente verifica il limite di prezzo, l'operatore approva.
+        badge: 🔍
+      - title:
+          it: Vendita sicura
+        text:
+          it: Paga la piattaforma e il titolo passa al compratore secondo le regole dell'organizzatore.
+        badge: 🔒
+    - type: data
+      id: biglietti
+      title:
+        it: Biglietti disponibili
+      source: collection:published_listings
+      display: table
+      fields:
+      - key: event
+        label:
+          it: Evento
+      - key: event_date
+        label:
+          it: Data
+        format: date
+      - key: sector
+        label:
+          it: Settore
+      - key: asking_price
+        label:
+          it: Prezzo
+        format: money
+      limit: 50
+      empty:
+        it: Nessun biglietto disponibile al momento.
+    - type: cards
+      id: regole
+      title:
+        it: Le regole
+      items:
+      - title:
+          it: Prezzo massimo
+        text:
+          it: Mai superiore a quello originale. Commissione di servizio piccola sulla transazione.
+      - title:
+          it: Privacy
+        text:
+          it: Venditore e compratore vedono solo le proprie operazioni.
+    - type: note
+      content:
+        it: FanSwap non è la biglietteria ufficiale. Il trasferimento del titolo segue le regole dell'organizzatore.
+  - key: listings
+    type: table
+    title:
+      it: Biglietti
+    source: collection:published_listings
+    data:
+      display: table
+      fields:
+      - key: event
+        label:
+          it: Evento
+      - key: event_date
+        label:
+          it: Data
+        format: date
+      - key: sector
+        label:
+          it: Settore
+      - key: asking_price
+        label:
+          it: Prezzo
+        format: money
+      limit: 100
+  - key: new_listing
+    type: new_run
+    title:
+      it: Vendi un biglietto
+    roles:
+    - user
+    - admin
+  - key: my_listings
+    type: history
+    title:
+      it: Le mie inserzioni
+    source: run
+    roles:
+    - user
+    - admin
+  - key: listing_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: alerts
+    type: instances
+    template: ticket_alert
+    title:
+      it: I miei avvisi
+    roles:
+    - user
+    - admin
+  - key: my_orders
+    type: table
+    title:
+      it: Le mie operazioni
+    source: collection:orders
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: event
+        label:
+          it: Evento
+      - key: price
+        label:
+          it: Prezzo
+        format: money
+      - key: status
+        label:
+          it: Stato
+        format: badge
+  - key: moderation_queue
+    type: approvals
+    title:
+      it: Moderazione
+    approvals:
+    - moderation
+    roles:
+    - admin
+  - key: admin
+    type: admin
+    title: Back office
+    roles:
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Pagamenti
+    roles:
+    - user
+  billing:
+    modes:
+    - per_transaction
+    currency: eur
+    transactionFeePct: 5
+  extensions:
+  - key: email_alerts
+    description: 'Email all''acquirente quando compare un biglietto: le notifiche email non sono ancora disponibili; per ora
+      l''avviso produce un risultato giornaliero visibile nell''app.'
+  - key: ticket_transfer
+    description: 'Trasferimento del titolo al compratore secondo le regole dell''organizzatore: richiede integrazioni per
+      ogni organizzatore, non esprimibili nel manifest.'
+  - key: disputes_refunds
+    description: Contestazioni e rimborsi gestiti dall'operatore tramite Stripe e il back office; flusso dedicato da sviluppare.
+  - key: file_upload
+    description: 'Caricamento del file del biglietto non disponibile: si usa un riferimento testuale.'

@@ -1,0 +1,928 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: portale-welfare
+  displayName: Portale Welfare
+  tagline:
+    it: 'Il welfare aziendale in un unico portale: saldo, rimborsi e assistente.'
+    en: 'Corporate welfare in one portal: balance, reimbursements and an assistant.'
+  description:
+    it: 'Lo strato digitale di un servizio di welfare aziendale: l''HR assegna i budget, il dipendente vede il saldo e chiede
+      rimborsi, un agente prepara la pratica, l''HR o l''operatore approva, un assistente risponde in chat e ogni mese l''HR
+      riceve il report di utilizzo.'
+    en: 'The digital layer of a corporate welfare service: HR assigns budgets, employees see their balance and request reimbursements,
+      an agent prepares the case, HR or the operator approves, a chat assistant answers questions and HR gets a monthly usage
+      report.'
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#15405a'
+      accent: '#e07a3f'
+      background: '#f6f8f9'
+      foreground: '#17232c'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Portale
+      color: primary
+    - text: Welfare
+      color: accent
+    button: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Per chi
+        en: Who it is for
+      href: '#per-chi'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Super admin
+      assignedBy: admin_emails
+    - key: operator
+      label:
+        it: Operatore provider
+        en: Provider operator
+      assignedBy: invite
+    - key: hr
+      label: HR
+      assignedBy: invite
+    - key: employee
+      label:
+        it: Dipendente
+        en: Employee
+      assignedBy: derived
+      from: collection:employees.email
+    - key: supplier
+      label:
+        it: Fornitore
+        en: Supplier
+      assignedBy: derived
+      from: collection:vouchers.supplier_email
+  limits:
+  - action: agent:claim_checker
+    per: user
+    max: 10
+    window: day
+  - action: chat
+    per: user
+    max: 40
+    window: day
+  agents:
+  - key: claim_checker
+    role: main
+    description: Reads the receipt text, checks the request against the company regulation and the general tax rules, prepares
+      the case and asks for approval.
+    profile:
+      inline:
+        display_name: Welfare claim checker
+        crews:
+        - id: claim_checker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare corporate welfare reimbursement cases for HR and the provider''s operators. You do not
+            decide: you check, summarise and ask for approval.
+
+            Steps: 1) read the employee''s account (remaining budget, allowed categories) and the company regulation with
+            the provided tools; 2) read the receipt text or link data the employee provided and extract date, issuer, tax
+            id if present, description, amount; if the receipt is only a link you cannot open, say so and list what is missing;
+            3) check admissibility: category allowed by the regulation, amount within the remaining budget and any category
+            cap, expense date within the plan year, receipt in the employee''s or a dependant''s name where required, document
+            complete; 4) apply general tax-treatment considerations for welfare benefits (Italian TUIR art. 51 and 100 logic)
+            only as flags to be verified by the provider: never state fiscal limits you were not given and never invent figures;
+            5) call request_claim_review once with the verdict.
+
+            Output: a level-1 title "# Pratica rimborso — <category> — <amount> EUR", then ## Riepilogo richiesta, ## Dati
+            letti dalla ricevuta (table), ## Controlli (table: check, result OK/KO/da verificare, reason), ## Esito proposto
+            (Ammissibile / Non ammissibile / Da integrare), ## Documenti mancanti, ## Note per l''approvatore. Under 400 words.
+            At the end add one fenced json block: {"employee":"","category":"","amount":0,"expense_date":"","verdict":"admissible|not_admissible|incomplete","summary":""}.
+            Write in the language with the ISO code requested.'
+    goalTemplate: 'Employee: {user}
+
+      Category: {category_label}
+
+      Amount: {amount} EUR
+
+      Expense date: {expense_date}
+
+      {?description}Description: {description}{/description}
+
+      {?receipt_text}Receipt text pasted by the employee:
+
+      {receipt_text}{/receipt_text}
+
+      {?receipt_url}Receipt link: {receipt_url}{/receipt_url}
+
+      Today is {date}. Prepare the case and write it in the language with ISO code {lang}.'
+    output: markdown+json
+    resultSchema:
+      type: object
+      properties:
+        employee:
+          type: string
+        category:
+          type: string
+        amount:
+          type: number
+        expense_date:
+          type: string
+        verdict:
+          type: string
+        summary:
+          type: string
+    writesTo:
+      collection: claims
+      parse: json_last
+    when: mode == 'claim'
+    appTools:
+    - name: read_account
+      description: 'Read the welfare account records in scope: remaining budget, allowed categories'
+      action: read
+      collection: employees
+      scope: user
+    - name: read_regulation
+      description: Read the company welfare regulation
+      action: read
+      collection: regulations
+      scope: user
+    awaits:
+    - claim_review
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.5
+  - key: importer
+    role: setup
+    description: Turns the employee list pasted by HR into welfare accounts with their annual budget.
+    profile:
+      inline:
+        display_name: Welfare employee importer
+        crews:
+        - id: importer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You load the employee list pasted by HR (CSV or lines: name, work email, annual welfare budget,
+            optional categories) into welfare accounts. For every valid row call the tool save_employee once with fields name,
+            email, budget_total (number), budget_used 0, categories (list or ''all''), plan_year. Skip rows with a missing
+            or malformed email or a non-numeric budget and report them. If HR gave a default budget, use it only for rows
+            without one. Never invent emails or amounts. Output: a level-1 title "# Import dipendenti — <n> caricati", then
+            ## Caricati (table), ## Scartati (table with reason).'
+    goalTemplate: 'Plan year: {plan_year}
+
+      {?default_budget}Default annual budget per employee: {default_budget} EUR{/default_budget}
+
+      Employee list:
+
+      {employee_list}
+
+      Write the result in the language with ISO code {lang}.'
+    when: mode == 'import'
+    output: markdown
+    appTools:
+    - name: save_employee
+      description: Create or update a welfare account
+      action: write
+      collection: employees
+      scope: user
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.4
+  - key: assistant
+    role: helper
+    description: Answers employees' questions about their welfare plan.
+    profile:
+      inline:
+        display_name: Welfare assistant
+        chat_mode: true
+        crews:
+        - id: assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 5
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the welfare plan assistant for employees. Answer only from the employee''s own account and
+            the company regulation, read with the tools: remaining budget, allowed categories (reimbursements of school or
+            medical expenses, transport pass, shopping vouchers, gym, pension contribution), deadlines and how to submit a
+            claim in the portal (new request, pasted receipt text or link). Be short and friendly. If the regulation does
+            not say, say so and suggest asking HR. Never give personal tax advice as fact and never invent figures or limits.
+            Reply in the user''s language.'
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+      New message from {user}: {message}
+
+      Today is {date}.'
+    output: markdown
+    appTools:
+    - name: read_account
+      description: 'Read the welfare account records in scope: remaining budget, allowed categories'
+      action: read
+      collection: employees
+      scope: user
+    - name: read_regulation
+      description: Read the company welfare regulation
+      action: read
+      collection: regulations
+      scope: user
+    - name: read_claims
+      description: Read the welfare claims in scope
+      action: read
+      collection: claims
+      scope: user
+    limits:
+      maxTurns: 5
+      maxBudgetUsd: 0.2
+  - key: reporter
+    role: scheduled
+    description: 'Monthly usage report for one company: use by category, remaining budget, deadlines.'
+    memory: instance
+    profile:
+      inline:
+        display_name: Welfare monthly reporter
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the monthly welfare report for the HR of one company. Read accounts, claims and vouchers
+            with the tools. Start with "# Report welfare — <company> — <month year>". Sections: ## Sintesi (budget managed,
+            used, remaining, % used), ## Utilizzo per categoria (table, plus a chart block), ## Budget residuo per fascia
+            (no names below a 5-person group), ## Scadenze (plan year end, claim deadlines from the regulation), ## Pratiche
+            in attesa, ## Cosa è cambiato rispetto al mese scorso (use your memory). Use only figures found in the data; say
+            when data is missing. Under 450 words. Include one chart as a fenced block:
+
+            ```chart
+
+            {"type":"bar","title":"...","labels":["A"],"series":[{"name":"EUR","values":[1]}],"unit":"EUR"}
+
+            ```
+
+            At the end call remember with the 5 key figures.'
+    goalTemplate: Monthly welfare report as of {date}. Write in the language with ISO code {lang}.
+    output: markdown
+    writesTo:
+      collection: monthly_reports
+    appTools:
+    - name: read_accounts
+      description: Read the company's welfare accounts
+      action: read
+      collection: employees
+      scope: user
+    - name: read_claims
+      description: Read the welfare claims in scope
+      action: read
+      collection: claims
+      scope: user
+    - name: read_vouchers
+      description: Read vouchers issued
+      action: read
+      collection: vouchers
+      scope: user
+    - name: read_regulation
+      description: Read the company welfare regulation
+      action: read
+      collection: regulations
+      scope: user
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.5
+  inputForm:
+    title:
+      it: Nuova richiesta
+      en: New request
+    fields:
+    - name: mode
+      type: select
+      roles:
+      - hr
+      - admin
+      default: claim
+      label:
+        it: Cosa vuoi fare
+        en: What to do
+      options:
+      - value: claim
+        label:
+          it: Richiesta di rimborso
+          en: Reimbursement claim
+      - value: import
+        label:
+          it: Carica elenco dipendenti
+          en: Import employee list
+    - name: category
+      type: select
+      required: true
+      visibleWhen: mode == 'claim'
+      label:
+        it: Categoria
+        en: Category
+      options:
+      - value: school
+        label:
+          it: Spese scolastiche
+          en: School expenses
+      - value: medical
+        label:
+          it: Spese mediche
+          en: Medical expenses
+      - value: transport
+        label:
+          it: Abbonamento trasporti
+          en: Transport pass
+      - value: vouchers
+        label:
+          it: Buoni spesa
+          en: Shopping vouchers
+      - value: gym
+        label:
+          it: Palestra
+          en: Gym
+      - value: pension
+        label:
+          it: Previdenza complementare
+          en: Pension contribution
+    - name: amount
+      type: number
+      required: true
+      visibleWhen: mode == 'claim'
+      label:
+        it: Importo (EUR)
+        en: Amount (EUR)
+    - name: expense_date
+      type: date
+      required: true
+      visibleWhen: mode == 'claim'
+      label:
+        it: Data della spesa
+        en: Expense date
+    - name: description
+      type: textarea
+      maxLength: 500
+      visibleWhen: mode == 'claim'
+      label:
+        it: Descrizione
+        en: Description
+    - name: receipt_text
+      type: textarea
+      maxLength: 4000
+      visibleWhen: mode == 'claim'
+      label:
+        it: Testo della ricevuta
+        en: Receipt text
+      help:
+        it: 'Il caricamento di file non è ancora disponibile: incolla il testo della ricevuta o indica un link.'
+        en: 'File upload is not available yet: paste the receipt text or give a link.'
+    - name: receipt_url
+      type: url
+      visibleWhen: mode == 'claim'
+      label:
+        it: Link alla ricevuta
+        en: Receipt link
+    - name: plan_year
+      type: number
+      visibleWhen: mode == 'import'
+      default: 2026
+      label:
+        it: Anno di piano
+        en: Plan year
+    - name: default_budget
+      type: number
+      visibleWhen: mode == 'import'
+      label:
+        it: Budget annuale predefinito (EUR)
+        en: Default annual budget (EUR)
+    - name: employee_list
+      type: textarea
+      maxLength: 20000
+      visibleWhen: mode == 'import'
+      label:
+        it: Elenco dipendenti (nome, email, budget)
+        en: Employee list (name, email, budget)
+  data:
+    collections:
+    - name: employees
+      ownedBy: user
+      sharing:
+      - viewer
+      description: Welfare accounts of the company's employees, loaded by HR; each is shared with the employee it belongs
+        to
+      fields:
+      - name: name
+        type: text
+      - name: email
+        type: email
+        required: true
+      - name: plan_year
+        type: number
+      - name: budget_total
+        type: number
+      - name: budget_used
+        type: number
+      - name: categories
+        type: text
+    - name: regulations
+      ownedBy: user
+      sharing:
+      - viewer
+      description: The company welfare regulation (allowed categories, caps, deadlines), written by HR
+      fields:
+      - name: title
+        type: text
+      - name: rules
+        type: textarea
+    - name: claims
+      ownedBy: user
+      sharing:
+      - viewer
+      description: Reimbursement cases prepared by the agent, one per request
+      fields:
+      - name: employee
+        type: text
+      - name: category
+        type: text
+      - name: amount
+        type: number
+      - name: expense_date
+        type: text
+      - name: verdict
+        type: text
+      - name: summary
+        type: textarea
+    - name: vouchers
+      ownedBy: user
+      sharing:
+      - viewer
+      description: Vouchers issued by the provider; the supplier sees only those issued at their business
+      fields:
+      - name: employee
+        type: text
+      - name: supplier_email
+        type: email
+      - name: supplier_name
+        type: text
+      - name: category
+        type: text
+      - name: amount
+        type: number
+      - name: status
+        type: text
+      - name: issued_at
+        type: date
+    - name: monthly_reports
+      ownedBy: instance
+      description: Monthly welfare reports of each company watch
+  templates:
+  - key: monthly_report
+    title:
+      it: Report mensile welfare
+      en: Monthly welfare report
+    description:
+      it: Ogni mese un report con utilizzo per categoria, budget residuo e scadenze.
+      en: Every month a report with use by category, remaining budget and deadlines.
+    agent: reporter
+    params:
+    - name: company
+      type: text
+      required: true
+      label:
+        it: Azienda
+        en: Company
+    goal: Monthly welfare report for "{instance}", company {company}. Today is {date}. Write in the language with ISO code
+      {lang}.
+    schedule:
+      cron: 0 6 1 * *
+      userCanChange: false
+    maxPerUser: 2
+    roles:
+    - hr
+    - admin
+    cost:
+      perRun: 20
+  approvals:
+  - key: claim_review
+    title:
+      it: Verifica pratica di rimborso
+      en: Reimbursement case review
+    description: HR or provider operator confirms or rejects the case prepared by the agent
+    role: hr
+    decidedBy: role
+    fields:
+    - employee
+    - category
+    - amount
+    - verdict
+    - summary
+    timeoutMinutes: 10080
+    onTimeout: reject
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Portale Welfare
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow:
+        it: Welfare aziendale
+        en: Corporate welfare
+      title:
+        it: Il tuo **budget welfare**, chiaro e sempre a portata di mano.
+        en: Your **welfare budget**, clear and always at hand.
+      text:
+        it: Vedi il saldo, chiedi un rimborso con la ricevuta e fatti aiutare da un assistente. Un agente prepara la pratica,
+          l'HR approva.
+        en: See your balance, request a reimbursement with your receipt and get help from an assistant. An agent prepares
+          the case, HR approves.
+      actions:
+      - label:
+          it: Accedi
+          en: Sign in
+        href: /login
+        style: primary
+      - label:
+          it: Come funziona
+          en: How it works
+        href: '#come-funziona'
+        style: ghost
+      aside: '<div style="padding:16px"><strong>Budget 2026</strong><br>Residuo: 640 EUR<br>Scuola · Trasporti · Palestra
+        · Previdenza</div>'
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: L'HR assegna i budget
+          en: HR assigns budgets
+        text:
+          it: Carica l'elenco dei dipendenti e il budget annuale secondo il regolamento.
+          en: Upload the employee list and the annual budget according to the regulation.
+      - title:
+          it: Il dipendente sceglie
+          en: The employee chooses
+        text:
+          it: Rimborsi, trasporti, buoni spesa, palestra o previdenza.
+          en: Reimbursements, transport, shopping vouchers, gym or pension.
+      - title:
+          it: Controllo e approvazione
+          en: Check and approval
+        text:
+          it: L'agente legge la ricevuta e verifica regolamento e regole fiscali; HR o operatore approva.
+          en: The agent reads the receipt and checks regulation and tax rules; HR or operator approves.
+    - type: cards
+      id: per-chi
+      title:
+        it: Per chi
+        en: Who it is for
+      items:
+      - title: HR
+        text:
+          it: Dati della tua azienda e report mensile.
+          en: Your company's data and a monthly report.
+        badge: 🏢
+      - title:
+          it: Dipendenti
+          en: Employees
+        text:
+          it: Solo il tuo conto, con un assistente in chat.
+          en: Only your own account, with a chat assistant.
+        badge: 👤
+      - title:
+          it: Fornitori
+          en: Suppliers
+        text:
+          it: Solo i voucher emessi presso di te.
+          en: Only the vouchers issued at your business.
+        badge: 🏪
+    - type: note
+      content:
+        it: Rete di fornitori, emissione dei voucher e aspetti fiscali sono gestiti dal provider. Le verifiche dell'agente
+          sono un supporto alla decisione, non consulenza fiscale.
+        en: Supplier network, voucher issuance and tax aspects are handled by the provider. The agent's checks support the
+          decision and are not tax advice.
+  - key: balance
+    type: cards
+    title:
+      it: Il mio saldo
+      en: My balance
+    source: collection:employees
+    roles:
+    - employee
+    - hr
+    - admin
+    data:
+      display: cards
+      fields:
+      - key: name
+        label:
+          it: Dipendente
+          en: Employee
+      - key: plan_year
+        label:
+          it: Anno
+          en: Year
+      - key: budget_total
+        label:
+          it: Budget
+          en: Budget
+        format: money
+      - key: budget_used
+        label:
+          it: Usato
+          en: Used
+        format: money
+      - key: categories
+        label:
+          it: Categorie
+          en: Categories
+      empty:
+        it: Nessun conto welfare trovato.
+        en: No welfare account found.
+  - key: new
+    type: new_run
+    title:
+      it: Nuova richiesta
+      en: New request
+    roles:
+    - employee
+    - hr
+    - admin
+  - key: requests
+    type: history
+    title:
+      it: Le mie pratiche
+      en: My cases
+    source: run
+    roles:
+    - employee
+    - hr
+    - operator
+    - admin
+  - key: case
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: assistant_chat
+    type: chat
+    title:
+      it: Assistente welfare
+      en: Welfare assistant
+    source: agent:assistant
+    examples:
+    - it: Quanto budget mi resta?
+      en: How much budget do I have left?
+    - it: Posso farmi rimborsare la retta scolastica di mio figlio?
+      en: Can I get my child's school fees reimbursed?
+    - it: Entro quando devo inviare le ricevute?
+      en: By when must I send receipts?
+    placeholder:
+      it: Chiedi qualcosa sul tuo piano welfare…
+      en: Ask about your welfare plan…
+    roles:
+    - employee
+    - hr
+    - admin
+  - key: to_approve
+    type: approvals
+    title:
+      it: Pratiche da approvare
+      en: Cases to approve
+    approvals:
+    - claim_review
+    roles:
+    - hr
+    - operator
+    - admin
+  - key: hr_accounts
+    type: table
+    title:
+      it: Dipendenti e budget
+      en: Employees and budgets
+    source: collection:employees
+    roles:
+    - hr
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label:
+          it: Nome
+          en: Name
+      - key: email
+        label: Email
+      - key: budget_total
+        label: Budget
+        format: money
+      - key: budget_used
+        label:
+          it: Usato
+          en: Used
+        format: money
+      kpis:
+      - label:
+          it: Budget gestito
+          en: Managed budget
+        agg: sum
+        field: budget_total
+        format: money
+      - label:
+          it: Usato
+          en: Used
+        agg: sum
+        field: budget_used
+        format: money
+      - label:
+          it: Dipendenti
+          en: Employees
+        agg: count
+      sort:
+        field: name
+        dir: asc
+      limit: 200
+  - key: hr_regulation
+    type: list
+    title:
+      it: Regolamento
+      en: Regulation
+    source: collection:regulations
+    roles:
+    - hr
+    - admin
+    data:
+      display: list
+      fields:
+      - key: title
+      - key: rules
+  - key: watches
+    type: instances
+    template: monthly_report
+    title:
+      it: Report mensili
+      en: Monthly reports
+    roles:
+    - hr
+    - admin
+  - key: vouchers_view
+    type: table
+    title:
+      it: Voucher emessi
+      en: Issued vouchers
+    source: collection:vouchers
+    roles:
+    - supplier
+    - hr
+    - admin
+    data:
+      display: table
+      fields:
+      - key: employee
+        label:
+          it: Dipendente
+          en: Employee
+      - key: category
+        label:
+          it: Categoria
+          en: Category
+      - key: amount
+        label:
+          it: Importo
+          en: Amount
+        format: money
+      - key: status
+        label:
+          it: Stato
+          en: Status
+        format: badge
+      - key: issued_at
+        label:
+          it: Emesso
+          en: Issued
+        format: date
+      sort:
+        field: issued_at
+        dir: desc
+      limit: 100
+  - key: account
+    type: account
+    title:
+      it: Crediti
+      en: Credits
+    roles:
+    - hr
+    - admin
+  billing:
+    modes:
+    - credits
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:claim_checker:
+        estimate: 10
+        metered: true
+      agent:importer: 5
+      agent:assistant: 2
+    packs:
+    - key: small
+      credits: 500
+      price: 10
+      label: Starter
+    - key: company
+      credits: 3000
+      price: 50
+      label: Company
+  extensions:
+  - key: file_upload
+    description: 'Receipt and employee-list upload are not available yet: employees paste the receipt text or a link, HR pastes
+      the list as CSV text.'
+  - key: monthly_email
+    description: 'Notifications are not available yet: the monthly report is stored in the Monthly reports view; no email
+      is sent to HR.'
+  - key: cross_user_visibility
+    description: Employee/HR/supplier isolation relies on per-record sharing (viewer) and derived roles from employees.email
+      and vouchers.supplier_email. HR seeing employees' claims and aggregating them in the report needs those records shared
+      to HR; to be verified in the studio.
+  - key: commission_on_budget
+    description: 'The company pays a commission as a percentage of the managed budget: not expressible in the billing model
+      yet. Bill it outside the portal or as a subscription plan.'
+  - key: provider_scope
+    description: Supplier network, voucher issuance and tax handling stay with the provider; vouchers are loaded into the
+      vouchers collection by the provider.

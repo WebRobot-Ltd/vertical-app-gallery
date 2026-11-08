@@ -1,0 +1,468 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: bozzarapida
+  displayName: BozzaRapida
+  tagline:
+    it: Dalle fonti alla bozza, con il caporedattore sempre al comando.
+  description:
+    it: BozzaRapida controlla ogni ora le fonti della tua testata, raggruppa le notizie sullo stesso fatto, propone gli argomenti
+      del giorno e scrive bozze con fonti e passaggi da verificare. Nulla viene pubblicato in automatico.
+  langs:
+  - it
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f2933'
+      accent: '#c2410c'
+      background: '#fbfaf7'
+      foreground: '#1b1f24'
+    fonts:
+      body: Inter
+      display: Source Serif 4
+    wordmark:
+    - text: Bozza
+      color: primary
+    - text: Rapida
+      color: accent
+  header:
+    links:
+    - label: Come funziona
+      href: '#come-funziona'
+    - label: Regole
+      href: '#regole'
+    cta:
+      label: Accedi
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Caporedattore
+      assignedBy: admin_emails
+    - key: user
+      label: Redattore
+      assignedBy: signup
+  limits:
+  - action: agent:writer
+    per: user
+    max: 20
+    window: day
+    roles:
+    - user
+  agents:
+  - key: scout
+    role: scheduled
+    description: Controlla le fonti della redazione ogni ora, raggruppa le notizie sullo stesso fatto e propone gli argomenti
+      del giorno.
+    memory: instance
+    writesTo:
+      collection: topics
+      parse: markdown_sections
+    profile:
+      inline:
+        display_name: BozzaRapida - Scout
+        crews:
+        - id: scout
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'Sei lo scout di una redazione giornalistica locale. Ricevi un elenco di fonti (feed RSS, comunicati
+            di comuni, questure, aziende, siti istituzionali; i lanci d''agenzia SOLO se la redazione dichiara di avere l''abbonamento
+            e fornisce il link del feed) e il territorio di interesse. Usa gli strumenti WebRobot per leggere le fonti: non
+            inventare mai contenuti e non usare fonti non elencate. Passi: 1) leggi le novità dall''ultima verifica (la tua
+            memoria contiene gli argomenti già proposti: non ripeterli se non ci sono sviluppi); 2) raggruppa le notizie che
+            riguardano lo stesso fatto; 3) valuta la rilevanza per il territorio da 1 a 5 con una motivazione breve (vicinanza,
+            impatto sui lettori, novità, urgenza); 4) proponi al massimo 10 argomenti ordinati per rilevanza. Formato: un
+            titolo di primo livello ''# Argomenti del giorno - <data e ora>'' e poi, per ogni argomento, una sezione ''##
+            <titolo dell''argomento>'' con le righe: **Rilevanza:** n/5 - motivo; **Sintesi:** 2-3 frasi neutre; **Fonti:**
+            elenco di link con nome della fonte e data; **Da verificare:** cosa è dichiarato da una sola fonte o è ambiguo.
+            Se non ci sono novità scrivilo in una riga. Alla fine usa lo strumento remember con i titoli proposti. Non dare
+            giudizi, non scrivere articoli.'
+  - key: writer
+    role: main
+    description: Scrive titolo, sommario e testo della bozza con fonti e passaggi da verificare; chiede il social al terzo
+      agente e poi l'approvazione del caporedattore.
+    delegates:
+    - social
+    awaits:
+    - bozza_review
+    context:
+    - key: topic_record
+      from: collection:topics.title
+    profile:
+      inline:
+        display_name: BozzaRapida - Redattore AI
+        crews:
+        - id: writer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'Sei un redattore di una testata locale italiana. Scrivi la bozza di un pezzo su un argomento scelto,
+            con il taglio, la lunghezza e il tono indicati. Rileggi le fonti dell''argomento con gli strumenti WebRobot e
+            usa SOLO fatti che trovi lì: mai inventare nomi, cifre, citazioni o date. Struttura del report: titolo di primo
+            livello ''# <titolo del pezzo>''; poi ''## Sommario'' (2-3 righe); ''## Testo'' (rispetta lunghezza e tono, stile
+            giornalistico: attacco con le 5W, fatti prima delle opinioni, attribuzione chiara); ''## Fonti usate'' (elenco
+            con link e data); ''## Passaggi da verificare'' (elenco; nel testo evidenzia ciascun passaggio dubbio o non confermato
+            da almeno due fonti con **[VERIFICARE: ...]**); ''## Post per i social'' (chiedi i post allo strumento ask_social
+            passandogli titolo, sommario e fatti confermati, poi riportali). Non aggiungere informazioni non presenti nelle
+            fonti, non esprimere opinioni della testata, tutela i minori e le persone coinvolte in procedimenti (presunzione
+            di innocenza). Il pezzo è una bozza: non è pubblicato. Per ultimo chiama request_bozza_review per mandarlo al
+            caporedattore.'
+    goalTemplate: 'Argomento scelto: {topic}
+
+      Dettagli dell''argomento (da scout): {topic_record}
+
+      Taglio: {angle_label}
+
+      Lunghezza: {length_label}
+
+      Tono: {tone_label}
+
+      {?notes}Indicazioni del redattore: {notes}{/notes}
+
+      Data: {date}. Scrivi in italiano.'
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 1.0
+  - key: social
+    role: helper
+    description: Propone post brevi per i social a partire dalla bozza.
+    profile:
+      inline:
+        display_name: BozzaRapida - Social
+        crews:
+        - id: social
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Scrivi post brevi in italiano per i social di una testata locale (Facebook, Instagram, X), partendo
+            da titolo, sommario e fatti confermati che ricevi. Produci 3 post: uno per Facebook (max 300 caratteri), uno per
+            Instagram con 3 hashtag, uno per X (max 270 caratteri). Niente clickbait, niente fatti non presenti nell''input,
+            niente passaggi marcati da verificare. Segnala che i post vanno approvati insieme al pezzo.'
+  templates:
+  - key: desk_watch
+    title: Monitoraggio fonti
+    description: Ogni ora l'agente controlla le tue fonti e propone gli argomenti del giorno.
+    agent: scout
+    params:
+    - name: territory
+      type: text
+      required: true
+      label: Territorio
+      help: es. provincia di Cuneo, Alba e Langhe
+    - name: sources
+      type: textarea
+      required: true
+      maxLength: 3000
+      label: Fonti (un link per riga)
+      help: Feed RSS, pagine comunicati stampa di comuni, questure, aziende, siti istituzionali
+    - name: agency_feed
+      type: url
+      label: Feed lanci d'agenzia (solo se in abbonamento)
+      help: Lascia vuoto se non hai l'abbonamento
+    - name: keywords
+      type: text
+      label: Parole chiave da privilegiare
+    schedule:
+      cron: 0 * * * *
+      userCanChange: true
+    maxPerUser: 5
+    roles:
+    - admin
+    - user
+    goal: 'Monitoraggio "{instance}". Territorio: {territory}.
+
+      Fonti:
+
+      {sources}
+
+      {?agency_feed}Lanci d''agenzia (abbonamento attivo): {agency_feed}{/agency_feed}{!agency_feed}Nessun abbonamento d''agenzia:
+      non usarne.{/agency_feed}
+
+      {?keywords}Parole chiave: {keywords}{/keywords}
+
+      Ora attuale: {date}. Scrivi in italiano.'
+  data:
+    collections:
+    - name: topics
+      ownedBy: instance
+      description: Argomenti del giorno proposti dall'agente per ogni monitoraggio
+      fields:
+      - name: title
+        type: text
+        label: Argomento
+      - name: relevance
+        type: text
+        label: Rilevanza
+      - name: summary
+        type: textarea
+        label: Sintesi
+      - name: sources
+        type: textarea
+        label: Fonti
+      - name: to_check
+        type: textarea
+        label: Da verificare
+  inputForm:
+    title: Nuova bozza
+    fields:
+    - name: topic
+      type: relation
+      relation: topics
+      required: true
+      label: Argomento
+    - name: angle
+      type: select
+      required: true
+      label: Taglio
+      options:
+      - value: cronaca
+        label: Cronaca
+      - value: servizio
+        label: Servizio utile ai lettori
+      - value: approfondimento
+        label: Approfondimento
+      - value: breve
+        label: Notizia in breve
+    - name: length
+      type: select
+      required: true
+      label: Lunghezza
+      options:
+      - value: short
+        label: Breve (~800 battute)
+      - value: medium
+        label: Media (~2.000 battute)
+      - value: long
+        label: Lunga (~4.000 battute)
+    - name: tone
+      type: select
+      required: true
+      label: Tono
+      options:
+      - value: neutro
+        label: Neutro
+      - value: istituzionale
+        label: Istituzionale
+      - value: vicino
+        label: Vicino ai lettori
+    - name: notes
+      type: textarea
+      maxLength: 600
+      label: Indicazioni (facoltative)
+  approvals:
+  - key: bozza_review
+    title: Revisione della bozza
+    description: Il caporedattore modifica, approva o rimanda indietro la bozza con un commento.
+    role: admin
+    decidedBy: role
+    fields:
+    - title
+    - summary
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: BozzaRapida
+    sections:
+    - type: hero
+      title: Dalle fonti alla **bozza**, in pochi minuti.
+      text: BozzaRapida controlla ogni ora le fonti della tua testata, raggruppa le notizie sullo stesso fatto e ti propone
+        gli argomenti del giorno. Poi scrive la bozza, con fonti e passaggi da verificare. Decide sempre il caporedattore.
+      actions:
+      - label: Accedi
+        href: /login
+        style: primary
+      - label: Come funziona
+        href: '#come-funziona'
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title: Come funziona
+      items:
+      - title: Configura le fonti
+        text: Feed RSS, comunicati di comuni, questure, aziende, siti istituzionali; i lanci d'agenzia solo se hai l'abbonamento.
+        badge: 📰
+      - title: Scegli l'argomento
+        text: Ogni ora un agente raggruppa le notizie, valuta la rilevanza per il territorio e propone gli argomenti del giorno.
+        badge: 🎯
+      - title: Ricevi la bozza
+        text: 'Indichi taglio, lunghezza e tono: titolo, sommario, testo, fonti usate, passaggi da verificare e post social.'
+        badge: ✍️
+      - title: Approva il caporedattore
+        text: Modifica, approva o rimanda indietro con un commento. Nulla viene pubblicato in automatico.
+        badge: ✅
+    - type: cards
+      id: regole
+      title: Le nostre regole
+      items:
+      - title: Solo fatti dalle fonti
+        text: L'agente non inventa cifre, nomi o citazioni.
+      - title: Verifica evidenziata
+        text: Ogni passaggio dubbio è marcato da verificare.
+      - title: Ognuno vede le sue bozze
+        text: Il redattore vede le proprie, il caporedattore tutte.
+    - type: note
+      content: 'BozzaRapida è uno strumento di supporto alla redazione: la responsabilità editoriale resta della testata.'
+  - key: watches
+    type: instances
+    template: desk_watch
+    title: Fonti e monitoraggi
+    roles:
+    - user
+    - admin
+  - key: topics_list
+    type: table
+    title: Argomenti del giorno
+    source: collection:topics
+    columns:
+    - title
+    - relevance
+    - summary
+    - sources
+    - to_check
+    roles:
+    - user
+    - admin
+  - key: new_draft
+    type: new_run
+    title: Nuova bozza
+    roles:
+    - user
+    - admin
+  - key: my_drafts
+    type: history
+    title: Le mie bozze
+    source: run
+    roles:
+    - user
+    - admin
+  - key: draft
+    type: report
+    title: Bozza
+    source: run
+    printable: true
+    nav: false
+  - key: review
+    type: approvals
+    title: Da rivedere
+    approvals:
+    - bozza_review
+    roles:
+    - admin
+  - key: all_drafts
+    type: admin
+    title: Tutte le bozze
+    source: run
+    roles:
+    - admin
+  - key: account
+    type: account
+    title: Abbonamento
+    roles:
+    - admin
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: testata_s
+      price: 49
+      interval: month
+      label: Testata - fino a 3 redattori
+      includes:
+      - fino a 3 redattori
+      - monitoraggio orario delle fonti
+      - bozze e post social
+      roles:
+      - admin
+    - key: testata_m
+      price: 99
+      interval: month
+      label: Testata - fino a 8 redattori
+      includes:
+      - fino a 8 redattori
+      - monitoraggio orario delle fonti
+      - bozze e post social
+      roles:
+      - admin
+    - key: testata_l
+      price: 179
+      interval: month
+      label: Testata - fino a 20 redattori
+      includes:
+      - fino a 20 redattori
+      - monitoraggio orario delle fonti
+      - bozze e post social
+      roles:
+      - admin
+  extensions:
+  - key: email_desk_web
+    description: 'Invio via email del testo approvato al desk web: le notifiche email non sono ancora disponibili. Per ora
+      il pezzo approvato resta nella bozza stampabile/copiabile.'
+  - key: modifica_caporedattore
+    description: 'Modifica diretta del testo da parte del caporedattore nell''app: per ora può approvare o rimandare indietro
+      con un commento, e correggere fuori dall''app.'
+  - key: posti_redattori
+    description: 'Il limite di redattori per piano (3, 8, 20) non è applicato dal runtime: va controllato dal titolare.'
+  - key: agenzia_credenziali
+    description: I lanci d'agenzia sono letti solo se la redazione fornisce un link di feed accessibile; connettori con credenziali
+      non sono ancora disponibili.
+  - key: fonti_condivise
+    description: 'Le fonti e gli argomenti sono per utente: una redazione con più redattori condivide il monitoraggio solo
+      se lo crea il caporedattore e gli argomenti vengono riportati manualmente.'

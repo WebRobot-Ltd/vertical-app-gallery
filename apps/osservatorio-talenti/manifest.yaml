@@ -1,0 +1,766 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: osservatorio-talenti
+  displayName: Osservatorio Talenti
+  tagline:
+    it: Scouting guidato dai dati per il tuo club, con le valutazioni dei tuoi osservatori.
+    en: Data-driven scouting for your club, with your scouts' field ratings.
+  description:
+    it: Il club definisce il profilo cercato, un agente confronta i candidati con il profilo e con i titolari, integra le
+      valutazioni dal campo e consegna una shortlist con schede, grafici e note.
+    en: The club defines the profile it wants; an agent compares candidates with the profile and current starters, blends
+      in field ratings and delivers a shortlist with player cards, charts and notes.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0b3d2e'
+      accent: '#e0a526'
+      background: '#f6f8f5'
+      foreground: '#15201b'
+    fonts:
+      body: Inter
+      display: Barlow Condensed
+    wordmark:
+    - text: 'Osservatorio '
+      color: primary
+    - text: Talenti
+      color: accent
+    width: wide
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Dati e licenze
+        en: Data and licences
+      href: '#dati'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label:
+        it: Direttore sportivo
+        en: Sporting director
+      assignedBy: admin_emails
+    - key: scout
+      label:
+        it: Osservatore
+        en: Scout
+      assignedBy: invite
+  limits:
+  - action: agent:analyst
+    per: user
+    max: 10
+    window: day
+  - action: chat
+    per: user
+    max: 60
+    window: day
+  slots:
+  - key: template_values
+    description: Analysis focus and weights from the squad template (first team / youth).
+    timeoutMs: 2000
+    example:
+      values:
+        squad: first_team
+      lang: it
+    code: "def main(input):\n    v = input.get('values') or {}\n    if v.get('squad') == 'youth':\n        return {'focus':\
+      \ 'POTENTIAL: weight growth trend, age-relative performance, physical development margin and learning curve 55%; current\
+      \ output 30%; scout ratings 15%. Ignore transfer-fee maturity; flag injury and maturation-timing risks.',\n        \
+      \        'template_name': 'Settore giovanile'}\n    return {'focus': 'READINESS: weight current output per role vs.\
+      \ current starters 50%; consistency over the last 10+ matches 20%; scout ratings 20%; age/contract/fee fit 10%. Flag\
+      \ players who are not an upgrade on the starters.',\n            'template_name': 'Prima squadra'}\n"
+  agents:
+  - key: analyst
+    role: main
+    description: Compares candidates with the club's profile and starters, blends scout ratings, writes the shortlist.
+    profile:
+      inline:
+        display_name: Osservatorio analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a football scouting analyst working for ONE club. You get the searched profile (role, maximum
+            age, preferred foot, physical and technical traits, transfer-fee budget) and an analysis template focus.
+
+            Tools: read_stats (shared player and team statistics), read_evaluations (this club''s scouts'' field ratings:
+            match seen, grade, notes), read_profiles / save_profile (the club''s saved profiles), save_shortlist (store the
+            final shortlist for this club).
+
+            Method: 1) save the profile with save_profile. 2) Read the statistics and compute indicators per role (e.g. for
+            a striker: non-penalty xG and shots per 90, for a full-back: progressive carries/passes, duels won, defensive
+            actions per 90) only from the data really available. 3) Compare each candidate with the profile and with the club''s
+            current starters in the same role (ask the user in notes if the starters are unknown). 4) Blend the scout ratings:
+            show the data score, the scout score and the combined score separately, with the number of ratings behind each;
+            a player with no ratings uses the data score only and says so. 5) Respect the age limit and the budget strictly;
+            exclude those above them. 6) Save the shortlist with save_shortlist.
+
+            Rules: never invent figures, players, clubs or fees; if the statistics are missing or thin, say so and lower the
+            confidence. Event data is licensed to this club''s provider contract: do not reproduce raw event tables, only
+            indicators. Open StatsBomb data is NOT used (non-commercial licence). Market values are estimates, not facts.
+
+            Report structure (Markdown, language of the user): ''# Shortlist <role> — <squad template> — <date>''; ## Profile
+            sought; ## Method and data used; ## Shortlist (table: rank, player, age, club, foot, combined score, confidence);
+            then for each of the top candidates a ''### player card'' with key indicators, comparison with the starters, scout
+            notes, risks; one ```chart block per top-3 candidate drawn as a bar chart (the radar substitute) with labels =
+            the indicators and two series = the candidate and the current starter, values normalised 0-100, real figures only;
+            ## Next steps for the scouts (matches to watch). Format of a chart block: {"type":"bar","title":"...","labels":[...],"series":[{"name":"...","values":[...]}],"unit":""}.'
+    goalTemplate: 'Club squad template: {template_name}. {focus}
+
+      Role: {role_label}
+
+      {?max_age}Maximum age: {max_age}{/max_age}
+
+      {?foot}Preferred foot: {foot_label}{/foot}
+
+      {?physical}Physical traits: {physical}{/physical}
+
+      {?technical}Technical traits: {technical}{/technical}
+
+      {?budget}Transfer-fee budget (EUR): {budget}{/budget}
+
+      {?starters}Current starters in the role: {starters}{/starters}
+
+      Today: {date}. Write the shortlist in the language with ISO code {lang}.'
+    context:
+    - key: focus
+      from: slot:template_values
+    - key: template_name
+      from: slot:template_values
+    appTools:
+    - name: read_stats
+      description: Read shared player and team statistics
+      action: search
+      collection: player_stats
+      scope: all
+    - name: read_evaluations
+      description: Read this club's field evaluations
+      action: search
+      collection: field_evaluations
+      scope: user
+    - name: read_profiles
+      description: Read the saved search profiles
+      action: read
+      collection: search_profiles
+      scope: user
+    - name: save_profile
+      description: Save the searched profile
+      action: write
+      collection: search_profiles
+      scope: user
+    - name: save_shortlist
+      description: Save the shortlist entries
+      action: append
+      collection: shortlists
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 1.5
+  - key: recorder
+    role: helper
+    description: Chat that records a scout's field rating and reports on previous ones.
+    profile:
+      inline:
+        display_name: Osservatorio field notes
+        crews:
+        - id: recorder
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You collect field evaluations from scouts. For each rating you need: player, match seen (teams and
+            date), grade 1-10, notes. Ask for what is missing, one short question at a time. Then call save_evaluation once
+            and confirm in one line. When asked, summarise the ratings already saved with read_evaluations. Never invent ratings
+            or modify grades.'
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+      Scout ({user}): {message}
+
+      Today: {date}. Answer in the language with ISO code {lang}.'
+    appTools:
+    - name: save_evaluation
+      description: Save one field evaluation (player, match, grade, notes)
+      action: append
+      collection: field_evaluations
+      scope: user
+    - name: read_evaluations
+      description: Read this club's field evaluations
+      action: search
+      collection: field_evaluations
+      scope: user
+    output: markdown
+  - key: collector
+    role: scheduled
+    description: Every Monday refreshes shared results and computes the players who grew the most.
+    profile:
+      inline:
+        display_name: Osservatorio weekly risers
+        crews:
+        - id: collector
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You maintain the shared statistics of Osservatorio Talenti. Use football_data_csv (GET, path e.g.
+            /mmz4281/2627/I1.csv) to fetch historical results of the leagues and store team results with save_team_results.
+            Then read the shared player_stats and compare the latest values with the previous week's. Write a digest that
+            starts with '# Giocatori cresciuti — settimana del <date>', listing the top 10 players by improvement in the main
+            indicators with the delta and the matches behind it. Use only data you have; if player_stats has no new data say
+            it plainly. Never invent figures. Do not read any club's private records.
+    appTools:
+    - name: football_data_csv
+      description: Historical match results CSV by league and season
+      action: http
+      http:
+        method: GET
+        url: https://www.football-data.co.uk
+        allowPath: true
+        attribution: football-data.co.uk
+        maxBytes: 500000
+    - name: save_team_results
+      description: Store results in the shared collection
+      action: append
+      collection: team_results
+      scope: all
+    - name: read_stats
+      description: Read shared player and team statistics
+      action: search
+      collection: player_stats
+      scope: all
+    writesTo:
+      collection: growth_digest
+      parse: whole
+      keyBy: week
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 1
+  inputForm:
+    title:
+      it: Nuova ricerca
+      en: New search
+    fields:
+    - name: squad
+      type: select
+      required: true
+      label:
+        it: Template di analisi
+        en: Analysis template
+      options:
+      - value: first_team
+        label:
+          it: Prima squadra
+          en: First team
+      - value: youth
+        label:
+          it: Settore giovanile
+          en: Youth
+    - name: role
+      type: select
+      required: true
+      label:
+        it: Ruolo
+        en: Role
+      options:
+      - value: gk
+        label:
+          it: Portiere
+          en: Goalkeeper
+      - value: cb
+        label:
+          it: Difensore centrale
+          en: Centre-back
+      - value: fb
+        label:
+          it: Terzino
+          en: Full-back
+      - value: dm
+        label:
+          it: Mediano
+          en: Defensive midfielder
+      - value: cm
+        label:
+          it: Centrocampista
+          en: Central midfielder
+      - value: am
+        label:
+          it: Trequartista
+          en: Attacking midfielder
+      - value: w
+        label:
+          it: Esterno offensivo
+          en: Winger
+      - value: st
+        label:
+          it: Attaccante
+          en: Striker
+    - name: max_age
+      type: number
+      label:
+        it: Età massima
+        en: Maximum age
+    - name: foot
+      type: select
+      label:
+        it: Piede
+        en: Foot
+      options:
+      - value: right
+        label:
+          it: Destro
+          en: Right
+      - value: left
+        label:
+          it: Sinistro
+          en: Left
+      - value: both
+        label:
+          it: Indifferente
+          en: Either
+    - name: physical
+      type: textarea
+      maxLength: 400
+      label:
+        it: Caratteristiche fisiche
+        en: Physical traits
+      help:
+        it: es. altezza > 185 cm, forte nei duelli aerei
+        en: e.g. over 185 cm, strong in the air
+    - name: technical
+      type: textarea
+      maxLength: 400
+      label:
+        it: Caratteristiche tecniche
+        en: Technical traits
+      help:
+        it: es. gioco di prima, passaggio verticale
+        en: e.g. one-touch play, vertical passing
+    - name: budget
+      type: number
+      label:
+        it: Budget cartellino (€)
+        en: Transfer-fee budget (€)
+    - name: starters
+      type: text
+      maxLength: 200
+      label:
+        it: Titolari attuali nel ruolo
+        en: Current starters in the role
+  data:
+    collections:
+    - name: search_profiles
+      ownedBy: user
+      sharing:
+      - viewer
+      - editor
+      description: The club's searched profiles (role, age, foot, traits, budget)
+      fields:
+      - name: role
+        type: text
+      - name: max_age
+        type: number
+      - name: foot
+        type: text
+      - name: physical
+        type: textarea
+      - name: technical
+        type: textarea
+      - name: budget
+        type: number
+      - name: squad
+        type: text
+    - name: field_evaluations
+      ownedBy: user
+      sharing:
+      - viewer
+      - editor
+      description: Scouts' field ratings
+      fields:
+      - name: player
+        type: text
+        required: true
+      - name: match_seen
+        type: text
+        required: true
+      - name: grade
+        type: number
+        required: true
+      - name: notes
+        type: textarea
+    - name: shortlists
+      ownedBy: user
+      sharing:
+      - viewer
+      - editor
+      description: Shortlists produced for the club
+      fields:
+      - name: player
+        type: text
+      - name: role
+        type: text
+      - name: age
+        type: number
+      - name: club
+        type: text
+      - name: combined_score
+        type: number
+      - name: confidence
+        type: text
+      - name: notes
+        type: textarea
+    - name: player_stats
+      ownedBy: shared
+      description: Shared player statistics and indicators (only data whose licence allows commercial reuse)
+      fields:
+      - name: player
+        type: text
+      - name: role
+        type: text
+      - name: age
+        type: number
+      - name: club
+        type: text
+      - name: indicators
+        type: json
+      - name: updated
+        type: date
+    - name: team_results
+      ownedBy: shared
+      description: Historical match results from football-data
+      fields:
+      - name: league
+        type: text
+      - name: date
+        type: date
+      - name: home
+        type: text
+      - name: away
+        type: text
+      - name: score
+        type: text
+    - name: growth_digest
+      ownedBy: app
+      description: Weekly digest of the players who improved most
+      fields:
+      - name: week
+        type: text
+  schedules:
+  - agent: collector
+    action: run
+    cron: 0 5 * * 1
+    owner: app
+    goal: Refresh the shared results and write this Monday's digest of the players who grew most. Today is {date}.
+  egress:
+    hosts:
+    - www.football-data.co.uk
+    notes: 'football-data.co.uk: historical results CSV, attribution required; verify the site''s terms for commercial reuse
+      before publishing. StatsBomb open data is deliberately NOT used: its licence is non-commercial and this app is a paid
+      service.'
+  views:
+  - key: home
+    type: page
+    nav: false
+    sections:
+    - type: hero
+      eyebrow:
+        it: Scouting per club
+        en: Scouting for clubs
+      title:
+        it: Trova il **giocatore giusto**, con i numeri e con gli occhi dei tuoi osservatori.
+        en: Find the **right player**, with numbers and your scouts' eyes.
+      text:
+        it: Definisci il profilo, l'agente confronta i candidati con il profilo e con i tuoi titolari, integra le valutazioni
+          dal campo e consegna shortlist, schede e grafici.
+        en: Define the profile; the agent compares candidates with it and with your starters, blends in field ratings and
+          delivers a shortlist, player cards and charts.
+      actions:
+      - label:
+          it: Nuova ricerca
+          en: New search
+        href: /v/new_search
+        style: primary
+      - label:
+          it: Accedi
+          en: Sign in
+        href: /login
+        style: ghost
+      band: true
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Il profilo
+          en: The profile
+        text:
+          it: Ruolo, età massima, piede, tratti fisici e tecnici, budget di cartellino.
+          en: Role, maximum age, foot, physical and technical traits, fee budget.
+        badge: 🎯
+      - title:
+          it: L'analisi
+          en: The analysis
+        text:
+          it: Indicatori per ruolo e confronto con i titolari, con template per prima squadra e settore giovanile.
+          en: Role indicators and comparison with starters, with first-team and youth templates.
+        badge: 📊
+      - title:
+          it: Gli osservatori
+          en: The scouts
+        text:
+          it: Voti e note dal campo entrano nel punteggio finale.
+          en: Field grades and notes feed the final score.
+        badge: 📝
+    - type: cards
+      id: dati
+      title:
+        it: Dati e licenze
+        en: Data and licences
+      items:
+      - title: football-data
+        text:
+          it: Risultati storici, con attribuzione.
+          en: Historical results, with attribution.
+      - title:
+          it: Dati evento con licenza
+          en: Licensed event data
+        text:
+          it: I dati evento completi che il club ottiene dal proprio fornitore.
+          en: Full event data the club obtains from its own provider.
+      - title:
+          it: Privacy
+          en: Privacy
+        text:
+          it: Liste e note sono private del club; le statistiche sono condivise.
+          en: Lists and notes are private to the club; statistics are shared.
+    - type: note
+      content:
+        it: 'Supporto alle decisioni: i valori di mercato sono stime e le valutazioni non sostituiscono il giudizio tecnico.'
+        en: 'Decision support: market values are estimates and ratings do not replace technical judgement.'
+  - key: new_search
+    type: new_run
+    title:
+      it: Nuova ricerca
+      en: New search
+    roles:
+    - admin
+    - scout
+  - key: searches
+    type: history
+    title:
+      it: Le mie ricerche
+      en: My searches
+    source: run
+    roles:
+    - admin
+    - scout
+  - key: shortlist_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: evaluate
+    type: chat
+    title:
+      it: Valutazione dal campo
+      en: Field rating
+    source: agent:recorder
+    examples:
+    - it: Ho visto Rossi (Under 19 Bologna) ieri, voto 7
+      en: I saw Rossi (Bologna U19) yesterday, grade 7
+    - it: Mostrami le mie valutazioni
+      en: Show my ratings
+    placeholder:
+      it: Giocatore, partita vista, voto, note…
+      en: Player, match seen, grade, notes…
+    roles:
+    - admin
+    - scout
+  - key: ratings
+    type: table
+    title:
+      it: Valutazioni
+      en: Ratings
+    source: collection:field_evaluations
+    columns:
+    - player
+    - match_seen
+    - grade
+    - notes
+    roles:
+    - admin
+    - scout
+  - key: lists
+    type: table
+    title:
+      it: Shortlist del club
+      en: Club shortlists
+    source: collection:shortlists
+    columns:
+    - player
+    - role
+    - age
+    - club
+    - combined_score
+    - confidence
+    roles:
+    - admin
+    - scout
+  - key: profiles
+    type: table
+    title:
+      it: Profili cercati
+      en: Searched profiles
+    source: collection:search_profiles
+    columns:
+    - role
+    - max_age
+    - foot
+    - budget
+    - squad
+    roles:
+    - admin
+  - key: risers
+    type: page
+    title:
+      it: Giocatori cresciuti
+      en: Risers
+    roles:
+    - admin
+    - scout
+    sections:
+    - type: data
+      source: collection:growth_digest
+      display: list
+      fields:
+      - key: week
+        label:
+          it: Settimana
+          en: Week
+      sort:
+        field: week
+        dir: desc
+      limit: 12
+      empty:
+        it: Il primo riepilogo arriva lunedì.
+        en: The first digest arrives on Monday.
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Subscription
+    roles:
+    - admin
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 0
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:analyst:
+        estimate: 10
+        metered: true
+        requiresPlan: season
+      chat: 2
+    plans:
+    - key: season
+      price: 990
+      interval: year
+      label:
+        it: Stagione — club
+        en: Season — club
+      includes:
+      - analisi prima squadra e settore giovanile
+      - osservatori invitati
+      - riepilogo settimanale
+      credits: 2000
+      creditsReset: never
+      roles:
+      - admin
+    packs:
+    - key: topup
+      credits: 1000
+      price: 10
+      label: Top-up
+  extensions:
+  - key: weekly_email
+    description: 'Monday email with the players who grew most is NOT available yet: the digest appears in the ''Giocatori
+      cresciuti'' view instead.'
+  - key: licensed_event_data
+    description: Importing the club's licensed provider data needs each club's credentials or file uploads, not available
+      yet. For now the club pastes summary figures in notes or the platform operator loads licensed data it is entitled to
+      redistribute; the licence must allow this.
+  - key: statsbomb_excluded
+    description: StatsBomb open events are non-commercial only, so they are excluded from this paid app. Use them only in
+      a free, non-commercial version.
+  - key: club_tenancy
+    description: A club is several users (director + scouts) but records are per-user, shared by per-record invitations. A
+      true club-level workspace with invites by the director and strict isolation between clubs needs a derived tenancy not
+      expressible yet.
+  - key: radar_chart
+    description: Radar charts are not a supported chart type; player cards use a bar chart comparing candidate and starter.

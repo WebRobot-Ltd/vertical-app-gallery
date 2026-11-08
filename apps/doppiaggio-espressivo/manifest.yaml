@@ -1,0 +1,635 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: doppiaggio-espressivo
+  displayName: Doppiaggio Espressivo
+  tagline:
+    it: Doppia i tuoi video in altre lingue senza perdere l'emozione.
+    en: Dub your videos into other languages without losing the emotion.
+  description:
+    it: 'Gestione dei progetti di doppiaggio per studi di post-produzione e creatori: trascrizione con tempi, traduzione adattata
+      al labiale, annotazione delle emozioni, revisione del dialoghista, anteprima per il cliente e consegna finale. La sintesi
+      vocale è affidata a un motore esterno.'
+    en: 'Dubbing project management for post-production studios and creators: timed transcription, lip-sync adapted translation,
+      emotion annotation, dialogue-writer review, client preview and final delivery. Voice synthesis is handled by an external
+      engine.'
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#2b1d4a'
+      accent: '#e0533d'
+      background: '#faf8f5'
+      foreground: '#1c1a22'
+    fonts:
+      body: Inter
+      display: DM Serif Display
+    wordmark:
+    - text: 'Doppiaggio '
+      color: primary
+    - text: Espressivo
+      color: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Per chi è
+        en: Who it's for
+      href: '#per-chi'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: studio
+      label:
+        it: Studio / creator
+        en: Studio / creator
+      assignedBy: signup
+    - key: dialoghista
+      label:
+        it: Dialoghista
+        en: Dialogue writer
+      assignedBy: invite
+    - key: client
+      label:
+        it: Cliente
+        en: Client
+      assignedBy: invite
+  limits:
+  - action: agent:adapter
+    per: user
+    max: 10
+    window: day
+  agents:
+  - key: adapter
+    role: main
+    description: Transcribes the dialogue with timings, separates speakers, translates adapting length to lip-sync and pauses,
+      annotates emotion and intensity.
+    awaits:
+    - script_review
+    profile:
+      inline:
+        display_name: Dubbing adapter
+        crews:
+        - id: adapter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are a dubbing adaptation specialist. You receive a link to an original video or audio track,
+            the source language, the target languages and the characters. Produce, for each target language, a translated
+            script: one line per utterance with start and end time (seconds), speaker (mapped to the declared characters),
+            source text, translation adapted to the length of the original line, lip movements and pauses (note when the translation
+            is longer or shorter than the original and shorten or rephrase), emotion (neutral, joy, anger, sadness, fear,
+            surprise, tenderness, irony...) and intensity 1-5. Never invent dialogue you could not hear or read; mark unclear
+            parts with [inaudible] and flag them. If the media cannot be accessed, say so plainly and stop. Write the lines
+            into the collection with the tool and end with a final block of JSON: {"project": ..., "lines": [{"lang","start","end","speaker","source_text","translation","emotion","intensity","flag"}]}.
+            Then call request_script_review so the dialogue writer can review. Output starts with a level-1 title "# <Project>
+            — script for review", followed by a summary table (languages, number of lines, speakers, flagged lines) and notes
+            on adaptation choices.'
+    goalTemplate: 'Project: {title}
+
+      Media link: {media_url}
+
+      Source language: {source_lang}
+
+      Target languages: {target_langs}
+
+      Characters: {characters}
+
+      {?notes}Notes: {notes}{/notes}
+
+      Approximate duration in minutes: {minutes}
+
+      Date: {date}. Write the report in the language with ISO code {lang}.'
+    output: markdown+json
+    appTools:
+    - name: save_lines
+      description: Save the script lines of the project
+      action: write
+      collection: lines
+      scope: user
+    writesTo:
+      collection: projects
+      parse: final_block
+      keyBy: title
+  - key: dubber
+    role: helper
+    description: 'After script approval: sends lines to the external voice engine, assigns consistent voices, reassembles
+      the track and remixes the video.'
+    profile:
+      inline:
+        display_name: Dubbing producer
+        crews:
+        - id: dubber
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You produce the dubbed version of an approved script. Read the approved lines and the previous client
+            revisions with the tools. Assign one consistent voice per character in each language and pass emotion and intensity
+            to the voice engine for every line; re-do only the lines flagged by the client when revisions exist. Report each
+            step honestly: if the voice engine or the remix is not available in this app, say which step could not be done
+            and do not claim a preview exists. Never invent URLs. Output starts with "# <Project> — dubbing status", with
+            a table per language (lines done, lines to redo, voice per character, preview link if any).'
+    appTools:
+    - name: read_lines
+      description: Read the approved lines
+      action: read
+      collection: lines
+      scope: user
+    - name: read_revisions
+      description: Read client comments on lines to redo
+      action: read
+      collection: revisions
+      scope: all
+    - name: save_preview
+      description: Record a preview
+      action: write
+      collection: previews
+      scope: user
+    goalTemplate: 'Produce the dubbing for the approved project, reading the approved lines and any client revisions with
+      the tools. Date: {date}. Write the status in the language with ISO code {lang}.'
+    output: markdown
+  approvals:
+  - key: script_review
+    title:
+      it: Revisione del copione
+      en: Script review
+    description: The dialogue writer reviews and corrects the translated script, then approves it.
+    role: dialoghista
+    decidedBy: role
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: after_script_approved
+    'on':
+      approval: script_review
+      decision: approved
+    start:
+      agent: dubber
+    goal: 'The script was approved: produce the dubbing. {event}'
+    asUser: true
+  - key: after_revision
+    'on':
+      collection: revisions
+      op: insert
+    start:
+      agent: dubber
+    goal: 'The client asked to redo a line: redo only that line and update the preview. {event}'
+    asUser: true
+  inputForm:
+    title:
+      it: Nuovo progetto di doppiaggio
+      en: New dubbing project
+    fields:
+    - name: title
+      type: text
+      required: true
+      label:
+        it: Titolo del progetto
+        en: Project title
+    - name: media_url
+      type: url
+      required: true
+      label:
+        it: Link al video o alla traccia audio
+        en: Link to video or audio track
+      help:
+        it: 'Il caricamento di file non è ancora disponibile: incolla un link scaricabile.'
+        en: 'File upload is not available yet: paste a downloadable link.'
+    - name: source_lang
+      type: select
+      required: true
+      label:
+        it: Lingua di partenza
+        en: Source language
+      options:
+      - value: it
+        label: Italiano
+      - value: en
+        label: English
+      - value: es
+        label: Español
+      - value: fr
+        label: Français
+      - value: de
+        label: Deutsch
+      - value: pt
+        label: Português
+    - name: target_langs
+      type: multiselect
+      required: true
+      label:
+        it: Lingue di arrivo
+        en: Target languages
+      options:
+      - value: it
+        label: Italiano
+      - value: en
+        label: English
+      - value: es
+        label: Español
+      - value: fr
+        label: Français
+      - value: de
+        label: Deutsch
+      - value: pt
+        label: Português
+    - name: characters
+      type: textarea
+      required: true
+      maxLength: 800
+      label:
+        it: Personaggi
+        en: Characters
+      help:
+        it: 'Un personaggio per riga: nome, età, carattere, tono di voce'
+        en: 'One character per line: name, age, personality, voice tone'
+    - name: minutes
+      type: number
+      required: true
+      label:
+        it: Durata in minuti
+        en: Duration in minutes
+    - name: notes
+      type: textarea
+      maxLength: 600
+      label:
+        it: Note per il dialoghista (facoltative)
+        en: Notes for the dialogue writer (optional)
+  data:
+    collections:
+    - name: projects
+      ownedBy: user
+      sharing:
+      - viewer
+      description: Dubbing projects of each studio
+      fields:
+      - name: title
+        type: text
+      - name: source_lang
+        type: text
+      - name: target_langs
+        type: text
+      - name: status
+        type: select
+        options:
+        - transcribing
+        - in_review
+        - approved
+        - dubbing
+        - preview_ready
+        - delivered
+    - name: lines
+      ownedBy: user
+      description: Script lines, edited by the dialogue writer
+      fields:
+      - name: project
+        type: text
+      - name: lang
+        type: text
+      - name: start
+        type: number
+      - name: end
+        type: number
+      - name: speaker
+        type: text
+      - name: source_text
+        type: textarea
+      - name: translation
+        type: textarea
+      - name: emotion
+        type: text
+      - name: intensity
+        type: number
+      - name: flag
+        type: text
+      - name: status
+        type: select
+        options:
+        - draft
+        - approved
+        - to_redo
+    - name: previews
+      ownedBy: user
+      sharing:
+      - viewer
+      description: Previews shared with the studio's clients
+      fields:
+      - name: project
+        type: text
+      - name: lang
+        type: text
+      - name: preview_url
+        type: url
+      - name: final_url
+        type: url
+      - name: status
+        type: select
+        options:
+        - preview
+        - approved
+        - delivered
+    - name: revisions
+      ownedBy: user
+      sharing:
+      - viewer
+      - editor
+      description: Client comments on lines to redo
+      fields:
+      - name: project
+        type: text
+      - name: lang
+        type: text
+      - name: line_time
+        type: text
+      - name: comment
+        type: textarea
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Doppiaggio Espressivo
+    sections:
+    - type: hero
+      eyebrow:
+        it: Per studi di post-produzione e creator
+        en: For post-production studios and creators
+      title:
+        it: Doppia in altre lingue **senza perdere l'emozione**
+        en: Dub into other languages **without losing the emotion**
+      text:
+        it: Trascrizione, traduzione adattata al labiale, emozione per ogni battuta, revisione del dialoghista e anteprima
+          per il cliente, in un unico flusso di progetto.
+        en: Transcription, lip-sync adapted translation, emotion per line, dialogue-writer review and client preview in one
+          project workflow.
+      actions:
+      - label:
+          it: Nuovo progetto
+          en: New project
+        href: /v/new_project
+        style: primary
+      - label:
+          it: Accedi
+          en: Sign in
+        href: /login
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Carica e descrivi
+          en: Submit
+        text:
+          it: Link al video o all'audio, lingue e personaggi.
+          en: Link to the video or audio, languages and characters.
+        badge: 🎬
+      - title:
+          it: Copione adattato
+          en: Adapted script
+        text:
+          it: L'agente trascrive con i tempi, separa i parlanti, traduce e annota emozione e intensità.
+          en: The agent transcribes with timings, splits speakers, translates and tags emotion and intensity.
+        badge: 📝
+      - title:
+          it: Revisione
+          en: Review
+        text:
+          it: Il dialoghista corregge il copione nell'editor e lo approva.
+          en: The dialogue writer edits the script in the editor and approves it.
+        badge: ✅
+      - title:
+          it: Voci e anteprima
+          en: Voices and preview
+        text:
+          it: Voci coerenti per personaggio tramite un motore vocale esterno; il cliente ascolta e segnala le battute da rifare.
+          en: Consistent voices per character through an external voice engine; the client listens and flags lines to redo.
+        badge: 🎧
+    - type: cards
+      id: per-chi
+      title:
+        it: Per chi è
+        en: Who it's for
+      items:
+      - title:
+          it: Studi
+          en: Studios
+        text:
+          it: Ogni studio vede solo i propri progetti.
+          en: Each studio sees only its own projects.
+      - title:
+          it: Clienti
+          en: Clients
+        text:
+          it: Vedono solo le anteprime condivise con loro.
+          en: See only the previews shared with them.
+      - title:
+          it: Crediti
+          en: Credits
+        text:
+          it: Paghi a crediti in base ai minuti doppiati.
+          en: Pay with credits based on dubbed minutes.
+    - type: note
+      content:
+        it: Il lavoro vocale è svolto da un motore esterno. Verifica sempre diritti e consensi sulle voci.
+        en: Voice work is done by an external engine. Always check rights and consent for voices.
+  - key: new_project
+    type: new_run
+    title:
+      it: Nuovo progetto
+      en: New project
+    roles:
+    - studio
+    - admin
+  - key: projects
+    type: history
+    title:
+      it: I miei progetti
+      en: My projects
+    source: run
+    roles:
+    - studio
+    - admin
+  - key: project_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: script_editor
+    type: review
+    title:
+      it: Editor del copione
+      en: Script editor
+    source: collection:lines
+    columns:
+    - lang
+    - start
+    - end
+    - speaker
+    - source_text
+    - translation
+    - emotion
+    - intensity
+    - flag
+    - status
+    roles:
+    - dialoghista
+    - studio
+    - admin
+  - key: approvals
+    type: approvals
+    title:
+      it: Approvazioni
+      en: Approvals
+    approvals:
+    - script_review
+    roles:
+    - dialoghista
+    - admin
+  - key: previews
+    type: cards
+    title:
+      it: Anteprime
+      en: Previews
+    source: collection:previews
+    data:
+      display: cards
+      fields:
+      - key: project
+        label:
+          it: Progetto
+          en: Project
+      - key: lang
+        label:
+          it: Lingua
+          en: Language
+        format: badge
+      - key: preview_url
+        label: Preview
+        format: link
+      - key: final_url
+        label:
+          it: Video finale
+          en: Final video
+        format: link
+      - key: status
+        format: badge
+      empty:
+        it: Nessuna anteprima condivisa.
+        en: No shared previews.
+    roles:
+    - client
+    - studio
+    - admin
+  - key: revisions
+    type: table
+    title:
+      it: Battute da rifare
+      en: Lines to redo
+    source: collection:revisions
+    columns:
+    - project
+    - lang
+    - line_time
+    - comment
+    roles:
+    - client
+    - studio
+    - dialoghista
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Crediti
+      en: Credits
+    roles:
+    - studio
+  billing:
+    modes:
+    - credits
+    currency: eur
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:adapter:
+        estimate: 10
+        metered: true
+      agent:dubber:
+        estimate: 10
+        metered: true
+    packs:
+    - key: small
+      credits: 1000
+      price: 15
+      label: Starter
+    - key: studio
+      credits: 6000
+      price: 80
+      label: Studio
+  extensions:
+  - key: voice_engine
+    description: 'The external voice synthesis engine is not connected: needs an API with per-project credentials or a host
+      in egress. Until then the dubber reports voice generation as unavailable.'
+  - key: media_processing
+    description: Audio/video transcription, track reassembly and remux on the original video are not available as app features;
+      they depend on the voice/media engine.
+  - key: file_upload
+    description: 'Uploading video or audio files is not available yet: the form asks for a downloadable link. Final video
+      delivery is a link.'
+  - key: per_minute_billing
+    description: 'Credits per dubbed minute: the estimate is fixed at 10 and settled on real usage; true per-minute pricing
+      needs a rate by duration.'
+  - key: notifications
+    description: No emails to the dialogue writer or client when a script or preview is ready.

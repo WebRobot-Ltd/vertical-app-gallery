@@ -1,0 +1,652 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: spedizioni-unificate
+  displayName: Spedizioni Unificate
+  tagline:
+    it: 'Un pannello unico per spedire con più corrieri: tariffe a confronto, tracking e reclami.'
+    en: 'One panel to ship with several carriers: rate comparison, tracking and claims.'
+  description:
+    it: 'Per negozi online multi-corriere: un agente confronta le tariffe dei tuoi contratti per ogni ordine, propone il corriere
+      più conveniente o più veloce secondo le tue regole, controlla le spedizioni ferme e prepara i reclami.'
+    en: 'For multi-carrier online shops: an agent compares the rates of your contracts for each order, recommends the cheapest
+      or fastest carrier by your rules, watches stalled shipments and drafts claims.'
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12304f'
+      accent: '#e8710a'
+      background: '#f6f8fb'
+      foreground: '#16202c'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Spedizioni
+      color: primary
+    - text: Unificate
+      color: accent
+    width: wide
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Cosa è incluso
+        en: What's included
+      href: '#funzioni'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      assignedBy: signup
+  limits:
+  - action: agent:rate_advisor
+    per: user
+    max: 100
+    window: day
+    roles:
+    - user
+  egress:
+    hosts: []
+    notes: 'Nessuna API esterna: le tariffe sono quelle inserite dal negoziante; il tracking usa le pagine pubbliche dei corrieri
+      tramite MCP WebRobot.'
+  agents:
+  - key: rate_advisor
+    role: main
+    description: Confronta le tariffe dei corrieri del negoziante per un ordine e propone il più conveniente o il più veloce.
+    profile:
+      inline:
+        display_name: Rate advisor
+        crews:
+        - id: advisor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei un consulente di spedizioni per negozi online. Leggi con lo strumento read_carriers i contratti
+            e le tabelle tariffarie del negoziante (solo quelli sono validi) e confrontali per peso, dimensioni (peso volumetrico
+            = L*P*H/5000 kg, usa il maggiore) e destinazione dell''ordine. Applica le regole del negoziante (priorità: più
+            economico, più veloce, o equilibrato; supplementi carburante e isole se indicati). Mai inventare tariffe: se un
+            corriere non ha una tariffa per quella tratta, scrivilo e escludilo. Struttura del report: prima riga ''# Spedizione
+            <ordine> — <corriere consigliato>''; poi ## Raccomandazione (corriere, servizio, costo, tempi), ## Confronto (tabella
+            con tutti i corrieri: costo, tempi, note), ## Perché, ## Prossimi passi (crea la spedizione sul portale del corriere
+            e stampa l''etichetta: questa app non genera ancora etichette). Aggiungi un blocco ```chart di tipo bar con i
+            costi per corriere in EUR. Sotto 300 parole. Chiedi conferma con request_confirm_shipment prima di dichiarare
+            la scelta definitiva.'
+          mcp_servers: []
+    appTools:
+    - name: read_carriers
+      description: Contratti, tabelle tariffarie e regole del negoziante
+      action: read
+      collection: carriers
+      scope: user
+    - name: read_shops
+      description: Negozi del negoziante e relative regole di scelta
+      action: read
+      collection: shops
+      scope: user
+    - name: save_shipment
+      description: Registra la spedizione scelta
+      action: append
+      collection: shipments
+      scope: user
+    awaits:
+    - confirm_shipment
+    goalTemplate: 'Negozio: {shop}
+
+      Ordine: {order_ref}
+
+      Peso: {weight_kg} kg. Dimensioni: {?dims}{dims}{/dims}{!dims}non indicate{/dims} cm.
+
+      Destinazione: {dest_country} {dest_postcode}
+
+      Priorità: {priority_label}
+
+      {?notes}Note: {notes}{/notes}
+
+      Data: {date}. Scrivi in lingua {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.4
+  - key: tracker
+    role: helper
+    description: Ogni poche ore controlla il tracking pubblico delle spedizioni di un negozio, apre avvisi e prepara i reclami.
+    memory: instance
+    profile:
+      inline:
+        display_name: Shipment tracker
+        crews:
+        - id: tracker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Controlli lo stato delle spedizioni aperte di un negozio. Leggi con read_shipments quelle con stato
+            diverso da ''consegnata''. Per ciascuna apri la pagina pubblica di tracking del corriere con gli strumenti del
+            MCP WebRobot (scraping) e leggi l''ultimo stato. Ricorda nella memoria l''ultimo stato noto (remember). Se lo
+            stato è cambiato, segnalalo. Se una spedizione è ferma da più di 2 giorni o c''è un''eccezione di consegna (giacenza,
+            indirizzo errato, danno, smarrimento), scrivi un avviso. Mai inventare stati: se la pagina non è leggibile scrivi
+            ''non verificabile''. Output: prima riga ''# Tracking <negozio> — <data> <ora>'', poi ## Avvisi (per ognuno: ordine,
+            corriere, tracking, problema, giorni di fermo, gravità) e ## Bozza di reclamo (per ogni avviso, testo formale
+            pronto da inviare al corriere con riferimenti e richiesta), ## Cambi di stato. Se non c''è nulla: ''Nessun avviso''.
+            Non scrivere email ai clienti: l''app non le invia ancora.'
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+    appTools:
+    - name: read_shipments
+      description: Spedizioni del negoziante
+      action: read
+      collection: shipments
+      scope: user
+    writesTo:
+      collection: alerts
+      parse: whole
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 0.8
+  templates:
+  - key: shop_watch
+    title:
+      it: Sorveglianza spedizioni
+      en: Shipment watch
+    description:
+      it: Controlla il tracking del tuo negozio ogni 6 ore, apre avvisi per spedizioni ferme o con eccezioni e prepara i reclami.
+      en: Checks your shop's tracking every 6 hours, opens alerts for stalled shipments or exceptions and drafts claims.
+    agent: tracker
+    params:
+    - name: shop
+      type: text
+      required: true
+      label:
+        it: Negozio
+        en: Shop
+    goal: Controlla le spedizioni aperte del negozio "{shop}" ({instance}). Oggi è {date}. Scrivi in lingua {lang}.
+    schedule:
+      cron: 0 */6 * * *
+      userCanChange: true
+    maxPerUser: 5
+    cost:
+      perRun: 8
+  approvals:
+  - key: confirm_shipment
+    title:
+      it: Conferma il corriere scelto
+      en: Confirm the chosen carrier
+    decidedBy: requester
+    timeoutMinutes: 1440
+    onTimeout: reject
+  inputForm:
+    title:
+      it: Nuova spedizione
+      en: New shipment
+    fields:
+    - name: shop
+      type: text
+      required: true
+      label:
+        it: Negozio
+        en: Shop
+    - name: order_ref
+      type: text
+      required: true
+      label:
+        it: Numero ordine
+        en: Order number
+    - name: weight_kg
+      type: number
+      required: true
+      label:
+        it: Peso (kg)
+        en: Weight (kg)
+    - name: dims
+      type: text
+      label:
+        it: Dimensioni L×P×H (cm)
+        en: Size L×W×H (cm)
+      help:
+        it: es. 40x30x20
+        en: e.g. 40x30x20
+    - name: dest_country
+      type: country
+      required: true
+      label:
+        it: Paese di destinazione
+        en: Destination country
+    - name: dest_postcode
+      type: text
+      required: true
+      label:
+        it: CAP
+        en: Postcode
+    - name: priority
+      type: select
+      required: true
+      default: cheapest
+      label:
+        it: Priorità
+        en: Priority
+      options:
+      - value: cheapest
+        label:
+          it: Più economico
+          en: Cheapest
+      - value: fastest
+        label:
+          it: Più veloce
+          en: Fastest
+      - value: balanced
+        label:
+          it: Equilibrato
+          en: Balanced
+    - name: notes
+      type: textarea
+      maxLength: 400
+      label:
+        it: Note (facoltative)
+        en: Notes (optional)
+  data:
+    collections:
+    - name: shops
+      ownedBy: user
+      description: Negozi del negoziante e regole di scelta del corriere
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Nome
+      - name: platform
+        type: select
+        label: Piattaforma
+        options:
+        - shopify
+        - woocommerce
+        - marketplace
+        - altro
+      - name: rule
+        type: textarea
+        label: Regole di scelta
+    - name: carriers
+      ownedBy: user
+      description: Contratti e tabelle tariffarie dei corrieri del negoziante (niente chiavi API)
+      fields:
+      - name: carrier
+        type: text
+        required: true
+        label: Corriere
+      - name: service
+        type: text
+        label: Servizio
+      - name: rate_table
+        type: textarea
+        required: true
+        label: Tabella tariffe (fasce peso, zone, prezzo, tempi)
+      - name: surcharges
+        type: textarea
+        label: Supplementi
+    - name: orders
+      ownedBy: user
+      description: Ordini inseriti dal negoziante
+      fields:
+      - name: shop
+        type: text
+      - name: order_ref
+        type: text
+      - name: customer_email
+        type: email
+      - name: weight_kg
+        type: number
+      - name: dest_country
+        type: country
+      - name: dest_postcode
+        type: text
+    - name: shipments
+      ownedBy: user
+      description: Spedizioni create
+      fields:
+      - name: shop
+        type: text
+      - name: order_ref
+        type: text
+      - name: carrier
+        type: text
+      - name: tracking_number
+        type: text
+      - name: status
+        type: select
+        options:
+        - creata
+        - in transito
+        - in consegna
+        - giacenza
+        - eccezione
+        - consegnata
+      - name: cost_eur
+        type: number
+      - name: created
+        type: date
+      - name: delivered
+        type: date
+    - name: alerts
+      ownedBy: instance
+      description: Avvisi e bozze di reclamo di ogni sorveglianza
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Spedizioni Unificate
+    sections:
+    - type: hero
+      title:
+        it: Tutti i tuoi corrieri in **un solo pannello**.
+        en: All your carriers in **one panel**.
+      text:
+        it: Confronta le tariffe dei tuoi contratti per ogni ordine, scegli il corriere più conveniente o più veloce e tieni
+          sotto controllo le spedizioni ferme, con i reclami già pronti.
+        en: Compare your contract rates for every order, pick the cheapest or fastest carrier and keep stalled shipments under
+          control, with claims ready to send.
+      actions:
+      - label:
+          it: Inizia ora
+          en: Get started
+        href: /login
+        style: primary
+      band: true
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Inserisci negozi e contratti
+          en: Add shops and contracts
+        text:
+          it: Registra i tuoi negozi e le tabelle tariffarie dei corrieri.
+          en: Register your shops and carrier rate tables.
+        badge: 🏪
+      - title:
+          it: Confronto per ordine
+          en: Per-order comparison
+        text:
+          it: L'agente valuta peso, dimensioni e destinazione e propone il corriere secondo le tue regole.
+          en: The agent weighs weight, size and destination and recommends a carrier by your rules.
+        badge: ⚖️
+      - title:
+          it: Sorveglianza
+          en: Watch
+        text:
+          it: Ogni 6 ore controlla il tracking e apre avvisi con bozza di reclamo.
+          en: Every 6 hours it checks tracking and opens alerts with a claim draft.
+        badge: 🔔
+    - type: cards
+      id: funzioni
+      title:
+        it: Cosa è incluso
+        en: What's included
+      items:
+      - title:
+          it: Dashboard
+          en: Dashboard
+        text:
+          it: Costi, tempi e problemi per corriere.
+          en: Costs, times and issues per carrier.
+      - title:
+          it: Privacy per negozio
+          en: Per-account privacy
+        text:
+          it: Ogni utente vede solo i propri negozi e dati.
+          en: Each user sees only their own shops and data.
+      - title:
+          it: Abbonamento
+          en: Subscription
+        text:
+          it: Piani mensili in base al numero di spedizioni.
+          en: Monthly plans by number of shipments.
+    - type: note
+      content:
+        it: 'Supporto alle decisioni: verifica sempre le tariffe sul contratto con il corriere.'
+        en: 'Decision support: always verify rates against your carrier contract.'
+  - key: new_shipment
+    type: new_run
+    title:
+      it: Nuova spedizione
+      en: New shipment
+    roles:
+    - user
+    - admin
+  - key: history
+    type: history
+    title:
+      it: Confronti
+      en: Comparisons
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: approvals
+    type: approvals
+    title:
+      it: Conferme
+      en: Confirmations
+    roles:
+    - user
+    - admin
+  - key: shops_view
+    type: table
+    title:
+      it: Negozi
+      en: Shops
+    source: collection:shops
+    roles:
+    - user
+    - admin
+  - key: carriers_view
+    type: table
+    title:
+      it: Corrieri e tariffe
+      en: Carriers and rates
+    source: collection:carriers
+    roles:
+    - user
+    - admin
+  - key: orders_view
+    type: table
+    title:
+      it: Ordini
+      en: Orders
+    source: collection:orders
+    roles:
+    - user
+    - admin
+  - key: shipments_view
+    type: table
+    title:
+      it: Spedizioni
+      en: Shipments
+    source: collection:shipments
+    roles:
+    - user
+    - admin
+  - key: watches
+    type: instances
+    template: shop_watch
+    title:
+      it: Sorveglianza
+      en: Watch
+    roles:
+    - user
+    - admin
+  - key: stats
+    type: page
+    title:
+      it: Dashboard
+      en: Dashboard
+    roles:
+    - user
+    - admin
+    sections:
+    - type: data
+      title:
+        it: Costi e spedizioni per corriere
+        en: Costs and shipments per carrier
+      source: collection:shipments
+      display: kpi
+      kpis:
+      - label:
+          it: Spedizioni
+          en: Shipments
+        agg: count
+      - label:
+          it: Costo totale
+          en: Total cost
+        agg: sum
+        field: cost_eur
+        format: money
+      - label:
+          it: Costo medio
+          en: Average cost
+        agg: avg
+        field: cost_eur
+        format: money
+    - type: data
+      title:
+        it: Costo per spedizione
+        en: Cost per shipment
+      source: collection:shipments
+      display: chart
+      chart: bar
+      fields:
+      - key: carrier
+        label: Corriere
+      - key: cost_eur
+        label: EUR
+        format: money
+      limit: 60
+    - type: data
+      title:
+        it: Problemi
+        en: Issues
+      source: collection:shipments
+      display: table
+      fields:
+      - key: order_ref
+      - key: carrier
+      - key: status
+        format: badge
+      - key: tracking_number
+      filters:
+      - field: status
+        op: '='
+        value: eccezione
+      empty:
+        it: Nessun problema aperto.
+        en: No open issues.
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Plan
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    - credits
+    signupCredits: 30
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:rate_advisor:
+        estimate: 10
+        metered: true
+    packs:
+    - key: extra
+      credits: 500
+      price: 9
+      label: Extra
+    plans:
+    - key: starter
+      price: 29
+      interval: month
+      label: Starter — 200 spedizioni
+      credits: 300
+      creditsReset: monthly
+      roles:
+      - user
+    - key: growth
+      price: 79
+      interval: month
+      label: Growth — 1000 spedizioni
+      credits: 1200
+      creditsReset: monthly
+      roles:
+      - user
+  extensions:
+  - key: shop_oauth
+    description: 'Collegamento OAuth a Shopify, WooCommerce e marketplace con import automatico degli ordini: non disponibile,
+      gli ordini si inseriscono a mano.'
+  - key: carrier_api
+    description: 'Chiavi API dei corrieri, tariffe live, creazione spedizione e stampa etichetta, webhook di tracking: non
+      disponibili (servono credenziali per cliente); si usano tabelle tariffarie inserite dal negoziante e il tracking pubblico.'
+  - key: customer_emails
+    description: 'Email brandizzate al cliente finale a ogni cambio di stato e notifiche al negoziante: non disponibili.'
+  - key: public_tracking_returns
+    description: 'Pagina di tracking pubblica per il cliente finale e modulo di reso: richiede lettura/scrittura anonima su
+      dati del negoziante, non disponibile.'
+  - key: team_sharing
+    description: 'Più membri del team sugli stessi negozi con visibilità per negozio: oggi i dati sono per singolo utente.'

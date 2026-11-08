@@ -1,0 +1,684 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: impatto-filiera
+  displayName: ImpattoFiliera
+  tagline:
+    it: Le emissioni CO2 della tua catena di fornitura, fornitore per fornitore.
+    en: The CO2 emissions of your supply chain, supplier by supplier.
+    de: Die CO2-Emissionen Ihrer Lieferkette, Lieferant für Lieferant.
+  description:
+    it: Raccogli i dati dai fornitori con un questionario, un agente AI controlla la plausibilità e calcola Scope 1, 2 e 3
+      con i fattori ISPRA e DEFRA; il responsabile sostenibilità approva ogni fornitore prima che entri nel totale.
+    en: Collect data from suppliers with a questionnaire; an AI agent checks plausibility and computes Scope 1, 2 and 3 with
+      ISPRA and DEFRA factors; the sustainability manager approves each supplier before it enters the total.
+    de: Daten der Lieferanten per Fragebogen erfassen; ein KI-Agent prüft die Plausibilität und berechnet Scope 1, 2 und 3
+      mit ISPRA- und DEFRA-Faktoren; die Nachhaltigkeitsleitung genehmigt jeden Lieferanten vor der Aufnahme in die Summe.
+  langs:
+  - it
+  - en
+  - de
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#14403a'
+      accent: '#2f9e6b'
+      background: '#f6f8f5'
+      foreground: '#17211e'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Impatto
+      color: primary
+    - text: Filiera
+      color: accent
+    byline: by WebRobot
+    width: wide
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+        de: So funktioniert's
+      href: '#come-funziona'
+    - label:
+        it: Metodo
+        en: Method
+        de: Methode
+      href: '#metodo'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+        de: Anmelden
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label:
+        it: Azienda cliente
+        en: Client company
+        de: Kundenunternehmen
+      assignedBy: signup
+    - key: supplier
+      label:
+        it: Fornitore
+        en: Supplier
+        de: Lieferant
+      assignedBy: derived
+      from: collection:suppliers.contact_email
+  limits:
+  - action: agent:assessor
+    per: user
+    max: 20
+    window: day
+  egress:
+    hosts: []
+    notes: 'No direct API calls: emission factors are read from the public ISPRA and DEFRA publications through the WebRobot
+      MCP.'
+  agents:
+  - key: assessor
+    role: main
+    description: Checks plausibility of a supplier's questionnaire, computes Scope 1/2/3 with ISPRA and DEFRA factors, flags
+      anomalies and asks the sustainability manager for approval.
+    profile:
+      inline:
+        display_name: ImpattoFiliera assessor
+        crews:
+        - id: assessor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are a corporate carbon-accounting analyst (GHG Protocol). You receive one supplier''s questionnaire:
+            electricity, gas, fuels, raw materials, transport, certifications, plus the buyer''s purchase category. Steps:
+            1) Check plausibility: units, orders of magnitude, intensity per revenue or per tonne of output, inconsistencies
+            between fields; list every anomaly with the field and why. 2) Compute emissions in tCO2e: Scope 1 (gas, fuels),
+            Scope 2 (electricity, location-based and market-based if a guarantee of origin/certificate is declared), Scope
+            3 (raw materials, transport). Use ONLY public factors: ISPRA (Italian national inventory, electricity grid and
+            fuels) and DEFRA/DESNZ conversion factors, citing source, year and factor value for each line; if needed, retrieve
+            them with the WebRobot MCP from the public publications. Use a commercial database (e.g. ecoinvent) only if the
+            goal states the client holds a licence; otherwise never. Never invent figures: if a datum is missing, say so and
+            leave the line out of the total, marking the result as partial. 3) Call the tool request_supplier_review with
+            the totals and the anomalies so the sustainability manager approves or rejects; the supplier enters the company
+            total only after approval. Report structure: a level-1 title ''# <Supplier> — CO2 assessment <year>'', then ##
+            Summary (table Scope 1/2/3/total, data quality), ## Calculation lines (table: item, quantity, unit, factor, source,
+            tCO2e), ## Anomalies, ## Missing data, ## Certifications. Add a ```chart block (bar) with the three scopes. Write
+            in the requested language. This is decision support, not an audit or certification.'
+    goalTemplate: 'Supplier: {supplier_name}
+
+      Purchase category: {category_label}
+
+      Reporting year: {year}
+
+      Electricity: {electricity_kwh} kWh {?green_electricity}(guarantee of origin / renewable: {green_electricity}){/green_electricity}
+
+      Natural gas: {gas_m3} Sm3
+
+      Fuels: {fuels}
+
+      Raw materials: {materials}
+
+      Transport: {transport}
+
+      Certifications: {certifications}
+
+      {?notes}Notes: {notes}{/notes}
+
+      Client holds a commercial emission-factor database licence: {licence_label}.
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    output: markdown
+    awaits:
+    - supplier_review
+    writesTo:
+      collection: assessments
+      parse: whole
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 1.0
+  approvals:
+  - key: supplier_review
+    title:
+      it: Approva il fornitore
+      en: Approve the supplier
+      de: Lieferanten genehmigen
+    description: The sustainability manager reviews data, anomalies and emissions of one supplier before it counts in the
+      total.
+    decidedBy: requester
+    fields:
+    - supplier
+    - scope1
+    - scope2
+    - scope3
+    - anomalies
+    timeoutMinutes: 10080
+    onTimeout: reject
+  inputForm:
+    title:
+      it: Questionario fornitore
+      en: Supplier questionnaire
+      de: Lieferantenfragebogen
+    fields:
+    - name: supplier_name
+      type: text
+      required: true
+      label:
+        it: Ragione sociale
+        en: Company name
+        de: Firmenname
+    - name: category
+      type: select
+      required: true
+      label:
+        it: Categoria di acquisto
+        en: Purchase category
+        de: Einkaufskategorie
+      options:
+      - value: raw_materials
+        label:
+          it: Materie prime
+          en: Raw materials
+          de: Rohstoffe
+      - value: components
+        label:
+          it: Componenti
+          en: Components
+          de: Komponenten
+      - value: packaging
+        label:
+          it: Imballaggi
+          en: Packaging
+          de: Verpackung
+      - value: logistics
+        label:
+          it: Logistica
+          en: Logistics
+          de: Logistik
+      - value: services
+        label:
+          it: Servizi
+          en: Services
+          de: Dienstleistungen
+    - name: year
+      type: number
+      required: true
+      label:
+        it: Anno di riferimento
+        en: Reporting year
+        de: Berichtsjahr
+      default: 2025
+    - name: electricity_kwh
+      type: number
+      required: true
+      label:
+        it: Energia elettrica (kWh/anno)
+        en: Electricity (kWh/year)
+        de: Strom (kWh/Jahr)
+    - name: green_electricity
+      type: text
+      label:
+        it: Garanzie d'origine / rinnovabile (facoltativo)
+        en: Guarantees of origin / renewable (optional)
+        de: Herkunftsnachweise / erneuerbar (optional)
+    - name: gas_m3
+      type: number
+      label:
+        it: Gas naturale (Sm3/anno)
+        en: Natural gas (Sm3/year)
+        de: Erdgas (Sm3/Jahr)
+    - name: fuels
+      type: textarea
+      maxLength: 600
+      label:
+        it: Carburanti (tipo e litri/anno)
+        en: Fuels (type and litres/year)
+        de: Kraftstoffe (Art und Liter/Jahr)
+    - name: materials
+      type: textarea
+      maxLength: 800
+      label:
+        it: Materie prime (materiale, tonnellate/anno)
+        en: Raw materials (material, tonnes/year)
+        de: Rohstoffe (Material, Tonnen/Jahr)
+    - name: transport
+      type: textarea
+      maxLength: 800
+      label:
+        it: Trasporti (modalità, tonnellate e km)
+        en: Transport (mode, tonnes and km)
+        de: Transporte (Modus, Tonnen und km)
+    - name: certifications
+      type: textarea
+      maxLength: 400
+      label:
+        it: Certificazioni (ISO 14001, ISO 50001, EMAS…)
+        en: Certifications (ISO 14001, ISO 50001, EMAS…)
+        de: Zertifizierungen (ISO 14001, ISO 50001, EMAS…)
+    - name: licence
+      type: select
+      roles:
+      - user
+      - admin
+      default: 'no'
+      label:
+        it: Licenza database commerciale
+        en: Commercial database licence
+        de: Lizenz kommerzielle Datenbank
+      options:
+      - value: 'no'
+        label:
+          it: No (solo ISPRA/DEFRA)
+          en: No (ISPRA/DEFRA only)
+          de: Nein (nur ISPRA/DEFRA)
+      - value: 'yes'
+        label:
+          it: Sì
+          en: 'Yes'
+          de: Ja
+    - name: notes
+      type: textarea
+      maxLength: 400
+      label:
+        it: Note (facoltative)
+        en: Notes (optional)
+        de: Anmerkungen (optional)
+  data:
+    collections:
+    - name: suppliers
+      ownedBy: user
+      description: 'The client company''s suppliers: name, contact person, email, purchase category, questionnaire status
+        and date sent'
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: contact_name
+        type: text
+      - name: contact_email
+        type: email
+        required: true
+      - name: category
+        type: select
+        options:
+        - raw_materials
+        - components
+        - packaging
+        - logistics
+        - services
+      - name: status
+        type: select
+        options:
+        - to_invite
+        - invited
+        - reminded
+        - received
+        - approved
+        - rejected
+      - name: invited_on
+        type: date
+    - name: assessments
+      ownedBy: user
+      sharing:
+      - viewer
+      description: 'One record per supplier questionnaire assessed: scopes, anomalies, approval state. Visible to the supplier
+        that submitted it and shared with the client company.'
+      fields:
+      - name: supplier_name
+        type: text
+      - name: category
+        type: text
+      - name: year
+        type: number
+      - name: scope1
+        type: number
+      - name: scope2
+        type: number
+      - name: scope3
+        type: number
+      - name: total
+        type: number
+      - name: anomalies
+        type: text
+      - name: approval
+        type: select
+        options:
+        - pending
+        - approved
+        - rejected
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: ImpattoFiliera
+    sections:
+    - type: hero
+      band: true
+      eyebrow:
+        it: Scope 1 · 2 · 3
+        en: Scope 1 · 2 · 3
+        de: Scope 1 · 2 · 3
+      title:
+        it: Le emissioni della tua **filiera**, fornitore per fornitore.
+        en: The emissions of your **supply chain**, supplier by supplier.
+        de: Die Emissionen Ihrer **Lieferkette**, Lieferant für Lieferant.
+      text:
+        it: Questionario ai fornitori, controllo di plausibilità, calcolo con fattori ISPRA e DEFRA, approvazione del responsabile
+          sostenibilità e dashboard finale.
+        en: Supplier questionnaire, plausibility check, calculation with ISPRA and DEFRA factors, sustainability manager approval
+          and a final dashboard.
+        de: Lieferantenfragebogen, Plausibilitätsprüfung, Berechnung mit ISPRA- und DEFRA-Faktoren, Freigabe durch die Nachhaltigkeitsleitung
+          und Dashboard.
+      actions:
+      - label:
+          it: Inizia
+          en: Get started
+          de: Loslegen
+        href: /login
+        style: primary
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+        de: So funktioniert's
+      items:
+      - title:
+          it: 1 · Elenco fornitori
+          en: 1 · Supplier list
+          de: 1 · Lieferantenliste
+        text:
+          it: Inserisci fornitori, referente, email e categoria di acquisto.
+          en: Enter suppliers, contact person, email and purchase category.
+          de: Lieferanten, Ansprechpartner, E-Mail und Einkaufskategorie erfassen.
+      - title:
+          it: 2 · Questionario
+          en: 2 · Questionnaire
+          de: 2 · Fragebogen
+        text:
+          it: Ogni fornitore accede con il proprio link e compila energia, carburanti, materiali, trasporti, certificazioni.
+          en: Each supplier signs in with its own link and fills in energy, fuels, materials, transport, certifications.
+          de: Jeder Lieferant meldet sich über seinen Link an und erfasst Energie, Kraftstoffe, Materialien, Transporte, Zertifizierungen.
+      - title:
+          it: 3 · Calcolo e controllo
+          en: 3 · Calculation and checks
+          de: 3 · Berechnung und Prüfung
+        text:
+          it: L'agente verifica i dati, calcola le emissioni e segnala i valori anomali.
+          en: The agent verifies the data, computes emissions and flags anomalies.
+          de: Der Agent prüft die Daten, berechnet Emissionen und meldet Auffälligkeiten.
+      - title:
+          it: 4 · Approvazione e report
+          en: 4 · Approval and report
+          de: 4 · Freigabe und Bericht
+        text:
+          it: Approvi ogni fornitore, poi dashboard e report scaricabile.
+          en: You approve each supplier, then dashboard and downloadable report.
+          de: Sie genehmigen jeden Lieferanten, dann Dashboard und Bericht zum Download.
+    - type: cards
+      id: metodo
+      title:
+        it: Metodo e fonti
+        en: Method and sources
+        de: Methode und Quellen
+      items:
+      - title: ISPRA
+        text:
+          it: Fattori nazionali italiani per rete elettrica e combustibili.
+          en: Italian national factors for grid electricity and fuels.
+          de: Italienische nationale Faktoren für Strommix und Brennstoffe.
+      - title: DEFRA / DESNZ
+        text:
+          it: Fattori di conversione per materiali, trasporti e carburanti.
+          en: Conversion factors for materials, transport and fuels.
+          de: Umrechnungsfaktoren für Materialien, Transport und Kraftstoffe.
+      - title:
+          it: Database commerciale
+          en: Commercial database
+          de: Kommerzielle Datenbank
+        text:
+          it: Usato solo se il cliente ha la licenza.
+          en: Used only if the client holds a licence.
+          de: Nur bei vorhandener Lizenz des Kunden.
+    - type: note
+      content:
+        it: Supporto al calcolo, non certificazione né audit. Ogni fornitore vede solo i propri dati.
+        en: Calculation support, not a certification or audit. Each supplier sees only its own data.
+        de: Berechnungshilfe, keine Zertifizierung oder Prüfung. Jeder Lieferant sieht nur seine eigenen Daten.
+  - key: suppliers_list
+    type: list
+    title:
+      it: Fornitori
+      en: Suppliers
+      de: Lieferanten
+    source: collection:suppliers
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label:
+          it: Fornitore
+          en: Supplier
+          de: Lieferant
+      - key: contact_name
+        label:
+          it: Referente
+          en: Contact
+          de: Ansprechpartner
+      - key: contact_email
+        label: Email
+      - key: category
+        format: badge
+        label:
+          it: Categoria
+          en: Category
+          de: Kategorie
+      - key: status
+        format: badge
+        label:
+          it: Stato
+          en: Status
+          de: Status
+      - key: invited_on
+        format: date
+        label:
+          it: Invitato il
+          en: Invited on
+          de: Eingeladen am
+      sort:
+        field: invited_on
+        dir: asc
+      limit: 200
+      empty:
+        it: 'Nessun fornitore: aggiungine uno.'
+        en: 'No suppliers yet: add one.'
+        de: 'Noch keine Lieferanten: fügen Sie einen hinzu.'
+  - key: questionnaire
+    type: new_run
+    title:
+      it: Questionario
+      en: Questionnaire
+      de: Fragebogen
+    roles:
+    - supplier
+    - user
+    - admin
+  - key: my_submissions
+    type: history
+    title:
+      it: I miei invii
+      en: My submissions
+      de: Meine Einreichungen
+    source: run
+    roles:
+    - supplier
+    - user
+    - admin
+  - key: approvals_inbox
+    type: approvals
+    title:
+      it: Approvazioni
+      en: Approvals
+      de: Freigaben
+    roles:
+    - user
+    - admin
+  - key: emissions_dashboard
+    type: dashboard
+    title:
+      it: Dashboard emissioni
+      en: Emissions dashboard
+      de: Emissions-Dashboard
+    children:
+    - by_supplier
+    - by_category
+    roles:
+    - user
+    - admin
+  - key: by_supplier
+    type: chart
+    source: collection:assessments
+    nav: false
+    data:
+      display: chart
+      chart: stacked
+      fields:
+      - key: supplier_name
+        label:
+          it: Fornitore
+          en: Supplier
+          de: Lieferant
+      - key: scope1
+        label: Scope 1
+      - key: scope2
+        label: Scope 2
+      - key: scope3
+        label: Scope 3
+      filters:
+      - field: approval
+        op: '='
+        value: approved
+      sort:
+        field: total
+        dir: desc
+      limit: 50
+      empty:
+        it: Nessun fornitore approvato.
+        en: No approved suppliers.
+        de: Keine genehmigten Lieferanten.
+  - key: by_category
+    type: chart
+    source: collection:assessments
+    nav: false
+    data:
+      display: chart
+      chart: bar
+      fields:
+      - key: category
+        label:
+          it: Categoria
+          en: Category
+          de: Kategorie
+      - key: total
+        label: tCO2e
+      filters:
+      - field: approval
+        op: '='
+        value: approved
+      limit: 50
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+    title:
+      it: Report
+      en: Report
+      de: Bericht
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Subscription
+      de: Abonnement
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: s50
+      price: 1200
+      interval: year
+      label:
+        it: Fino a 50 fornitori
+        en: Up to 50 suppliers
+        de: Bis zu 50 Lieferanten
+      roles:
+      - user
+    - key: s200
+      price: 3600
+      interval: year
+      label:
+        it: Fino a 200 fornitori
+        en: Up to 200 suppliers
+        de: Bis zu 200 Lieferanten
+      roles:
+      - user
+    - key: s1000
+      price: 9000
+      interval: year
+      label:
+        it: Fino a 1000 fornitori
+        en: Up to 1000 suppliers
+        de: Bis zu 1000 Lieferanten
+      roles:
+      - user
+  extensions:
+  - key: email_outbound
+    description: Sending the questionnaire link by email to each supplier is not available yet. The client shares the app
+      link; suppliers sign in with a magic link sent to the email in the supplier list.
+  - key: email_inbound
+    description: 'Reading supplier answers that arrive by email is not available yet: suppliers answer in the questionnaire
+      form (paste text instead of attaching files).'
+  - key: reminders
+    description: Automatic reminders after one week are not available (no notifications). The suppliers list shows status
+      and invitation date so the client can see who is overdue.
+  - key: commercial_db
+    description: 'Commercial emission-factor database: no connector with client credentials yet; the client declares the licence
+      in the form and the agent is told, but data access needs a later integration.'
+  - key: supplier_isolation
+    description: Sharing each supplier's assessment with the client company and keeping suppliers limited to their own records
+      needs per-record invitation wiring to be verified; file uploads are not supported.

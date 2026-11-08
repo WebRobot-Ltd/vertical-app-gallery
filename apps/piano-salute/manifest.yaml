@@ -1,0 +1,604 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: piano-salute
+  displayName: Piano Salute
+  tagline: Un check-up, un piano di prevenzione rivisto da un medico, per un anno.
+  description: Piano Salute parte da un questionario e dai tuoi esami del sangue, li confronta con le linee guida pubbliche
+    (ISS, Ministero della Salute) e prepara una bozza di piano di prevenzione. Un medico della rete la rivede, la modifica
+    e la firma prima che tu la veda. Poi ti accompagna per un anno con follow-up mensili e aggiornamenti trimestrali.
+  langs:
+  - it
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0f4c5c'
+      accent: '#2a9d8f'
+      background: '#f6faf9'
+      foreground: '#16262b'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Piano
+      color: primary
+    - text: Salute
+      color: accent
+  header:
+    links:
+    - label: Come funziona
+      href: '#come-funziona'
+    - label: Privacy
+      href: '#privacy'
+    cta:
+      label: Inizia il check-up
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Amministratore
+      assignedBy: admin_emails
+    - key: doctor
+      label: Medico
+      assignedBy: invite
+    - key: user
+      label: Paziente
+      assignedBy: signup
+  limits:
+  - action: agent:analyst
+    per: user
+    max: 2
+    window: day
+    roles:
+    - user
+  agents:
+  - key: analyst
+    role: main
+    description: Legge questionario e valori degli esami, li confronta con le linee guida pubbliche e salva una bozza di piano;
+      poi chiede la revisione del medico.
+    awaits:
+    - plan_review
+    profile:
+      inline:
+        display_name: Piano Salute analista
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'Sei un assistente di prevenzione che prepara BOZZE di piani per la revisione di un medico. Non fai
+            diagnosi e non prescrivi terapie. Ricevi questionario e valori degli esami (testo incollato o link). Se i valori
+            mancano o sono illeggibili, dillo e non inventarli. Confronta i valori con le linee guida pubbliche dell''Istituto
+            Superiore di Sanità e del Ministero della Salute: se serve, consultale con gli strumenti web (solo siti istituzionali)
+            e cita la fonte e la pagina. Non inventare mai valori, soglie o fonti.
+
+
+            Struttura della bozza (in italiano, Markdown), con titolo di primo livello "# Piano Salute — bozza per <data>"
+            e sezioni ##: Sintesi del profilo, Valori fuori range o da osservare (tabella: esame, valore, riferimento, nota),
+            Esami consigliati con scadenze, Obiettivi di alimentazione, Obiettivi di movimento e sonno, Punti da verificare
+            col medico, Fonti. Aggiungi un grafico solo se confronti numeri reali. Tono chiaro e prudente.
+
+
+            Procedura: 1) scrivi la bozza; 2) salvala con lo strumento save_draft (campi: title, content, status="in_revisione");
+            3) aggiorna il profilo con save_profile; 4) chiama request_plan_review con un riassunto di 5 righe per il medico.
+            Non dire all''utente che il piano è pronto: finché il medico non firma resta una bozza.'
+    goalTemplate: 'Consenso al trattamento dei dati sanitari: {consent_given}.
+
+      Età: {age}. Sesso: {sex_label}. Peso: {weight_kg} kg. Altezza: {height_cm} cm.
+
+      Fumo: {smoking_label}. Alcol: {alcohol_label}. Attività fisica: {activity_label}. Sonno: {sleep_hours} ore.
+
+      {?family_history}Familiarità: {family_history}{/family_history}
+
+      {?medications}Farmaci: {medications}{/medications}
+
+      {?labs_text}Valori degli esami:
+
+      {labs_text}{/labs_text}
+
+      {?labs_link}Link al referto: {labs_link}{/labs_link}
+
+      Data di oggi: {date}.'
+    appTools:
+    - name: save_draft
+      description: Salva la bozza del piano (title, content, status)
+      action: write
+      collection: plan_drafts
+      scope: user
+    - name: save_profile
+      description: Salva o aggiorna il profilo di salute dell'utente
+      action: write
+      collection: health_profiles
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 0.8
+  - key: publisher
+    role: helper
+    description: Dopo la firma del medico pubblica il piano al paziente.
+    profile:
+      inline:
+        display_name: Piano Salute pubblicazione
+        crews:
+        - id: publisher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Pubblichi il piano firmato. Leggi con read_draft la bozza più recente del paziente, così come l''ha
+            modificata il medico. Copiala SENZA cambiare il contenuto con save_plan (campi: title, content, signed_by dal
+            contesto della decisione, signed_at = data di oggi, valid_until = un anno dopo). Rispondi con una riga di conferma.'
+    goalTemplate: 'Il medico ha approvato la bozza. Pubblica il piano. Data: {date}.'
+    appTools:
+    - name: read_draft
+      description: Legge le bozze del paziente
+      action: read
+      collection: plan_drafts
+      scope: user
+    - name: save_plan
+      description: Pubblica il piano firmato
+      action: write
+      collection: plans
+      scope: user
+    output: markdown
+  - key: followup
+    role: scheduled
+    description: Follow-up mensile con promemoria e domande brevi, e proposta trimestrale di aggiornamento dati.
+    memory: instance
+    writesTo:
+      collection: followups
+      parse: whole
+    profile:
+      inline:
+        display_name: Piano Salute follow-up
+        crews:
+        - id: followup
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.25
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Accompagni una persona nel suo piano di prevenzione annuale già firmato da un medico. Leggi il piano
+            con read_plan: se non esiste ancora, scrivi solo che il piano è in revisione. Non fai diagnosi né cambi il piano.
+            Scrivi in italiano, titolo "# Follow-up — <mese anno>", sezioni ##: Promemoria (esami e scadenze del piano nei
+            prossimi 30 giorni), Obiettivi del mese, Tre domande brevi (risposta sì/no o numero). Se è un aggiornamento trimestrale,
+            invita ad aprire "Nuovo check-up" per aggiornare questionario e referti. Meno di 250 parole. La tua memoria contiene
+            l''ultimo follow-up: non ripeterti. Alla fine chiama remember con i 5 punti chiave. Per sintomi preoccupanti invita
+            a contattare il medico curante o il 112.'
+    appTools:
+    - name: read_plan
+      description: Legge il piano firmato dell'utente
+      action: read
+      collection: plans
+      scope: user
+    output: markdown
+  templates:
+  - key: monthly_followup
+    title: Follow-up mensile
+    description: Ogni mese promemoria e domande brevi sul tuo piano.
+    agent: followup
+    params:
+    - name: focus
+      type: text
+      label: Su cosa vuoi più attenzione? (facoltativo)
+    goal: 'Follow-up mensile "{instance}". {?focus}Attenzione su: {focus}.{/focus} Oggi è {date}.'
+    schedule:
+      cron: 0 8 1 * *
+      userCanChange: false
+    maxPerUser: 1
+    roles:
+    - user
+  - key: quarterly_update
+    title: Aggiornamento trimestrale
+    description: Ogni tre mesi ti proponiamo di aggiornare i dati.
+    agent: followup
+    params:
+    - name: note
+      type: text
+      label: Nota (facoltativa)
+    goal: 'Aggiornamento trimestrale "{instance}": proponi di aggiornare questionario e referti e riassumi i progressi sugli
+      obiettivi. Oggi è {date}.'
+    schedule:
+      cron: 0 8 1 */3 *
+      userCanChange: false
+    maxPerUser: 1
+    roles:
+    - user
+  approvals:
+  - key: plan_review
+    title: Revisione e firma del piano
+    description: Il medico rivede, modifica la bozza e la firma prima che il paziente la veda.
+    role: doctor
+    decidedBy: role
+    fields:
+    - summary
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: publish_signed
+    description: Quando il medico firma, pubblica il piano al paziente.
+    'on':
+      approval: plan_review
+      decision: approved
+    start:
+      agent: publisher
+    goal: 'Il medico ha approvato la bozza. Evento: {event}. Pubblica il piano.'
+    asUser: true
+  inputForm:
+    title: Nuovo check-up
+    fields:
+    - name: consent_given
+      type: boolean
+      required: true
+      label: Acconsento al trattamento dei miei dati sanitari (art. 9 GDPR) per la redazione del piano, con revisione di un
+        medico
+      default: false
+    - name: age
+      type: number
+      required: true
+      label: Età
+    - name: sex
+      type: select
+      required: true
+      label: Sesso
+      options:
+      - value: f
+        label: Donna
+      - value: m
+        label: Uomo
+      - value: x
+        label: Altro / preferisco non dire
+    - name: weight_kg
+      type: number
+      required: true
+      label: Peso (kg)
+    - name: height_cm
+      type: number
+      required: true
+      label: Altezza (cm)
+    - name: smoking
+      type: select
+      required: true
+      label: Fumo
+      options:
+      - value: never
+        label: Mai fumato
+      - value: former
+        label: Ex fumatore
+      - value: current
+        label: Fumatore
+    - name: alcohol
+      type: select
+      required: true
+      label: Alcol
+      options:
+      - value: none
+        label: Nessuno
+      - value: light
+        label: Occasionale
+      - value: moderate
+        label: Regolare (1-2 al giorno)
+      - value: high
+        label: Più di 2 al giorno
+    - name: activity
+      type: select
+      required: true
+      label: Attività fisica
+      options:
+      - value: low
+        label: Sedentario
+      - value: mid
+        label: 1-2 volte a settimana
+      - value: high
+        label: 3 o più volte a settimana
+    - name: sleep_hours
+      type: number
+      required: true
+      label: Ore di sonno per notte
+    - name: family_history
+      type: textarea
+      maxLength: 600
+      label: Familiarità per malattie (facoltativo)
+    - name: medications
+      type: textarea
+      maxLength: 600
+      label: Farmaci che assumi (facoltativo)
+    - name: labs_text
+      type: textarea
+      maxLength: 6000
+      label: Valori degli esami del sangue
+      help: 'Il caricamento dei PDF non è ancora disponibile: copia e incolla i valori dal referto (esame, valore, unità).'
+    - name: labs_link
+      type: url
+      label: Link al referto online (facoltativo)
+  data:
+    collections:
+    - name: health_profiles
+      ownedBy: user
+      description: 'Profilo di salute dell''utente: età, sesso, peso, altezza, abitudini, familiarità, farmaci, data di aggiornamento'
+      fields:
+      - name: age
+        type: number
+      - name: sex
+        type: text
+      - name: weight_kg
+        type: number
+      - name: height_cm
+        type: number
+      - name: habits
+        type: textarea
+      - name: family_history
+        type: textarea
+      - name: medications
+        type: textarea
+      - name: updated_at
+        type: date
+    - name: plan_drafts
+      ownedBy: user
+      sharing:
+      - editor
+      description: Bozze di piano, modificabili dal medico assegnato tramite invito sul singolo record
+      fields:
+      - name: title
+        type: text
+      - name: content
+        type: textarea
+      - name: status
+        type: text
+    - name: plans
+      ownedBy: user
+      sharing:
+      - viewer
+      description: Piani firmati dal medico, visibili al paziente e al medico assegnato
+      fields:
+      - name: title
+        type: text
+      - name: content
+        type: textarea
+      - name: signed_by
+        type: text
+      - name: signed_at
+        type: date
+      - name: valid_until
+        type: date
+    - name: followups
+      ownedBy: instance
+      description: Follow-up mensili e aggiornamenti trimestrali di ciascun paziente
+  views:
+  - key: home
+    type: page
+    title: Piano Salute
+    nav: false
+    sections:
+    - type: hero
+      title: Un check-up, un **piano di prevenzione** firmato da un medico.
+      text: Compili un questionario, aggiungi i valori dei tuoi esami e ricevi per un anno un piano su esami, alimentazione
+        e movimento, rivisto e firmato da un medico della rete.
+      actions:
+      - label: Inizia il check-up
+        href: /login
+        style: primary
+      - label: Come funziona
+        href: '#come-funziona'
+        style: ghost
+      layout: stack
+      band: true
+    - type: steps
+      id: come-funziona
+      title: Come funziona
+      items:
+      - title: Consenso e questionario
+        text: Abitudini, familiarità, farmaci e valori degli esami del sangue.
+        badge: 📝
+      - title: Bozza e revisione medica
+        text: Un agente confronta i valori con le linee guida di ISS e Ministero della Salute; un medico rivede, modifica
+          e firma prima che tu veda il piano.
+        badge: 🩺
+      - title: Il tuo anno
+        text: Piano con scadenze, follow-up mensile con domande brevi e aggiornamento dei dati ogni tre mesi.
+        badge: 📅
+    - type: cards
+      title: Cosa ricevi
+      items:
+      - title: Esami consigliati
+        text: Con scadenze chiare.
+      - title: Obiettivi
+        text: Alimentazione, movimento e sonno.
+      - title: Storico
+        text: Tutti i tuoi piani e follow-up in un posto.
+    - type: note
+      id: privacy
+      content: 'Piano Salute è un servizio di prevenzione, non sostituisce il medico curante né fornisce diagnosi o terapie.
+        I dati sanitari sono trattati solo con il tuo consenso: li vedono tu e il medico assegnato; l''amministrazione del
+        servizio non ha accesso ai dati clinici. In caso di sintomi o urgenze chiama il 112.'
+  - key: new_checkup
+    type: new_run
+    title: Nuovo check-up
+    roles:
+    - user
+  - key: my_plan
+    type: page
+    title: Il mio piano
+    roles:
+    - user
+    sections:
+    - type: data
+      title: Piano firmato
+      source: collection:plans
+      display: cards
+      fields:
+      - key: title
+        label: Piano
+      - key: content
+        label: Contenuto
+      - key: signed_by
+        label: Firmato da
+      - key: signed_at
+        label: Data firma
+        format: date
+      - key: valid_until
+        label: Valido fino al
+        format: date
+      sort:
+        field: signed_at
+        dir: desc
+      limit: 1
+      empty: 'Il tuo piano è in revisione da parte di un medico: lo vedrai appena sarà firmato.'
+  - key: history
+    type: page
+    title: Storico
+    roles:
+    - user
+    sections:
+    - type: data
+      title: I miei piani
+      source: collection:plans
+      display: table
+      fields:
+      - key: title
+        label: Piano
+      - key: signed_by
+        label: Medico
+      - key: signed_at
+        label: Firmato il
+        format: date
+      - key: valid_until
+        label: Valido fino al
+        format: date
+      sort:
+        field: signed_at
+        dir: desc
+      limit: 50
+      empty: Nessun piano ancora.
+    - type: data
+      title: I miei follow-up
+      source: collection:followups
+      display: list
+      sort:
+        field: createdAt
+        dir: desc
+      limit: 50
+      empty: I follow-up appariranno qui.
+  - key: followups
+    type: instances
+    template: monthly_followup
+    title: Follow-up mensile
+    roles:
+    - user
+  - key: quarterly
+    type: instances
+    template: quarterly_update
+    title: Aggiornamento trimestrale
+    roles:
+    - user
+  - key: review
+    type: approvals
+    title: Bozze da firmare
+    approvals:
+    - plan_review
+    roles:
+    - doctor
+  - key: patients
+    type: page
+    title: I miei pazienti
+    roles:
+    - doctor
+    sections:
+    - type: data
+      title: Bozze dei pazienti assegnati
+      intro: Vedi solo i record condivisi con te.
+      source: collection:plan_drafts
+      display: table
+      fields:
+      - key: title
+        label: Bozza
+      - key: status
+        label: Stato
+        format: badge
+      limit: 100
+      empty: Nessun paziente assegnato.
+  - key: account
+    type: account
+    title: Abbonamento
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: annual
+      price: 129
+      interval: year
+      label: Piano Salute annuale
+      includes:
+      - check-up iniziale con revisione medica
+      - follow-up mensili
+      - aggiornamento trimestrale dei dati
+      roles:
+      - user
+  extensions:
+  - key: pdf_upload
+    description: 'Il caricamento dei referti in PDF non è disponibile: oggi l''utente incolla i valori o indica un link. Da
+      aggiungere appena esiste il tipo di campo file.'
+  - key: lab_connector
+    description: Ricezione diretta dei risultati dal laboratorio convenzionato (da realizzare quando sarà disponibile un connettore).
+  - key: email_notifications
+    description: 'Il follow-up mensile e la proposta trimestrale non sono inviati via email (notifiche non disponibili): l''utente
+      li trova nell''app, nello storico. L''invio email andrà aggiunto appena disponibile.'
+  - key: doctor_assignment
+    description: L'assegnazione medico-paziente avviene condividendo i record (bozze e piani) con il medico invitato; serve
+      un passaggio operativo per assegnare il medico a ogni nuovo paziente. L'admin non ha viste sui dati clinici.
+  - key: draft_visibility
+    description: La bozza è un dato dell'utente ma nessuna vista la mostra al paziente; da verificare che il report della
+      run non sia visibile al paziente prima della firma.
+  - key: health_data_compliance
+    description: Registro del consenso, DPIA, nomina dei medici e conservazione dei dati sanitari (GDPR art. 9) da definire
+      con il titolare del trattamento prima della pubblicazione.

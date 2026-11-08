@@ -1,0 +1,616 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: normaradar
+  displayName: NormaRadar
+  tagline:
+    it: Il radar normativo europeo per aziende regolate.
+    en: The EU regulatory radar for regulated companies.
+  description:
+    it: NormaRadar controlla ogni giorno le novità su EUR-Lex, le filtra sul profilo della tua azienda con priorità e motivazione,
+      fa la gap analysis delle tue policy e risponde alle domande citando sempre la fonte. Ogni output è approvato dal responsabile
+      compliance prima di essere condiviso.
+    en: NormaRadar checks EUR-Lex every day, filters changes against your company profile with priority and rationale, runs
+      gap analyses on your policies and answers questions always citing the source. Every output is approved by your compliance
+      officer before it is shared.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#12284c'
+      accent: '#1f6feb'
+      background: '#f6f8fb'
+      foreground: '#14202e'
+    fonts:
+      body: Inter
+      display: IBM Plex Serif
+    wordmark:
+    - text: Norma
+      color: primary
+    - text: Radar
+      color: accent
+    width: wide
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Prezzi
+        en: Pricing
+      href: '#prezzi'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: compliance
+      label:
+        it: Responsabile compliance
+        en: Compliance officer
+      assignedBy: invite
+    - key: user
+      label:
+        it: Utente
+        en: User
+      assignedBy: signup
+  limits:
+  - action: agent:gap
+    per: user
+    max: 10
+    window: day
+  - action: chat
+    per: user
+    max: 60
+    window: day
+  collections:
+  - name: company_profile
+    description: Profilo regolatorio dell'azienda
+    ownedBy: org
+    fields:
+    - name: sector
+      type: select
+      options:
+      - bank
+      - fintech
+      - insurance
+      - crypto
+      - other
+    - name: countries
+      type: text
+    - name: products
+      type: textarea
+    - name: regulations
+      type: text
+  - name: radar_items
+    description: Radar giornaliero, in attesa di approvazione o approvato
+    ownedBy: org
+    fields:
+    - name: date
+      type: date
+    - name: title
+      type: text
+    - name: priority
+      type: select
+      options:
+      - high
+      - medium
+      - low
+    - name: regulation
+      type: text
+    - name: why
+      type: textarea
+    - name: source
+      type: url
+    - name: status
+      type: select
+      options:
+      - pending
+      - approved
+      - rejected
+      default: pending
+  agents:
+  - key: radar
+    role: scheduled
+    description: Ogni giorno controlla EUR-Lex e produce il radar per l'azienda.
+    profile:
+      inline:
+        display_name: NormaRadar daily scanner
+        crews:
+        - id: radar
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are a regulatory monitoring analyst for EU regulated companies (banks, fintech, insurance, crypto).
+            Each day you read the new items published on EUR-Lex (RSS feeds and the public EUR-Lex API; reuse is free with
+            attribution) through the WebRobot MCP, and select only those relevant to the company profile you are given (sector,
+            countries, products, regulations such as DORA, MiCAR, AI Act, GDPR, PSD2). Start with a level-1 title "# Radar
+            normativo — <date>". Then, for each relevant item: a ## heading with the title, Priority (ALTA/HIGH, MEDIA/MEDIUM,
+            BASSA/LOW), the regulation concerned, why it matters for THIS company (2-3 sentences), the suggested next step,
+            and the source link (CELEX number or EUR-Lex URL). Order by priority. If nothing is relevant, say so. Never invent
+            documents, article numbers or dates: only report what you actually found on EUR-Lex. This is decision support,
+            not legal advice. Mark the output at the top as "DRAFT — pending compliance officer approval". End with the attribution:
+            "Source: EUR-Lex, © European Union, reuse authorised with attribution." After the report add a fenced ```json
+            block with an array of objects {date,title,priority(high|medium|low),regulation,why,source,status:"pending"}.
+            Write in the language with the ISO code given in the goal.'
+    appTools:
+    - name: read_profile
+      description: Read the company regulatory profile
+      action: read
+      collection: company_profile
+      scope: all
+    goalTemplate: 'Date: {date}. Read the company profile with the read_profile tool and check what EUR-Lex published since
+      the last working day. Produce the radar in the language {lang}.'
+    output: markdown+json
+    writesTo:
+      collection: radar_items
+      parse: json_last
+      keyBy: date
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+  - key: gap
+    role: main
+    description: Gap analysis tra una norma e le policy interne caricate.
+    profile:
+      inline:
+        display_name: NormaRadar gap analyst
+        crews:
+        - id: gap
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Write
+          - Edit
+          - NotebookEdit
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are a compliance gap analyst. You receive a regulation chosen by the user and the internal policy
+            document(s) uploaded (PDF or Word). Retrieve the text of the regulation from EUR-Lex via the WebRobot MCP and
+            read the policies. Output starts with a level-1 title "# Gap analysis — <regulation> — <company>". Mark it as
+            "DRAFT — pending compliance officer approval". Sections (## headings): Summary (overall coverage and count of
+            gaps), Gap table (columns: Requirement with article citation | Policy clause (document and section) | Status:
+            compliant / partial / non-compliant / missing | Severity), Non-compliant clauses (for each: the quoted policy
+            text, the requirement it fails with article and document, why), Proposed corrective text (ready-to-use wording
+            for each gap), Next steps. Cite article and document for every requirement. Never invent articles or quotations;
+            if the policy is silent or the source cannot be found, say so. If the comparison covers several requirements,
+            add a ```chart block with the count of gaps by status (real figures only). Decision support, not legal advice.
+            Write in the requested language.'
+    goalTemplate: 'Regulation to check: {regulation_label}
+
+      {?focus}Focus: {focus}{/focus}
+
+      Internal policy file(s): {policies}
+
+      Write the analysis in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 2
+  - key: assistant
+    role: helper
+    description: 'Chat sulle norme: risponde solo con fonte citata.'
+    profile:
+      inline:
+        display_name: NormaRadar source-bound assistant
+        chat_mode: true
+        crews:
+        - id: assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You answer questions about EU regulation (DORA, MiCAR, AI Act, GDPR, PSD2 and others). Look up the
+            text on EUR-Lex through the WebRobot MCP before answering. Every statement must cite its source: document (name
+            and CELEX number) and article/paragraph. If you cannot find the source, answer exactly "Non lo so / I don''t know:
+            non ho trovato una fonte" in the user''s language and suggest where to look. Never answer from memory without
+            a verified citation, never invent articles. Keep answers short, begin with the answer, then the ''Fonti / Sources''
+            list. Mark answers as "DRAFT — to be validated by the compliance officer before being shared". Not legal advice.'
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New question: {message}
+
+      Answer in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.8
+  inputForm:
+    title:
+      it: Nuova gap analysis
+      en: New gap analysis
+    fields:
+    - name: regulation
+      type: select
+      required: true
+      label:
+        it: Norma
+        en: Regulation
+      options:
+      - value: dora
+        label: DORA (Reg. 2022/2554)
+      - value: micar
+        label: MiCAR (Reg. 2023/1114)
+      - value: ai_act
+        label: AI Act (Reg. 2024/1689)
+      - value: gdpr
+        label: GDPR (Reg. 2016/679)
+      - value: psd2
+        label: PSD2 (Dir. 2015/2366)
+    - name: policies
+      type: file
+      required: true
+      label:
+        it: Policy interne (PDF o Word)
+        en: Internal policies (PDF or Word)
+    - name: focus
+      type: textarea
+      maxLength: 500
+      label:
+        it: Ambito specifico (facoltativo)
+        en: Specific scope (optional)
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: NormaRadar
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow:
+        it: Monitoraggio normativo
+        en: Regulatory monitoring
+      title:
+        it: Sapere **cosa cambia** nelle norme UE, prima che diventi un problema.
+        en: Know **what changes** in EU rules before it becomes a problem.
+      text:
+        it: Un radar giornaliero su EUR-Lex filtrato sul profilo della tua azienda, gap analysis delle tue policy e una chat
+          che risponde solo citando la fonte. Tutto approvato dal tuo responsabile compliance.
+        en: A daily EUR-Lex radar filtered on your company profile, gap analysis of your policies and a chat that answers
+          only with cited sources. Everything approved by your compliance officer.
+      actions:
+      - label:
+          it: Inizia
+          en: Get started
+        href: /login
+        style: primary
+      - label:
+          it: Come funziona
+          en: How it works
+        href: '#come-funziona'
+        style: ghost
+      aside: '<div style="padding:16px"><b>HIGH</b> · DORA<br>New RTS on ICT incident reporting<br><small>Why: your payment
+        app falls in scope. Source: EUR-Lex</small></div>'
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Descrivi la tua azienda
+          en: Describe your company
+        text:
+          it: Settore, paesi, prodotti e normative che ti riguardano.
+          en: Sector, countries, products and the regulations that apply.
+        badge: 🏦
+      - title:
+          it: Ricevi il radar
+          en: Get the radar
+        text:
+          it: Ogni giorno le novità rilevanti con priorità alta/media/bassa e il perché.
+          en: Every day the relevant changes with high/medium/low priority and the reason.
+        badge: 📡
+      - title:
+          it: Analizza e chiedi
+          en: Analyse and ask
+        text:
+          it: Carica le policy per la gap analysis con testo correttivo, o fai domande in chat.
+          en: Upload policies for a gap analysis with corrective text, or ask questions in chat.
+        badge: 📄
+      - title:
+          it: Approva e condividi
+          en: Approve and share
+        text:
+          it: Il responsabile compliance approva ogni output prima della condivisione.
+          en: The compliance officer approves every output before it is shared.
+        badge: ✅
+    - type: cards
+      id: prezzi
+      title:
+        it: Prezzi
+        en: Pricing
+      items:
+      - title:
+          it: Radar — abbonamento mensile
+          en: Radar — monthly subscription
+        text:
+          it: Radar giornaliero su EUR-Lex per il tuo profilo.
+          en: Daily EUR-Lex radar for your profile.
+      - title:
+          it: Crediti
+          en: Credits
+        text:
+          it: Gap analysis e chat si pagano a consumo in crediti.
+          en: Gap analysis and chat are pay-per-use in credits.
+    - type: note
+      content:
+        it: 'Fonte dati: EUR-Lex, © Unione europea, riuso autorizzato con attribuzione. Supporto alle decisioni, non consulenza
+          legale.'
+        en: 'Data source: EUR-Lex, © European Union, reuse authorised with attribution. Decision support, not legal advice.'
+  - key: profile
+    type: list
+    title:
+      it: Profilo azienda
+      en: Company profile
+    source: collection:company_profile
+    roles:
+    - user
+    - compliance
+    - admin
+    data:
+      display: cards
+      fields:
+      - key: sector
+        label:
+          it: Settore
+          en: Sector
+      - key: countries
+        label:
+          it: Paesi
+          en: Countries
+      - key: products
+        label:
+          it: Prodotti
+          en: Products
+      - key: regulations
+        label:
+          it: Normative
+          en: Regulations
+  - key: radar
+    type: table
+    title:
+      it: Radar
+      en: Radar
+    source: collection:radar_items
+    roles:
+    - user
+    - compliance
+    - admin
+    preview:
+      rows: 3
+      unlessPlan: radar_monthly
+    data:
+      display: table
+      fields:
+      - key: date
+        label:
+          it: Data
+          en: Date
+        format: date
+      - key: priority
+        label:
+          it: Priorità
+          en: Priority
+        format: badge
+      - key: regulation
+        label:
+          it: Norma
+          en: Regulation
+      - key: title
+        label:
+          it: Novità
+          en: Item
+      - key: why
+        label:
+          it: Perché
+          en: Why
+      - key: status
+        label:
+          it: Approvazione
+          en: Approval
+        format: badge
+      - key: source
+        label:
+          it: Fonte
+          en: Source
+        format: link
+      filters:
+      - field: status
+        op: '='
+        value: approved
+      sort:
+        field: date
+        dir: desc
+      limit: 100
+      empty:
+        it: Nessuna novità approvata.
+        en: No approved items yet.
+  - key: approvals
+    type: table
+    title:
+      it: Da approvare
+      en: To approve
+    source: collection:radar_items
+    roles:
+    - compliance
+    - admin
+    data:
+      display: table
+      fields:
+      - key: date
+        format: date
+      - key: priority
+        format: badge
+      - key: title
+      - key: why
+      - key: source
+        format: link
+      - key: status
+        format: badge
+      filters:
+      - field: status
+        op: '='
+        value: pending
+      sort:
+        field: date
+        dir: desc
+      limit: 100
+      empty:
+        it: Niente in attesa.
+        en: Nothing pending.
+  - key: new_gap
+    type: new_run
+    title:
+      it: Gap analysis
+      en: Gap analysis
+    roles:
+    - user
+    - compliance
+    - admin
+  - key: analyses
+    type: history
+    title:
+      it: Le mie analisi
+      en: My analyses
+    source: run
+    roles:
+    - user
+    - compliance
+    - admin
+  - key: gap_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: chat
+    type: chat
+    title:
+      it: Chiedi alla norma
+      en: Ask the law
+    source: agent:assistant
+    examples:
+    - it: Quali sono gli obblighi di notifica degli incidenti ICT secondo DORA?
+      en: What are the ICT incident reporting obligations under DORA?
+    - it: Cosa prevede l'art. 6 del GDPR?
+      en: What does Article 6 GDPR provide?
+    placeholder:
+      it: Fai una domanda su una norma…
+      en: Ask about a regulation…
+    roles:
+    - user
+    - compliance
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento e crediti
+      en: Plan and credits
+    roles:
+    - user
+    - compliance
+  schedules:
+  - agent: radar
+    action: run
+    cron: 0 7 * * 1-5
+    owner: app
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:gap:
+        estimate: 10
+        metered: true
+      agent:assistant:
+        estimate: 10
+        metered: true
+    packs:
+    - key: starter
+      credits: 500
+      price: 10
+      label: Starter
+    - key: pro
+      credits: 3000
+      price: 50
+      label: Pro
+    plans:
+    - key: radar_monthly
+      price: 49
+      interval: month
+      label:
+        it: Radar giornaliero
+        en: Daily radar
+      includes:
+      - radar
+      credits: 0
+  extensions:
+  - key: approval_gate
+    description: Un output (voce del radar, gap analysis, risposta di chat) resta 'pending' e visibile solo al responsabile
+      compliance finché non lo approva; solo gli output 'approved' sono condivisibili con gli altri utenti.

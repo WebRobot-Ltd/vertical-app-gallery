@@ -1,0 +1,747 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: cucina-sotto-controllo
+  displayName: Cucina sotto Controllo
+  tagline:
+    it: Food cost reale, scorte e ordini ai fornitori sotto controllo, ogni giorno.
+  description:
+    it: 'Gestionale con agenti per ristoranti: ricette, fornitori, magazzino e vendite. Ogni giorno un agente calcola il food
+      cost reale, scala le scorte e prepara gli ordini da approvare; ogni lunedì un report con margini, previsione coperti
+      e quantità da ordinare, anche consolidato per gruppo.'
+  langs:
+  - it
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#2b2a28'
+      accent: '#c2410c'
+      background: '#faf8f5'
+      foreground: '#1f1d1b'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: 'Cucina sotto '
+      color: primary
+    - text: Controllo
+      color: accent
+    width: wide
+  header:
+    links:
+    - label:
+        it: Come funziona
+      href: '#come-funziona'
+    - label:
+        it: Ruoli
+      href: '#ruoli'
+    cta:
+      label:
+        it: Accedi
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Super admin
+      assignedBy: admin_emails
+    - key: titolare
+      label:
+        it: Titolare
+      assignedBy: signup
+    - key: chef
+      label:
+        it: Chef
+      assignedBy: invite
+    - key: sala
+      label:
+        it: Sala
+      assignedBy: invite
+  limits:
+  - action: agent:vendite
+    per: user
+    max: 20
+    window: day
+  agents:
+  - key: vendite
+    role: main
+    description: Registra a fine servizio coperti e piatti venduti.
+    profile:
+      inline:
+        display_name: Registrazione vendite
+        crews:
+        - id: vendite
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei l''assistente che registra le vendite di fine servizio di un ristorante. Ricevi locale, data,
+            servizio, coperti e un elenco ''piatto x quantità''. Confronta ogni piatto con le ricette esistenti (strumento
+            leggi_ricette) usando il nome più simile; se un piatto non esiste NON inventarlo: segnalalo come non riconosciuto.
+            Salva UN record con lo strumento salva_vendite (locale, data, servizio, coperti, righe [{piatto, quantita}]).
+            Se esiste già un record per stessa data+locale+servizio, sostituiscilo. Rispondi in italiano con un titolo ''#
+            Vendite registrate — <locale> <data>'' e una tabella dei piatti registrati, più l''elenco degli eventuali piatti
+            non riconosciuti. Non mostrare costi o margini.'
+    goalTemplate: 'Locale: {locale}
+
+      Data: {data}
+
+      Servizio: {servizio_label}
+
+      Coperti: {coperti}
+
+      Piatti venduti (uno per riga, ''piatto x quantità''):
+
+      {piatti}
+
+      Oggi è {date}.'
+    appTools:
+    - name: leggi_ricette
+      description: Legge le ricette del locale con ingredienti e grammature
+      action: read
+      collection: ricette
+      scope: user
+    - name: salva_vendite
+      description: Salva o sostituisce il record di vendite del servizio
+      action: write
+      collection: vendite
+      scope: user
+    output: markdown
+  - key: controllo
+    role: scheduled
+    description: 'Ogni giorno, per un locale: food cost reale vs teorico, scorte, sprechi, differenze inventariali, ordini
+      ai fornitori.'
+    memory: instance
+    awaits:
+    - ordine_fornitore
+    writesTo:
+      collection: controlli_giornalieri
+      parse: whole
+      keyBy: date
+    profile:
+      inline:
+        display_name: Controllo giornaliero cucina
+        crews:
+        - id: controllo
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei il controller di cucina di UN locale. Lavori solo con i dati reali letti dagli strumenti (ricette
+            con grammature, listini fornitori, giacenze, vendite, sprechi/conteggi); non inventare mai numeri: se un dato
+            manca, scrivilo. Ogni giorno: 1) leggi le vendite di ieri del locale indicato; se mancano, dillo in cima e non
+            scalare nulla. 2) Calcola il food cost TEORICO di ogni piatto (grammature x ultimo prezzo di listino) e il food
+            cost REALE (consumo effettivo da scorte: giacenza iniziale + carichi - giacenza finale, ripartito sui piatti venduti);
+            mostra scostamento in € e %. 3) Scala le scorte con le quantità teoriche delle vendite (strumento aggiorna_giacenze)
+            e segnala differenze inventariali e sprechi oltre il 5%. 4) Per ogni ingrediente sotto soglia scegli il fornitore
+            con il prezzo migliore dal listino e, con lo strumento request_ordine_fornitore, chiedi l''approvazione del titolare
+            con fornitore, righe (ingrediente, quantità, prezzo unitario), totale e testo email pronto. Non considerare mai
+            un ordine inviato: l''invio resta al titolare. Output: titolo ''# Controllo <locale> — <data>'', poi ## Sintesi,
+            ## Food cost per piatto (tabella: piatto, teorico, reale, scostamento), ## Scorte e sotto soglia, ## Sprechi e
+            differenze, ## Ordini proposti. Concludi con remember: i 5 punti chiave di oggi. Italiano.'
+    goalTemplate: 'Locale: {locale}. Data di oggi: {date}. Esegui il controllo giornaliero sulle vendite di ieri.'
+    appTools:
+    - name: leggi_ricette
+      description: Legge le ricette del locale con ingredienti e grammature
+      action: read
+      collection: ricette
+      scope: user
+    - name: leggi_fornitori
+      description: Fornitori e listini
+      action: read
+      collection: fornitori
+      scope: user
+    - name: leggi_giacenze
+      description: Giacenze, soglie e conteggi
+      action: read
+      collection: giacenze
+      scope: user
+    - name: leggi_vendite
+      description: Vendite per servizio
+      action: read
+      collection: vendite
+      scope: user
+    - name: aggiorna_giacenze
+      description: Aggiorna le giacenze dopo lo scarico teorico
+      action: write
+      collection: giacenze
+      scope: user
+    - name: registra_ordine
+      description: Registra la bozza d'ordine al fornitore
+      action: append
+      collection: ordini
+      scope: user
+    output: markdown
+  - key: report_settimanale
+    role: scheduled
+    description: 'Ogni lunedì: margine per piatto, prezzi da rivedere, previsione coperti, quantità da ordinare, consolidato
+      di gruppo.'
+    memory: instance
+    writesTo:
+      collection: report_settimanali
+      parse: whole
+      keyBy: date
+    profile:
+      inline:
+        display_name: Report settimanale margini
+        crews:
+        - id: report
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei l''analista di gestione per il titolare di uno o più locali dello stesso gruppo. Leggi ricette,
+            listini, giacenze, vendite e controlli giornalieri con gli strumenti. Se il parametro locale è vuoto, produci
+            il report per ogni locale e poi un CONSOLIDATO di gruppo; i dati dei locali restano separati nelle tabelle. Non
+            inventare numeri: se le vendite storiche sono poche, dichiara la previsione poco affidabile. Struttura: ''# Report
+            settimanale — <locale o Gruppo> — settimana del <data>'', ## Sintesi, ## Margine per piatto (tabella: piatto,
+            prezzo, food cost, margine €, margine %, venduti), ## Piatti da rivedere nel prezzo (con motivo e prezzo suggerito
+            indicativo), ## Previsione coperti della settimana (per giorno, basata sullo storico per giorno della settimana),
+            ## Quantità da ordinare (ingrediente, quantità, fornitore consigliato), ## Consolidato di gruppo (se più locali).
+            Aggiungi un grafico per i margini e uno per i coperti: ```chart
+
+            {"type":"bar","title":"...","labels":[...],"series":[{"name":"...","values":[...]}],"unit":"%"}
+
+            ``` solo con dati reali. Non è consulenza fiscale. Italiano. Chiudi con remember.'
+    goalTemplate: '{?locale}Locale: {locale}.{/locale}{!locale}Tutti i locali del gruppo, con consolidato.{/locale} Oggi è
+      {date}. Produci il report della settimana.'
+    appTools:
+    - name: leggi_ricette
+      description: Legge le ricette del locale con ingredienti e grammature
+      action: read
+      collection: ricette
+      scope: user
+    - name: leggi_fornitori
+      description: Fornitori e listini
+      action: read
+      collection: fornitori
+      scope: user
+    - name: leggi_giacenze
+      description: Giacenze, soglie e conteggi
+      action: read
+      collection: giacenze
+      scope: user
+    - name: leggi_vendite
+      description: Vendite per servizio
+      action: read
+      collection: vendite
+      scope: user
+    - name: leggi_locali
+      description: Locali del gruppo
+      action: read
+      collection: locali
+      scope: user
+    output: markdown
+  inputForm:
+    title:
+      it: Inserisci vendite del servizio
+    fields:
+    - name: locale
+      type: text
+      required: true
+      label:
+        it: Locale
+    - name: data
+      type: date
+      required: true
+      label:
+        it: Data
+    - name: servizio
+      type: select
+      required: true
+      label:
+        it: Servizio
+      options:
+      - value: pranzo
+        label:
+          it: Pranzo
+      - value: cena
+        label:
+          it: Cena
+      - value: giornata
+        label:
+          it: Intera giornata
+    - name: coperti
+      type: number
+      required: true
+      label:
+        it: Coperti
+    - name: piatti
+      type: textarea
+      required: true
+      maxLength: 3000
+      label:
+        it: Piatti venduti
+      help:
+        it: Uno per riga, es. Tagliatelle al ragù x 12
+  templates:
+  - key: controllo_locale
+    title:
+      it: Controllo giornaliero locale
+    description:
+      it: Ogni giorno food cost reale, scorte, sprechi e ordini da approvare per un locale.
+    agent: controllo
+    params:
+    - name: locale
+      type: text
+      required: true
+      label:
+        it: Nome del locale
+    schedule:
+      cron: 0 4 * * *
+      userCanChange: true
+    maxPerUser: 10
+    roles:
+    - titolare
+    - admin
+    goal: 'Locale: {locale}. Istanza: {instance}. Oggi è {date}. Esegui il controllo giornaliero sulle vendite di ieri.'
+  - key: report_gruppo
+    title:
+      it: Report del lunedì
+    description:
+      it: Report settimanale per un locale o consolidato per tutto il gruppo (lascia vuoto il locale).
+    agent: report_settimanale
+    params:
+    - name: locale
+      type: text
+      label:
+        it: Locale (vuoto = tutto il gruppo)
+    schedule:
+      cron: 0 5 * * 1
+      userCanChange: false
+    maxPerUser: 10
+    roles:
+    - titolare
+    - admin
+    goal: '{?locale}Locale: {locale}.{/locale}{!locale}Tutti i locali del gruppo, con consolidato.{/locale} Oggi è {date}.
+      Produci il report della settimana.'
+  approvals:
+  - key: ordine_fornitore
+    title:
+      it: Approva ordine al fornitore
+    description: Ordine preparato dall'agente quando un ingrediente scende sotto soglia
+    fields:
+    - locale
+    - fornitore
+    - righe
+    - totale
+    - testo_email
+    decidedBy: requester
+    timeoutMinutes: 2880
+    onTimeout: reject
+  data:
+    collections:
+    - name: locali
+      ownedBy: user
+      description: Locali del gruppo
+      fields:
+      - name: nome
+        type: text
+        required: true
+        label:
+          it: Nome
+      - name: citta
+        type: city
+        label:
+          it: Città
+      - name: email_ordini
+        type: email
+        label:
+          it: Email per gli ordini
+    - name: ricette
+      ownedBy: user
+      description: Ricette con grammature
+      sharing:
+      - viewer
+      - editor
+      fields:
+      - name: locale
+        type: text
+        required: true
+        label:
+          it: Locale
+      - name: piatto
+        type: text
+        required: true
+        label:
+          it: Piatto
+      - name: porzioni
+        type: number
+        label:
+          it: Porzioni
+      - name: prezzo_vendita
+        type: number
+        label:
+          it: Prezzo di vendita (€)
+      - name: ingredienti
+        type: array
+        label:
+          it: Ingredienti
+        fields:
+        - name: ingrediente
+          type: text
+        - name: grammi
+          type: number
+          label:
+            it: Grammi
+    - name: fornitori
+      ownedBy: user
+      description: Fornitori e listini
+      fields:
+      - name: nome
+        type: text
+        required: true
+        label:
+          it: Fornitore
+      - name: email
+        type: email
+        label:
+          it: Email
+      - name: listino
+        type: array
+        label:
+          it: Listino
+        fields:
+        - name: ingrediente
+          type: text
+        - name: prezzo_kg
+          type: number
+          label:
+            it: Prezzo al kg/l (€)
+        - name: validita
+          type: date
+    - name: giacenze
+      ownedBy: user
+      description: Magazzino per locale
+      sharing:
+      - viewer
+      - editor
+      fields:
+      - name: locale
+        type: text
+        required: true
+        label:
+          it: Locale
+      - name: ingrediente
+        type: text
+        required: true
+        label:
+          it: Ingrediente
+      - name: quantita_kg
+        type: number
+        label:
+          it: Giacenza (kg/l)
+      - name: soglia_kg
+        type: number
+        label:
+          it: Soglia di riordino
+      - name: spreco_kg
+        type: number
+        label:
+          it: Sprechi registrati
+      - name: conteggio_kg
+        type: number
+        label:
+          it: Ultimo conteggio fisico
+    - name: vendite
+      ownedBy: user
+      description: Vendite per servizio, da inserimento manuale
+      sharing:
+      - editor
+      fields:
+      - name: locale
+        type: text
+        required: true
+      - name: data
+        type: date
+        required: true
+      - name: servizio
+        type: text
+      - name: coperti
+        type: number
+      - name: righe
+        type: array
+        fields:
+        - name: piatto
+          type: text
+        - name: quantita
+          type: number
+    - name: ordini
+      ownedBy: user
+      description: Ordini ai fornitori preparati dagli agenti
+      fields:
+      - name: locale
+        type: text
+      - name: fornitore
+        type: text
+      - name: righe
+        type: json
+      - name: totale
+        type: number
+      - name: stato
+        type: select
+        options:
+        - bozza
+        - approvato
+        - rifiutato
+        - inviato
+    - name: controlli_giornalieri
+      ownedBy: instance
+      description: Un controllo al giorno per ogni locale
+    - name: report_settimanali
+      ownedBy: instance
+      description: Report del lunedì, per locale o consolidato
+  views:
+  - key: home
+    type: page
+    title: Cucina sotto Controllo
+    nav: false
+    sections:
+    - type: hero
+      title:
+        it: Sai quanto **guadagni** su ogni piatto, ogni giorno.
+      text:
+        it: Ricette, listini, magazzino e vendite in un posto solo. Gli agenti calcolano il food cost reale, scalano le scorte,
+          preparano gli ordini ai fornitori e ogni lunedì ti consegnano il report con i margini.
+      actions:
+      - label:
+          it: Inizia
+        href: /login
+        style: primary
+      - label:
+          it: Come funziona
+        href: '#come-funziona'
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+      items:
+      - title:
+          it: Inserisci i dati
+        text:
+          it: Ricette con grammature, fornitori con listini, giacenze. A fine servizio il personale inserisce coperti e piatti
+            venduti.
+        badge: 📝
+      - title:
+          it: Controllo ogni giorno
+        text:
+          it: L'agente confronta food cost reale e teorico, scala le scorte, segnala sprechi e differenze.
+        badge: 🔎
+      - title:
+          it: Ordini approvati da te
+        text:
+          it: 'Sotto soglia, l''agente prepara l''ordine al miglior fornitore: lo approvi tu prima che parta.'
+        badge: ✅
+      - title:
+          it: Report del lunedì
+        text:
+          it: Margine per piatto, prezzi da rivedere, coperti previsti, quantità da ordinare, anche consolidato di gruppo.
+        badge: 📊
+    - type: cards
+      id: ruoli
+      title:
+        it: Ognuno vede ciò che serve
+      items:
+      - title:
+          it: Titolare
+        text:
+          it: Tutto, compresi margini e report di gruppo.
+      - title:
+          it: Chef
+        text:
+          it: Ricette e scorte.
+      - title:
+          it: Sala
+        text:
+          it: Solo inserimento vendite.
+    - type: note
+      content:
+        it: Supporto alle decisioni, non consulenza fiscale o contabile. Abbonamento mensile per locale.
+  - key: nuove_vendite
+    type: new_run
+    title:
+      it: Inserisci vendite
+    roles:
+    - sala
+    - chef
+    - titolare
+    - admin
+  - key: ricette_v
+    type: list
+    title:
+      it: Ricette
+    source: collection:ricette
+    columns:
+    - locale
+    - piatto
+    - porzioni
+    - prezzo_vendita
+    - ingredienti
+    roles:
+    - chef
+    - titolare
+    - admin
+  - key: scorte_v
+    type: list
+    title:
+      it: Magazzino
+    source: collection:giacenze
+    columns:
+    - locale
+    - ingrediente
+    - quantita_kg
+    - soglia_kg
+    - spreco_kg
+    - conteggio_kg
+    roles:
+    - chef
+    - titolare
+    - admin
+  - key: fornitori_v
+    type: list
+    title:
+      it: Fornitori e listini
+    source: collection:fornitori
+    columns:
+    - nome
+    - email
+    - listino
+    roles:
+    - titolare
+    - admin
+  - key: locali_v
+    type: list
+    title:
+      it: I miei locali
+    source: collection:locali
+    columns:
+    - nome
+    - citta
+    - email_ordini
+    roles:
+    - titolare
+    - admin
+  - key: vendite_v
+    type: history
+    title:
+      it: Storico vendite
+    source: run
+    roles:
+    - titolare
+    - admin
+  - key: controlli
+    type: instances
+    title:
+      it: Controllo giornaliero
+    template: controllo_locale
+    roles:
+    - titolare
+    - admin
+  - key: report
+    type: instances
+    title:
+      it: Report e margini
+    template: report_gruppo
+    roles:
+    - titolare
+    - admin
+  - key: ordini_v
+    type: approvals
+    title:
+      it: Ordini da approvare
+    approvals:
+    - ordine_fornitore
+    roles:
+    - titolare
+    - admin
+  - key: ordini_storico
+    type: table
+    title:
+      it: Ordini ai fornitori
+    source: collection:ordini
+    columns:
+    - locale
+    - fornitore
+    - totale
+    - stato
+    roles:
+    - titolare
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+    roles:
+    - titolare
+  schedules: []
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: locale_mensile
+      price: 59
+      interval: month
+      label:
+        it: Per locale, mensile
+      includes:
+      - controllo giornaliero
+      - report del lunedì
+      - ordini con approvazione
+      roles:
+      - titolare
+  egress:
+    hosts: []
+    notes: Nessuna API esterna.
+  extensions:
+  - key: pos_sync
+    description: 'Le vendite automatiche dalla cassa/POS richiedono credenziali del singolo cliente e non sono ancora disponibili:
+      per ora il personale inserisce coperti e piatti a fine servizio. Il POS potrà alimentare la collezione vendite.'
+  - key: email_ordini
+    description: 'L''invio email al fornitore non è ancora disponibile: dopo l''approvazione il titolare riceve il testo email
+      pronto e l''ordine risulta in ''Ordini ai fornitori''; l''invio resta manuale.'
+  - key: staff_access
+    description: Chef e sala sono inviati dal titolare e accedono ai dati del titolare tramite condivisione dei record (sharing);
+      la visibilità per ruolo è data dalle viste. Il prezzo per locale va applicato con una quantità di abbonamenti pari ai
+      locali (una sola voce di piano oggi).

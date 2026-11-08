@@ -1,0 +1,568 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: garanzia-riparazioni
+  displayName: Garanzia & Riparazioni
+  tagline:
+    it: Dalla segnalazione del guasto all'appuntamento, in un solo portale.
+  description:
+    it: Registra il prodotto, apri una pratica di garanzia, ricevi la diagnosi iniziale e prenota l'intervento nel centro
+      di riparazione competente. Rivenditori partner e operatori seguono le pratiche.
+  langs:
+  - it
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#17324d'
+      accent: '#e07a1f'
+      background: '#f7f8fa'
+      foreground: '#1a2230'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Garanzia
+      color: primary
+    - text: '&Riparazioni'
+      color: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+      href: '#come-funziona'
+    - label:
+        it: Per i rivenditori
+      href: '#rivenditori'
+    cta:
+      label:
+        it: Accedi
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: operator
+      label:
+        it: Operatore
+      assignedBy: admin
+    - key: reseller
+      label:
+        it: Rivenditore partner
+      assignedBy: invite
+    - key: user
+      label:
+        it: Cliente
+      assignedBy: signup
+  limits:
+  - action: agent:triage
+    per: user
+    max: 10
+    window: day
+    roles:
+    - user
+  agents:
+  - key: triage
+    role: main
+    description: Classifica il guasto, verifica la garanzia, propone i controlli e prenota l'appuntamento.
+    profile:
+      inline:
+        display_name: Assistente pratiche di garanzia
+        crews:
+        - id: triage
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei l''assistente che gestisce le pratiche di garanzia e riparazione. Hai gli strumenti: read_products
+            (prodotti registrati dal cliente), check_warranty (calcolo garanzia), read_centers (centri di riparazione), read_slots
+            (slot liberi), write_case (salva la pratica), book_appointment (salva l''appuntamento). Procedi così: 1) leggi
+            il prodotto indicato; 2) classifica il guasto (categoria, gravità bassa/media/alta, causa probabile) dalla descrizione
+            e dai link alle foto, senza inventare ciò che non vedi; 3) chiama check_warranty con data di acquisto e mesi di
+            garanzia: la garanzia legale è 24 mesi se il prodotto non ha altro dato; se manca la data o lo scontrino non è
+            raggiungibile, dì che la garanzia è DA VERIFICARE, non dichiararla valida; 4) proponi 2-4 controlli semplici e
+            sicuri che il cliente può fare subito; 5) se serve un intervento, scegli i centri competenti per marca, tipo e
+            provincia, mostra le opzioni e gli slot liberi: prenota con book_appointment SOLO uno slot che compare in read_slots
+            e solo se il cliente lo ha indicato nel form (preferred_slot) o, in assenza, proponi i primi tre slot senza prenotare;
+            6) se il caso è complesso (gravità alta, sicurezza, garanzia dubbia, contestazione) chiama request_complex_case
+            per l''operatore umano e non prenotare. Salva sempre la pratica con write_case (stato: aperta, in_attesa_cliente,
+            appuntamento_fissato, in_revisione_operatore). Non promettere rimborsi o sostituzioni. Il report inizia con un
+            titolo ''# Pratica <prodotto> — <guasto>'' e ha le sezioni ## Diagnosi, ## Garanzia, ## Primi controlli, ## Intervento
+            e appuntamento, ## Prossimi passi. Scrivi in italiano.'
+          mcp_servers: []
+    goalTemplate: 'Prodotto registrato: {product}
+
+      Problema descritto dal cliente: {problem}
+
+      {?photos}Link alle foto del guasto: {photos}{/photos}
+
+      {?preferred_slot}Slot preferito (id): {preferred_slot}{/preferred_slot}
+
+      Provincia del cliente: {province}
+
+      Data di oggi: {date}. Rispondi in italiano.'
+    output: markdown
+    awaits:
+    - complex_case
+    writesTo:
+      collection: cases
+      parse: whole
+    appTools:
+    - name: read_products
+      description: Prodotti registrati dal cliente
+      action: read
+      collection: products
+      scope: user
+    - name: check_warranty
+      description: 'Calcola mesi trascorsi e garanzia residua. Args: purchase_date (AAAA-MM-GG), today, warranty_months'
+      action: call
+      slot: warranty_check
+    - name: read_centers
+      description: Centri di riparazione per marca, tipo, provincia
+      action: search
+      collection: repair_centers
+      scope: all
+    - name: read_slots
+      description: Slot liberi dei centri
+      action: search
+      collection: slots
+      scope: all
+    - name: write_case
+      description: Crea o aggiorna la pratica del cliente
+      action: write
+      collection: cases
+      scope: user
+    - name: book_appointment
+      description: Registra l'appuntamento scelto e inoltra la pratica al centro
+      action: write
+      collection: appointments
+      scope: user
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  - key: registra
+    role: helper
+    description: Registra i prodotti del cliente in conversazione.
+    profile:
+      inline:
+        display_name: Registrazione prodotto
+        crews:
+        - id: registra
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Aiuti il cliente a registrare un prodotto acquistato. Raccogli: tipo, marca, modello (se noto),
+            data di acquisto (AAAA-MM-GG) e link alla foto dello scontrino (il caricamento diretto di file non è ancora disponibile:
+            chiedi un link a una foto già online, ad esempio da un servizio di archiviazione). Chiedi solo ciò che manca.
+            Quando hai tutto, chiama write_product una volta e conferma. Non inventare dati.'
+    goalTemplate: 'Conversazione finora:
+
+      {history}
+
+      Nuovo messaggio: {message}'
+    output: markdown
+    appTools:
+    - name: write_product
+      description: Salva il prodotto del cliente
+      action: write
+      collection: products
+      scope: user
+  inputForm:
+    title:
+      it: Apri una pratica
+    fields:
+    - name: product
+      type: relation
+      relation: products
+      optionsFrom: collection:products
+      required: true
+      label:
+        it: Prodotto
+    - name: problem
+      type: textarea
+      required: true
+      maxLength: 1500
+      label:
+        it: Descrivi il problema
+    - name: photos
+      type: urls
+      label:
+        it: Link alle foto del guasto
+      help:
+        it: 'Il caricamento di file non è ancora disponibile: incolla link a foto online.'
+    - name: province
+      type: text
+      required: true
+      label:
+        it: Provincia
+    - name: preferred_slot
+      type: text
+      label:
+        it: Slot preferito (facoltativo)
+      help:
+        it: Se lasci vuoto, ti proponiamo gli slot liberi.
+  data:
+    collections:
+    - name: products
+      ownedBy: user
+      description: Prodotti registrati dal cliente
+      fields:
+      - name: type
+        type: text
+        required: true
+        label: Tipo
+      - name: brand
+        type: text
+        required: true
+        label: Marca
+      - name: model
+        type: text
+        label: Modello
+      - name: purchase_date
+        type: date
+        required: true
+        label: Data di acquisto
+      - name: receipt_url
+        type: url
+        label: Foto dello scontrino (link)
+      - name: reseller
+        type: text
+        label: Rivenditore
+    - name: cases
+      ownedBy: user
+      description: Pratiche di garanzia e riparazione
+      fields:
+      - name: title
+        type: text
+      - name: product
+        type: text
+      - name: category
+        type: text
+      - name: severity
+        type: select
+        options:
+        - bassa
+        - media
+        - alta
+      - name: warranty
+        type: select
+        options:
+        - valida
+        - scaduta
+        - da_verificare
+      - name: status
+        type: select
+        options:
+        - aperta
+        - in_attesa_cliente
+        - appuntamento_fissato
+        - in_revisione_operatore
+        - chiusa
+      - name: reseller
+        type: text
+      - name: center
+        type: text
+      - name: report
+        type: textarea
+    - name: appointments
+      ownedBy: user
+      description: Appuntamenti presso i centri
+      fields:
+      - name: case_title
+        type: text
+      - name: center
+        type: text
+      - name: slot_id
+        type: text
+      - name: starts_at
+        type: text
+    - name: repair_centers
+      ownedBy: shared
+      description: Centri di riparazione (servizio esterno, anagrafica)
+      fields:
+      - name: name
+        type: text
+      - name: province
+        type: text
+      - name: brands
+        type: text
+      - name: types
+        type: text
+    - name: slots
+      ownedBy: shared
+      description: Slot liberi dei centri
+      fields:
+      - name: center
+        type: text
+      - name: starts_at
+        type: text
+      - name: free
+        type: boolean
+  slots:
+  - key: warranty_check
+    description: Mesi trascorsi dall'acquisto e garanzia residua
+    timeoutMs: 2000
+    example:
+      args:
+        purchase_date: '2025-03-10'
+        today: '2026-11-08'
+        warranty_months: 24
+    code: "from datetime import date\n\ndef main(input):\n    a = input.get('args') or {}\n    try:\n        p = date.fromisoformat(a['purchase_date'])\n\
+      \        t = date.fromisoformat(a['today'])\n    except Exception:\n        return {'status': 'da_verificare', 'reason':\
+      \ 'data mancante o non valida'}\n    months = (t.year - p.year) * 12 + (t.month - p.month) - (1 if t.day < p.day else\
+      \ 0)\n    w = int(a.get('warranty_months') or 24)\n    left = w - months\n    return {'status': 'valida' if left >=\
+      \ 0 else 'scaduta', 'months_elapsed': months, 'months_left': max(left, 0)}\n"
+  approvals:
+  - key: complex_case
+    title:
+      it: 'Caso complesso: presa in carico operatore'
+    role: operator
+    decidedBy: role
+    fields:
+    - title
+    - severity
+    - warranty
+    timeoutMinutes: 1440
+    onTimeout: reject
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Garanzia & Riparazioni
+    sections:
+    - type: hero
+      eyebrow:
+        it: Garanzia semplice
+      title:
+        it: Un problema col tuo prodotto? **Risolvilo** in pochi passi.
+      text:
+        it: 'Registra l''acquisto, descrivi il guasto: un assistente AI lo classifica, verifica la garanzia, ti dice cosa
+          controllare e ti fissa l''appuntamento nel centro giusto.'
+      actions:
+      - label:
+          it: Apri una pratica
+        href: /login
+        style: primary
+      band: true
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+      items:
+      - title:
+          it: Registra il prodotto
+        text:
+          it: Tipo, marca, data e link alla foto dello scontrino.
+          en: ''
+        badge: 📦
+      - title:
+          it: Apri la pratica
+        text:
+          it: Descrivi il guasto e aggiungi link a foto.
+          en: ''
+        badge: 📝
+      - title:
+          it: Diagnosi e garanzia
+        text:
+          it: Classificazione, verifica della garanzia e primi controlli.
+          en: ''
+        badge: 🔍
+      - title:
+          it: Appuntamento
+        text:
+          it: 'Scegli uno slot libero: la pratica va al centro competente. Un operatore segue i casi complessi.'
+          en: ''
+        badge: 📅
+    - type: cards
+      id: rivenditori
+      title:
+        it: Per i rivenditori partner
+      items:
+      - title:
+          it: Pratiche dei tuoi clienti
+        text:
+          it: Una vista dedicata con stato e garanzia di ogni pratica.
+      - title:
+          it: Abbonamento + fee per pratica
+        text:
+          it: Un canone mensile e una quota per ogni pratica gestita.
+    - type: note
+      content:
+        it: Il portale gestisce le pratiche; tecnici e centri di riparazione sono un servizio separato. La diagnosi è un supporto
+          e non sostituisce la verifica del centro.
+  - key: products_chat
+    type: chat
+    title:
+      it: Registra un prodotto
+    source: agent:registra
+    examples:
+    - Ho comprato una lavatrice Bosch il 12 marzo 2025
+    - Vorrei registrare un televisore Samsung
+    placeholder:
+      it: Descrivi il prodotto acquistato…
+    roles:
+    - user
+  - key: my_products
+    type: table
+    title:
+      it: I miei prodotti
+    source: collection:products
+    columns:
+    - type
+    - brand
+    - model
+    - purchase_date
+    roles:
+    - user
+  - key: new_case
+    type: new_run
+    title:
+      it: Apri una pratica
+    roles:
+    - user
+  - key: my_cases
+    type: table
+    title:
+      it: Le mie pratiche
+    source: collection:cases
+    columns:
+    - title
+    - status
+    - warranty
+    - center
+    roles:
+    - user
+  - key: case_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: history
+    type: history
+    title:
+      it: Storico analisi
+    source: run
+    roles:
+    - user
+  - key: approvals
+    type: approvals
+    title:
+      it: Casi complessi
+    approvals:
+    - complex_case
+    roles:
+    - operator
+    - admin
+  - key: reseller_cases
+    type: table
+    title:
+      it: Pratiche dei miei clienti
+    source: collection:cases
+    columns:
+    - title
+    - status
+    - warranty
+    - severity
+    - reseller
+    roles:
+    - reseller
+    - admin
+  - key: all_appointments
+    type: table
+    title:
+      it: Appuntamenti
+    source: collection:appointments
+    columns:
+    - case_title
+    - center
+    - starts_at
+    roles:
+    - operator
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Crediti e abbonamento
+    roles:
+    - user
+    - reseller
+  billing:
+    modes:
+    - credits
+    - subscription
+    currency: eur
+    signupCredits: 20
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:triage:
+        estimate: 10
+        metered: true
+      agent:registra: 2
+    packs:
+    - key: base
+      credits: 300
+      price: 5
+      label: Pacchetto base
+    plans:
+    - key: reseller_pro
+      price: 49
+      interval: month
+      label:
+        it: Rivenditore partner
+      includes:
+      - vista pratiche dei propri clienti
+      credits: 500
+      creditsReset: monthly
+      roles:
+      - reseller
+  extensions:
+  - key: file_upload
+    description: 'Caricamento di foto di scontrini e guasti non ancora disponibile: nel manifesto si usano link a immagini
+      online. Da sostituire con campi file quando sarà supportato.'
+  - key: email_updates
+    description: 'Email al cliente a ogni cambio di stato non disponibili ancora: lo stato è visibile solo nell''area personale.'
+  - key: reseller_visibility
+    description: Un rivenditore deve vedere solo le pratiche dei propri clienti (collegamento cliente-rivenditore); con ownedBy
+      user le pratiche sono del cliente. Serve una regola di visibilità per rivenditore, oggi non esprimibile.
+  - key: slot_locking
+    description: Blocco atomico dello slot prenotato (evitare doppie prenotazioni) e sincronizzazione con il sistema dei centri
+      di riparazione esterno.
+  - key: per_case_fee
+    description: La fee per pratica ai rivenditori è modellata con crediti a consumo dal cliente e abbonamento; l'addebito
+      diretto al rivenditore per ogni pratica gestita richiede una regola dedicata.

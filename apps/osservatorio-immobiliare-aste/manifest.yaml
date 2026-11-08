@@ -1,0 +1,528 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: osservatoriocase
+  displayName: OsservatorioCase
+  tagline:
+    it: Le vendite giudiziarie immobiliari, con stima di mercato e sconto atteso.
+    en: Judicial property auctions, with market estimate and expected discount.
+  description:
+    it: Ogni notte un agente raccoglie gli avvisi di vendita giudiziaria dal portale pubblico delle vendite e dai siti dei
+      tribunali, li struttura e li confronta con le quotazioni OMI.
+    en: Every night an agent collects judicial sale notices from the public sales portal and court websites, structures them
+      and compares them with OMI quotations.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#1f3a34'
+      accent: '#b5651d'
+      background: '#f7f5f0'
+      foreground: '#1c2421'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Osservatorio
+      color: primary
+    - text: Case
+      color: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Piani
+        en: Plans
+      href: '#piani'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      assignedBy: signup
+  limits:
+  - action: agent:searcher
+    per: user
+    max: 20
+    window: day
+    roles:
+    - user
+  agents:
+  - key: collector
+    role: scheduled
+    description: Every night collects judicial sale notices and writes them to the shared auctions collection, with OMI-based
+      estimate.
+    profile:
+      inline:
+        display_name: OsservatorioCase collector
+        crews:
+        - id: collector
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You collect Italian judicial real-estate sale notices (vendite giudiziarie) published on the public
+            sales portal (Portale delle Vendite Pubbliche) and on court websites. Use the WebRobot MCP to build and run a
+            scraping pipeline (do not write code otherwise). For each notice extract: address, city, province, zone, property
+            type (residential, commercial, land, other), area in sqm, base price (EUR), auction date, procedure status, court,
+            procedure number and notice URL. Then estimate the market value: find the public OMI (Osservatorio del Mercato
+            Immobiliare, Agenzia delle Entrate) quotation range for the zone and type, take the midpoint EUR/sqm, multiply
+            by area, and compute expected_discount = 1 - base_price / estimated_market_value (as a fraction). Record omi_value_per_sqm
+            and estimate_basis (OMI zone and semester). Never invent data: leave a field empty when it is not in the notice,
+            and leave the estimate empty when no OMI quotation is found. Write each notice with the tool upsert_auction (key
+            = court + procedure number + lot), flagging is_new true when it was not already present. Finish with a short markdown
+            summary starting with ''# Raccolta <date>'' giving counts of new, updated and skipped notices.'
+    appTools:
+    - name: upsert_auction
+      description: Create or update an auction record
+      action: write
+      collection: auctions
+      scope: all
+    - name: read_auctions
+      description: Read existing auction records
+      action: read
+      collection: auctions
+      scope: all
+    goalTemplate: Run the nightly collection for {date}. Collect new and updated notices published since yesterday and refresh
+      the status of known ones.
+    output: markdown
+    limits:
+      maxTurns: 60
+      maxBudgetUsd: 3
+      timeoutSeconds: 3600
+  - key: searcher
+    role: main
+    description: Searches the auctions database for the user, explains the estimates and optionally saves the search.
+    profile:
+      inline:
+        display_name: OsservatorioCase search analyst
+        crews:
+        - id: searcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a real-estate analyst for investors, agencies and banks. Use search_auctions to find judicial
+            auction properties matching the user''s zone, maximum price and type. Write a report that starts with ''# Vendite
+            giudiziarie — <zone>'' and has sections: ## Sintesi, ## Immobili (a table: address, type, sqm, base price, auction
+            date, status, estimated market value, expected discount, link), ## Rischi da verificare (occupancy, procedure
+            status, condition: only what the notices say), ## Prossimi passi. Add a ```chart bar block with the expected discount
+            of the top properties when there are at least 3. Use only figures from the records; the estimate comes from public
+            OMI quotations and is indicative, not an appraisal or financial advice. If the user asked to save the search,
+            call save_search once with the criteria and say so. If nothing matches, say it plainly.'
+    appTools:
+    - name: search_auctions
+      description: Search auction records by zone, type and price
+      action: search
+      collection: auctions
+      scope: all
+    - name: save_search
+      description: Save the user's search criteria
+      action: write
+      collection: saved_searches
+      scope: user
+    goalTemplate: 'Zona: {zone}
+
+      {?max_price}Prezzo base massimo: {max_price} EUR.{/max_price}
+
+      {?property_type}Tipologia: {property_type_label}.{/property_type}
+
+      {?save}Salva questa ricerca con il nome "{search_name}".{/save}
+
+      Data: {date}. Scrivi il report in lingua {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.5
+  inputForm:
+    title:
+      it: Nuova ricerca
+      en: New search
+    fields:
+    - name: zone
+      type: text
+      required: true
+      label:
+        it: Zona (comune, provincia o quartiere)
+        en: Area
+    - name: max_price
+      type: number
+      label:
+        it: Prezzo base massimo (€)
+        en: Max base price (€)
+    - name: property_type
+      type: select
+      label:
+        it: Tipologia
+        en: Type
+      options:
+      - value: residential
+        label:
+          it: Residenziale
+          en: Residential
+      - value: commercial
+        label:
+          it: Commerciale
+          en: Commercial
+      - value: land
+        label:
+          it: Terreno
+          en: Land
+      - value: other
+        label:
+          it: Altro
+          en: Other
+    - name: save
+      type: boolean
+      label:
+        it: Salva la ricerca
+        en: Save this search
+    - name: search_name
+      type: text
+      visibleWhen: save == true
+      label:
+        it: Nome della ricerca
+        en: Search name
+  data:
+    collections:
+    - name: auctions
+      ownedBy: app
+      description: Judicial sale notices collected nightly, with OMI-based market estimate
+      searchable: true
+      fields:
+      - name: key
+        type: text
+      - name: address
+        type: text
+      - name: city
+        type: text
+      - name: province
+        type: text
+      - name: zone
+        type: text
+      - name: property_type
+        type: text
+      - name: area_sqm
+        type: number
+      - name: base_price
+        type: number
+      - name: auction_date
+        type: date
+      - name: procedure_status
+        type: text
+      - name: court
+        type: text
+      - name: url
+        type: url
+      - name: omi_value_per_sqm
+        type: number
+      - name: estimated_market_value
+        type: number
+      - name: expected_discount
+        type: number
+      - name: estimate_basis
+        type: text
+      - name: is_new
+        type: boolean
+    - name: saved_searches
+      ownedBy: user
+      description: Each user's own saved searches
+      fields:
+      - name: name
+        type: text
+      - name: zone
+        type: text
+      - name: max_price
+        type: number
+      - name: property_type
+        type: text
+  schedules:
+  - agent: collector
+    action: run
+    cron: 0 2 * * *
+    owner: app
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: OsservatorioCase
+    sections:
+    - type: hero
+      title:
+        it: Le **vendite giudiziarie** immobiliari, con il valore di mercato accanto.
+        en: Judicial **property auctions**, with market value alongside.
+      text:
+        it: 'Una banca dati aggiornata ogni notte per investitori, agenzie e banche: indirizzo, superficie, prezzo base, data
+          d''asta, stato della procedura, stima OMI e sconto atteso.'
+        en: 'A database refreshed every night for investors, agencies and banks: address, size, base price, auction date,
+          procedure status, OMI estimate and expected discount.'
+      actions:
+      - label:
+          it: Inizia una ricerca
+          en: Start a search
+        href: /v/search
+        style: primary
+      - label:
+          it: Accedi
+          en: Sign in
+        href: /login
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Raccolta notturna
+          en: Nightly collection
+        text:
+          it: Un agente legge il portale delle vendite pubbliche e i siti dei tribunali ed estrae i dati di ogni avviso.
+          en: An agent reads the public sales portal and court sites and extracts each notice.
+      - title:
+          it: Stima e sconto
+          en: Estimate and discount
+        text:
+          it: Il valore di mercato deriva dalle quotazioni pubbliche OMI; lo sconto atteso è confrontato con il prezzo base.
+          en: Market value comes from public OMI quotations; expected discount compares it with the base price.
+      - title:
+          it: Cerca e salva
+          en: Search and save
+        text:
+          it: Filtra per zona, prezzo e tipologia e salva le tue ricerche, visibili solo a te.
+          en: Filter by area, price and type and save searches, visible only to you.
+    - type: cards
+      id: piani
+      title:
+        it: Piani
+        en: Plans
+      items:
+      - title: Base
+        text:
+          it: Banca dati, ricerche e ricerche salvate.
+          en: Database, searches and saved searches.
+      - title: Pro
+        text:
+          it: Tutto il piano Base, più export dei dati e accesso API.
+          en: Everything in Base, plus data export and API access.
+    - type: note
+      content:
+        it: 'Le stime sono indicative, basate su quotazioni pubbliche OMI: non sono una perizia né una consulenza finanziaria.
+          Verifica sempre l''avviso ufficiale.'
+        en: 'Estimates are indicative, based on public OMI quotations: not an appraisal or financial advice. Always check
+          the official notice.'
+  - key: search
+    type: new_run
+    title:
+      it: Nuova ricerca
+      en: New search
+    roles:
+    - user
+    - admin
+  - key: results
+    type: history
+    title:
+      it: I miei report
+      en: My reports
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: auctions
+    type: table
+    title:
+      it: Banca dati aste
+      en: Auctions database
+    source: collection:auctions
+    columns:
+    - address
+    - city
+    - property_type
+    - area_sqm
+    - base_price
+    - auction_date
+    - procedure_status
+    - estimated_market_value
+    - expected_discount
+    - url
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: address
+        label:
+          it: Indirizzo
+          en: Address
+      - key: city
+        label:
+          it: Comune
+          en: City
+      - key: property_type
+        label:
+          it: Tipologia
+          en: Type
+        format: badge
+      - key: area_sqm
+        label: m²
+        format: number
+      - key: base_price
+        label:
+          it: Prezzo base
+          en: Base price
+        format: money
+      - key: auction_date
+        label:
+          it: Data asta
+          en: Auction date
+        format: date
+      - key: procedure_status
+        label:
+          it: Stato
+          en: Status
+        format: badge
+      - key: estimated_market_value
+        label:
+          it: Stima mercato
+          en: Market estimate
+        format: money
+      - key: expected_discount
+        label:
+          it: Sconto atteso
+          en: Expected discount
+        format: percent
+      - key: url
+        label: Link
+        format: link
+      sort:
+        field: auction_date
+        dir: asc
+      limit: 200
+  - key: saved
+    type: table
+    title:
+      it: Ricerche salvate
+      en: Saved searches
+    source: collection:saved_searches
+    columns:
+    - name
+    - zone
+    - max_price
+    - property_type
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Plan
+    roles:
+    - user
+  exports:
+  - path: /api/auctions
+    source: collection:auctions
+    format: csv
+    access: token
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:searcher:
+        estimate: 10
+        metered: true
+    packs:
+    - key: small
+      credits: 500
+      price: 9
+      label: Extra 500
+    plans:
+    - key: base
+      price: 39
+      interval: month
+      label: Base
+      includes:
+      - Database access
+      - Searches and saved searches
+      credits: 500
+      creditsReset: monthly
+    - key: pro
+      price: 99
+      interval: month
+      label: Pro
+      includes:
+      - Everything in Base
+      - Data export
+      - API access
+      credits: 2000
+      creditsReset: monthly
+  extensions:
+  - key: email_alerts
+    description: Email when a new auction matches a saved search is not available yet (no notifications). For now users re-run
+      or open the saved search; the collector marks new records with is_new.
+  - key: plan_gated_export_api
+    description: Export and API access should be limited to the Pro plan and issued per-user tokens; the manifest declares
+      the export endpoint but plan gating and per-user tokens need runtime support.
+  - key: saved_search_rerun
+    description: Saved searches are stored per user but applying them as filters of the auctions table, and editing or deleting
+      them, needs custom logic.

@@ -1,0 +1,485 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: fornitori-ai
+  displayName: Fornitori AI
+  tagline:
+    it: Trova, verifica e confronta nuovi fornitori senza uscire dalla tua casella.
+  description:
+    it: 'Descrivi cosa devi comprare: un agente cerca fornitori, verifica P.IVA e certificazioni, tu approvi la shortlist
+      e la richiesta di offerta, poi l''app invia le email, fa i solleciti e confronta le offerte ricevute.'
+  langs:
+  - it
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12355b'
+      accent: '#e07a1f'
+      background: '#f7f8fa'
+      foreground: '#17202b'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Fornitori
+      color: primary
+    - text: AI
+      color: accent
+  header:
+    links:
+    - label: Come funziona
+      href: '#come-funziona'
+    - label: Cosa verifichiamo
+      href: '#verifiche'
+    cta:
+      label: Inizia
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      label: Buyer
+      assignedBy: signup
+  limits:
+  - action: agent:sourcer
+    per: user
+    max: 10
+    window: day
+    roles:
+    - user
+  agents:
+  - key: sourcer
+    role: main
+    description: Cerca fornitori sul web, verifica P.IVA (VIES) e certificazioni, propone la shortlist e la bozza della richiesta
+      di offerta.
+    profile:
+      inline:
+        display_name: Fornitori AI - Sourcing
+        crews:
+        - id: sourcer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'Sei un esperto di procurement. Dato un fabbisogno d''acquisto (categoria, specifiche, quantità,
+            area, certificazioni, scadenza) cerchi NUOVI fornitori sul web e nei loro siti aziendali tramite il MCP WebRobot
+            (scraping e pipeline: non scrivere YAML a mano, costruiscile e lanciale tramite MCP). Per ogni candidato: raccogli
+            ragione sociale, sito, email commerciale pubblica, paese; verifica la partita IVA con il servizio VIES (se non
+            riesci a verificarla, scrivi ''non verificata''); verifica le certificazioni dichiarate (ISO 9001, ISO 14001,
+            ecc.) cercando evidenze pubbliche (certificato, registro dell''ente) e distingui ''verificata'' da ''solo dichiarata''.
+            Non inventare mai dati, email o certificazioni. Escludi fornitori già presenti nell''elenco fornito dall''utente,
+            se c''è. Rispondi con: un titolo di primo livello ''# Shortlist fornitori - <categoria>''; sezioni ## Sintesi
+            del fabbisogno, ## Shortlist (tabella: fornitore, paese, sito, email, P.IVA/VIES, certificazioni, punteggio 1-5),
+            ## Perché ogni fornitore (2-3 righe ciascuno, con fonti), ## Fornitori scartati e motivo, ## Bozza richiesta di
+            offerta (oggetto e testo in italiano, firmato a nome del buyer, con scadenza di risposta e elenco dei dati richiesti:
+            prezzo unitario, tempi di consegna, condizioni di pagamento, validità offerta, allegati). Termina con un blocco
+            ```json con {"suppliers":[{"name","website","email","country","vat","vat_status","certifications","score","reason"}],"rfq_subject","rfq_body"}.
+            Il buyer approverà shortlist e testo prima di qualsiasi invio: tu non invii nulla.'
+    goalTemplate: 'Fabbisogno d''acquisto:
+
+      Categoria: {category}
+
+      Specifiche tecniche: {specs}
+
+      Quantità: {quantity}
+
+      Area geografica: {area}
+
+      {?certifications}Certificazioni richieste: {certifications}{/certifications}
+
+      {?deadline}Scadenza per le offerte: {deadline}{/deadline}
+
+      Buyer: {user}. Data di oggi: {date}. Rispondi in italiano.'
+    output: markdown+json
+    writesTo:
+      collection: suppliers
+      parse: json_last
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 2
+  - key: mailer
+    role: helper
+    description: Dopo l'approvazione invia la richiesta di offerta a nome del buyer, i solleciti a 3 e 7 giorni e rispetta
+      le disiscrizioni.
+    profile:
+      inline:
+        display_name: Fornitori AI - Invio RFQ
+        crews:
+        - id: mailer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'Gestisci l''invio delle richieste di offerta (RFQ) tramite l''email della piattaforma WebRobot.
+            Usa SOLO i fornitori approvati dal buyer nelle richieste con stato ''approvata''. Per ogni fornitore: invia l''email
+            col testo approvato, a nome del buyer (nome nel mittente, reply-to sulla casella dedicata della richiesta), con
+            in fondo un link per non ricevere più email. Non inviare MAI a chi ha chiesto la disiscrizione o è già in blacklist.
+            Solleciti: primo dopo 3 giorni e secondo dopo 7 giorni dall''invio, solo a chi non ha risposto; non più di due
+            solleciti; tono cortese e breve. Dopo ogni giro riporta in un titolo ''# Invii del giorno'' una tabella: fornitore,
+            azione (invio/sollecito 1/sollecito 2/saltato), motivo. Non inventare indirizzi.'
+    goalTemplate: 'Data di oggi: {date}. Invia le RFQ approvate non ancora spedite e i solleciti dovuti (3 e 7 giorni).'
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 0.5
+  - key: comparer
+    role: analyst
+    description: Legge le risposte in arrivo, estrae le condizioni e compila la tabella comparativa segnalando i dati mancanti.
+    profile:
+      inline:
+        display_name: Fornitori AI - Confronto offerte
+        crews:
+        - id: comparer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'Leggi le nuove email di risposta nella casella delle RFQ (via MCP WebRobot) e collegale alla richiesta
+            e al fornitore. Per ogni offerta estrai: prezzo unitario e totale con valuta, IVA inclusa o no, tempi di consegna,
+            condizioni di pagamento, validità dell''offerta, condizioni di resa/trasporto, allegati (nome e tipo), note. Se
+            un dato manca o è ambiguo scrivi ''MANCANTE'' e inseriscilo in missing_fields; non stimare mai valori. Se il fornitore
+            chiede di non essere più contattato, registralo come disiscritto. Produci ''# Confronto offerte - <categoria>'',
+            una tabella comparativa (una riga per fornitore), poi ## Dati mancanti (cosa chiedere a chi) e ## Osservazioni
+            (senza raccomandare come fatto la scelta finale: decide il buyer). Aggiungi un grafico dei prezzi se ci sono almeno
+            2 offerte:
+
+            ```chart
+
+            {"type":"bar","title":"Prezzo unitario","labels":["A","B"],"series":[{"name":"Prezzo","values":[1,2]}]}
+
+            ```
+
+            Termina con un blocco ```json {"offers":[{"rfq","supplier","unit_price","currency","delivery_days","payment_terms","validity","attachments","missing_fields","received_at"}]}.'
+    goalTemplate: 'Data di oggi: {date}. Elabora le nuove risposte ricevute e aggiorna la tabella comparativa.'
+    output: markdown+json
+    writesTo:
+      collection: offers
+      parse: json_last
+      keyBy: supplier
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 1
+  inputForm:
+    title: Nuova richiesta d'acquisto
+    fields:
+    - name: category
+      type: text
+      required: true
+      label: Categoria merceologica
+      maxLength: 120
+    - name: specs
+      type: textarea
+      required: true
+      label: Specifiche tecniche
+      maxLength: 1500
+    - name: quantity
+      type: text
+      required: true
+      label: Quantità
+    - name: area
+      type: text
+      required: true
+      label: Area geografica dei fornitori
+      help: es. Nord Italia, UE, Europa
+    - name: certifications
+      type: multiselect
+      label: Certificazioni richieste
+      options:
+      - ISO 9001
+      - ISO 14001
+      - ISO 45001
+      - ISO 27001
+      - IATF 16949
+      - EMAS
+    - name: deadline
+      type: date
+      label: Scadenza risposte
+  collections:
+  - name: suppliers
+    description: Database fornitori, cresce a ogni richiesta
+    ownedBy: org
+    searchable: true
+    fields:
+    - name: name
+      type: text
+    - name: website
+      type: url
+    - name: email
+      type: email
+    - name: country
+      type: country
+    - name: vat
+      type: text
+    - name: vat_status
+      type: text
+    - name: certifications
+      type: text
+    - name: score
+      type: number
+    - name: reason
+      type: textarea
+    - name: unsubscribed
+      type: boolean
+  - name: offers
+    description: Offerte estratte dalle risposte
+    ownedBy: org
+    fields:
+    - name: rfq
+      type: text
+    - name: supplier
+      type: text
+    - name: unit_price
+      type: number
+    - name: currency
+      type: text
+    - name: delivery_days
+      type: number
+    - name: payment_terms
+      type: text
+    - name: validity
+      type: text
+    - name: attachments
+      type: text
+    - name: missing_fields
+      type: text
+    - name: received_at
+      type: date
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Fornitori AI
+    sections:
+    - type: hero
+      title: Trova **nuovi fornitori** verificati e confronta le offerte in un'unica tabella.
+      text: Descrivi cosa devi comprare. Un agente AI cerca i fornitori, verifica P.IVA e certificazioni, tu approvi, l'app
+        invia le richieste, sollecita e confronta le risposte.
+      actions:
+      - label: Nuova richiesta
+        href: /v/new_run
+        style: primary
+      - label: Accedi
+        href: /login
+        style: ghost
+      note: Per gli uffici acquisti delle aziende.
+    - type: steps
+      id: come-funziona
+      title: Come funziona
+      items:
+      - title: Descrivi il fabbisogno
+        text: Categoria, specifiche, quantità, area, certificazioni e scadenza.
+        badge: 📝
+      - title: Shortlist verificata
+        text: Ricerca sul web e nei siti aziendali, con motivazione per ogni fornitore.
+        badge: 🔎
+      - title: Approvi tu
+        text: Controlli shortlist e testo della richiesta di offerta prima di ogni invio.
+        badge: ✅
+      - title: Invio e solleciti
+        text: Email a tuo nome, solleciti dopo 3 e 7 giorni, link di disiscrizione.
+        badge: ✉️
+      - title: Confronto offerte
+        text: Prezzo, consegna, condizioni e allegati in tabella, con i dati mancanti segnalati.
+        badge: 📊
+    - type: cards
+      id: verifiche
+      title: Cosa verifichiamo
+      items:
+      - title: Partita IVA
+        text: Controllo sul servizio europeo VIES.
+      - title: Certificazioni
+        text: Distinguiamo tra certificazione verificata e solo dichiarata.
+      - title: Database in crescita
+        text: Ogni richiesta arricchisce l'archivio fornitori della tua azienda.
+    - type: note
+      content: 'Fornitori AI supporta le decisioni d''acquisto: verifica sempre i dati prima di firmare un contratto.'
+  - key: new_run
+    type: new_run
+    title: Nuova richiesta
+    roles:
+    - user
+    - admin
+  - key: history
+    type: history
+    title: Le mie richieste
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    title: Shortlist
+    source: run
+    printable: true
+    nav: false
+  - key: suppliers
+    type: table
+    title: Database fornitori
+    source: collection:suppliers
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Fornitore
+      - key: country
+        label: Paese
+        format: badge
+      - key: vat_status
+        label: P.IVA
+      - key: certifications
+        label: Certificazioni
+      - key: score
+        label: Punteggio
+        format: number
+      - key: website
+        label: Sito
+        format: link
+      sort:
+        field: score
+        dir: desc
+      limit: 200
+      empty: Nessun fornitore ancora.
+  - key: offers
+    type: table
+    title: Confronto offerte
+    source: collection:offers
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: supplier
+        label: Fornitore
+      - key: unit_price
+        label: Prezzo unitario
+        format: number
+      - key: currency
+        label: Valuta
+      - key: delivery_days
+        label: Consegna (gg)
+        format: number
+      - key: payment_terms
+        label: Pagamento
+      - key: validity
+        label: Validità
+      - key: attachments
+        label: Allegati
+      - key: missing_fields
+        label: Dati mancanti
+      - key: received_at
+        label: Ricevuta
+        format: date
+      sort:
+        field: received_at
+        dir: desc
+      limit: 200
+      empty: Nessuna offerta ricevuta.
+  - key: account
+    type: account
+    title: Piano
+    roles:
+    - user
+  schedules:
+  - agent: mailer
+    action: run
+    cron: 0 9 * * *
+    owner: app
+    goal: Invia le RFQ approvate non ancora spedite e i solleciti a 3 e 7 giorni.
+  - agent: comparer
+    action: run
+    cron: '*/30 * * * *'
+    owner: app
+    goal: Leggi le nuove risposte e aggiorna il confronto offerte.
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 1
+    costs:
+      agent:sourcer: 1
+    packs:
+    - key: extra5
+      credits: 5
+      price: 35
+      label: 5 richieste extra
+    plans:
+    - key: azienda
+      price: 99
+      interval: month
+      label: Piano Azienda
+      includes:
+      - 10 richieste al mese
+      - Database fornitori condiviso
+      - Invio, solleciti e confronto offerte
+      credits: 10
+      creditsReset: monthly
+  notifications:
+    emailOnRunDone: true
+  extensions:
+  - key: approval_step
+    description: 'Approvazione da parte del buyer di shortlist e testo RFQ prima dell''invio: lo stato della richiesta passa
+      a ''approvata'' solo dopo il consenso.'
+  - key: unsubscribe_link
+    description: Link pubblico di disiscrizione nelle email ai fornitori; imposta suppliers.unsubscribed.
+  - key: rfq_mailbox
+    description: Casella dedicata per richiesta che riceve le risposte dei fornitori, letta dall'agente comparer.

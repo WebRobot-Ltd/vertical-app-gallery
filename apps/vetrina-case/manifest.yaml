@@ -1,0 +1,741 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: vetrina-case
+  displayName: Vetrina Case
+  tagline:
+    it: Annunci immobiliari delle agenzie, con stima automatica del valore.
+    en: Agency real-estate listings with an automatic value estimate.
+  description:
+    it: 'Portale di annunci pubblicati dalle agenzie, con ricerca per zona, ricerche salvate e un servizio di stima basato
+      sulle quotazioni OMI e sugli annunci del portale. Questo è solo lo strato software: nessuna attività di mediazione.'
+    en: 'A portal of agency listings with area search, saved searches and a valuation service based on OMI quotes and portal
+      listings. Software layer only: no brokerage activity.'
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#17324d'
+      accent: '#d9772b'
+      background: '#f8f6f2'
+      foreground: '#1c2530'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Vetrina
+      color: primary
+    - text: Case
+      color: accent
+    button: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Per le agenzie
+        en: For agencies
+      href: '#agenzie'
+    cta:
+      label:
+        it: Cerca casa
+        en: Find a home
+      href: /v/search
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+      - search
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label:
+        it: Agenzia / utente
+        en: Agency / user
+      assignedBy: signup
+  limits:
+  - action: agent:valuer
+    per: user
+    max: 5
+    window: day
+    roles:
+    - user
+  egress:
+    hosts: []
+    notes: No direct external API. OMI quotes (Agenzia delle Entrate) are collected by a monthly scheduled agent through the
+      WebRobot MCP; reuse allowed with attribution.
+  agents:
+  - key: valuer
+    role: main
+    description: Estimates a value range from OMI quotes and portal listings.
+    profile:
+      inline:
+        display_name: Vetrina Case valuer
+        crews:
+        - id: valuer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a property valuation assistant for an Italian listings portal. Use ONLY the tools: omi_quotes
+            (OMI quotation records: zone, property type, state, min/max EUR per sqm) and search_listings (listings on the
+            portal in the same area). Start with a level-1 title "# Stima — <address>". Sections with ## headings: Dati inseriti,
+            Quotazioni OMI (zone, min-max EUR/m², attribution to Osservatorio del Mercato Immobiliare, Agenzia delle Entrate),
+            Annunci comparabili (count, median asking EUR/m²; asking prices are not sale prices), Intervallo di valore (low
+            - central - high in EUR, with the adjustments for floor, condition and construction year explained), Affidabilità
+            (high/medium/low depending on how many quotes and comparables you found), Note. Add a ```chart block (bar) comparing
+            OMI min, OMI max, comparables median per sqm, with real figures only. Never invent quotes or listings: if data
+            is missing say so and widen the range. This is an indicative estimate, not a certified appraisal. If the owner
+            asked to be contacted, end with a line saying the request is recorded for a local agency.'
+          mcp_servers: []
+    goalTemplate: 'Address: {address}
+
+      Surface: {surface} m2
+
+      Floor: {floor}
+
+      Condition: {condition_label}
+
+      Construction year: {year}
+
+      {?contact}The owner agrees to be contacted by a local agency.{/contact}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    appTools:
+    - name: omi_quotes
+      description: Read OMI quotation records
+      action: search
+      collection: omi_quotes
+      scope: all
+    - name: search_listings
+      description: Search portal listings
+      action: search
+      collection: listings
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.6
+  - key: omi_sync
+    role: scheduled
+    description: Monthly collects OMI quotations into the shared collection.
+    profile:
+      inline:
+        display_name: OMI collector
+        crews:
+        - id: omi
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You collect the latest published OMI (Osservatorio del Mercato Immobiliare, Agenzia delle Entrate)
+            quotations for the provinces where the portal has listings. Use the WebRobot MCP to build and run the collection
+            pipeline; do not write code yourself. Use search_listings to know which municipalities matter and write_omi to
+            save one record per (municipality, zone, property type, state) with fields municipality, zone, property_type,
+            state, min_eur_sqm, max_eur_sqm, semester. Finish with a level-1 title "# OMI update <date>" and a short summary.
+            Never invent figures.
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+    appTools:
+    - name: search_listings
+      description: Search portal listings
+      action: search
+      collection: listings
+      scope: all
+    - name: write_omi
+      description: Save an OMI quotation
+      action: write
+      collection: omi_quotes
+      scope: all
+    goalTemplate: Update the OMI quotations. Today is {date}.
+    output: markdown
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 2
+  - key: auditor
+    role: scheduled
+    description: Daily check of duplicate or inconsistent listings, flagged to the admin.
+    profile:
+      inline:
+        display_name: Listing auditor
+        crews:
+        - id: auditor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You audit the listings of a real-estate portal. Read them with read_listings. Find (1) probable duplicates
+            (same address or same photos/price/surface across listings or agencies) and (2) inconsistent data (price per sqm
+            far from the area median, surface vs rooms impossible, energy class invalid, floor above building floors). For
+            each issue call write_flag with fields listing_id, kind (duplicate|inconsistent), detail, severity (low|medium|high).
+            Do not modify or hide listings. Finish with "# Audit <date>" and counts; never invent issues.
+          mcp_servers: []
+    appTools:
+    - name: read_listings
+      description: Read all listings
+      action: read
+      collection: listings
+      scope: all
+    - name: write_flag
+      description: Flag a listing for the admin
+      action: write
+      collection: quality_flags
+      scope: all
+    goalTemplate: Audit all listings now. Today is {date}.
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.5
+  - key: matcher
+    role: helper
+    description: Finds new listings matching one saved search.
+    memory: instance
+    writesTo:
+      collection: search_matches
+    profile:
+      inline:
+        display_name: Saved search matcher
+        crews:
+        - id: matcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You check one saved search against the portal. Use find_listings to list active listings matching
+            zone, max price, min rooms and features. Your memory holds the ids already reported: report only new ones. Start
+            with "# <search title> — <date>", then a table (title, price, m2, rooms, energy class, link). If nothing new,
+            say so in one line. At the end call remember with all ids reported so far. Never invent listings.'
+          mcp_servers: []
+    appTools:
+    - name: find_listings
+      description: Search listings
+      action: search
+      collection: listings
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.3
+  templates:
+  - key: saved_search
+    title:
+      it: Ricerca salvata
+      en: Saved search
+    description:
+      it: Controlla ogni giorno i nuovi annunci compatibili.
+      en: Checks every day for new matching listings.
+    agent: matcher
+    params:
+    - name: zone
+      type: text
+      required: true
+      label:
+        it: Zona / comune
+        en: Area / town
+    - name: max_price
+      type: number
+      label:
+        it: Prezzo massimo
+        en: Max price
+    - name: min_rooms
+      type: number
+      label:
+        it: Locali minimi
+        en: Min rooms
+    - name: features
+      type: text
+      label:
+        it: Caratteristiche (balcone, box…)
+        en: Features
+    goal: 'Saved search "{instance}": zone {zone}; max price {max_price}; min rooms {min_rooms}; features {features}. Today
+      is {date}. Write in the language with ISO code {lang}.'
+    schedule:
+      cron: 0 7 * * *
+      userCanChange: false
+    maxPerUser: 10
+    cost:
+      perRun: 0
+  schedules:
+  - agent: omi_sync
+    cron: 0 3 1 * *
+    action: run
+    owner: app
+  - agent: auditor
+    cron: 0 4 * * *
+    action: run
+    owner: app
+  inputForm:
+    title:
+      it: Stima il valore
+      en: Estimate the value
+    fields:
+    - name: address
+      type: text
+      required: true
+      label:
+        it: Indirizzo completo
+        en: Full address
+    - name: surface
+      type: number
+      required: true
+      label:
+        it: Superficie (m²)
+        en: Surface (m²)
+    - name: floor
+      type: number
+      required: true
+      label:
+        it: Piano
+        en: Floor
+    - name: condition
+      type: select
+      required: true
+      label:
+        it: Stato
+        en: Condition
+      options:
+      - value: new
+        label:
+          it: Nuovo / ristrutturato
+          en: New / renovated
+      - value: good
+        label:
+          it: Buono
+          en: Good
+      - value: to_renovate
+        label:
+          it: Da ristrutturare
+          en: To renovate
+    - name: year
+      type: number
+      required: true
+      label:
+        it: Anno di costruzione
+        en: Construction year
+    - name: contact
+      type: boolean
+      label:
+        it: Voglio essere contattato da un'agenzia della zona
+        en: I agree to be contacted by a local agency
+  data:
+    collections:
+    - name: listings
+      ownedBy: shared
+      searchable: true
+      description: Agency listings, public. owner_agency identifies the publishing agency.
+      fields:
+      - name: title
+        type: text
+        required: true
+      - name: owner_agency
+        type: text
+      - name: address
+        type: text
+      - name: zone
+        type: text
+      - name: lat
+        type: number
+      - name: lng
+        type: number
+      - name: price
+        type: number
+        required: true
+      - name: surface
+        type: number
+      - name: rooms
+        type: number
+      - name: floor
+        type: number
+      - name: energy_class
+        type: select
+        options:
+        - A4
+        - A3
+        - A2
+        - A1
+        - B
+        - C
+        - D
+        - E
+        - F
+        - G
+      - name: features
+        type: text
+      - name: photo_urls
+        type: urls
+      - name: floorplan_url
+        type: url
+      - name: status
+        type: select
+        options:
+        - active
+        - sold
+        - withdrawn
+    - name: omi_quotes
+      ownedBy: shared
+      description: OMI quotations per municipality and zone
+      fields:
+      - name: municipality
+        type: text
+      - name: zone
+        type: text
+      - name: property_type
+        type: text
+      - name: state
+        type: text
+      - name: min_eur_sqm
+        type: number
+      - name: max_eur_sqm
+        type: number
+      - name: semester
+        type: text
+    - name: contact_requests
+      ownedBy: user
+      description: Contact requests received by each agency
+      fields:
+      - name: listing_id
+        type: text
+      - name: name
+        type: text
+      - name: email
+        type: email
+      - name: message
+        type: textarea
+    - name: quality_flags
+      ownedBy: org
+      description: Duplicate or inconsistent listings, for the admin only
+      fields:
+      - name: listing_id
+        type: text
+      - name: kind
+        type: select
+        options:
+        - duplicate
+        - inconsistent
+      - name: detail
+        type: textarea
+      - name: severity
+        type: select
+        options:
+        - low
+        - medium
+        - high
+    - name: search_matches
+      ownedBy: instance
+      description: New listings found by each saved search
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Vetrina Case
+    sections:
+    - type: hero
+      eyebrow:
+        it: Annunci delle agenzie
+        en: Agency listings
+      title:
+        it: Trova casa. Scopri quanto **vale** la tua.
+        en: Find a home. Learn what yours is **worth**.
+      text:
+        it: Cerca per zona, prezzo e caratteristiche, salva le ricerche e chiedi una stima basata sulle quotazioni OMI e sugli
+          annunci del portale.
+        en: Search by area, price and features, save searches and ask for an estimate based on OMI quotes and portal listings.
+      actions:
+      - label:
+          it: Cerca annunci
+          en: Search listings
+        href: /v/search
+        style: primary
+      - label:
+          it: Stima la tua casa
+          en: Value my home
+        href: /v/new_valuation
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Cerca
+          en: Search
+        text:
+          it: Filtra gli annunci per zona, prezzo, locali e caratteristiche.
+          en: Filter listings by area, price, rooms and features.
+        badge: 🔎
+      - title:
+          it: Salva
+          en: Save
+        text:
+          it: Una ricerca salvata controlla ogni giorno i nuovi annunci compatibili.
+          en: A saved search checks daily for new matching listings.
+        badge: 🔔
+      - title:
+          it: Stima
+          en: Estimate
+        text:
+          it: 'Indirizzo, m², piano, stato e anno: ottieni un intervallo di valore.'
+          en: 'Address, m², floor, condition and year: get a value range.'
+        badge: 📈
+    - type: cards
+      id: agenzie
+      title:
+        it: Per le agenzie
+        en: For agencies
+      items:
+      - title:
+          it: Pubblica e gestisci
+          en: Publish and manage
+        text:
+          it: Annunci con foto, planimetria, prezzo, classe energetica; contatti raccolti in un'unica area.
+          en: Listings with photos, floorplan, price, energy class; leads in one area.
+      - title:
+          it: Abbonamento mensile
+          en: Monthly plan
+        text:
+          it: Paghi in base al numero di annunci attivi.
+          en: You pay by number of active listings.
+    - type: note
+      content:
+        it: 'Vetrina Case è uno strumento software: non svolge attività di mediazione. La stima è indicativa e non è una perizia.'
+        en: 'Vetrina Case is a software tool: it does not perform brokerage. The estimate is indicative, not an appraisal.'
+  - key: search
+    type: page
+    title:
+      it: Cerca annunci
+      en: Search listings
+    sections:
+    - type: data
+      source: collection:listings
+      display: cards
+      title:
+        it: Annunci
+        en: Listings
+      fields:
+      - key: title
+        label:
+          it: Titolo
+          en: Title
+      - key: zone
+        label:
+          it: Zona
+          en: Area
+      - key: price
+        label:
+          it: Prezzo
+          en: Price
+        format: money
+      - key: surface
+        label: m²
+        format: number
+      - key: rooms
+        label:
+          it: Locali
+          en: Rooms
+        format: number
+      - key: energy_class
+        label:
+          it: Classe
+          en: Class
+        format: badge
+      filters:
+      - field: status
+        op: '='
+        value: active
+      sort:
+        field: price
+        dir: asc
+      limit: 60
+      empty:
+        it: Nessun annuncio.
+        en: No listings.
+  - key: new_valuation
+    type: new_run
+    title:
+      it: Stima
+      en: Valuation
+    roles:
+    - user
+    - admin
+  - key: valuations
+    type: history
+    title:
+      it: Le mie stime
+      en: My valuations
+    source: run
+    roles:
+    - user
+    - admin
+  - key: valuation
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: my_listings
+    type: table
+    title:
+      it: I miei annunci
+      en: My listings
+    source: collection:listings
+    roles:
+    - user
+    - admin
+  - key: my_contacts
+    type: table
+    title:
+      it: I miei contatti
+      en: My leads
+    source: collection:contact_requests
+    roles:
+    - user
+    - admin
+  - key: searches
+    type: instances
+    template: saved_search
+    title:
+      it: Ricerche salvate
+      en: Saved searches
+    roles:
+    - user
+    - admin
+  - key: flags
+    type: table
+    title:
+      it: Segnalazioni qualità
+      en: Quality flags
+    source: collection:quality_flags
+    roles:
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Plan
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    - credits
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:valuer:
+        estimate: 10
+        metered: true
+    packs:
+    - key: valuations
+      credits: 500
+      price: 5
+      label: Pack stime
+    plans:
+    - key: agency_s
+      price: 29
+      interval: month
+      label: Agenzia S — fino a 20 annunci
+      includes:
+      - 20 active listings
+      - lead inbox
+      roles:
+      - user
+    - key: agency_m
+      price: 79
+      interval: month
+      label: Agenzia M — fino a 100 annunci
+      includes:
+      - 100 active listings
+      - lead inbox
+      - feed import
+      roles:
+      - user
+    - key: agency_l
+      price: 199
+      interval: month
+      label: Agenzia L — fino a 500 annunci
+      includes:
+      - 500 active listings
+      - lead inbox
+      - feed import
+      roles:
+      - user
+  extensions:
+  - key: listing_editor
+    description: Form for agencies to create/edit listings with an agency-scoped write to the shared catalogue, so each agency
+      sees and edits only its own listings and leads.
+  - key: file_upload
+    description: 'Photo and floorplan upload is not available yet: agencies paste links (photo_urls, floorplan_url).'
+  - key: feed_import
+    description: Import from agency management software via feed (XML/CSV) needs a per-agency connector and a scheduled sync.
+  - key: map_search
+    description: Interactive map search with drawn areas is not available; search is by zone text and filters.
+  - key: email_alerts
+    description: Email notifications for saved searches are not available yet; new matches appear in the saved-searches view.
+  - key: contact_form_and_lead_routing
+    description: Public contact form that writes to the agency's contact_requests, and routing of the owner's contact consent
+      from the valuation to a local agency, need cross-user writes not available yet.
+  - key: plan_limits
+    description: Enforcement of the active-listings cap per plan.

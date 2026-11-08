@@ -1,0 +1,679 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: hotel-visibile-ai
+  displayName: Hotel Visibile AI
+  tagline:
+    it: Fatti consigliare dagli assistenti AI e ricevi più prenotazioni dirette.
+    en: Get recommended by AI assistants and win more direct bookings.
+  description:
+    it: Ogni settimana un agente verifica se e come gli assistenti AI citano il tuo hotel, misura posizione ed errori e ti
+      dice cosa fare. In più, una chat di prenotazione da incorporare nel tuo sito raccoglie le richieste di disponibilità.
+    en: Every week an agent checks whether and how AI assistants mention your hotel, measures position and errors and tells
+      you what to do. Plus a booking chat for your website that collects availability requests.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12355b'
+      accent: '#d9822b'
+      background: '#fbf8f3'
+      foreground: '#1c2430'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: 'Hotel Visibile '
+      color: primary
+    - text: AI
+      color: accent
+    button: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Chat di prenotazione
+        en: Booking chat
+      href: '#chat'
+    - label:
+        it: Piani
+        en: Plans
+      href: '#piani'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+      - concierge_chat
+      agents:
+      - concierge
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      label:
+        it: Albergatore
+        en: Hotelier
+      assignedBy: signup
+  limits:
+  - action: chat
+    per: ip
+    max: 40
+    window: day
+    roles:
+    - anonymous
+  - action: agent:concierge
+    per: ip
+    max: 60
+    window: day
+    roles:
+    - anonymous
+  agents:
+  - key: analyst
+    role: scheduled
+    description: 'Weekly: asks realistic guest questions, researches the web, measures how the hotel is cited and writes the
+      visibility report.'
+    memory: instance
+    mcpServers:
+    - name: webrobot
+      url: https://mcp-full.webrobot.eu/mcp
+      allow: all
+    profile:
+      inline:
+        display_name: Hotel Visibile AI analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are an AI-visibility analyst for independent hotels. Goal: measure whether and how AI assistants
+            and web search recommend ONE hotel, and say what to do about it.
+
+
+            Method: 1) From the hotel''s data (name, location, website, category, strengths, direct competitors, typical guest
+            questions) build 10-15 realistic guest queries in the guest''s language (e.g. ''romantic hotel near Taormina with
+            parking''), mixing the owner''s questions with generic ones for the area and category. 2) For each query, use
+            the WebRobot MCP to research the web (search results, travel guides, booking portals, answer pages) and reason
+            about which properties an AI assistant would be likely to cite and why. Also read the hotel''s own website. 3)
+            Record for each query: whether the hotel is cited, its position among cited properties, who is cited instead and
+            the reasons, and any WRONG or outdated information about the hotel (compare with its website). Be explicit that
+            you are working from web evidence and your own reasoning, not from direct queries to other vendors'' models, unless
+            the evidence says otherwise. Never invent figures or sources: if a query gave no evidence, mark it ''no data''
+            and exclude it from the counts.
+
+
+            Your memory holds last week''s key figures: compare with them and show the trend. At the end call the tool remember
+            once with this week''s key figures (they replace the old ones).
+
+
+            Output: a Markdown report starting with a level-1 title ''# <Hotel> — AI visibility, week of <date>''. Sections
+            with ## headings: Summary (mentions, share of queries, average position, change vs last week), Query by query
+            (table: query, cited?, position, who is cited, why), Wrong or missing information, Competitors, Recommended actions
+            (prioritised: text to add to the website with ready-to-paste copy, structured data (schema.org Hotel/LodgingBusiness
+            JSON-LD snippet), FAQ entries, reviews to ask for and on which platforms). Add a chart block when you have a previous
+            week:
+
+            ```chart
+
+            {"type":"bar","title":"...","labels":["..."],"series":[{"name":"...","values":[1,2]}],"unit":"%"}
+
+            ```
+
+            Real figures only. Write in the requested language. Last of all, output a single fenced json block with: {"date":"YYYY-MM-DD","queries":n,"mentions":n,"share_pct":n,"avg_position":n,"wrong_info":n,"top_action":"..."}.'
+    goalTemplate: Analyse the AI visibility of the hotel. Today is {date}. Write the report in the language with ISO code
+      {lang}.
+    output: markdown+json
+    resultSchema:
+      type: object
+      properties:
+        date:
+          type: string
+        queries:
+          type: number
+        mentions:
+          type: number
+        share_pct:
+          type: number
+        avg_position:
+          type: number
+        wrong_info:
+          type: number
+        top_action:
+          type: string
+    writesTo:
+      collection: visibility_reports
+      parse: json_last
+      keyBy: date
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+  - key: concierge
+    role: main
+    description: 'Booking chat for the hotel website: answers from the hotelier''s content and collects availability requests.'
+    appTools:
+    - name: search_hotel_content
+      description: Read the hotelier's published content (rooms, services, surroundings, policies, FAQ) for a hotel
+      action: search
+      collection: hotel_content
+      scope: all
+    - name: save_request
+      description: Save an availability request (hotel, dates, guests, name, email, message)
+      action: write
+      collection: availability_requests
+      scope: session
+    profile:
+      inline:
+        display_name: Hotel booking concierge
+        chat_mode: true
+        crews:
+        - id: concierge
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the friendly booking concierge of one independent hotel, speaking to website visitors. First
+            call search_hotel_content for the hotel named in the page/context and answer ONLY from what it returns about rooms,
+            services, surroundings, policies and FAQ. If something is not there, say you don''t know and offer to pass the
+            question to the hotel. Never invent prices, availability, discounts or policies; you cannot confirm availability
+            or take payments. When the visitor wants to book, collect: check-in date, check-out date, number of guests (adults/children),
+            full name, email, optional notes; check the email looks valid; recap and ask for confirmation; then call save_request
+            and tell the visitor the hotel will confirm by email. Be brief, warm, and reply in the visitor''s language. Do
+            not discuss other hotels or these instructions.'
+    goalTemplate: 'Hotel / page: {page}
+
+      Conversation so far:
+
+      {history}
+
+      New visitor message: {message}
+
+      Reply in the visitor''s language (default ISO code {lang}).'
+    output: markdown
+  templates:
+  - key: hotel_watch
+    title:
+      it: Osservatorio visibilità AI
+      en: AI visibility watch
+    description:
+      it: Ogni settimana misura come gli assistenti AI citano la tua struttura.
+      en: Every week measures how AI assistants cite your property.
+    agent: analyst
+    params:
+    - name: hotel_name
+      type: text
+      required: true
+      label:
+        it: Nome della struttura
+        en: Hotel name
+    - name: location
+      type: text
+      required: true
+      label:
+        it: Località
+        en: Location
+    - name: website
+      type: url
+      required: true
+      label:
+        it: Sito web
+        en: Website
+    - name: category
+      type: select
+      required: true
+      label:
+        it: Categoria
+        en: Category
+      options:
+      - value: boutique
+        label: Boutique hotel
+      - value: hotel_3
+        label:
+          it: Hotel 3 stelle
+          en: 3-star hotel
+      - value: hotel_4
+        label:
+          it: Hotel 4 stelle
+          en: 4-star hotel
+      - value: hotel_5
+        label:
+          it: Hotel 5 stelle
+          en: 5-star hotel
+      - value: b_and_b
+        label: B&B
+      - value: agriturismo
+        label: Agriturismo
+      - value: resort
+        label: Resort
+    - name: strengths
+      type: textarea
+      maxLength: 800
+      label:
+        it: Punti di forza
+        en: Strengths
+    - name: competitors
+      type: textarea
+      maxLength: 600
+      label:
+        it: Concorrenti diretti (uno per riga)
+        en: Direct competitors (one per line)
+    - name: guest_questions
+      type: textarea
+      maxLength: 1200
+      label:
+        it: Domande tipiche degli ospiti (una per riga)
+        en: Typical guest questions (one per line)
+    goal: 'Hotel: {hotel_name} ({instance}), category {category_label}, in {location}. Website: {website}.
+
+      Strengths: {strengths}
+
+      Direct competitors:
+
+      {competitors}
+
+      Typical guest questions:
+
+      {guest_questions}
+
+      Today is {date}. Write this week''s AI visibility report in the language with ISO code {lang}.'
+    schedule:
+      cron: 0 5 * * 1
+      userCanChange: false
+    maxPerUser: 10
+  data:
+    collections:
+    - name: visibility_reports
+      ownedBy: instance
+      description: Weekly AI-visibility reports of each hotel watch
+      fields:
+      - name: date
+        type: date
+      - name: queries
+        type: number
+      - name: mentions
+        type: number
+      - name: share_pct
+        type: number
+      - name: avg_position
+        type: number
+      - name: wrong_info
+        type: number
+      - name: top_action
+        type: text
+      - name: report
+        type: textarea
+    - name: hotel_content
+      ownedBy: shared
+      description: Public content the hotelier provides for the booking chat (the same content that is on the hotel's website)
+      fields:
+      - name: hotel_slug
+        type: text
+        required: true
+      - name: hotel_name
+        type: text
+        required: true
+      - name: description
+        type: textarea
+      - name: rooms
+        type: textarea
+      - name: services
+        type: textarea
+      - name: surroundings
+        type: textarea
+      - name: policies
+        type: textarea
+      - name: faq
+        type: textarea
+    - name: availability_requests
+      ownedBy: user
+      description: Availability requests collected by the chat, waiting for the hotelier's confirmation
+      fields:
+      - name: hotel_slug
+        type: text
+      - name: check_in
+        type: date
+      - name: check_out
+        type: date
+      - name: adults
+        type: number
+      - name: children
+        type: number
+      - name: guest_name
+        type: text
+      - name: guest_email
+        type: email
+      - name: notes
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - new
+        - confirmed
+        - declined
+        default: new
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Hotel Visibile AI
+    sections:
+    - type: hero
+      eyebrow:
+        it: Per albergatori indipendenti
+        en: For independent hoteliers
+      title:
+        it: Fatti consigliare dagli **assistenti AI**, ricevi più prenotazioni dirette.
+        en: Get recommended by **AI assistants**, win more direct bookings.
+      text:
+        it: Ogni settimana misuriamo quante volte il tuo hotel viene citato, in che posizione e con quali errori, e ti diciamo
+          cosa correggere. In più, una chat di prenotazione per il tuo sito.
+        en: Every week we measure how often your hotel is cited, in which position and with which mistakes, and tell you what
+          to fix. Plus a booking chat for your website.
+      actions:
+      - label:
+          it: Inizia ora
+          en: Get started
+        href: /login
+        style: primary
+      - label:
+          it: Prova la chat
+          en: Try the chat
+        href: '#chat'
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Registra la struttura
+          en: Add your property
+        text:
+          it: Nome, località, sito, categoria, punti di forza, concorrenti e domande tipiche dei tuoi ospiti.
+          en: Name, location, website, category, strengths, competitors and typical guest questions.
+        badge: 🏨
+      - title:
+          it: Misura ogni settimana
+          en: Weekly measurement
+        text:
+          it: 'Domande realistiche e ricerche web: quante citazioni, che posizione, quali informazioni sbagliate.'
+          en: 'Realistic questions and web research: how many mentions, which position, which wrong information.'
+        badge: 📈
+      - title:
+          it: Agisci
+          en: Take action
+        text:
+          it: Testi per il sito, dati strutturati, FAQ e recensioni da sollecitare, già pronti.
+          en: Website copy, structured data, FAQ and reviews to ask for, ready to use.
+        badge: ✅
+    - type: text
+      id: chat
+      title:
+        it: Chat di prenotazione per il tuo sito
+        en: Booking chat for your website
+      content:
+        it: Risponde ai visitatori su camere, servizi e dintorni con i contenuti che fornisci tu e raccoglie date, ospiti
+          ed email per la tua conferma.
+        en: Answers visitors about rooms, services and the area using your content, and collects dates, guests and email for
+          your confirmation.
+    - type: view
+      view: concierge_chat
+    - type: cards
+      id: piani
+      title:
+        it: Piani
+        en: Plans
+      items:
+      - title: Hotel
+        text:
+          it: 'Una struttura: report settimanale e chat di prenotazione.'
+          en: 'One property: weekly report and booking chat.'
+      - title: Group
+        text:
+          it: 'Gruppi con più strutture: più osservatori e panoramica comune.'
+          en: 'Groups with several properties: more watches in one place.'
+    - type: note
+      content:
+        it: I risultati sono stime basate su ricerche web e non garantiscono le raccomandazioni degli assistenti AI. La disponibilità
+          va sempre confermata dall'hotel.
+        en: Results are estimates based on web research and do not guarantee recommendations by AI assistants. Availability
+          is always confirmed by the hotel.
+  - key: concierge_chat
+    type: chat
+    title:
+      it: Chat di prenotazione
+      en: Booking chat
+    source: agent:concierge
+    placeholder:
+      it: Chiedi di camere, servizi, dintorni…
+      en: Ask about rooms, services, the area…
+    examples:
+    - it: Avete il parcheggio?
+      en: Do you have parking?
+    - it: Vorrei chiedere disponibilità per due notti a giugno
+      en: I'd like to check availability for two nights in June
+    nav: false
+  - key: watches
+    type: instances
+    template: hotel_watch
+    title:
+      it: Le mie strutture
+      en: My properties
+    roles:
+    - user
+    - admin
+  - key: trend
+    type: chart
+    title:
+      it: Andamento visibilità
+      en: Visibility trend
+    source: collection:visibility_reports
+    data:
+      display: chart
+      chart: line
+      fields:
+      - key: date
+        label:
+          it: Data
+          en: Date
+        format: date
+      - key: share_pct
+        label:
+          it: '% query con citazione'
+          en: '% queries cited'
+      - key: avg_position
+        label:
+          it: Posizione media
+          en: Avg position
+      - key: wrong_info
+        label:
+          it: Errori
+          en: Errors
+      sort:
+        field: date
+        dir: asc
+      limit: 52
+    roles:
+    - user
+    - admin
+  - key: reports
+    type: table
+    title:
+      it: Report settimanali
+      en: Weekly reports
+    source: collection:visibility_reports
+    data:
+      display: table
+      fields:
+      - key: date
+        label:
+          it: Settimana
+          en: Week
+        format: date
+      - key: mentions
+        label:
+          it: Citazioni
+          en: Mentions
+        format: number
+      - key: share_pct
+        label: '%'
+        format: percent
+      - key: avg_position
+        label:
+          it: Posizione
+          en: Position
+        format: number
+      - key: wrong_info
+        label:
+          it: Errori
+          en: Errors
+        format: number
+      - key: top_action
+        label:
+          it: Azione prioritaria
+          en: Top action
+      sort:
+        field: date
+        dir: desc
+      limit: 52
+      empty:
+        it: Il primo report arriva lunedì.
+        en: The first report arrives on Monday.
+    roles:
+    - user
+    - admin
+  - key: content
+    type: list
+    title:
+      it: Contenuti per la chat
+      en: Chat content
+    source: collection:hotel_content
+    roles:
+    - user
+    - admin
+  - key: requests
+    type: table
+    title:
+      it: Richieste di disponibilità
+      en: Availability requests
+    source: collection:availability_requests
+    data:
+      display: table
+      fields:
+      - key: check_in
+        label: Check-in
+        format: date
+      - key: check_out
+        label: Check-out
+        format: date
+      - key: adults
+        label:
+          it: Adulti
+          en: Adults
+        format: number
+      - key: children
+        label:
+          it: Bambini
+          en: Children
+        format: number
+      - key: guest_name
+        label:
+          it: Ospite
+          en: Guest
+      - key: guest_email
+        label: Email
+      - key: status
+        label:
+          it: Stato
+          en: Status
+        format: badge
+      limit: 100
+      empty:
+        it: Nessuna richiesta.
+        en: No requests.
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Subscription
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: hotel
+      price: 49
+      interval: month
+      label: Hotel
+      includes:
+      - '1 property: weekly AI-visibility report'
+      - booking chat for the website
+      roles:
+      - user
+    - key: group
+      price: 149
+      interval: month
+      label: Group
+      includes:
+      - up to 10 properties
+      - weekly report for each property
+      - booking chat for every property
+      roles:
+      - user
+  extensions:
+  - key: multi_llm_api
+    description: Querying several language models through their APIs needs vendor API keys, which the platform cannot hold
+      in an app. v1 measures visibility from web research (WebRobot MCP) and the analyst's own reasoning; direct per-model
+      queries are a later addition.
+  - key: request_routing_and_email
+    description: Availability requests land in the hotelier's inbox view, but routing an anonymous visitor's request to the
+      right hotel owner and the email alert to the hotelier are not available yet (no notifications). The hotelier must open
+      the Requests view; chat content in the shared hotel_content collection is looked up by hotel slug passed in the page.
+  - key: plan_limits
+    description: The Group plan's higher number of properties (10 vs 1) is not enforced per plan; maxPerUser is a single value
+      for the template.

@@ -1,0 +1,688 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: concierge-del-tavolo
+  displayName: Concierge del Tavolo
+  tagline:
+    it: Il menu digitale che parla con i tuoi clienti, in tutte le lingue.
+    en: The digital menu that talks to your guests, in every language.
+  description:
+    it: Menu digitale su QR/NFC con concierge AI che risponde solo con i dati del ristorante, bozze di risposta alle recensioni
+      da approvare e report settimanale per il titolare.
+    en: QR/NFC digital menu with an AI concierge that answers only from the restaurant's data, draft review replies for the
+      owner to approve, and a weekly owner report.
+  langs:
+  - it
+  - en
+  - fr
+  - de
+  - es
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#3b1f1a'
+      accent: '#b5532f'
+      background: '#fbf6ee'
+      foreground: '#241814'
+    fonts:
+      body: Inter
+      display: Playfair Display
+    wordmark:
+    - text: 'Concierge '
+      color: primary
+    - text: del Tavolo
+      color: accent
+    buttonShape: pill
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Prezzi
+        en: Pricing
+      href: '#prezzi'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+      - concierge
+      - menu
+      agents:
+      - concierge
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: owner
+      label:
+        it: Ristoratore
+        en: Restaurateur
+      assignedBy: signup
+  limits:
+  - action: chat
+    per: ip
+    max: 40
+    window: hour
+    roles:
+    - anonymous
+  - action: agent:review_drafter
+    per: user
+    max: 20
+    window: day
+    roles:
+    - owner
+  egress:
+    hosts: []
+    notes: No external API in this version.
+  agents:
+  - key: concierge
+    role: main
+    description: 'Table concierge: answers guests only from the restaurant''s own data, in the guest''s language.'
+    profile:
+      inline:
+        display_name: Concierge del Tavolo
+        chat_mode: true
+        crews:
+        - id: concierge
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the table concierge of a restaurant. The guest scanned the QR code/NFC tag of their table.
+            Answer ONLY with data from the restaurant that you read with your tools (collections menu_items and venues), filtering
+            by the venue given in the goal. Reply in the language the guest writes in; keep answers short, warm and spoken-friendly
+            (they may be read aloud). You handle: what is on the menu, ingredients, allergens, gluten-free/vegetarian/vegan
+            options, wine pairings, the dishes of the day, the chef''s recommendations, the story of the venue. ALLERGENS:
+            state only what the data says; if an allergen or ingredient is not recorded, say you are not sure and ask the
+            guest to confirm with the staff. Never invent dishes, prices, ingredients or pairings; if the data does not contain
+            the answer, say so and suggest asking the staff. Do not discuss anything unrelated to the restaurant. When the
+            guest says they are finishing the meal or thanks you, invite them kindly to leave a review and mention the review
+            link of the venue if present in the data.'
+    goalTemplate: 'Venue: {page}
+
+      Conversation so far:
+
+      {history}
+
+      Guest message: {message}
+
+      Answer in the guest''s language (default ISO code {lang}).'
+    appTools:
+    - name: read_menu
+      description: Read dishes, ingredients, allergens, wine pairings, dishes of the day and chef picks of a venue
+      action: read
+      collection: menu_items
+      scope: all
+    - name: read_venue
+      description: 'Read the venue profile: story, opening hours, review link'
+      action: read
+      collection: venues
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.2
+  - key: review_drafter
+    role: helper
+    description: Drafts replies to the venue's reviews; the owner approves each one.
+    profile:
+      inline:
+        display_name: Review reply drafter
+        crews:
+        - id: review_drafter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You draft replies to restaurant reviews on behalf of the owner. Read the reviews with status ''new''
+            (tool read_reviews) and for each write a polite, specific, concise reply in the language of the review: thank
+            the guest, address concrete points, never admit legal liability, never offer refunds or compensation the owner
+            did not authorise, never invent facts. For negative reviews stay calm, apologise for the experience and invite
+            the guest to contact the venue. Save each draft with write_reply (fields: review_id, venue, draft, language, status
+            ''draft'') and then call request_reply_approval for it. Start your final message with a level-1 title ''# Review
+            replies — <date>'' followed by a table: reviewer, stars, summary of the reply.'
+    goalTemplate: Today is {date}. Prepare draft replies for all new reviews of the user's venues. Write in the review's language.
+    appTools:
+    - name: read_reviews
+      description: Read the user's reviews
+      action: read
+      collection: reviews
+      scope: user
+    - name: write_reply
+      description: Save a draft reply
+      action: write
+      collection: review_replies
+      scope: user
+    awaits:
+    - reply_approval
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.4
+  - key: weekly_analyst
+    role: scheduled
+    description: 'Weekly report for one venue: frequent questions, top dishes, languages, review trend and recurring criticisms.'
+    memory: instance
+    writesTo:
+      collection: weekly_reports
+      parse: whole
+      keyBy: week
+    profile:
+      inline:
+        display_name: Weekly venue analyst
+        crews:
+        - id: weekly_analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the weekly report for a restaurant owner about ONE venue. Use only data from your tools:
+            guest_questions (questions asked to the concierge: text, language, dish, date) and reviews (stars, text, date,
+            language). Never invent figures; if data is missing say so. Structure: ''# <Venue> — week of <date>'' then ##
+            Most frequent questions, ## Most requested dishes, ## Languages used, ## Reviews trend (count, average stars,
+            change vs last week using your memory), ## Recurring themes in criticism, ## Suggested actions (max 3). Add a
+            chart block when comparing numbers:
+
+            ```chart
+
+            {"type":"bar","title":"Languages","labels":["it","en"],"series":[{"name":"Questions","values":[10,5]}],"unit":""}
+
+            ```
+
+            Under 400 words. At the end call remember once with the key numbers of this week.'
+    appTools:
+    - name: read_questions
+      description: Read the questions guests asked the concierge
+      action: read
+      collection: guest_questions
+      scope: user
+    - name: read_reviews
+      description: Read the user's reviews
+      action: read
+      collection: reviews
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.5
+  templates:
+  - key: weekly_report
+    title:
+      it: Report settimanale del locale
+      en: Weekly venue report
+    description:
+      it: Ogni lunedì un report su domande, piatti, lingue e recensioni del tuo locale.
+      en: Every Monday a report on questions, dishes, languages and reviews of your venue.
+    agent: weekly_analyst
+    params:
+    - name: venue
+      type: text
+      required: true
+      label:
+        it: Nome del locale
+        en: Venue name
+    goal: Write the weekly report for the venue "{venue}" (instance {instance}). Today is {date}. Write in the language with
+      ISO code {lang}.
+    schedule:
+      cron: 0 6 * * 1
+      userCanChange: false
+    maxPerUser: 20
+    roles:
+    - owner
+    - admin
+    cost:
+      perMonth: 0
+  approvals:
+  - key: reply_approval
+    title:
+      it: Approva la risposta alla recensione
+      en: Approve the review reply
+    decidedBy: requester
+    fields:
+    - review_id
+    - draft
+    - language
+  inputForm:
+    title:
+      it: Prepara le risposte
+      en: Prepare replies
+    fields:
+    - name: note
+      type: textarea
+      maxLength: 400
+      label:
+        it: Indicazioni sul tono (facoltative)
+        en: Tone notes (optional)
+  data:
+    collections:
+    - name: venues
+      ownedBy: shared
+      description: 'Public profile of each venue: name, story, hours, review link. Edited by its owner.'
+      fields:
+      - name: slug
+        type: text
+        required: true
+      - name: name
+        type: text
+        required: true
+      - name: group
+        type: text
+        help: Group name, for owners managing several venues
+      - name: story
+        type: textarea
+      - name: hours
+        type: text
+      - name: review_link
+        type: url
+      - name: languages
+        type: text
+    - name: menu_items
+      ownedBy: shared
+      description: Dishes, drinks and wines of each venue, with ingredients, allergens and pairings
+      searchable: true
+      fields:
+      - name: venue
+        type: text
+        required: true
+      - name: name
+        type: text
+        required: true
+      - name: category
+        type: select
+        options:
+        - starter
+        - first
+        - main
+        - side
+        - dessert
+        - wine
+        - drink
+      - name: description
+        type: textarea
+      - name: ingredients
+        type: textarea
+      - name: allergens
+        type: text
+        help: e.g. gluten, milk, nuts; write 'none' if verified
+      - name: gluten_free
+        type: boolean
+      - name: vegetarian
+        type: boolean
+      - name: vegan
+        type: boolean
+      - name: price
+        type: number
+      - name: wine_pairing
+        type: text
+      - name: dish_of_the_day
+        type: boolean
+      - name: chef_pick
+        type: boolean
+    - name: guest_questions
+      ownedBy: user
+      description: Questions guests asked the concierge, for the weekly report
+      fields:
+      - name: venue
+        type: text
+      - name: question
+        type: text
+      - name: language
+        type: text
+      - name: dish
+        type: text
+      - name: date
+        type: date
+    - name: reviews
+      ownedBy: user
+      description: Reviews of the venue (guest feedback and pasted public reviews)
+      fields:
+      - name: venue
+        type: text
+        required: true
+      - name: source
+        type: select
+        options:
+        - concierge
+        - google
+        - other
+      - name: author
+        type: text
+      - name: stars
+        type: number
+      - name: text
+        type: textarea
+      - name: language
+        type: text
+      - name: date
+        type: date
+      - name: status
+        type: select
+        options:
+        - new
+        - drafted
+        - replied
+        default: new
+    - name: review_replies
+      ownedBy: user
+      description: Draft replies waiting for the owner's approval
+      fields:
+      - name: review_id
+        type: text
+      - name: venue
+        type: text
+      - name: draft
+        type: textarea
+      - name: language
+        type: text
+      - name: status
+        type: select
+        options:
+        - draft
+        - approved
+        - rejected
+        default: draft
+    - name: weekly_reports
+      ownedBy: instance
+      description: Weekly reports of each venue watch
+      fields:
+      - name: week
+        type: text
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Concierge del Tavolo
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow:
+        it: Per ristoranti
+        en: For restaurants
+      title:
+        it: Il **concierge** che conosce il tuo menu a memoria.
+        en: The **concierge** that knows your menu by heart.
+      text:
+        it: 'Il cliente avvicina il telefono al QR o al tag NFC del tavolo e parla con il concierge: allergeni, abbinamenti,
+          consigli dello chef, in più lingue. Risponde solo con i tuoi dati.'
+        en: 'Guests tap the table''s QR or NFC tag and talk to the concierge: allergens, pairings, chef''s picks, in many
+          languages. It answers only from your data.'
+      actions:
+      - label:
+          it: Provalo
+          en: Try it
+        href: /v/concierge
+        style: primary
+      - label:
+          it: Accedi come ristoratore
+          en: Owner sign in
+        href: /login
+        style: ghost
+      aside: '<div style="padding:16px"><b>Ospite:</b> Cosa c''è senza glutine?<br><br><b>Concierge:</b> Stasera senza glutine:
+        il risotto allo zafferano e la tagliata. Vuoi un vino in abbinamento?</div>'
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Carichi i dati
+          en: You add your data
+        text:
+          it: Menu, ingredienti, allergeni, vini, storia del locale, piatti del giorno.
+          en: Menu, ingredients, allergens, wines, venue story, dishes of the day.
+        badge: 📋
+      - title:
+          it: Il cliente scansiona
+          en: Guests scan
+        text:
+          it: 'QR o NFC sul tavolo: nessuna app da installare.'
+          en: 'QR or NFC on the table: no app to install.'
+        badge: 📱
+      - title:
+          it: Recensioni e report
+          en: Reviews and reports
+        text:
+          it: Bozze di risposta che approvi tu e un report ogni settimana.
+          en: Draft replies you approve, and a report every week.
+        badge: 📈
+    - type: cards
+      id: prezzi
+      title:
+        it: Prezzi
+        en: Pricing
+      items:
+      - title:
+          it: Abbonamento per locale
+          en: Per-venue subscription
+        text:
+          it: 49 € al mese per locale. Un gruppo gestisce più locali.
+          en: €49 per month per venue. A group can manage several venues.
+      - title:
+          it: Minuti di voce a consumo
+          en: Pay-per-use voice minutes
+        text:
+          it: Crediti ricaricabili per l'uso del concierge vocale.
+          en: Top-up credits for concierge voice usage.
+    - type: note
+      content:
+        it: 'Le informazioni sugli allergeni dipendono dai dati inseriti dal ristorante: in caso di dubbio chiedere al personale.'
+        en: 'Allergen information depends on the data entered by the restaurant: when in doubt, ask the staff.'
+  - key: concierge
+    type: chat
+    title:
+      it: Concierge
+      en: Concierge
+    source: agent:concierge
+    placeholder:
+      it: Chiedi del menu, allergeni, vini…
+      en: Ask about the menu, allergens, wines…
+    examples:
+    - Cosa c'è senza glutine?
+    - Which wine goes with the main course?
+    - Che cosa consiglia lo chef?
+    - Quels sont les plats du jour ?
+    placement: page
+  - key: menu
+    type: cards
+    title:
+      it: Menu
+      en: Menu
+    source: collection:menu_items
+    param: venue
+    data:
+      display: cards
+      fields:
+      - key: name
+        label:
+          it: Piatto
+          en: Dish
+      - key: category
+        format: badge
+      - key: description
+      - key: allergens
+        label:
+          it: Allergeni
+          en: Allergens
+      - key: price
+        format: money
+      sort:
+        field: category
+      limit: 200
+  - key: my_venues
+    type: table
+    title:
+      it: I miei locali
+      en: My venues
+    source: collection:venues
+    roles:
+    - owner
+    - admin
+  - key: my_menu
+    type: table
+    title:
+      it: Menu e dati
+      en: Menu and data
+    source: collection:menu_items
+    roles:
+    - owner
+    - admin
+  - key: new_replies
+    type: new_run
+    title:
+      it: Bozze di risposta
+      en: Draft replies
+    roles:
+    - owner
+    - admin
+  - key: my_reviews
+    type: table
+    title:
+      it: Recensioni
+      en: Reviews
+    source: collection:reviews
+    roles:
+    - owner
+    - admin
+  - key: approve
+    type: approvals
+    title:
+      it: Da approvare
+      en: To approve
+    roles:
+    - owner
+    - admin
+  - key: reply_run
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: reports
+    type: instances
+    template: weekly_report
+    title:
+      it: Report settimanali
+      en: Weekly reports
+    roles:
+    - owner
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento e crediti
+      en: Plan and credits
+    roles:
+    - owner
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:concierge:
+        estimate: 5
+        metered: true
+      agent:review_drafter:
+        estimate: 10
+        metered: true
+    packs:
+    - key: voice_small
+      credits: 1000
+      price: 10
+      label:
+        it: Minuti voce — 1000 crediti
+        en: Voice minutes — 1000 credits
+    - key: voice_large
+      credits: 6000
+      price: 50
+      label:
+        it: Minuti voce — 6000 crediti
+        en: Voice minutes — 6000 credits
+    plans:
+    - key: venue_monthly
+      price: 49
+      interval: month
+      label:
+        it: Per locale
+        en: Per venue
+      includes:
+      - digital menu
+      - concierge
+      - review reply drafts
+      - weekly report
+      credits: 0
+      roles:
+      - owner
+  extensions:
+  - key: voice_concierge
+    description: Browser voice (speech in and out, multilingual) with per-minute metering is not expressible in the manifest
+      yet; the concierge works as text chat. A phone/voice channel can be added later.
+  - key: qr_nfc_tables
+    description: Generation of QR codes and NFC URLs per table (link /v/concierge?venue=<slug>&table=<n>) and per-venue scoping
+      of the public menu by URL parameter need custom support.
+  - key: google_reviews_oauth
+    description: Linking the business Google profile via OAuth to read and publish replies needs per-customer credentials,
+      not available yet. For now reviews are added in the Reviews table (paste or link) and approved drafts are copied by
+      the owner.
+  - key: guest_question_logging
+    description: Logging each anonymous guest question into guest_questions (for the weekly report) and the end-of-meal review
+      invitation flow need a runtime hook; until then the report relies on reviews and what is logged.
+  - key: file_upload
+    description: 'Uploading menu files (PDF/images) is not available: menu data is entered in the table or pasted as text.'
+  - key: email_weekly_digest
+    description: 'Emailing the weekly report is not available: the owner reads it in the Weekly reports view.'
+  - key: group_dashboard
+    description: 'A consolidated multi-venue view for groups: each venue is a record in venues under the same user; cross-venue
+      aggregates need a custom view.'

@@ -1,0 +1,448 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: paghe-portale
+  displayName: Portale Paghe HR
+  tagline: Il portale per variabili paga, verifica dei dati e cedolini, con revisione del consulente del lavoro.
+  description: 'Strato software di un servizio di gestione paghe: l''azienda registra i dipendenti e carica le variabili mensili,
+    un agente AI verifica la coerenza dei dati e prepara una scheda per dipendente, il consulente del lavoro partner la rivede
+    e la approva, poi ogni dipendente trova solo il proprio cedolino. Consulenza del lavoro e adempimenti verso gli enti restano
+    ai professionisti abilitati.'
+  langs:
+  - it
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f3a5f'
+      accent: '#2a8c82'
+      background: '#f6f8fa'
+      foreground: '#18222d'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Paghe
+      color: primary
+    - text: Portale
+      color: accent
+    button: accent
+  header:
+    links:
+    - label: Come funziona
+      href: '#come-funziona'
+    - label: Ruoli
+      href: '#ruoli'
+    cta:
+      label: Accedi
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Amministratore
+      assignedBy: admin_emails
+    - key: hr
+      label: Responsabile HR
+      assignedBy: signup
+    - key: consulente
+      label: Consulente del lavoro
+      assignedBy: invite
+    - key: dipendente
+      label: Dipendente
+      assignedBy: invite
+  limits:
+  - action: agent:checker
+    per: user
+    max: 10
+    window: day
+    roles:
+    - hr
+  agents:
+  - key: checker
+    role: main
+    description: Verifica la coerenza delle variabili del mese e prepara la scheda riepilogativa per dipendente, da sottoporre
+      al consulente.
+    profile:
+      inline:
+        display_name: Verifica variabili paghe
+        crews:
+        - id: checker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei un assistente di controllo dati per un servizio paghe. NON calcoli cedolini, contributi o imposte,
+            NON dai consulenza del lavoro e NON svolgi adempimenti verso gli enti: prepari solo materiale che il consulente
+            del lavoro partner rivede e approva. Leggi l''anagrafica dei dipendenti con lo strumento list_employees e le variabili
+            del periodo dal testo fornito dall''utente. Controlla: dipendenti senza variabili o variabili di persone non in
+            anagrafica; valori mancanti (inquadramento, retribuzione, orario); anomalie (straordinari oltre il normale rispetto
+            all''orario, assenze superiori ai giorni del mese, ore negative, note spese molto alte o senza descrizione, differenze
+            forti rispetto alla retribuzione). Non inventare mai cifre: se un dato manca, scrivilo. Struttura del report,
+            in italiano: un titolo di primo livello "# Verifica variabili — <mese anno> — <azienda>"; ## Esito generale (numero
+            dipendenti, quanti con segnalazioni); ## Segnalazioni bloccanti; ## Segnalazioni da controllare; ## Schede riepilogative
+            (una sottosezione ### per dipendente con presenze, assenze, straordinari, note spese e segnalazioni, solo dati
+            forniti); ## Domande per l''HR. Chiudi richiedendo la revisione al consulente con lo strumento request_consultant_review,
+            solo se non ci sono segnalazioni bloccanti.'
+          mcp_servers: []
+    appTools:
+    - name: list_employees
+      description: Elenca i dipendenti dell'azienda dell'utente
+      action: read
+      collection: employees
+      scope: user
+    awaits:
+    - consultant_review
+    goalTemplate: 'Periodo: {period}.
+
+      Registra le variabili del mese e verificale.
+
+      Variabili (presenze, assenze, straordinari, note spese):
+
+      {variables}
+
+      {?notes}Note dell''HR: {notes}{/notes}
+
+      Scrivi in italiano. Data di oggi: {date}.'
+    output: markdown
+    writesTo:
+      collection: period_summaries
+      parse: whole
+      keyBy: period
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.8
+  inputForm:
+    title: Variabili del mese
+    fields:
+    - name: period
+      type: text
+      required: true
+      label: Periodo (AAAA-MM)
+      help: es. 2026-11
+    - name: variables
+      type: textarea
+      required: true
+      maxLength: 8000
+      label: Variabili del periodo
+      help: 'Incolla una riga per dipendente: nome, giorni presenza, assenze, ore straordinario, note spese (anche da CSV).
+        Il caricamento di file non è ancora disponibile.'
+    - name: notes
+      type: textarea
+      maxLength: 600
+      label: Note (facoltative)
+  approvals:
+  - key: consultant_review
+    title: Revisione del consulente del lavoro
+    description: Il consulente rivede le schede riepilogative prima dell'elaborazione.
+    role: consulente
+    fields:
+    - period
+    - summary
+    timeoutMinutes: 10080
+    onTimeout: reject
+    decidedBy: role
+  data:
+    collections:
+    - name: employees
+      description: Anagrafica dipendenti dell'azienda cliente
+      ownedBy: user
+      searchable: true
+      fields:
+      - name: full_name
+        type: text
+        required: true
+        label: Nome e cognome
+      - name: email
+        type: email
+        required: true
+        label: Email
+      - name: tax_code
+        type: text
+        label: Codice fiscale
+      - name: birth_date
+        type: date
+        label: Data di nascita
+      - name: hire_date
+        type: date
+        label: Data di assunzione
+      - name: contract_level
+        type: text
+        label: Inquadramento (CCNL e livello)
+      - name: gross_salary
+        type: number
+        label: Retribuzione lorda mensile
+      - name: weekly_hours
+        type: number
+        label: Ore settimanali
+    - name: period_summaries
+      description: Schede riepilogative generate dall'agente, per periodo
+      ownedBy: user
+      sharing:
+      - editor
+      fields:
+      - name: period
+        type: text
+        label: Periodo
+      - name: content
+        type: textarea
+        label: Scheda
+      - name: status
+        type: select
+        label: Stato
+        options:
+        - value: in_revisione
+          label: In revisione
+        - value: approvata
+          label: Approvata
+        - value: respinta
+          label: Respinta
+    - name: payslips
+      description: Cedolini disponibili; ogni record è condiviso con il solo dipendente interessato
+      ownedBy: user
+      sharing:
+      - viewer
+      fields:
+      - name: employee_email
+        type: email
+        required: true
+        label: Email dipendente
+      - name: period
+        type: text
+        required: true
+        label: Periodo
+      - name: document_url
+        type: url
+        required: true
+        label: Link al cedolino
+    - name: employee_documents
+      description: Documenti del dipendente (CU, contratto, lettere), condivisi col solo interessato
+      ownedBy: user
+      sharing:
+      - viewer
+      fields:
+      - name: employee_email
+        type: email
+        required: true
+        label: Email dipendente
+      - name: title
+        type: text
+        required: true
+        label: Titolo
+      - name: document_url
+        type: url
+        required: true
+        label: Link al documento
+      - name: year
+        type: number
+        label: Anno
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Portale Paghe HR
+    sections:
+    - type: hero
+      eyebrow: Gestione paghe e personale
+      title: Variabili paga **verificate**, cedolini al sicuro, ognuno vede il suo.
+      text: Il portale dove l'azienda registra i dipendenti e carica le variabili del mese, un agente AI controlla i dati
+        e il consulente del lavoro partner approva prima dell'elaborazione.
+      actions:
+      - label: Accedi
+        href: /login
+        style: primary
+      - label: Come funziona
+        href: '#come-funziona'
+        style: ghost
+      note: Interfaccia in italiano · abbonamento mensile per numero di dipendenti
+    - type: steps
+      id: come-funziona
+      title: Come funziona
+      items:
+      - title: Anagrafica
+        text: L'HR registra dati anagrafici, inquadramento, retribuzione e orario.
+        badge: '1'
+      - title: Variabili del mese
+        text: Presenze, assenze, straordinari e note spese si inseriscono dal modulo.
+        badge: '2'
+      - title: Verifica dell'agente
+        text: L'agente segnala valori mancanti o anomali e prepara una scheda per dipendente.
+        badge: '3'
+      - title: Revisione del consulente
+        text: Il consulente del lavoro rivede e approva prima dell'elaborazione.
+        badge: '4'
+      - title: Cedolini
+        text: Ogni dipendente scarica solo la propria busta paga e i propri documenti.
+        badge: '5'
+    - type: cards
+      id: ruoli
+      title: Chi vede cosa
+      items:
+      - title: Responsabile HR
+        text: 'Vede tutta l''azienda: dipendenti, variabili, schede, cedolini.'
+      - title: Consulente del lavoro
+        text: Vede i clienti a lui assegnati e approva le schede.
+      - title: Dipendente
+        text: Accede solo al proprio cedolino e ai propri documenti.
+    - type: note
+      content: Questo portale è solo lo strato software. La consulenza del lavoro e gli adempimenti verso gli enti restano
+        in capo a professionisti abilitati. L'agente AI non calcola cedolini né dà consulenza.
+  - key: employees
+    type: table
+    title: Dipendenti
+    source: collection:employees
+    columns:
+    - full_name
+    - email
+    - contract_level
+    - gross_salary
+    - weekly_hours
+    roles:
+    - hr
+    - admin
+  - key: new_period
+    type: new_run
+    title: Carica variabili del mese
+    roles:
+    - hr
+    - admin
+  - key: history
+    type: history
+    title: Verifiche passate
+    source: run
+    roles:
+    - hr
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: summaries
+    type: table
+    title: Schede riepilogative
+    source: collection:period_summaries
+    columns:
+    - period
+    - status
+    roles:
+    - hr
+    - consulente
+    - admin
+  - key: review
+    type: approvals
+    title: Da rivedere
+    approvals:
+    - consultant_review
+    roles:
+    - consulente
+    - admin
+  - key: payslips_hr
+    type: table
+    title: Cedolini dell'azienda
+    source: collection:payslips
+    columns:
+    - employee_email
+    - period
+    - document_url
+    roles:
+    - hr
+    - admin
+  - key: my_payslips
+    type: table
+    title: I miei cedolini
+    source: collection:payslips
+    columns:
+    - period
+    - document_url
+    roles:
+    - dipendente
+  - key: my_documents
+    type: table
+    title: I miei documenti
+    source: collection:employee_documents
+    columns:
+    - title
+    - year
+    - document_url
+    roles:
+    - dipendente
+  - key: account
+    type: account
+    title: Abbonamento
+    roles:
+    - hr
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 20
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:checker:
+        estimate: 10
+        metered: true
+    packs:
+    - key: extra
+      credits: 500
+      price: 6
+      label: Crediti extra
+    plans:
+    - key: fino_10
+      price: 39
+      interval: month
+      label: Fino a 10 dipendenti
+      credits: 200
+      creditsReset: monthly
+      roles:
+      - hr
+    - key: fino_50
+      price: 149
+      interval: month
+      label: Fino a 50 dipendenti
+      credits: 600
+      creditsReset: monthly
+      roles:
+      - hr
+    - key: fino_200
+      price: 449
+      interval: month
+      label: Fino a 200 dipendenti
+      credits: 2000
+      creditsReset: monthly
+      roles:
+      - hr
+  extensions:
+  - key: email_reminders
+    description: 'Promemoria via email alle scadenze mensili (caricamento variabili, revisione del consulente, cedolini pronti):
+      le notifiche email non sono ancora disponibili.'
+  - key: file_upload
+    description: 'Caricamento di file (variabili in Excel/CSV, cedolini PDF, documenti): non disponibile, si usano testo incollato
+      e link.'
+  - key: employee_row_access
+    description: L'accesso del dipendente ai soli propri cedolini si basa sulla condivisione per record (viewer) con la sua
+      email; l'assegnazione dei clienti al consulente avviene per invito/condivisione delle schede. Un'assegnazione consulente-cliente
+      dedicata e il conteggio automatico dei dipendenti per il piano richiedono logica personalizzata.

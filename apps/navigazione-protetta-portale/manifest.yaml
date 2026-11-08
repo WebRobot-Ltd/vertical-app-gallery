@@ -1,0 +1,703 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: safe-browse-console
+  displayName: SafeBrowse Console
+  tagline:
+    it: 'La console per l''IT manager: minacce web bloccate, andamenti e azioni consigliate.'
+    en: 'The IT manager''s console: blocked web threats, trends and recommended actions.'
+  description:
+    it: Registra utenti e policy, ricevi eventi anonimizzati dai dispositivi protetti e lascia che un agente AI li aggreghi,
+      li ordini per gravità e scriva il report con le azioni consigliate. Ogni azienda vede solo i propri dati, in forma aggregata.
+    en: Register users and policies, receive anonymised events from protected devices and let an AI agent aggregate them,
+      rank them by severity and write a report with recommended actions. Each company only sees its own data, in aggregate
+      form.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#12304a'
+      accent: '#e0572b'
+      background: '#f6f8fa'
+      foreground: '#17212b'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: SafeBrowse
+      color: primary
+    - text: ' Console'
+      color: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#how'
+    - label:
+        it: Privacy
+        en: Privacy
+      href: '#privacy'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: WebRobot staff
+      assignedBy: admin_emails
+    - key: user
+      label:
+        it: IT manager
+        en: IT manager
+      assignedBy: signup
+  limits:
+  - action: agent:analyst
+    per: user
+    max: 10
+    window: day
+    roles:
+    - user
+  egress:
+    hosts:
+    - example.invalid
+    notes: Placeholder, no external API used.
+  agents:
+  - key: collector
+    role: helper
+    description: Receives one anonymised threat event from the webhook and stores it.
+    profile:
+      inline:
+        display_name: Event collector
+        crews:
+        - id: collector
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 3
+          max_budget_usd: 0.05
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You receive one JSON event about a threat blocked on a protected device, already anonymised. Validate
+            it and store it exactly once with the tool write_event, using the fields ts, category, domain, severity (low|medium|high|critical),
+            action, pseudonym_id. Never try to re-identify a person; if the event contains an email, name or IP address, drop
+            that field and store the rest. Reply with one line: stored or rejected, and why.'
+    appTools:
+    - name: write_event
+      description: Store one anonymised threat event
+      action: append
+      collection: threat_events
+      scope: user
+  - key: analyst
+    role: main
+    description: Aggregates the company's events and writes the severity-ranked report.
+    profile:
+      inline:
+        display_name: Threat analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a web-security analyst writing for a company''s IT manager. Read the company''s threat events
+            and policies with the tools, for the requested period. Start with a level-1 title "# Web threat report — <period>".
+            Sections with ## headings: Summary (blocked totals, trend vs previous period), Findings ranked by severity (critical
+            first; riskiest sites and categories, most exposed pseudonymous IDs shown only in aggregate, e.g. ''top 5% of
+            devices''), Policy gaps (compare with the company''s blocked categories and data-sharing rules), Recommended actions
+            (prioritised, concrete). Add one chart as a fenced block ```chart {"type":"bar","title":"...","labels":[...],"series":[{"name":"...","values":[...]}]}
+            ``` with real figures only. Privacy: never name or try to identify employees; report groups of at least 5 devices,
+            otherwise say ''too few to show''. Never invent figures; if data is thin, say so. Write in the language with ISO
+            code given in the goal.'
+    goalTemplate: 'Period: {period_label}. Focus: {focus_label}. {?notes}Notes: {notes}{/notes}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    appTools:
+    - name: read_events
+      description: Read the company's anonymised threat events
+      action: read
+      collection: threat_events
+      scope: user
+    - name: read_policies
+      description: Read the company's policies
+      action: read
+      collection: policies
+      scope: user
+    - name: read_users
+      description: Read the registered users (pseudonymous)
+      action: read
+      collection: protected_users
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.8
+  - key: watcher
+    role: helper
+    description: 'Daily check of one company: aggregates yesterday''s events and flags anomalous spikes.'
+    memory: instance
+    profile:
+      inline:
+        display_name: Spike watcher
+        crews:
+        - id: watcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You check yesterday''s blocked-threat events of one company against its usual level. Read events
+            with read_events. Start with "# Daily check — <date>". Then sections: ## Numbers (blocked total, by severity,
+            top 5 risky domains), ## Anomaly (yes/no and why, comparing with the typical daily level kept in your memory),
+            ## Action. Begin the Numbers section with a line ''Blocked: <integer>'' and add a line ''Anomaly: yes'' or ''Anomaly:
+            no''. Be aggregate only: never single out an employee. Never invent figures. At the end call remember with the
+            typical daily level (rolling average) and the last 7 totals.'
+    goalTemplate: Check yesterday for the company. Today is {date}. Language ISO code {lang}.
+    appTools:
+    - name: read_events
+      description: Read the company's anonymised threat events
+      action: read
+      collection: threat_events
+      scope: user
+    writesTo:
+      collection: daily_checks
+      parse: whole
+      keyBy: date
+  inputForm:
+    title:
+      it: Nuovo report
+      en: New report
+    fields:
+    - name: period
+      type: select
+      required: true
+      label:
+        it: Periodo
+        en: Period
+      options:
+      - value: 7d
+        label:
+          it: Ultimi 7 giorni
+          en: Last 7 days
+      - value: 30d
+        label:
+          it: Ultimi 30 giorni
+          en: Last 30 days
+      - value: 90d
+        label:
+          it: Ultimi 90 giorni
+          en: Last 90 days
+    - name: focus
+      type: select
+      required: true
+      label:
+        it: Focus
+        en: Focus
+      options:
+      - value: all
+        label:
+          it: Panoramica
+          en: Overview
+      - value: sites
+        label:
+          it: Siti rischiosi
+          en: Risky sites
+      - value: exposure
+        label:
+          it: Esposizione degli utenti
+          en: User exposure
+      - value: policy
+        label:
+          it: Efficacia delle policy
+          en: Policy effectiveness
+    - name: notes
+      type: textarea
+      maxLength: 400
+      label:
+        it: Note (facoltative)
+        en: Notes (optional)
+  data:
+    collections:
+    - name: protected_users
+      ownedBy: user
+      description: Users/seats registered by the IT manager (pseudonymous ID, team, device count)
+      fields:
+      - name: pseudonym_id
+        type: text
+        required: true
+        label:
+          it: ID pseudonimo
+          en: Pseudonymous ID
+      - name: team
+        type: text
+        label:
+          it: Reparto
+          en: Team
+      - name: active
+        type: boolean
+        default: true
+        label:
+          it: Attivo
+          en: Active
+    - name: policies
+      ownedBy: user
+      description: 'Company policies: blocked site categories and data-sharing rules'
+      fields:
+      - name: name
+        type: text
+        required: true
+        label:
+          it: Nome
+          en: Name
+      - name: blocked_categories
+        type: multiselect
+        label:
+          it: Categorie bloccate
+          en: Blocked categories
+        options:
+        - value: phishing
+          label: Phishing
+        - value: malware
+          label: Malware
+        - value: adult
+          label:
+            it: Adulti
+            en: Adult
+        - value: gambling
+          label:
+            it: Gioco d'azzardo
+            en: Gambling
+        - value: anonymizers
+          label:
+            it: Anonimizzatori
+            en: Anonymizers
+        - value: file_sharing
+          label: File sharing
+      - name: data_sharing
+        type: select
+        label:
+          it: Condivisione dati
+          en: Data sharing
+        options:
+        - value: none
+          label:
+            it: Nessuna
+            en: None
+        - value: aggregate
+          label:
+            it: Solo aggregata
+            en: Aggregate only
+        - value: full
+          label:
+            it: Completa
+            en: Full
+      - name: notes
+        type: textarea
+        label:
+          it: Note
+          en: Notes
+    - name: threat_events
+      ownedBy: user
+      description: Anonymised threat events pushed by protected devices via webhook
+      fields:
+      - name: ts
+        type: date
+        label:
+          it: Data
+          en: Time
+      - name: category
+        type: text
+        label:
+          it: Categoria
+          en: Category
+      - name: domain
+        type: text
+        label:
+          it: Dominio
+          en: Domain
+      - name: severity
+        type: select
+        label:
+          it: Gravità
+          en: Severity
+        options:
+        - low
+        - medium
+        - high
+        - critical
+      - name: action
+        type: text
+        label:
+          it: Azione
+          en: Action
+      - name: pseudonym_id
+        type: text
+        label:
+          it: ID pseudonimo
+          en: Pseudonymous ID
+    - name: daily_checks
+      ownedBy: instance
+      description: Daily aggregate and anomaly check of each company watch
+      fields:
+      - name: date
+        type: date
+      - name: blocked
+        type: number
+      - name: anomaly
+        type: text
+      - name: summary
+        type: textarea
+  templates:
+  - key: threat_watch
+    title:
+      it: Controllo giornaliero
+      en: Daily check
+    description:
+      it: Ogni giorno aggrega gli eventi e segnala i picchi anomali.
+      en: Every day aggregates the events and flags anomalous spikes.
+    agent: watcher
+    params:
+    - name: label
+      type: text
+      required: true
+      label:
+        it: Nome del controllo
+        en: Watch name
+    goal: Daily check "{instance}" ({label}). Today is {date}. Language ISO code {lang}.
+    schedule:
+      cron: 0 6 * * *
+      userCanChange: false
+    maxPerUser: 1
+    cost:
+      perRun: 5
+  triggers:
+  - key: ingest_event
+    description: Devices post anonymised events to /api/hooks/ingest_event
+    'on':
+      webhook: true
+    start:
+      agent: collector
+    goal: 'Store this event: {event}'
+    asUser: true
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: SafeBrowse Console
+    sections:
+    - type: hero
+      band: true
+      eyebrow:
+        it: Console di gestione
+        en: Management console
+      title:
+        it: Vedi cosa **minaccia la navigazione** della tua azienda, senza spiare nessuno.
+        en: See what **threatens your company's browsing**, without spying on anyone.
+      text:
+        it: Policy, utenti, dashboard delle minacce bloccate e report con azioni consigliate, tutto in forma aggregata e anonima.
+        en: Policies, users, a dashboard of blocked threats and reports with recommended actions, all aggregated and anonymous.
+      actions:
+      - label:
+          it: Accedi
+          en: Sign in
+        href: /login
+        style: primary
+      - label:
+          it: Come funziona
+          en: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Configura
+          en: Configure
+        text:
+          it: 'Registra utenti (pseudonimi) e policy: categorie bloccate e regole sui dati.'
+          en: 'Register users (pseudonyms) and policies: blocked categories and data rules.'
+        badge: ⚙️
+      - title:
+          it: Raccogli
+          en: Collect
+        text:
+          it: I dispositivi protetti inviano eventi già anonimizzati alla console.
+          en: Protected devices send already-anonymised events to the console.
+        badge: 📡
+      - title:
+          it: Decidi
+          en: Decide
+        text:
+          it: Un agente ordina le minacce per gravità e propone le azioni.
+          en: An agent ranks threats by severity and proposes actions.
+        badge: 📊
+    - type: cards
+      id: privacy
+      title: Privacy
+      items:
+      - title:
+          it: Solo i tuoi dati
+          en: Only your data
+        text:
+          it: Ogni azienda vede esclusivamente i propri eventi.
+          en: Each company sees only its own events.
+      - title:
+          it: Aggregato
+          en: Aggregated
+        text:
+          it: Nessun nome dei dipendenti; gruppi troppo piccoli non vengono mostrati.
+          en: No employee names; groups too small are not shown.
+    - type: note
+      content:
+        it: L'estensione del browser e la protezione endpoint sono un prodotto separato. Supporto alle decisioni, non consulenza
+          legale.
+        en: The browser extension and endpoint protection are a separate product. Decision support, not legal advice.
+  - key: dashboard
+    type: page
+    title:
+      it: Dashboard
+      en: Dashboard
+    roles:
+    - user
+    - admin
+    sections:
+    - type: data
+      title:
+        it: Minacce bloccate nel tempo
+        en: Threats blocked over time
+      source: collection:daily_checks
+      display: chart
+      chart: line
+      fields:
+      - key: date
+        label:
+          it: Giorno
+          en: Day
+        format: date
+      - key: blocked
+        label:
+          it: Bloccate
+          en: Blocked
+        format: number
+      sort:
+        field: date
+        dir: asc
+      limit: 60
+      kpis:
+      - label:
+          it: Totale bloccate
+          en: Total blocked
+        agg: sum
+        field: blocked
+        format: number
+      empty:
+        it: Attiva il controllo giornaliero per vedere i dati.
+        en: Enable the daily check to see data.
+    - type: data
+      title:
+        it: Eventi per gravità
+        en: Events by severity
+      source: collection:threat_events
+      display: table
+      fields:
+      - key: ts
+        label:
+          it: Data
+          en: Time
+        format: date
+      - key: severity
+        label:
+          it: Gravità
+          en: Severity
+        format: badge
+      - key: category
+        label:
+          it: Categoria
+          en: Category
+      - key: domain
+        label:
+          it: Dominio
+          en: Domain
+      filters:
+      - field: severity
+        op: '!='
+        value: low
+      sort:
+        field: ts
+        dir: desc
+      limit: 50
+    - type: data
+      title:
+        it: Controlli giornalieri e picchi
+        en: Daily checks and spikes
+      source: collection:daily_checks
+      display: list
+      fields:
+      - key: date
+        format: date
+      - key: anomaly
+        format: badge
+      - key: summary
+      sort:
+        field: date
+        dir: desc
+      limit: 14
+  - key: watches
+    type: instances
+    template: threat_watch
+    title:
+      it: Controllo giornaliero
+      en: Daily check
+    roles:
+    - user
+    - admin
+  - key: new
+    type: new_run
+    title:
+      it: Nuovo report
+      en: New report
+    roles:
+    - user
+    - admin
+  - key: reports
+    type: history
+    title:
+      it: I miei report
+      en: My reports
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: policies_view
+    type: list
+    title:
+      it: Policy
+      en: Policies
+    source: collection:policies
+    roles:
+    - user
+    - admin
+  - key: users_view
+    type: list
+    title:
+      it: Utenti protetti
+      en: Protected users
+    source: collection:protected_users
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Subscription
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:analyst:
+        estimate: 10
+        metered: true
+    packs:
+    - key: extra
+      credits: 500
+      price: 6
+      label: Extra reports
+    plans:
+    - key: seats_25
+      price: 49
+      interval: month
+      label:
+        it: Fino a 25 postazioni
+        en: Up to 25 seats
+      credits: 300
+      creditsReset: monthly
+    - key: seats_100
+      price: 169
+      interval: month
+      label:
+        it: Fino a 100 postazioni
+        en: Up to 100 seats
+      credits: 800
+      creditsReset: monthly
+    - key: seats_500
+      price: 699
+      interval: month
+      label:
+        it: Fino a 500 postazioni
+        en: Up to 500 seats
+      credits: 2500
+      creditsReset: monthly
+  extensions:
+  - key: email_alerts
+    description: Email alert on anomalous spikes and periodic summary email are not available yet; anomalies are shown on
+      the dashboard and in the daily checks list. Add email notifications when supported.
+  - key: per_seat_pricing
+    description: Subscription is per number of protected seats; per-seat quantity billing is not expressible, so seat tiers
+      are offered as plans. Seat count enforcement against protected_users is not automatic.
+  - key: webhook_tenant_routing
+    description: The webhook must identify the company of each event (e.g. per-company token) and write it into that company's
+      threat_events; per-tenant hook secrets are not expressible in the manifest and need runtime support.
+  - key: exact_aggregations
+    description: Charts over raw events use the daily_checks aggregates written by the daily agent; server-side group-by over
+      threat_events is not available.

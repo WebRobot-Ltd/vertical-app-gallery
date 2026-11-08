@@ -1,0 +1,832 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: avventure-aperto
+  displayName: Avventure all'Aperto
+  tagline:
+    it: Escursioni, kayak, arrampicata e cicloturismo con guide certificate.
+    en: Hikes, kayaking, climbing and cycle tours with certified guides.
+  description:
+    it: 'Marketplace di esperienze outdoor: cerca per zona, data e attività, prenota e paga. Le guide pubblicano le esperienze
+      e confermano entro 48 ore.'
+    en: 'Outdoor experiences marketplace: search by area, date and activity, book and pay. Guides publish experiences and
+      confirm within 48 hours.'
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f4d3a'
+      accent: '#e07a1f'
+      background: '#f6f4ee'
+      foreground: '#1c2420'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: 'Avventure '
+      color: primary
+    - text: all'Aperto
+      color: accent
+    button: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Per le guide
+        en: For guides
+      href: '#guide'
+    cta:
+      label:
+        it: Prenota
+        en: Book
+      href: /v/new_booking
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: guide
+      label:
+        it: Guida
+        en: Guide
+      assignedBy: admin
+    - key: user
+      label:
+        it: Cliente
+        en: Customer
+      assignedBy: signup
+  limits:
+  - action: agent:concierge
+    per: user
+    max: 15
+    window: day
+  - action: agent:publisher
+    per: user
+    max: 20
+    window: day
+  egress:
+    hosts:
+    - api.met.no
+    notes: 'MET Norway locationforecast: free reuse, CC BY 4.0, attribution required.'
+  agents:
+  - key: concierge
+    role: main
+    description: Finds matching experiences for area, date and activity, shows the weather forecast and prepares the booking
+      request.
+    profile:
+      inline:
+        display_name: Concierge Avventure
+        crews:
+        - id: concierge
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You help customers find and book outdoor experiences. Use the tool search_experiences to read the
+            shared catalogue (fields: title, activity, area, meeting_point, meeting_map_url, lat, lon, duration_hours, difficulty,
+            min_people, max_people, equipment, price_eur, available_dates, guide_email, status). Only offer experiences with
+            status ''published'' whose available_dates contain the requested date (or the closest ones, saying so). Never
+            invent experiences, dates or prices. Optionally call weather_forecast with query ''lat=<lat>&lon=<lon>'' for the
+            date and summarise it (attribution: MET Norway, CC BY 4.0). Write the answer starting with a level-1 title ''#
+            Esperienze per <area> — <date>''. Then ## Le migliori opzioni (a table: title, guide, difficulty, duration, price,
+            group size), ## Meteo, ## Cosa portare, ## Come prenotare. For the experience the customer picks, call save_booking
+            once to record a booking with status ''awaiting_guide'' (fields: experience_id, title, guide_email, date, people,
+            total_eur, customer_note). Explain that payment is held and the guide has 48 hours to confirm; if not, or if the
+            minimum group is not reached, an alternative or a refund is proposed. Never give safety guarantees: remind users
+            to follow the guide''s instructions.'
+          mcp_servers: []
+    goalTemplate: 'Area: {area}
+
+      Date: {date_wanted}
+
+      Activity: {activity_label}
+
+      People: {people}
+
+      {?notes}Notes: {notes}{/notes}
+
+      Today is {date}. Write in the language with ISO code {lang}.'
+    appTools:
+    - name: search_experiences
+      description: Search the published experiences catalogue
+      action: search
+      collection: experiences
+      scope: all
+    - name: save_booking
+      description: Record the customer's booking request
+      action: write
+      collection: bookings
+      scope: user
+    - name: weather_forecast
+      description: Weather forecast for coordinates (MET Norway)
+      action: http
+      http:
+        method: GET
+        url: https://api.met.no/weatherapi/locationforecast/2.0/compact
+        headers:
+          User-Agent: avventure-aperto.webrobot.eu support@webrobot.eu
+        attribution: MET Norway, CC BY 4.0
+        maxBytes: 60000
+    awaits:
+    - guide_confirm
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  - key: publisher
+    role: helper
+    description: Checks a guide's experience form and publishes it in the catalogue.
+    profile:
+      inline:
+        display_name: Pubblicatore esperienze
+        crews:
+        - id: publisher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You review an outdoor experience submitted by a verified guide and publish it. Check completeness
+            and consistency (min_people <= max_people, price > 0, dates in the future in YYYY-MM-DD, realistic duration, meeting
+            point with a map link). Improve the description''s clarity without adding facts. Then call save_experience once
+            with all fields and status ''published'' (or ''draft'' if something essential is missing). Answer with ''# <Experience
+            title> — pubblicata'' (or ''bozza''), then ## Scheda (a table of the fields), ## Suggerimenti. Never invent certifications,
+            prices or dates.'
+    goalTemplate: 'Guide: {user}
+
+      Experience details:
+
+      {message}
+
+      Today is {date}. Language: {lang}'
+    appTools:
+    - name: save_experience
+      description: Publish or update an experience in the shared catalogue
+      action: write
+      collection: experiences
+      scope: all
+    output: markdown
+  - key: rescuer
+    role: helper
+    description: 'When a guide does not confirm in 48h, rejects, or the minimum group is missed: proposes a similar alternative
+      or a refund.'
+    profile:
+      inline:
+        display_name: Soccorso prenotazioni
+        crews:
+        - id: rescuer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'A booking could not go ahead (guide did not confirm in 48h, declined, or minimum group not reached).
+            Use search_experiences to find the most similar published experience (same activity, nearby area, same or neighbouring
+            date, group size fits). Start with ''# Alternativa per la tua prenotazione''. Sections: ## Cosa è successo, ##
+            La nostra proposta (up to 2 alternatives with a short reason, or none), ## Rimborso (the customer may always choose
+            a full refund). Call update_booking once to set status ''alternative_proposed'' (or ''refund_requested'' if none
+            exists) and proposal text. Never claim a refund has been paid: the status is ''refund_requested'' and the platform
+            executes it. Never invent experiences.'
+    goalTemplate: '{message}
+
+      Write in the language with ISO code {lang}. Today is {date}.'
+    appTools:
+    - name: search_experiences
+      description: Search the published experiences catalogue
+      action: search
+      collection: experiences
+      scope: all
+    - name: update_booking
+      description: Update the customer's booking
+      action: write
+      collection: bookings
+      scope: user
+    output: markdown
+  templates:
+  - key: experience_publish
+    title:
+      it: Pubblica un'esperienza
+      en: Publish an experience
+    description:
+      it: 'Compila la scheda dell''esperienza: l''agente la controlla e la pubblica nel catalogo.'
+      en: 'Fill in the experience sheet: the agent checks it and publishes it in the catalogue.'
+    agent: publisher
+    roles:
+    - guide
+    - admin
+    maxPerUser: 50
+    params:
+    - name: title
+      type: text
+      required: true
+      label:
+        it: Titolo
+        en: Title
+    - name: activity
+      type: select
+      required: true
+      label:
+        it: Attività
+        en: Activity
+      options:
+      - value: hiking
+        label:
+          it: Escursionismo
+          en: Hiking
+      - value: kayak
+        label: Kayak
+      - value: climbing
+        label:
+          it: Arrampicata
+          en: Climbing
+      - value: cycling
+        label:
+          it: Cicloturismo
+          en: Cycle touring
+    - name: area
+      type: text
+      required: true
+      label:
+        it: Zona
+        en: Area
+    - name: description
+      type: textarea
+      required: true
+      label:
+        it: Descrizione
+        en: Description
+    - name: meeting_point
+      type: text
+      required: true
+      label:
+        it: Luogo di ritrovo
+        en: Meeting point
+    - name: meeting_map_url
+      type: url
+      required: true
+      label:
+        it: Link alla mappa
+        en: Map link
+    - name: lat
+      type: number
+      label: Latitudine
+    - name: lon
+      type: number
+      label: Longitudine
+    - name: duration_hours
+      type: number
+      required: true
+      label:
+        it: Durata (ore)
+        en: Duration (hours)
+    - name: difficulty
+      type: select
+      required: true
+      label:
+        it: Difficoltà
+        en: Difficulty
+      options:
+      - value: easy
+        label:
+          it: Facile
+          en: Easy
+      - value: medium
+        label:
+          it: Media
+          en: Medium
+      - value: hard
+        label:
+          it: Difficile
+          en: Hard
+    - name: min_people
+      type: number
+      required: true
+      label:
+        it: Partecipanti minimi
+        en: Min people
+    - name: max_people
+      type: number
+      required: true
+      label:
+        it: Partecipanti massimi
+        en: Max people
+    - name: equipment
+      type: textarea
+      label:
+        it: Attrezzatura
+        en: Equipment
+    - name: price_eur
+      type: number
+      required: true
+      label:
+        it: Prezzo a persona (EUR)
+        en: Price per person (EUR)
+    - name: available_dates
+      type: text
+      required: true
+      label:
+        it: Date disponibili (AAAA-MM-GG, separate da virgola)
+        en: Available dates (YYYY-MM-DD, comma separated)
+    goal: 'Guide experience to publish.
+
+      Title: {title}
+
+      Activity: {activity}
+
+      Area: {area}
+
+      Description: {description}
+
+      Meeting point: {meeting_point}
+
+      Map link: {meeting_map_url}
+
+      Latitude/longitude: {lat}, {lon}
+
+      Duration hours: {duration_hours}
+
+      Difficulty: {difficulty}
+
+      Min/max people: {min_people}/{max_people}
+
+      Equipment: {equipment}
+
+      Price per person EUR: {price_eur}
+
+      Available dates: {available_dates}
+
+      Today is {date}. Language: {lang}'
+  inputForm:
+    title:
+      it: Cerca un'esperienza
+      en: Find an experience
+    fields:
+    - name: area
+      type: text
+      required: true
+      label:
+        it: Zona
+        en: Area
+      help:
+        it: es. Dolomiti, Lago di Garda
+        en: e.g. Dolomites, Lake Garda
+    - name: date_wanted
+      type: date
+      required: true
+      label:
+        it: Data
+        en: Date
+    - name: activity
+      type: select
+      required: true
+      label:
+        it: Attività
+        en: Activity
+      options:
+      - value: hiking
+        label:
+          it: Escursionismo
+          en: Hiking
+      - value: kayak
+        label: Kayak
+      - value: climbing
+        label:
+          it: Arrampicata
+          en: Climbing
+      - value: cycling
+        label:
+          it: Cicloturismo
+          en: Cycle touring
+    - name: people
+      type: number
+      required: true
+      default: 2
+      label:
+        it: Partecipanti
+        en: People
+    - name: notes
+      type: textarea
+      maxLength: 400
+      label:
+        it: Note (facoltative)
+        en: Notes (optional)
+  data:
+    collections:
+    - name: guides
+      ownedBy: user
+      description: Guide professional profile
+      fields:
+      - name: full_name
+        type: text
+        required: true
+      - name: license_url
+        type: url
+        help: Link to the guide licence (file upload not available yet)
+      - name: license_number
+        type: text
+      - name: bio
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - pending
+        - verified
+        - suspended
+    - name: experiences
+      ownedBy: shared
+      description: Public catalogue of experiences
+      searchable: true
+      fields:
+      - name: title
+        type: text
+        required: true
+      - name: activity
+        type: select
+        options:
+        - hiking
+        - kayak
+        - climbing
+        - cycling
+      - name: area
+        type: text
+      - name: description
+        type: textarea
+      - name: meeting_point
+        type: text
+      - name: meeting_map_url
+        type: url
+      - name: lat
+        type: number
+      - name: lon
+        type: number
+      - name: duration_hours
+        type: number
+      - name: difficulty
+        type: select
+        options:
+        - easy
+        - medium
+        - hard
+      - name: min_people
+        type: number
+      - name: max_people
+        type: number
+      - name: equipment
+        type: textarea
+      - name: price_eur
+        type: number
+      - name: available_dates
+        type: text
+      - name: guide_email
+        type: email
+      - name: status
+        type: select
+        options:
+        - draft
+        - published
+    - name: bookings
+      ownedBy: user
+      description: The customer's bookings
+      fields:
+      - name: experience_id
+        type: text
+      - name: title
+        type: text
+      - name: guide_email
+        type: email
+      - name: date
+        type: date
+      - name: people
+        type: number
+      - name: total_eur
+        type: number
+      - name: customer_note
+        type: textarea
+      - name: proposal
+        type: textarea
+      - name: voucher_code
+        type: text
+      - name: status
+        type: select
+        options:
+        - awaiting_guide
+        - confirmed
+        - alternative_proposed
+        - refund_requested
+        - completed
+    - name: gift_vouchers
+      ownedBy: user
+      description: Gift vouchers bought by the customer
+      fields:
+      - name: code
+        type: text
+      - name: amount_eur
+        type: number
+      - name: recipient_name
+        type: text
+      - name: message
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - active
+        - redeemed
+  approvals:
+  - key: guide_confirm
+    title:
+      it: Conferma prenotazione
+      en: Confirm booking
+    description: The guide confirms the booking within 48 hours
+    role: guide
+    fields:
+    - title
+    - date
+    - people
+    - total_eur
+    timeoutMinutes: 2880
+    onTimeout: reject
+  triggers:
+  - key: guide_declined
+    'on':
+      approval: guide_confirm
+      decision: rejected
+    start:
+      agent: rescuer
+    goal: 'The guide declined or did not confirm in time. Booking: {event}'
+  - key: guide_timeout
+    'on':
+      approval: guide_confirm
+      decision: timeout
+    start:
+      agent: rescuer
+    goal: 'The guide did not confirm within 48 hours. Booking: {event}'
+  - key: group_too_small
+    'on':
+      collection: bookings
+      op: update
+      where:
+        status: min_group_missed
+    start:
+      agent: rescuer
+    goal: 'Minimum group not reached. Booking: {event}'
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Avventure all'Aperto
+    sections:
+    - type: hero
+      band: true
+      eyebrow:
+        it: Esperienze outdoor con guide certificate
+        en: Outdoor experiences with certified guides
+      title:
+        it: Trova la tua **avventura all'aperto**
+        en: Find your **outdoor adventure**
+      text:
+        it: 'Escursioni, kayak, arrampicata e cicloturismo: cerca per zona, data e attività, prenota e paga in sicurezza.'
+        en: 'Hikes, kayaking, climbing and cycle tours: search by area, date and activity, book and pay securely.'
+      actions:
+      - label:
+          it: Cerca un'esperienza
+          en: Find an experience
+        href: /v/new_booking
+        style: primary
+      - label:
+          it: Accedi
+          en: Sign in
+        href: /login
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Cerca
+          en: Search
+        text:
+          it: 'Zona, data e tipo di attività: ti mostriamo le esperienze disponibili e il meteo.'
+          en: 'Area, date and activity: we show available experiences and the weather.'
+        badge: 🔎
+      - title:
+          it: Prenota
+          en: Book
+        text:
+          it: La guida conferma entro 48 ore. Se non conferma o il gruppo minimo non si raggiunge, ti proponiamo un'alternativa
+            o il rimborso.
+          en: The guide confirms within 48 hours. If not, or the minimum group is missed, we propose an alternative or a refund.
+        badge: 📅
+      - title:
+          it: Vivi l'esperienza
+          en: Enjoy
+        text:
+          it: Voucher con QR, istruzioni e promemoria meteo il giorno prima. Poi lascia una recensione.
+          en: Voucher with QR, instructions and a weather reminder the day before. Then leave a review.
+        badge: ⛰️
+    - type: cards
+      id: guide
+      title:
+        it: Sei una guida?
+        en: Are you a guide?
+      items:
+      - title:
+          it: Registrati come professionista
+          en: Register as a professional
+        text:
+          it: 'Compila il profilo con il link al tesserino: dopo la verifica puoi pubblicare le esperienze e ricevere i pagamenti.'
+          en: 'Fill in your profile with a link to your licence: once verified you can publish experiences and get paid.'
+        badge: 🧭
+      - title:
+          it: Pagamenti
+          en: Payouts
+        text:
+          it: La piattaforma trattiene una commissione e versa il resto dopo l'esperienza.
+          en: The platform keeps a fee and pays you the rest after the experience.
+        badge: 💶
+    - type: note
+      content:
+        it: 'Le attività outdoor comportano rischi: segui sempre le indicazioni della guida.'
+        en: 'Outdoor activities carry risks: always follow your guide''s instructions.'
+  - key: new_booking
+    type: new_run
+    title:
+      it: Cerca e prenota
+      en: Search and book
+    roles:
+    - user
+    - admin
+  - key: my_bookings
+    type: history
+    title:
+      it: Le mie prenotazioni
+      en: My bookings
+    source: run
+    roles:
+    - user
+  - key: booking_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: publish_experience
+    type: instances
+    template: experience_publish
+    title:
+      it: Pubblica esperienze
+      en: Publish experiences
+    roles:
+    - guide
+    - admin
+  - key: bookings_list
+    type: table
+    title:
+      it: Prenotazioni e voucher
+      en: Bookings and vouchers
+    source: collection:bookings
+    columns:
+    - title
+    - date
+    - people
+    - total_eur
+    - voucher_code
+    - status
+    roles:
+    - user
+    - guide
+    - admin
+  - key: gifts
+    type: table
+    title:
+      it: Voucher regalo
+      en: Gift vouchers
+    source: collection:gift_vouchers
+    columns:
+    - code
+    - amount_eur
+    - recipient_name
+    - status
+    roles:
+    - user
+  - key: approvals
+    type: approvals
+    title:
+      it: Da confermare (48h)
+      en: To confirm (48h)
+    approvals:
+    - guide_confirm
+    roles:
+    - guide
+    - admin
+  - key: catalogue
+    type: table
+    title:
+      it: Esperienze
+      en: Experiences
+    source: collection:experiences
+    columns:
+    - title
+    - activity
+    - area
+    - difficulty
+    - price_eur
+    - guide_email
+    - status
+    roles:
+    - guide
+    - admin
+  - key: profile
+    type: table
+    title:
+      it: Profili guide
+      en: Guide profiles
+    source: collection:guides
+    columns:
+    - full_name
+    - license_number
+    - license_url
+    - status
+    roles:
+    - guide
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Pagamenti
+      en: Payments
+    roles:
+    - user
+    - guide
+  billing:
+    modes:
+    - per_transaction
+    currency: eur
+    transactionFeePct: 12
+    sellers: collection:guides
+    costs:
+      agent:concierge: 0
+  extensions:
+  - key: guide_licence_upload
+    description: 'Uploading the guide licence is not available yet: guides paste a link and the admin verifies it, then assigns
+      the guide role.'
+  - key: guide_calendar_sync
+    description: 'Syncing dates from the guide''s own calendar (Google/Apple) needs per-guide credentials, not available yet:
+      guides list available dates in the experience.'
+  - key: map_picker
+    description: 'A map pin picker is not available: meeting point is text plus a map link and lat/lon.'
+  - key: guide_scoped_bookings
+    description: 'Each guide should see only the bookings of their experiences while the customer sees their own and the admin
+      all: per-guide filtering of customer-owned records needs a runtime rule.'
+  - key: notifications
+    description: 'Notifications are not available yet: guide notification on a new booking, voucher with QR and instructions
+      on confirmation, the weather reminder the day before, and the post-experience review request all need email/push.'
+  - key: stripe_connect_payouts
+    description: Guides connect their Stripe account; the 12% platform fee and payout after the experience, the refund executed
+      on 'refund_requested', and gift voucher checkout are handled by the payment layer, not by agents.
+  - key: reviews
+    description: The review collection and request after the experience depend on notifications.

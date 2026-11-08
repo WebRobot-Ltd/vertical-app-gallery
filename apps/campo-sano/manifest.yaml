@@ -1,0 +1,577 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: camposano
+  displayName: CampoSano
+  tagline:
+    it: Ogni giorno, il rischio di malattie e stress idrico di ogni tuo appezzamento.
+    en: Every day, the disease and water-stress risk of each of your fields.
+  description:
+    it: 'CampoSano è un supporto alle decisioni per l''agricoltura di precisione: per ogni appezzamento un agente AI incrocia
+      indici di vegetazione satellitari, meteo e modelli agronomici e ti dà un semaforo di rischio con il consiglio di intervento.'
+    en: 'CampoSano is a decision-support tool for precision agriculture: for each field an AI agent combines satellite vegetation
+      indices, weather and agronomic models and gives you a risk traffic light with intervention advice.'
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#1f4d2e'
+      accent: '#7a9a1e'
+      background: '#f6f8f1'
+      foreground: '#18241b'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Campo
+      color: primary
+    - text: Sano
+      color: accent
+    width: wide
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Fonti
+        en: Sources
+      href: '#fonti'
+    - label:
+        it: Prezzi
+        en: Pricing
+      href: '#prezzi'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      label:
+        it: Azienda agricola
+        en: Farm
+      assignedBy: signup
+  limits:
+  - action: agent:parcel_analyst
+    per: user
+    max: 30
+    window: day
+    roles:
+    - user
+  egress:
+    hosts:
+    - api.open-meteo.com
+    - archive-api.open-meteo.com
+    notes: 'Open-Meteo: forecast and historical weather, free API, CC BY 4.0 attribution (non-commercial tier; a commercial
+      licence is needed for production use at scale).'
+  agents:
+  - key: parcel_analyst
+    role: scheduled
+    description: 'Daily: collects satellite indices, weather and ARPA data for one parcel, computes indicators and disease
+      / water-stress risk, writes the daily record.'
+    memory: instance
+    output: markdown+json
+    writesTo:
+      collection: parcel_reports
+      parse: json_last
+      keyBy: date
+    resultSchema:
+      type: object
+      properties:
+        date:
+          type: string
+        ndvi:
+          type: number
+        ndvi_change_7d:
+          type: number
+        gdd:
+          type: number
+        rain_7d_mm:
+          type: number
+        forecast_rain_5d_mm:
+          type: number
+        risk_disease:
+          type: number
+        disease_name:
+          type: string
+        risk_water:
+          type: number
+        traffic_light:
+          type: string
+          enum:
+          - green
+          - yellow
+          - red
+        advice:
+          type: string
+        data_quality:
+          type: string
+    appTools:
+    - name: weather_forecast
+      description: 'Open-Meteo forecast for a point. Query: latitude, longitude, daily=temperature_2m_max,temperature_2m_min,precipitation_sum,et0_fao_evapotranspiration,
+        hourly=relative_humidity_2m,leaf_wetness_proxy not available (use relative_humidity_2m,temperature_2m,precipitation),
+        forecast_days=5, timezone=auto.'
+      action: http
+      http:
+        method: GET
+        url: https://api.open-meteo.com/v1/forecast
+        attribution: Weather data by Open-Meteo.com, CC BY 4.0
+    - name: weather_history
+      description: 'Open-Meteo historical weather for a point. Query: latitude, longitude, start_date, end_date (YYYY-MM-DD),
+        daily=temperature_2m_max,temperature_2m_min,precipitation_sum,et0_fao_evapotranspiration, timezone=auto.'
+      action: http
+      http:
+        method: GET
+        url: https://archive-api.open-meteo.com/v1/archive
+        attribution: Weather data by Open-Meteo.com, CC BY 4.0
+    profile:
+      inline:
+        display_name: CampoSano parcel analyst
+        crews:
+        - id: parcel_analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are an agronomy decision-support analyst for ONE agricultural parcel. Each run you must: (1)
+            read the parcel data in the goal (crop, variety, sowing and flowering dates, coordinates, area); (2) get weather:
+            call weather_history for the last 14 days and weather_forecast for the next 5 days at the parcel coordinates (temperature,
+            rain, humidity, ET0); (3) get the vegetation index (NDVI/EVI) of the parcel from Copernicus Sentinel-2 public
+            data and the nearest ARPA regional station observations, using the WebRobot MCP to collect public pages or datasets;
+            if a source is unreachable or cloudy, say so and use the last value in your memory, flagging data_quality accordingly;
+            (4) compute indicators: growing degree days since sowing (base 10 C unless the crop needs another), 7-day NDVI
+            change, rain last 7 days, forecast rain, ET0 balance; (5) estimate risk 0-100 for the diseases relevant to the
+            crop and phenological stage (e.g. downy mildew and powdery mildew for grapevine, with the 3-10 rule and humidity/temperature
+            infection periods; late blight for potato/tomato; septoria/fusarium for wheat around flowering; peacock spot for
+            olive) and for water stress (ET0 versus rain, NDVI drop). Always name the model or rule you applied. Traffic light:
+            green <40, yellow 40-69, red >=70 on the higher of the two risks. NEVER invent figures: if a value is not available
+            write ''n/d''. Advice is decision support, not a prescription: suggest the type of intervention and the timing
+            window, and tell the farmer to check labels, local regulations and with their agronomist. Report in the language
+            with the ISO code given in the goal. Structure: a level-1 title ''# <parcel> — <date>'', then ## Summary, ## Indicators
+            (table), ## Risk (disease and water stress), ## Advice, ## Data and sources (cite Copernicus, Open-Meteo, ARPA).
+            If a trend is worth showing add a ```chart fenced block with real figures only. LAST, output one fenced json block
+            with exactly these keys: date (YYYY-MM-DD), ndvi, ndvi_change_7d, gdd, rain_7d_mm, forecast_rain_5d_mm, risk_disease,
+            disease_name, risk_water, traffic_light (green|yellow|red), advice (one or two sentences), data_quality. Then
+            call the tool remember once with the 5 key points of today (latest NDVI, GDD, risks, advice given) replacing the
+            old ones.'
+  templates:
+  - key: parcel
+    title:
+      it: Appezzamento
+      en: Parcel
+    description:
+      it: 'Un appezzamento monitorato ogni giorno: indici satellitari, meteo, rischio malattie e stress idrico.'
+      en: 'A parcel monitored every day: satellite indices, weather, disease and water-stress risk.'
+    agent: parcel_analyst
+    params:
+    - name: farm
+      type: text
+      label:
+        it: Azienda
+        en: Farm
+    - name: crop
+      type: select
+      required: true
+      label:
+        it: Coltura
+        en: Crop
+      options:
+      - value: grapevine
+        label:
+          it: Vite
+          en: Grapevine
+      - value: olive
+        label:
+          it: Olivo
+          en: Olive
+      - value: wheat
+        label:
+          it: Grano
+          en: Wheat
+      - value: tomato
+        label:
+          it: Pomodoro
+          en: Tomato
+      - value: potato
+        label:
+          it: Patata
+          en: Potato
+      - value: maize
+        label:
+          it: Mais
+          en: Maize
+      - value: other
+        label:
+          it: Altra
+          en: Other
+    - name: variety
+      type: text
+      label:
+        it: Varietà
+        en: Variety
+    - name: sowing_date
+      type: date
+      required: true
+      label:
+        it: Data di semina/impianto
+        en: Sowing / planting date
+    - name: flowering_date
+      type: date
+      label:
+        it: Fioritura (reale o prevista)
+        en: Flowering (actual or expected)
+    - name: latitude
+      type: number
+      required: true
+      label:
+        it: Latitudine (centro)
+        en: Latitude (centre)
+    - name: longitude
+      type: number
+      required: true
+      label:
+        it: Longitudine (centro)
+        en: Longitude (centre)
+    - name: area_ha
+      type: number
+      required: true
+      label:
+        it: Superficie (ha)
+        en: Area (ha)
+    - name: geometry
+      type: textarea
+      maxLength: 4000
+      label:
+        it: Perimetro (GeoJSON, facoltativo)
+        en: Boundary (GeoJSON, optional)
+      help:
+        it: Incolla il poligono in GeoJSON; il disegno su mappa arriverà.
+        en: Paste the polygon as GeoJSON; map drawing is coming.
+    goal: 'Parcel "{instance}" of farm {farm}. Crop: {crop} {variety}. Sowing/planting: {sowing_date}. {?flowering_date}Flowering:
+      {flowering_date}.{/flowering_date} Centre: lat {latitude}, lon {longitude}; area {area_ha} ha. {?geometry}Boundary GeoJSON:
+      {geometry}{/geometry} Today is {date}. Write the report in the language with ISO code {lang}.'
+    schedule:
+      cron: 0 5 * * *
+      userCanChange: false
+    maxPerUser: 50
+  data:
+    collections:
+    - name: parcel_reports
+      ownedBy: instance
+      description: Daily indicators, risk and advice of each parcel (one record per day)
+      fields:
+      - name: date
+        type: date
+      - name: ndvi
+        type: number
+      - name: ndvi_change_7d
+        type: number
+      - name: gdd
+        type: number
+      - name: rain_7d_mm
+        type: number
+      - name: forecast_rain_5d_mm
+        type: number
+      - name: risk_disease
+        type: number
+      - name: disease_name
+        type: text
+      - name: risk_water
+        type: number
+      - name: traffic_light
+        type: text
+      - name: advice
+        type: textarea
+      - name: data_quality
+        type: text
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: CampoSano
+    sections:
+    - type: hero
+      eyebrow:
+        it: Agricoltura di precisione
+        en: Precision agriculture
+      title:
+        it: Sai **ogni giorno** quando il tuo campo è a rischio.
+        en: Know **every day** when your field is at risk.
+      text:
+        it: 'Disegna i tuoi appezzamenti, indica coltura e date chiave: un agente AI incrocia satellite Copernicus, meteo
+          Open-Meteo e stazioni ARPA e ti dà un semaforo di rischio per malattie e stress idrico, con il consiglio di intervento.'
+        en: 'Add your parcels with crop and key dates: an AI agent combines Copernicus satellite data, Open-Meteo weather
+          and ARPA stations and gives you a risk traffic light for diseases and water stress, with intervention advice.'
+      actions:
+      - label:
+          it: Inizia
+          en: Get started
+        href: /login
+        style: primary
+      - label:
+          it: Come funziona
+          en: How it works
+        href: '#come-funziona'
+        style: ghost
+      band: true
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Aggiungi gli appezzamenti
+          en: Add your parcels
+        text:
+          it: Posizione, superficie, coltura, varietà, semina e fioritura.
+          en: Location, area, crop, variety, sowing and flowering.
+        badge: 📍
+      - title:
+          it: Ogni giorno l'agente analizza
+          en: The agent analyses daily
+        text:
+          it: Indici di vigore, meteo, storico e modelli agronomici per malattia.
+          en: Vigour indices, weather, history and disease-specific agronomic models.
+        badge: 🛰️
+      - title:
+          it: Decidi con il semaforo
+          en: Decide with the traffic light
+        text:
+          it: Verde, giallo, rosso per ogni appezzamento, con il consiglio sull'intervento.
+          en: Green, yellow, red for each parcel, with advice on the intervention.
+        badge: 🚦
+    - type: cards
+      id: fonti
+      title:
+        it: Fonti dei dati
+        en: Data sources
+      items:
+      - title: Copernicus Sentinel-2
+        text:
+          it: Indici di vegetazione (NDVI) dell'appezzamento.
+          en: Vegetation indices (NDVI) of the parcel.
+      - title: Open-Meteo
+        text:
+          it: Previsioni e storico meteo (CC BY 4.0).
+          en: Weather forecasts and history (CC BY 4.0).
+      - title: ARPA
+        text:
+          it: Osservazioni delle stazioni regionali.
+          en: Regional station observations.
+    - type: cards
+      id: prezzi
+      title:
+        it: Abbonamento annuale per ettari
+        en: Annual plan by hectares
+      items:
+      - title: Small
+        text:
+          it: Fino a 50 ettari monitorati.
+          en: Up to 50 monitored hectares.
+      - title: Medium
+        text:
+          it: Fino a 200 ettari monitorati.
+          en: Up to 200 monitored hectares.
+      - title: Large
+        text:
+          it: Fino a 500 ettari monitorati.
+          en: Up to 500 monitored hectares.
+    - type: note
+      content:
+        it: 'Supporto alle decisioni, non una prescrizione agronomica: verifica sempre etichette, normativa e consulta il
+          tuo agronomo. Dati: Copernicus, Open-Meteo (CC BY 4.0), ARPA.'
+        en: 'Decision support, not an agronomic prescription: always check labels and regulations and consult your agronomist.
+          Data: Copernicus, Open-Meteo (CC BY 4.0), ARPA.'
+  - key: parcels
+    type: instances
+    template: parcel
+    title:
+      it: I miei appezzamenti
+      en: My parcels
+    roles:
+    - user
+    - admin
+  - key: dashboard
+    type: page
+    title:
+      it: Dashboard
+      en: Dashboard
+    roles:
+    - user
+    - admin
+    sections:
+    - type: data
+      title:
+        it: Semaforo di rischio
+        en: Risk traffic light
+      source: collection:parcel_reports
+      display: table
+      fields:
+      - key: date
+        label:
+          it: Data
+          en: Date
+        format: date
+      - key: traffic_light
+        label:
+          it: Semaforo
+          en: Light
+        format: badge
+      - key: disease_name
+        label:
+          it: Malattia
+          en: Disease
+      - key: risk_disease
+        label:
+          it: Rischio malattia
+          en: Disease risk
+        format: number
+      - key: risk_water
+        label:
+          it: Stress idrico
+          en: Water stress
+        format: number
+      - key: advice
+        label:
+          it: Consiglio
+          en: Advice
+      sort:
+        field: date
+        dir: desc
+      limit: 50
+      empty:
+        it: 'Nessun dato ancora: aggiungi un appezzamento.'
+        en: 'No data yet: add a parcel.'
+    - type: data
+      title:
+        it: Andamento NDVI e rischio
+        en: NDVI and risk trend
+      source: collection:parcel_reports
+      display: chart
+      chart: line
+      fields:
+      - key: date
+      - key: ndvi
+      - key: risk_disease
+      - key: risk_water
+      sort:
+        field: date
+        dir: asc
+      limit: 90
+    - type: data
+      title:
+        it: Ultimi indicatori
+        en: Latest indicators
+      source: collection:parcel_reports
+      display: kpi
+      kpis:
+      - label: NDVI
+        agg: last
+        field: ndvi
+        format: number
+      - label: GDD
+        agg: last
+        field: gdd
+        format: number
+      - label:
+          it: Pioggia 7 gg (mm)
+          en: Rain 7d (mm)
+        agg: last
+        field: rain_7d_mm
+        format: number
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Plan
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: small
+      price: 290
+      interval: year
+      label:
+        it: Small — fino a 50 ha
+        en: Small — up to 50 ha
+      includes:
+      - 50 ha
+    - key: medium
+      price: 990
+      interval: year
+      label:
+        it: Medium — fino a 200 ha
+        en: Medium — up to 200 ha
+      includes:
+      - 200 ha
+      roles:
+      - user
+    - key: large
+      price: 2200
+      interval: year
+      label:
+        it: Large — fino a 500 ha
+        en: Large — up to 500 ha
+      includes:
+      - 500 ha
+      roles:
+      - user
+  extensions:
+  - key: map_drawing
+    description: 'Drawing parcels on a map is not available yet: for now centre coordinates and an optional pasted GeoJSON.
+      Maps in the dashboard also pending.'
+  - key: email_alerts
+    description: Email alerts when a disease risk exceeds the threshold are not available yet (no notifications). For now
+      the risk traffic light and advice appear in the dashboard; the email can be added when notifications are supported.
+  - key: consultant_access
+    description: Consultant role seeing the fields of the clients they follow (per-client sharing of parcel instances) is
+      not expressible yet; farms see only their own parcels.
+  - key: hectare_billing
+    description: Subscription is by tiers of hectares; enforcing the hectare cap against the sum of parcels' area_ha needs
+      custom logic.
+  - key: copernicus_access
+    description: Copernicus Sentinel data normally needs a Data Space account/token; the agent collects public data via the
+      WebRobot MCP and flags missing data. A dedicated connector is a future step.
+  - key: field_sensors_gis
+    description: 'Future: field sensor data (soil moisture, leaf wetness) and richer GIS layers as additional collections
+      feeding the analyst.'

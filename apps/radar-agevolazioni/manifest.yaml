@@ -1,0 +1,751 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: radar-agevolazioni
+  displayName: RadarAgevolazioni
+  tagline:
+    it: I bandi giusti per la tua impresa, ogni mattina.
+    en: The right grants for your company, every morning.
+  description:
+    it: Monitora oltre trenta fonti pubbliche di incentivi, calcola l'ammissibilità del tuo profilo e prepara bozze di domanda
+      riviste da un consulente.
+    en: Monitors 30+ public incentive sources, scores your eligibility and prepares consultant-reviewed application drafts.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#12355b'
+      accent: '#1f8a70'
+      background: '#f6f8fb'
+      foreground: '#17212b'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Radar
+      color: primary
+    - text: Agevolazioni
+      color: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Fonti
+        en: Sources
+      href: '#fonti'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: consultant
+      label:
+        it: Consulente
+        en: Consultant
+      assignedBy: invite
+    - key: user
+      assignedBy: signup
+  limits:
+  - action: agent:drafter
+    per: user
+    max: 5
+    window: day
+    roles:
+    - user
+  agents:
+  - key: scanner
+    role: scheduled
+    description: Ogni mattina scansiona le fonti pubbliche e indicizza i nuovi bandi.
+    profile:
+      inline:
+        display_name: Scanner bandi
+        crews:
+        - id: scanner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'Sei l''agente che monitora i bandi e gli incentivi pubblici per le imprese italiane. Ogni giorno
+            consulti, tramite il WebRobot MCP (costruisci ed esegui tu la pipeline di raccolta), oltre trenta fonti pubbliche:
+            incentivi.gov.it, i portali delle Regioni, il Registro Nazionale Aiuti (RNA), il portale EU Funding & Tenders,
+            camere di commercio, Invitalia, MIMIT. Individua solo i bandi nuovi o modificati nelle ultime 48 ore. Per ciascuno
+            estrai: titolo, ente, fonte, url, scadenza (YYYY-MM-DD), dotazione in euro, percentuale di contributo, requisiti
+            (ATECO ammessi, regioni, dimensione, anzianità, tipo di investimento, importi min/max) e una sintesi di 2 frasi.
+            Non inventare mai dati: se un campo non è nel testo ufficiale lascialo vuoto. Chiudi con un breve riepilogo in
+            Markdown (titolo di primo livello ''# Nuovi bandi del <data>'') e, alla fine, un unico blocco JSON: array di oggetti
+            {id, titolo, ente, fonte, url, scadenza, dotazione, contributo_pct, requisiti, regioni, ateco, investimento, sintesi}.
+            L''id è stabile (ente + codice o slug del titolo).'
+    goalTemplate: Oggi è {date}. Scansiona le fonti e indicizza i nuovi bandi.
+    output: markdown+json
+    writesTo:
+      collection: bandi
+      parse: json_last
+      keyBy: id
+    limits:
+      maxTurns: 60
+      maxBudgetUsd: 3
+      timeoutSeconds: 3600
+  - key: matcher
+    role: analyst
+    description: Confronta i bandi con il profilo aziendale e calcola il punteggio di ammissibilità.
+    memory: instance
+    profile:
+      inline:
+        display_name: Matcher ammissibilità
+        crews:
+        - id: matcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Valuti l''ammissibilità di una singola impresa ai bandi di agevolazione. Con lo strumento search_bandi
+            cerca i bandi aperti (scadenza futura) compatibili per regione, ATECO e tipo di investimento. Per ciascun bando
+            calcola un punteggio 0-100 confrontando i requisiti con il profilo: ATECO, regione/provincia, dimensione (dipendenti,
+            fatturato), anzianità, tipo e importo dell''investimento. Elenca in modo esplicito i requisiti soddisfatti e quelli
+            mancanti o non verificabili. Non inventare requisiti; se il bando non li specifica, scrivilo. Non sei un consulente
+            legale: il punteggio è un''indicazione da verificare. Scrivi un report Markdown che inizia con ''# Bandi compatibili
+            — <azienda> — <data>'', con una tabella dei migliori e il dettaglio per bando. Poi, con lo strumento write_matches,
+            salva un record per bando con punteggio >= 40: {bando_id, titolo, punteggio, soddisfatti, mancanti, scadenza,
+            url}. La memoria contiene i bandi già segnalati: evidenzia solo i nuovi e le scadenze imminenti, poi chiama remember
+            con l''elenco aggiornato.'
+    appTools:
+    - name: search_bandi
+      description: Cerca tra i bandi indicizzati
+      action: search
+      collection: bandi
+      scope: all
+    - name: write_matches
+      description: Salva i bandi compatibili con punteggio
+      action: write
+      collection: matches
+      scope: all
+    output: markdown
+    writesTo:
+      collection: matches
+      parse: markdown_sections
+      keyBy: bando_id
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 1
+  - key: drafter
+    role: main
+    description: Prepara bozza di domanda e relazione tecnica, da far approvare a un consulente.
+    awaits:
+    - draft_review
+    profile:
+      inline:
+        display_name: Redattore domande
+        crews:
+        - id: drafter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Prepari la bozza di domanda di agevolazione e di relazione tecnica per un bando scelto dal cliente.
+            Leggi il bando con search_bandi e i dati del cliente dai suoi match con read_matches. Struttura: ''# Bozza di
+            domanda — <bando> — <azienda>'' poi ## Dati del richiedente, ## Descrizione del progetto, ## Spese ammissibili
+            e importi, ## Relazione tecnica (obiettivi, tempi, risultati attesi), ## Allegati da preparare, ## Punti da verificare.
+            Usa solo i dati forniti; dove mancano scrivi [DA COMPLETARE], non inventare cifre o dichiarazioni. Al termine
+            chiama request_draft_review con il testo completo: il cliente non lo vede finché un consulente non lo approva.
+            Al cliente rispondi solo con un breve messaggio di stato (''# Bozza inviata in revisione'').'
+    appTools:
+    - name: search_bandi
+      description: Cerca tra i bandi indicizzati
+      action: search
+      collection: bandi
+      scope: all
+    - name: read_matches
+      description: Legge i match del cliente
+      action: read
+      collection: matches
+      scope: user
+    goalTemplate: 'Bando: {bando}
+
+      Azienda: {company_name}
+
+      {?notes}Note del cliente: {notes}{/notes}
+
+      Data: {date}. Scrivi in lingua {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 1.5
+  - key: finalizer
+    role: helper
+    description: Pubblica la bozza approvata nell'area del cliente.
+    profile:
+      inline:
+        display_name: Pubblicazione bozza approvata
+        crews:
+        - id: finalizer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: Ricevi l'evento di approvazione di una bozza con il testo e le note del consulente. Salva con save_approved
+            un record {titolo, testo, approvata_da, data} riportando il testo esattamente, integrando le note del consulente
+            solo se sono correzioni esplicite. Non aggiungere contenuti. Rispondi con '# Bozza approvata' e una riga di conferma.
+    appTools:
+    - name: save_approved
+      description: Salva la bozza approvata
+      action: write
+      collection: approved_drafts
+      scope: user
+    goalTemplate: Oggi è {date}. Pubblica la bozza approvata descritta nell'evento ricevuto.
+    output: markdown
+    limits:
+      maxTurns: 4
+      maxBudgetUsd: 0.2
+  templates:
+  - key: company_watch
+    title:
+      it: Profilo aziendale
+      en: Company profile
+    description:
+      it: Ogni mattina l'agente confronta i nuovi bandi con questo profilo e calcola l'ammissibilità.
+      en: Every morning the agent compares new grants against this profile and scores eligibility.
+    agent: matcher
+    params:
+    - name: company_name
+      type: text
+      required: true
+      label:
+        it: Ragione sociale
+        en: Company name
+    - name: ateco
+      type: text
+      required: true
+      label: Codice ATECO
+    - name: region
+      type: select
+      required: true
+      label:
+        it: Regione
+        en: Region
+      options:
+      - Abruzzo
+      - Basilicata
+      - Calabria
+      - Campania
+      - Emilia-Romagna
+      - Friuli-Venezia Giulia
+      - Lazio
+      - Liguria
+      - Lombardia
+      - Marche
+      - Molise
+      - Piemonte
+      - Puglia
+      - Sardegna
+      - Sicilia
+      - Toscana
+      - Trentino-Alto Adige
+      - Umbria
+      - Valle d'Aosta
+      - Veneto
+    - name: province
+      type: text
+      required: true
+      label:
+        it: Provincia
+        en: Province
+    - name: employees
+      type: number
+      required: true
+      label:
+        it: Dipendenti
+        en: Employees
+    - name: revenue
+      type: number
+      required: true
+      label:
+        it: Fatturato annuo (€)
+        en: Annual revenue (€)
+    - name: founded_year
+      type: number
+      required: true
+      label:
+        it: Anno di costituzione
+        en: Year founded
+    - name: investment_type
+      type: select
+      required: true
+      label:
+        it: Tipo di investimento
+        en: Investment type
+      options:
+      - value: machinery
+        label:
+          it: Macchinari
+          en: Machinery
+      - value: digital
+        label:
+          it: Digitale
+          en: Digital
+      - value: hiring
+        label:
+          it: Assunzioni
+          en: Hiring
+      - value: energy
+        label:
+          it: Energia
+          en: Energy
+    - name: investment_amount
+      type: number
+      required: true
+      label:
+        it: Importo previsto (€)
+        en: Planned amount (€)
+    goal: 'Profilo "{instance}": {company_name}, ATECO {ateco}, sede {province} ({region}), {employees} dipendenti, fatturato
+      {revenue} €, costituita nel {founded_year}. Investimento previsto: {investment_type}, {investment_amount} €. Oggi è
+      {date}. Valuta i bandi aperti e scrivi il report in lingua {lang}.'
+    schedule:
+      cron: 30 6 * * *
+      userCanChange: false
+    maxPerUser: 5
+    cost:
+      perRun: 0
+  inputForm:
+    title:
+      it: Richiedi bozza di domanda
+      en: Request an application draft
+    fields:
+    - name: bando
+      type: relation
+      relation: bandi
+      required: true
+      label:
+        it: Bando
+        en: Grant
+    - name: company_name
+      type: text
+      required: true
+      label:
+        it: Ragione sociale
+        en: Company name
+    - name: notes
+      type: textarea
+      maxLength: 1500
+      label:
+        it: Dettagli del progetto (facoltativo)
+        en: Project details (optional)
+      help:
+        it: 'Incolla testo o link: il caricamento di file non è ancora disponibile.'
+        en: 'Paste text or links: file upload is not available yet.'
+  data:
+    collections:
+    - name: bandi
+      ownedBy: app
+      searchable: true
+      description: Bandi indicizzati dallo scanner
+      fields:
+      - name: id
+        type: text
+      - name: titolo
+        type: text
+      - name: ente
+        type: text
+      - name: fonte
+        type: text
+      - name: url
+        type: url
+      - name: scadenza
+        type: date
+      - name: dotazione
+        type: number
+      - name: contributo_pct
+        type: number
+      - name: requisiti
+        type: textarea
+      - name: regioni
+        type: text
+      - name: ateco
+        type: text
+      - name: investimento
+        type: text
+      - name: sintesi
+        type: textarea
+    - name: matches
+      ownedBy: instance
+      searchable: true
+      description: Bandi compatibili per profilo, con punteggio
+      fields:
+      - name: bando_id
+        type: text
+      - name: titolo
+        type: text
+      - name: punteggio
+        type: number
+      - name: soddisfatti
+        type: textarea
+      - name: mancanti
+        type: textarea
+      - name: scadenza
+        type: date
+      - name: url
+        type: url
+    - name: approved_drafts
+      ownedBy: user
+      description: Bozze approvate dal consulente, scaricabili dal cliente
+      fields:
+      - name: titolo
+        type: text
+      - name: testo
+        type: textarea
+      - name: approvata_da
+        type: text
+      - name: data
+        type: date
+  approvals:
+  - key: draft_review
+    title:
+      it: Revisione bozza di domanda
+      en: Application draft review
+    description: Il consulente rivede e approva la bozza prima che il cliente la scarichi.
+    role: consultant
+    decidedBy: role
+    fields:
+    - bando
+    - company_name
+    - testo
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: draft_approved
+    'on':
+      approval: draft_review
+      decision: approved
+    start:
+      agent: finalizer
+    goal: 'Bozza approvata: {event}'
+    asUser: true
+  schedules:
+  - agent: scanner
+    action: run
+    cron: 0 5 * * *
+    owner: app
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: RadarAgevolazioni
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow:
+        it: Finanza agevolata per PMI e consulenti
+        en: Grant finance for SMEs and advisors
+      title:
+        it: I **bandi giusti** per la tua impresa, ogni mattina.
+        en: The **right grants** for your company, every morning.
+      text:
+        it: Monitoriamo oltre trenta fonti pubbliche, calcoliamo l'ammissibilità del tuo profilo e prepariamo bozze di domanda
+          riviste da un consulente.
+        en: We monitor 30+ public sources, score your eligibility and prepare consultant-reviewed application drafts.
+      actions:
+      - label:
+          it: Inizia
+          en: Get started
+        href: /login
+        style: primary
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Crea il profilo
+          en: Create your profile
+        text:
+          it: ATECO, sede, dimensione, investimento previsto.
+          en: ATECO, location, size, planned investment.
+        badge: 🏢
+      - title:
+          it: Ogni mattina il radar
+          en: Daily radar
+        text:
+          it: Nuovi bandi con requisiti, scadenze, dotazione e contributo.
+          en: New grants with requirements, deadlines, budget and contribution rate.
+        badge: 📡
+      - title:
+          it: Punteggio di ammissibilità
+          en: Eligibility score
+        text:
+          it: Requisiti soddisfatti e mancanti, spiegati.
+          en: Requirements met and missing, explained.
+        badge: ✅
+      - title:
+          it: Bozza rivista
+          en: Reviewed draft
+        text:
+          it: Domanda e relazione tecnica approvate da un consulente.
+          en: Application and technical report approved by an advisor.
+        badge: 📝
+    - type: cards
+      id: fonti
+      title:
+        it: Fonti
+        en: Sources
+      items:
+      - title: incentivi.gov.it
+        text:
+          it: Portale nazionale degli incentivi.
+          en: National incentives portal.
+      - title:
+          it: Portali regionali
+          en: Regional portals
+        text:
+          it: Bandi di tutte le Regioni.
+          en: Calls from all Italian Regions.
+      - title: RNA
+        text:
+          it: Registro Nazionale Aiuti di Stato.
+          en: National State Aid Register.
+      - title: EU Funding & Tenders
+        text:
+          it: Programmi e bandi europei.
+          en: EU programmes and calls.
+    - type: note
+      content:
+        it: 'Supporto alle decisioni, non consulenza legale o finanziaria: verifica sempre i requisiti sul bando ufficiale.'
+        en: 'Decision support, not legal or financial advice: always check requirements on the official call.'
+  - key: watches
+    type: instances
+    template: company_watch
+    title:
+      it: I miei profili
+      en: My profiles
+    roles:
+    - user
+    - admin
+  - key: dashboard
+    type: page
+    title:
+      it: Dashboard bandi
+      en: Grants dashboard
+    roles:
+    - user
+    - consultant
+    - admin
+    sections:
+    - type: data
+      title:
+        it: I miei bandi compatibili
+        en: My matching grants
+      source: collection:matches
+      display: table
+      fields:
+      - key: titolo
+        label:
+          it: Bando
+          en: Grant
+      - key: punteggio
+        label:
+          it: Punteggio
+          en: Score
+        format: number
+      - key: soddisfatti
+        label:
+          it: Soddisfatti
+          en: Met
+      - key: mancanti
+        label:
+          it: Mancanti
+          en: Missing
+      - key: scadenza
+        label:
+          it: Scadenza
+          en: Deadline
+        format: date
+      - key: url
+        label: Link
+        format: link
+      sort:
+        field: punteggio
+        dir: desc
+      limit: 100
+      empty:
+        it: 'Crea un profilo: i primi risultati arrivano alla prossima scansione.'
+        en: 'Create a profile: first results arrive after the next scan.'
+  - key: search
+    type: table
+    title:
+      it: Cerca nei bandi
+      en: Search grants
+    source: collection:bandi
+    columns:
+    - titolo
+    - ente
+    - scadenza
+    - dotazione
+    - contributo_pct
+    - regioni
+    - ateco
+    - url
+    roles:
+    - user
+    - consultant
+    - admin
+  - key: new_draft
+    type: new_run
+    title:
+      it: Bozza di domanda
+      en: Application draft
+    roles:
+    - user
+    - admin
+  - key: drafts
+    type: history
+    title:
+      it: Le mie pratiche
+      en: My applications
+    source: run
+    roles:
+    - user
+    - admin
+  - key: draft
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: approved
+    type: table
+    title:
+      it: Bozze approvate
+      en: Approved drafts
+    source: collection:approved_drafts
+    columns:
+    - titolo
+    - approvata_da
+    - data
+    - testo
+    roles:
+    - user
+  - key: reviews
+    type: approvals
+    title:
+      it: Bozze da rivedere
+      en: Drafts to review
+    approvals:
+    - draft_review
+    roles:
+    - consultant
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Subscription
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 0
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:drafter: 3000
+    packs:
+    - key: pratiche_5
+      credits: 15000
+      price: 150
+      label:
+        it: 5 pratiche
+        en: 5 applications
+    plans:
+    - key: monthly
+      price: 49
+      interval: month
+      label:
+        it: RadarAgevolazioni mensile
+        en: RadarAgevolazioni monthly
+      includes:
+      - profili aziendali
+      - dashboard e ricerca full-text
+      - punteggio di ammissibilità
+      roles:
+      - user
+  extensions:
+  - key: consultant_assignment
+    description: 'Il consulente dovrebbe vedere tutti i clienti a lui assegnati (profili, match, pratiche). I dati dei clienti
+      sono per utente e il modello non prevede ancora una vista consulente→clienti assegnati: per ora il consulente vede solo
+      le richieste di revisione nella vista ''Bozze da rivedere''.'
+  - key: email_digest
+    description: 'Email giornaliera al cliente con i bandi compatibili: le notifiche email non sono ancora disponibili; il
+      cliente consulta la dashboard.'
+  - key: file_upload
+    description: 'Caricamento di documenti (visure, bilanci) e download file della bozza non disponibili: testo da incollare,
+      stampa/PDF dal report.'

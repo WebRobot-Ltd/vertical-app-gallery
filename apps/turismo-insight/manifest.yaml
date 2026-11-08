@@ -1,0 +1,777 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: turismo-insight
+  displayName: TurismoInsight
+  tagline:
+    it: Decision intelligence per destinazioni, consorzi e catene alberghiere.
+    en: Decision intelligence for destinations, consortia and hotel chains.
+  description:
+    it: 'Definisci un territorio e i mercati di provenienza: ogni settimana un agente raccoglie dati ufficiali, eventi, voli
+      e notizie, e ti consegna trend, stagionalità, confronto con destinazioni simili e sentiment. Chiedi ai dati in chat.'
+    en: 'Define a territory and your source markets: every week an agent collects official data, events, flights and news,
+      and delivers trends, seasonality, peer comparison and sentiment. Ask the data in chat.'
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#0b3c5d'
+      accent: '#e07a3f'
+      background: '#f6f8fa'
+      foreground: '#14202b'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Turismo
+      color: primary
+    - text: Insight
+      color: accent
+    button: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Fonti
+        en: Sources
+      href: '#fonti'
+    - label:
+        it: Prezzi
+        en: Pricing
+      href: '#prezzi'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label:
+        it: Analista
+        en: Analyst
+      assignedBy: signup
+  limits:
+  - action: chat
+    per: user
+    max: 60
+    window: day
+    roles:
+    - user
+  - action: agent:reporter
+    per: user
+    max: 10
+    window: day
+    roles:
+    - user
+  egress:
+    hosts:
+    - esploradati.istat.it
+    - ec.europa.eu
+    notes: ISTAT (esploradati.istat.it, SDMX, CC BY 3.0 IT) and Eurostat (ec.europa.eu dissemination API, reuse allowed with
+      attribution). Read-only GET.
+  agents:
+  - key: collector
+    role: scheduled
+    description: 'Weekly, for one territory: collects official statistics, events, flights and news, indexes them, and delegates
+      trend and sentiment analysis.'
+    memory: instance
+    delegates:
+    - trend_analyst
+    - sentiment_analyst
+    profile:
+      inline:
+        display_name: TurismoInsight collector
+        crews:
+        - id: collector
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are the weekly data collector of TurismoInsight for ONE tourist territory (municipalities or
+            province) and a list of source markets. Collect ONLY open sources: (1) ISTAT arrivals and nights by municipality/province
+            and country of residence, via tool istat_data (SDMX, GET; path = dataflow and key); (2) Eurostat tourism and air
+            passenger datasets (tour_occ_*, avia_paoa) via tool eurostat_data (GET; path = dataset code, query = filters such
+            as geo=ITH3&time=2025); (3) event calendars published by the local authorities and tourist boards, public air-traffic
+            data and sector news: for these build and run the needed scraping pipeline through the WebRobot MCP (do not write
+            YAML by hand in your answer; use the MCP tools). NEVER use TripAdvisor, Booking or other review platforms. Store
+            what you collect with tool save_document (title, source, url, date, text summary) so it is searchable. Then call
+            ask_trend_analyst with the figures you collected (trend vs previous period and year, seasonality, comparison with
+            3 similar destinations), and ask_sentiment_analyst with the news and press releases (titles, dates, short excerpts).
+            Finally write the report: a level-1 title ''# <Territory> — week of <date>'', then ## Highlights, ## Arrivals
+            and nights by market, ## Trend and seasonality, ## Peer comparison, ## Events and flights, ## Sentiment, ## Sources.
+            Add a ```chart block for the main comparison (real figures only). The LAST thing in your answer is a fenced json
+            block with an array ''rows'' of objects {week, market, period, arrivals, nights, yoy_pct, sentiment_score, note},
+            one per market, using only figures actually retrieved (null if missing). Never invent numbers; state data gaps
+            and publication lags plainly. Your memory holds the last brief: lead with what changed, and at the end call remember
+            with the 5 key points.'
+    appTools:
+    - name: istat_data
+      description: Query ISTAT SDMX data (tourism arrivals and nights)
+      action: http
+      http:
+        method: GET
+        url: https://esploradati.istat.it/SDMXWS/rest/data
+        allowPath: true
+        attribution: ISTAT, CC BY 3.0 IT
+    - name: eurostat_data
+      description: Query Eurostat dissemination API (tourism, air transport)
+      action: http
+      http:
+        method: GET
+        url: https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data
+        allowPath: true
+        attribution: Eurostat, European Union
+    - name: save_document
+      description: Index a collected document in the territory archive
+      action: append
+      collection: territory_documents
+      scope: all
+    goalTemplate: 'Territory: {territory}.
+
+      {?markets}Source markets: {markets}.{/markets}
+
+      Today is {date}. Write in the language with ISO code {lang}.'
+    output: markdown+json
+    writesTo:
+      collection: territory_metrics
+      parse: json_last
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+      timeoutSeconds: 1800
+  - key: trend_analyst
+    role: helper
+    description: Computes trends, seasonality and peer comparison from the figures it is given.
+    profile:
+      inline:
+        display_name: TurismoInsight trend analyst
+        crews:
+        - id: trend_analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a tourism statistician. From the figures you receive compute: year-on-year and period-on-period
+            change, seasonality (monthly index vs annual mean), market share by origin, and a comparison with similar destinations
+            if figures for them are provided. Show formulas briefly, flag small samples and publication lags, and never invent
+            or extrapolate figures that were not given. Answer in compact Markdown with tables.'
+  - key: sentiment_analyst
+    role: helper
+    description: Assesses the sentiment of news and public press releases about the territory.
+    profile:
+      inline:
+        display_name: TurismoInsight sentiment analyst
+        crews:
+        - id: sentiment_analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You assess the sentiment of news items and public press releases about a tourist territory. You are
+            given titles, dates and excerpts; you never use or ask for traveller reviews. For each item give a score from
+            -1 to +1 and a theme (safety, transport, events, weather, prices, environment, infrastructure, other); then an
+            overall score, the top 3 positive and negative themes, and any emerging risk or opportunity. Say how many items
+            the judgement rests on; with fewer than 5, say it is weak. Compact Markdown.
+  - key: chat_analyst
+    role: helper
+    description: Answers analysts' questions on their own territories' data.
+    profile:
+      inline:
+        display_name: TurismoInsight chat
+        crews:
+        - id: chat_analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You are the data assistant of TurismoInsight. Answer ONLY from the user's territory metrics and archived
+            documents, read with the tools search_documents and read_metrics. Cite source and date for each claim, give figures
+            with their period, and say plainly when the data does not cover the question. Never invent numbers, never use
+            traveller reviews. Short answers, Markdown tables when comparing, and a ```chart block when a comparison across
+            markets or periods helps.
+    appTools:
+    - name: read_metrics
+      description: Weekly metrics by market for the user's territories
+      action: read
+      collection: territory_metrics
+      scope: user
+    - name: search_documents
+      description: Search the archive of collected documents
+      action: search
+      collection: territory_documents
+      scope: user
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New question: {message}
+
+      Answer in the language with ISO code {lang}.'
+    output: markdown
+  - key: reporter
+    role: main
+    description: Writes the monthly executive report for a territory.
+    profile:
+      inline:
+        display_name: TurismoInsight monthly reporter
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the monthly executive report on a tourist territory for managers. Read the data with read_metrics
+            and search_documents. Start with ''# <Territory> — report <month>''. Sections: ## Executive summary (5 bullets),
+            ## Arrivals and nights by market, ## Trend and seasonality, ## Peer comparison, ## Events and flights ahead, ##
+            Sentiment of news and press, ## Recommended actions, ## Sources and limits. Include at least one ```chart block
+            with real figures. Never invent figures; state gaps. Max 700 words.'
+    appTools:
+    - name: read_metrics
+      description: Weekly metrics by market for the user's territories
+      action: read
+      collection: territory_metrics
+      scope: user
+    - name: search_documents
+      description: Search the archive of collected documents
+      action: search
+      collection: territory_documents
+      scope: user
+    goalTemplate: 'Territory: {territory}
+
+      Month: {month}
+
+      {?focus}Focus requested: {focus}{/focus}
+
+      Write the report in the language with ISO code {lang}.'
+    output: markdown
+  templates:
+  - key: territory_watch
+    title:
+      it: Territorio monitorato
+      en: Monitored territory
+    description:
+      it: Raccolta e analisi settimanale per un territorio e i suoi mercati di provenienza.
+      en: Weekly collection and analysis for a territory and its source markets.
+    agent: collector
+    params:
+    - name: territory
+      type: text
+      required: true
+      label:
+        it: Comuni o provincia
+        en: Municipalities or province
+      help:
+        it: es. Provincia di Rimini, oppure Cortina d'Ampezzo
+        en: e.g. Province of Rimini, or Cortina d'Ampezzo
+    - name: markets
+      type: textarea
+      required: true
+      maxLength: 300
+      label:
+        it: Mercati di provenienza
+        en: Source markets
+      help:
+        it: es. Germania, Francia, Stati Uniti, Polonia
+        en: e.g. Germany, France, United States, Poland
+    goal: 'Territory "{instance}": {territory}. Source markets: {markets}. Today is {date}. Write in the language with ISO
+      code {lang}.'
+    schedule:
+      cron: 0 5 * * 1
+      userCanChange: false
+    maxPerUser: 10
+    cost:
+      perRun: 10
+  inputForm:
+    title:
+      it: Report mensile
+      en: Monthly report
+    fields:
+    - name: territory
+      type: text
+      required: true
+      label:
+        it: Territorio
+        en: Territory
+    - name: month
+      type: text
+      required: true
+      label:
+        it: Mese (es. 2026-10)
+        en: Month (e.g. 2026-10)
+    - name: markets
+      type: textarea
+      maxLength: 300
+      label:
+        it: Mercati di provenienza (facoltativo)
+        en: Source markets (optional)
+    - name: focus
+      type: textarea
+      maxLength: 400
+      label:
+        it: Focus (facoltativo)
+        en: Focus (optional)
+  data:
+    collections:
+    - name: territory_metrics
+      ownedBy: instance
+      description: Weekly arrivals, nights, YoY change and sentiment by source market
+      fields:
+      - name: week
+        type: text
+      - name: market
+        type: text
+      - name: period
+        type: text
+      - name: arrivals
+        type: number
+      - name: nights
+        type: number
+      - name: yoy_pct
+        type: number
+      - name: sentiment_score
+        type: number
+      - name: note
+        type: text
+    - name: territory_documents
+      ownedBy: instance
+      searchable: true
+      description: Searchable archive of collected statistics, events, flights and news
+      fields:
+      - name: title
+        type: text
+      - name: source
+        type: text
+      - name: url
+        type: url
+      - name: date
+        type: date
+      - name: text
+        type: textarea
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: TurismoInsight
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow:
+        it: Decision intelligence per il turismo
+        en: Tourism decision intelligence
+      title:
+        it: Capisci **da dove arrivano** i turisti e cosa succederà.
+        en: Understand **where tourists come from** and what comes next.
+      text:
+        it: 'Per destinazioni, consorzi e catene alberghiere: dati ufficiali, eventi, voli e notizie in una dashboard per
+          territorio, più un report mensile e una chat sui tuoi dati.'
+        en: 'For destinations, consortia and hotel chains: official data, events, flights and news in one dashboard per territory,
+          plus a monthly report and a chat on your data.'
+      actions:
+      - label:
+          it: Accedi
+          en: Sign in
+        href: /login
+        style: primary
+      - label:
+          it: Come funziona
+          en: How it works
+        href: '#come-funziona'
+        style: ghost
+      aside: '<div style="padding:16px"><b>Rimini · settimana 44</b><br>Germania +6,2% · Polonia +11,4%<br>Sentiment notizie:
+        +0,31</div>'
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Definisci il territorio
+          en: Define the territory
+        text:
+          it: Comuni o provincia e i mercati di provenienza che ti interessano.
+          en: Municipalities or province and the source markets you care about.
+      - title:
+          it: Raccolta settimanale
+          en: Weekly collection
+        text:
+          it: Un agente raccoglie e indicizza dati, eventi, voli e notizie; altri due calcolano trend e sentiment.
+          en: An agent collects and indexes data, events, flights and news; two more compute trends and sentiment.
+      - title:
+          it: Dashboard, report e chat
+          en: Dashboard, report and chat
+        text:
+          it: Grafici per mercato e periodo, report mensile stampabile in PDF, domande in chat.
+          en: Charts by market and period, a monthly report printable as PDF, questions in chat.
+    - type: cards
+      id: fonti
+      title:
+        it: Fonti aperte
+        en: Open sources
+      items:
+      - title: ISTAT · Eurostat
+        text:
+          it: Arrivi e presenze per provenienza.
+          en: Arrivals and nights by origin.
+      - title:
+          it: Enti locali
+          en: Local authorities
+        text:
+          it: Calendari eventi pubblicati.
+          en: Published event calendars.
+      - title:
+          it: Voli e notizie
+          en: Flights and news
+        text:
+          it: Dati aperti sui voli e stampa di settore. Nessuna recensione TripAdvisor o Booking.
+          en: Open flight data and trade press. No TripAdvisor or Booking reviews.
+    - type: cards
+      id: prezzi
+      title:
+        it: Prezzi
+        en: Pricing
+      items:
+      - title:
+          it: Abbonamento annuale per territorio
+          en: Annual subscription per territory
+        text:
+          it: Raccolta settimanale, dashboard, chat e report mensili inclusi.
+          en: Weekly collection, dashboard, chat and monthly reports included.
+        badge: 📍
+    - type: note
+      content:
+        it: 'Supporto alle decisioni, non consulenza. I dati ufficiali hanno ritardi di pubblicazione indicati nei report.
+          Fonti: ISTAT (CC BY 3.0 IT), Eurostat.'
+        en: 'Decision support, not advice. Official data has publication lags stated in the reports. Sources: ISTAT (CC BY
+          3.0 IT), Eurostat.'
+  - key: watches
+    type: instances
+    template: territory_watch
+    title:
+      it: I miei territori
+      en: My territories
+    roles:
+    - user
+    - admin
+  - key: dashboard
+    type: page
+    title:
+      it: Dashboard
+      en: Dashboard
+    roles:
+    - user
+    - admin
+    sections:
+    - type: data
+      title:
+        it: Indicatori
+        en: Indicators
+      source: collection:territory_metrics
+      display: kpi
+      kpis:
+      - label:
+          it: Arrivi
+          en: Arrivals
+        agg: sum
+        field: arrivals
+        format: number
+      - label:
+          it: Presenze
+          en: Nights
+        agg: sum
+        field: nights
+        format: number
+      - label:
+          it: Variazione annua media
+          en: Avg YoY
+        agg: avg
+        field: yoy_pct
+        format: percent
+      - label: Sentiment
+        agg: avg
+        field: sentiment_score
+        format: number
+    - type: data
+      title:
+        it: Arrivi per mercato
+        en: Arrivals by market
+      source: collection:territory_metrics
+      display: chart
+      chart: bar
+      fields:
+      - key: market
+        label:
+          it: Mercato
+          en: Market
+      - key: arrivals
+        label:
+          it: Arrivi
+          en: Arrivals
+      - key: nights
+        label:
+          it: Presenze
+          en: Nights
+      limit: 60
+    - type: data
+      title:
+        it: Andamento nel tempo
+        en: Trend over time
+      source: collection:territory_metrics
+      display: chart
+      chart: line
+      fields:
+      - key: period
+        label:
+          it: Periodo
+          en: Period
+      - key: arrivals
+        label:
+          it: Arrivi
+          en: Arrivals
+      - key: sentiment_score
+        label: Sentiment
+      sort:
+        field: period
+        dir: asc
+      limit: 60
+    - type: data
+      title:
+        it: Dettaglio
+        en: Detail
+      source: collection:territory_metrics
+      display: table
+      fields:
+      - key: week
+        label:
+          it: Settimana
+          en: Week
+      - key: market
+        label:
+          it: Mercato
+          en: Market
+      - key: arrivals
+        label:
+          it: Arrivi
+          en: Arrivals
+        format: number
+      - key: nights
+        label:
+          it: Presenze
+          en: Nights
+        format: number
+      - key: yoy_pct
+        label: YoY
+        format: percent
+      - key: sentiment_score
+        label: Sentiment
+        format: number
+      - key: note
+        label:
+          it: Nota
+          en: Note
+      sort:
+        field: week
+        dir: desc
+      limit: 100
+      empty:
+        it: 'Nessun dato ancora: crea un territorio e attendi la prima raccolta.'
+        en: 'No data yet: add a territory and wait for the first collection.'
+    - type: data
+      title:
+        it: Archivio documenti
+        en: Document archive
+      source: collection:territory_documents
+      display: table
+      fields:
+      - key: date
+        label: Data
+        format: date
+      - key: title
+        label:
+          it: Titolo
+          en: Title
+      - key: source
+        label:
+          it: Fonte
+          en: Source
+      - key: url
+        label: Link
+        format: link
+      sort:
+        field: date
+        dir: desc
+      limit: 50
+  - key: ask
+    type: chat
+    source: agent:chat_analyst
+    title:
+      it: Chiedi ai dati
+      en: Ask the data
+    placeholder:
+      it: Es. Come sono cambiati gli arrivi dalla Germania rispetto all'anno scorso?
+      en: E.g. How did arrivals from Germany change vs last year?
+    examples:
+    - it: Quali mercati crescono di più?
+      en: Which markets grow fastest?
+    - it: Che eventi sono previsti il prossimo mese?
+      en: Which events are planned next month?
+    roles:
+    - user
+    - admin
+  - key: new_report
+    type: new_run
+    title:
+      it: Report mensile
+      en: Monthly report
+    roles:
+    - user
+    - admin
+  - key: reports
+    type: history
+    title:
+      it: I miei report
+      en: My reports
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Subscription
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:reporter:
+        estimate: 10
+        metered: true
+      agent:chat_analyst:
+        estimate: 3
+        metered: true
+    packs:
+    - key: credits_1000
+      credits: 1000
+      price: 10
+      label: 1000 crediti
+    plans:
+    - key: territory_year
+      price: 1490
+      interval: year
+      label:
+        it: Territorio · annuale
+        en: Territory · annual
+      includes:
+      - 1 territory
+      - weekly collection
+      - dashboard
+      - chat
+      - monthly reports
+      credits: 3000
+      creditsReset: monthly
+  extensions:
+  - key: monthly_pdf_email
+    description: Sending the monthly PDF report by email to executives is not available yet (no notifications). Meanwhile
+      each report is printable as PDF from the report view.
+  - key: map_view
+    description: Interactive maps are not available as a display type yet; the dashboard shows charts, tables and filters
+      by market and period.
+  - key: per_territory_seat_limit
+    description: 'The annual price is per territory: the number of territories is capped by maxPerUser; enforcing it from
+      the purchased plan quantity needs custom logic.'

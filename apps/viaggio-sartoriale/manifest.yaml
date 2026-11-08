@@ -1,0 +1,628 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: viaggio-sartoriale
+  displayName: ViaggioSartoriale
+  tagline:
+    it: Viaggi su misura, rifiniti da un esperto locale.
+    en: Tailor-made trips, refined by a local expert.
+  description:
+    it: 'Descrivi il viaggio che sogni: una squadra di agenti prepara tre proposte da open data (enti turistici, OpenStreetMap,
+      Wikidata) e un esperto locale le rivede, le arricchisce con consigli personali e le approva.'
+    en: 'Describe your dream trip: a team of agents prepares three itineraries from open data (tourism boards, OpenStreetMap,
+      Wikidata) and a local expert reviews them, adds personal tips and approves them.'
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f3a4d'
+      accent: '#c46a2b'
+      background: '#fbf8f3'
+      foreground: '#1c2329'
+    fonts:
+      body: Inter
+      display: Playfair Display
+    wordmark:
+    - text: Viaggio
+      color: primary
+    - text: Sartoriale
+      color: accent
+    buttonShape: rounded
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Fonti
+        en: Sources
+      href: '#fonti'
+    cta:
+      label:
+        it: Pianifica il viaggio
+        en: Plan my trip
+      href: /v/new
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: expert
+      label:
+        it: Esperto locale
+        en: Local expert
+      assignedBy: derived
+      from: collection:experts.email
+    - key: traveler
+      label:
+        it: Viaggiatore
+        en: Traveler
+      assignedBy: signup
+  limits:
+  - action: agent:planner
+    per: user
+    max: 3
+    window: day
+    roles:
+    - traveler
+  egress:
+    hosts:
+    - nominatim.openstreetmap.org
+    - overpass-api.de
+    - query.wikidata.org
+    notes: 'OpenStreetMap Nominatim and Overpass: data ODbL, attribution © OpenStreetMap contributors, respect usage policy
+      (low volume). Wikidata Query Service: CC0. Online travel agency data is never used.'
+  agents:
+  - key: researcher
+    role: helper
+    description: Collects places, distances and events from open data for a destination.
+    profile:
+      inline:
+        display_name: ViaggioSartoriale researcher
+        crews:
+        - id: researcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are a travel data researcher. Given a destination, dates and interests, collect FACTS only from
+            open data: (1) osm_search (Nominatim: query q=<place>, format=json, limit=5) to locate the area; (2) osm_overpass
+            (query data=<Overpass QL, e.g. [out:json][timeout:25];node[tourism=museum](around:15000,LAT,LON);out 30;>) for
+            museums, viewpoints, wineries, trails, sport facilities; (3) wikidata_sparql (query=<SPARQL>, format=json) for
+            notable places, heritage sites and recurring events; (4) public open-data pages of the local tourism board, via
+            the WebRobot MCP, only for official pages that allow reuse. Never use online travel agencies or booking portals.
+            Return a structured list: places (name, type, coordinates, source), approximate distances/travel times between
+            them computed from coordinates (state they are estimates), events in the date range with source. Do not invent
+            anything; say what you could not find. Keep the sources for attribution: © OpenStreetMap contributors (ODbL),
+            Wikidata (CC0).'
+    appTools:
+    - name: osm_search
+      description: 'Geocode a place with OpenStreetMap Nominatim (query: q, format=json, limit)'
+      action: http
+      http:
+        method: GET
+        url: https://nominatim.openstreetmap.org/search
+        attribution: © OpenStreetMap contributors, ODbL
+    - name: osm_overpass
+      description: 'Query OpenStreetMap features with Overpass QL (query: data=...)'
+      action: http
+      http:
+        method: GET
+        url: https://overpass-api.de/api/interpreter
+        attribution: © OpenStreetMap contributors, ODbL
+        maxBytes: 300000
+    - name: wikidata_sparql
+      description: 'Run a SPARQL query on Wikidata (query: query=..., format=json)'
+      action: http
+      http:
+        method: GET
+        url: https://query.wikidata.org/sparql
+        attribution: Wikidata, CC0
+        maxBytes: 300000
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 1.0
+  - key: planner
+    role: main
+    description: Designs three different itineraries from the researcher's facts and sends them to the local expert for review.
+    profile:
+      inline:
+        display_name: ViaggioSartoriale planner
+        crews:
+        - id: planner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the lead planner of ViaggioSartoriale, tailor-made trips. First ask the researcher (ask_researcher)
+            for places, distances and events for the request. Then write THREE clearly different itinerary proposals (e.g.
+            one classic, one off the beaten path, one focused on the strongest interest), each respecting dates, group size,
+            budget and pace. Output structure: a level-1 title "# Tre proposte per <destination>"; then for each proposal
+            a "## Proposta N — <name>" with: idea in two lines, day-by-day plan, indicative budget range (label as estimate,
+            never as a quote), main places with source, a "Da confermare con l''esperto locale" list. Add a final "## Fonti"
+            with: © OpenStreetMap contributors (ODbL), Wikidata (CC0), tourism board open data used. Use only open data facts
+            from the researcher; never invent prices, opening hours or availability, and never recommend specific hotels or
+            restaurants: the local expert adds those. Write in the language with ISO code given in the goal. When done, call
+            request_expert_review so the local expert of the area reviews, adds personal tips and trusted places, and approves.'
+    delegates:
+    - researcher
+    awaits:
+    - expert_review
+    goalTemplate: 'Trip request from {user}.
+
+      Destination or region: {destination}
+
+      Dates: from {date_from} to {date_to}
+
+      Travelers: {people}
+
+      {?budget}Total budget: {budget} EUR{/budget}
+
+      Interests: {interests}
+
+      Preferred pace: {pace_label}
+
+      {?notes}Notes: {notes}{/notes}
+
+      Today is {date}. Write the proposals in the language with ISO code {lang}.'
+    writesTo:
+      collection: trip_proposals
+      parse: whole
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 1.0
+  - key: revisor
+    role: helper
+    description: Chat where the traveler picks a proposal and asks for changes; changes go back to the expert.
+    memory: user
+    profile:
+      inline:
+        display_name: ViaggioSartoriale revision assistant
+        crews:
+        - id: revisor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You help a traveler refine the approved proposals of their trip. Read their proposals with the tool
+            read_my_proposals. Help them choose one, collect change requests (days, pace, places, budget) and rewrite the
+            affected parts of the chosen itinerary, clearly marking what changed. You do not set prices, confirm availability
+            or take payments: say that the local expert validates every change and that the deposit is paid when they confirm.
+            Never invent facts beyond the proposals. Use remember to keep the chosen proposal and the requested changes. Reply
+            in the traveler''s language.'
+    appTools:
+    - name: read_my_proposals
+      description: The traveler's own approved proposals
+      action: read
+      collection: trip_proposals
+      scope: user
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New message from {user}: {message}
+
+      Today is {date}. Reply in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.4
+  approvals:
+  - key: expert_review
+    title:
+      it: Revisione dell'esperto locale
+      en: Local expert review
+    description: The local expert of the area reviews the three proposals, adds personal tips and trusted places, then approves
+      or rejects.
+    role: expert
+    decidedBy: role
+    fields:
+    - destination
+    - date_from
+    - date_to
+    - people
+    - budget
+    - interests
+    - pace
+    timeoutMinutes: 1440
+    onTimeout: reject
+  inputForm:
+    title:
+      it: Il tuo viaggio
+      en: Your trip
+    fields:
+    - name: destination
+      type: text
+      required: true
+      maxLength: 120
+      label:
+        it: Destinazione o regione
+        en: Destination or region
+    - name: date_from
+      type: date
+      required: true
+      label:
+        it: Dal
+        en: From
+    - name: date_to
+      type: date
+      required: true
+      label:
+        it: Al
+        en: To
+    - name: people
+      type: number
+      required: true
+      default: 2
+      label:
+        it: Numero di persone
+        en: Number of people
+    - name: budget
+      type: number
+      label:
+        it: Budget totale (EUR)
+        en: Total budget (EUR)
+    - name: interests
+      type: multiselect
+      required: true
+      label:
+        it: Interessi
+        en: Interests
+      options:
+      - value: food_wine
+        label:
+          it: Enogastronomia
+          en: Food & wine
+      - value: art
+        label:
+          it: Arte
+          en: Art
+      - value: nature
+        label:
+          it: Natura
+          en: Nature
+      - value: sport
+        label:
+          it: Sport
+          en: Sport
+    - name: pace
+      type: select
+      required: true
+      label:
+        it: Ritmo
+        en: Pace
+      options:
+      - value: slow
+        label:
+          it: Rilassato
+          en: Relaxed
+      - value: balanced
+        label:
+          it: Equilibrato
+          en: Balanced
+      - value: intense
+        label:
+          it: Intenso
+          en: Intense
+    - name: notes
+      type: textarea
+      maxLength: 600
+      label:
+        it: Note (facoltative)
+        en: Notes (optional)
+  data:
+    collections:
+    - name: experts
+      ownedBy: org
+      description: 'Registered local experts, managed by the admin: contact, area covered, payout account'
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: email
+        type: email
+        required: true
+      - name: region
+        type: text
+        required: true
+        help: Area covered
+      - name: bio
+        type: textarea
+      - name: trusted_places
+        type: textarea
+    - name: trip_proposals
+      ownedBy: user
+      description: The traveler's trip proposals, with the expert's review
+      fields:
+      - name: title
+        type: text
+      - name: body
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - draft
+        - approved
+        - chosen
+        - confirmed
+    - name: bookings
+      ownedBy: user
+      description: Chosen proposal and deposit status
+      fields:
+      - name: proposal
+        type: relation
+        relation: trip_proposals
+      - name: deposit_status
+        type: select
+        options:
+        - pending
+        - paid
+  views:
+  - key: home
+    type: page
+    title: ViaggioSartoriale
+    nav: false
+    sections:
+    - type: hero
+      band: true
+      eyebrow:
+        it: Viaggi su misura con un esperto locale
+        en: Tailor-made trips with a local expert
+      title:
+        it: Il tuo **viaggio su misura**, in tre proposte.
+        en: Your **tailor-made trip**, in three proposals.
+      text:
+        it: Raccontaci destinazione, date, interessi e ritmo. Gli agenti preparano tre itinerari da open data; un esperto
+          locale li rivede e li arricchisce con i suoi consigli.
+        en: Tell us destination, dates, interests and pace. Agents prepare three itineraries from open data; a local expert
+          reviews and enriches them with personal tips.
+      actions:
+      - label:
+          it: Pianifica il viaggio
+          en: Plan my trip
+        href: /v/new
+        style: primary
+      - label:
+          it: Accedi
+          en: Sign in
+        href: /login
+        style: ghost
+      note:
+        it: Basta la tua email per accedere, senza password.
+        en: Just your email to sign in, no password.
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Compili il modulo
+          en: Fill in the form
+        text:
+          it: Destinazione, date, persone, budget, interessi e ritmo.
+          en: Destination, dates, people, budget, interests and pace.
+        badge: 📝
+      - title:
+          it: Tre proposte
+          en: Three proposals
+        text:
+          it: Una squadra di agenti costruisce tre itinerari diversi.
+          en: A team of agents builds three different itineraries.
+        badge: 🧭
+      - title:
+          it: Revisione dell'esperto
+          en: Expert review
+        text:
+          it: Un esperto della zona aggiunge consigli e strutture di fiducia e approva, entro 24 ore.
+          en: A local expert adds tips and trusted places and approves, within 24 hours.
+        badge: 🤝
+      - title:
+          it: Scegli e conferma
+          en: Choose and confirm
+        text:
+          it: Scegli una proposta, chiedi modifiche in chat e paga un acconto con carta.
+          en: Pick a proposal, ask for changes in chat and pay a deposit by card.
+        badge: 💳
+    - type: cards
+      id: fonti
+      title:
+        it: Fonti
+        en: Sources
+      intro:
+        it: Solo dati aperti. Nessun dato di agenzie di viaggio online.
+        en: Open data only. No online travel agency data.
+      items:
+      - title: OpenStreetMap
+        text:
+          it: Luoghi e distanze. © contributori OpenStreetMap (ODbL).
+          en: Places and distances. © OpenStreetMap contributors (ODbL).
+      - title: Wikidata
+        text:
+          it: Luoghi di interesse ed eventi (CC0).
+          en: Points of interest and events (CC0).
+      - title:
+          it: Enti turistici
+          en: Tourism boards
+        text:
+          it: Open data ufficiali con licenza di riuso.
+          en: Official open data with reuse licences.
+    - type: note
+      content:
+        it: Le stime di budget sono indicative, non preventivi. Il prezzo finale è confermato dall'esperto.
+        en: Budget figures are estimates, not quotes. The final price is confirmed by the expert.
+  - key: new
+    type: new_run
+    title:
+      it: Nuovo viaggio
+      en: New trip
+    roles:
+    - traveler
+    - admin
+  - key: trips
+    type: history
+    title:
+      it: Le mie richieste
+      en: My requests
+    source: run
+    roles:
+    - traveler
+    - admin
+  - key: trip
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: reviews
+    type: approvals
+    title:
+      it: Proposte da rivedere
+      en: Proposals to review
+    approvals:
+    - expert_review
+    roles:
+    - expert
+    - admin
+  - key: proposals
+    type: cards
+    title:
+      it: Le mie proposte
+      en: My proposals
+    source: collection:trip_proposals
+    roles:
+    - traveler
+    - admin
+    data:
+      display: cards
+      fields:
+      - key: title
+        label:
+          it: Proposta
+          en: Proposal
+      - key: status
+        label:
+          it: Stato
+          en: Status
+        format: badge
+      empty:
+        it: Nessuna proposta approvata ancora.
+        en: No approved proposals yet.
+  - key: refine
+    type: chat
+    title:
+      it: Modifiche e scelta
+      en: Changes and choice
+    source: agent:revisor
+    examples:
+    - it: Scelgo la proposta 2, con meno spostamenti
+      en: I pick proposal 2, with fewer transfers
+    - it: Puoi aggiungere una giornata di trekking?
+      en: Can you add a hiking day?
+    placeholder:
+      it: Scrivi qui le tue richieste di modifica…
+      en: Write your change requests here…
+    roles:
+    - traveler
+    - admin
+  - key: experts_admin
+    type: table
+    title:
+      it: Esperti locali
+      en: Local experts
+    source: collection:experts
+    roles:
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label:
+          it: Nome
+          en: Name
+      - key: email
+        label: Email
+      - key: region
+        label:
+          it: Zona
+          en: Area
+  - key: account
+    type: account
+    title:
+      it: Pagamenti
+      en: Payments
+    roles:
+    - traveler
+  billing:
+    modes:
+    - per_transaction
+    currency: eur
+    transactionFeePct: 15
+    sellers: collection:experts
+  extensions:
+  - key: anonymous_request
+    description: 'Anonymous travelers cannot submit a request yet (an agent run needs an owner): the traveler signs in with
+      a one-click email link before sending the form.'
+  - key: email_delivery
+    description: 'Email with the three proposals within 24 hours is not available (no notifications yet): the traveler sees
+      the proposals in the app once the expert approves.'
+  - key: expert_area_assignment
+    description: 'Assigning each request to the expert registered for its area, and showing the expert only requests of that
+      area, needs custom logic: for now every expert sees the review queue and the admin should assign it.'
+  - key: expert_chat
+    description: 'Live chat between traveler and expert is not available: the assistant collects change requests and the expert
+      validates them.'
+  - key: deposit_payout
+    description: Per-trip deposit checkout and the split to the expert's Stripe Connect account (platform commission 15%)
+      must be wired to the confirmed proposal; experts connect their Stripe account first.

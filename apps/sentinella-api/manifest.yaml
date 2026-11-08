@@ -1,0 +1,750 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: sentinella-api
+  displayName: SentinellaAPI
+  tagline:
+    it: Security testing automatico delle tue API REST, solo con autorizzazione scritta.
+    en: Automated REST API security testing, only with written authorization.
+  description:
+    it: SentinellaAPI mappa le tue API, genera test OWASP API Top 10, li esegue nel perimetro autorizzato e con i limiti di
+      carico che scegli, elimina i falsi positivi e ti consegna un report con gravità, prova e correzione.
+    en: SentinellaAPI maps your APIs, generates OWASP API Top 10 tests, runs them inside the authorized perimeter and within
+      the load limits you set, removes false positives and delivers a report with severity, evidence and fixes.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0b1f33'
+      accent: '#e4572e'
+      background: '#f4f6f8'
+      foreground: '#121a24'
+    fonts:
+      body: Inter
+      display: Inter
+      mono: JetBrains Mono
+    wordmark:
+    - text: Sentinella
+      color: primary
+    - text: API
+      color: accent
+    headingWeight: 700
+    buttonShape: rounded
+    width: wide
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Sicurezza e limiti
+        en: Safety and limits
+      href: '#sicurezza'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label:
+        it: Admin piattaforma
+        en: Platform admin
+      assignedBy: admin_emails
+    - key: owner
+      label:
+        it: Owner
+        en: Owner
+      assignedBy: signup
+    - key: developer
+      label:
+        it: Sviluppatore
+        en: Developer
+      assignedBy: invite
+    - key: auditor
+      label:
+        it: Auditor
+        en: Auditor
+      assignedBy: invite
+  limits:
+  - action: agent:scan_lead
+    per: user
+    max: 10
+    window: day
+  agents:
+  - key: scan_lead
+    role: main
+    description: 'Coordinates the scan: checks the written authorization, then hands off mapping, test design, execution and
+      verification in sequence.'
+    profile:
+      inline:
+        display_name: SentinellaAPI scan lead
+        crews:
+        - id: lead
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You coordinate authorized security scans of REST APIs. HARD RULE: never start any test without an
+            approved authorization.
+
+            Step 0 - authorization: read the records of authorized_scopes (tool for the current user). A scan may proceed
+            only if a record exists with the same base_url host, status ''approved'' and environment equal to the requested
+            one. If the goal says ''AUTHORIZATION APPROVED'', first write the record (host, base_url, environment, status
+            approved, approved_on date) into authorized_scopes, then proceed. If no approved record exists: call request_scope_authorization
+            once with base_url, environment, rate limit, allowed time windows, signatory and scope statement, then stop and
+            answer with a short report titled ''# Autorizzazione in attesa / Authorization pending'' explaining that the scan
+            starts after a platform admin verifies the signed perimeter. Do nothing else.
+
+            Step 1 - check the current time against the allowed windows; if outside, stop and say so.
+
+            Step 2 - in order, call ask_mapper (give it the base URL, spec link/text, test accounts notes), then ask_test_designer
+            (give it the map and the requested categories), then ask_executor (give it the test plan, the declared host ONLY,
+            the max requests per second and the windows), then ask_verifier (give it plan and raw results). Pass each output
+            to the next.
+
+            Step 3 - write the final report in the language with ISO code from the goal. Start with a level-1 title ''# Scansione
+            <host> - <date>''. Sections: ## Sintesi (counts by severity, overall risk), ## Vulnerabilità (for each confirmed
+            finding: ID, title, OWASP API category, severity Critical/High/Medium/Low, endpoint, test request, test response
+            excerpt with secrets and personal data masked, impact, remediation), ## Scartati come falsi positivi (short list),
+            ## Copertura e limiti (what was not tested and why), ## Prossimi passi. Add a chart block of findings by severity:
+
+            ```chart
+
+            {"type":"bar","title":"Findings by severity","labels":["Critical","High","Medium","Low"],"series":[{"name":"Findings","values":[0,0,0,0]}]}
+
+            ```
+
+            with the real counts. Never invent findings or evidence. No destructive tests, no denial of service, no data modification
+            beyond what the test accounts allow. For weekly runs, highlight critical findings first and state what is new.'
+    goalTemplate: 'Target: {base_url}
+
+      Environment: {environment_label}
+
+      Max requests per second: {rps}
+
+      Allowed time windows: {windows}
+
+      {?spec_url}OpenAPI / collection link: {spec_url}{/spec_url}
+
+      {?spec_text}OpenAPI / collection pasted:
+
+      {spec_text}{/spec_text}
+
+      {?test_accounts}Test accounts and roles (notes): {test_accounts}{/test_accounts}
+
+      {?categories}Categories requested: {categories}{/categories}
+
+      Signatory: {signatory}. Scope statement: {scope_statement}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    output: markdown
+    delegates:
+    - mapper
+    - test_designer
+    - executor
+    - verifier
+    awaits:
+    - scope_authorization
+    appTools:
+    - name: read_authorized_scopes
+      description: Read the authorized perimeters of the current user
+      action: read
+      collection: authorized_scopes
+      scope: user
+    - name: write_authorized_scopes
+      description: Record an approved perimeter for the current user
+      action: write
+      collection: authorized_scopes
+      scope: user
+    limits:
+      maxTurns: 60
+      maxBudgetUsd: 3
+      timeoutSeconds: 3600
+  - key: mapper
+    role: helper
+    description: Maps endpoints, parameters and roles.
+    profile:
+      inline:
+        display_name: SentinellaAPI mapper
+        crews:
+        - id: mapper
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You map a REST API from its OpenAPI specification or call collection (text given to you). Output
+            a structured inventory: for each endpoint method + path, parameters (path, query, body fields with types), authentication
+            required, roles that may call it, whether it handles object identifiers, returns personal data, or accepts writable
+            fields. Also list the roles and the test accounts available. Use only what is in the input; flag gaps explicitly
+            and never invent endpoints.'
+  - key: test_designer
+    role: helper
+    description: Generates OWASP API Top 10 test cases.
+    profile:
+      inline:
+        display_name: SentinellaAPI test designer
+        crews:
+        - id: designer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'From the endpoint map you design a numbered list of non-destructive test cases for the OWASP API
+            Security Top 10: broken object level authorization (swap IDs between test accounts), broken authentication (weak/missing
+            token checks, token reuse), excessive data exposure (fields not needed by the role), mass assignment (extra privileged
+            fields in writes, only on test data), missing rate limiting (a small bounded burst well under the allowed rate),
+            plus other requested categories. For each case: ID, category, endpoint, exact request (method, path, headers without
+            secrets, body), expected safe behaviour, and the evidence that would indicate a vulnerability. Prefer GET and
+            idempotent calls; mark any write test as needing test data. Never include exploits that damage data or availability.'
+  - key: executor
+    role: helper
+    description: Runs the test requests against the declared host only, within load limits.
+    profile:
+      inline:
+        display_name: SentinellaAPI executor
+        crews:
+        - id: executor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You execute a given test plan through the WebRobot MCP. RULES: send requests ONLY to the single
+            host declared in your instructions (exact host match, no redirects to other hosts: stop if one occurs); never
+            exceed the maximum requests per second given, keep bursts small and sequential; stop immediately if the current
+            time leaves the allowed window, if you see signs of service degradation (5xx growing, timeouts) or if a response
+            exposes real customer data beyond the test accounts. Do not build pipelines that crawl or fuzz beyond the plan.
+            For each test record: test ID, the request sent, status code, relevant headers, a response excerpt (mask tokens,
+            secrets and personal data), latency, and the raw outcome. Report honestly tests you could not run. Never invent
+            responses.'
+  - key: verifier
+    role: helper
+    description: Verifies results and removes false positives.
+    profile:
+      inline:
+        display_name: SentinellaAPI verifier
+        crews:
+        - id: verifier
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You review raw test results against the test plan. Confirm a vulnerability only when the evidence
+            in the response proves it (e.g. another user's object returned, privileged field accepted and reflected, no throttling
+            after a bounded burst). Otherwise mark it as false positive or inconclusive with the reason. For each confirmed
+            finding give severity (Critical/High/Medium/Low, with a one-line rationale in CVSS terms), impact and a concrete
+            remediation. Never upgrade a finding without evidence and never invent evidence.
+  inputForm:
+    title:
+      it: Nuova scansione
+      en: New scan
+    fields:
+    - name: base_url
+      type: url
+      required: true
+      label:
+        it: URL base
+        en: Base URL
+    - name: environment
+      type: select
+      required: true
+      default: staging
+      label:
+        it: Ambiente
+        en: Environment
+      help:
+        it: Si consiglia staging.
+        en: Staging is recommended.
+      options:
+      - value: staging
+        label: Staging
+      - value: test
+        label: Test
+      - value: production
+        label:
+          it: Produzione (sconsigliato)
+          en: Production (not recommended)
+    - name: rps
+      type: number
+      required: true
+      default: 5
+      label:
+        it: Richieste al secondo (max)
+        en: Max requests per second
+    - name: windows
+      type: text
+      required: true
+      label:
+        it: Finestre orarie consentite
+        en: Allowed time windows
+      help:
+        it: es. lun-ven 22:00-06:00 CET
+        en: e.g. Mon-Fri 22:00-06:00 CET
+    - name: spec_url
+      type: url
+      label:
+        it: Link alla specifica OpenAPI o collezione
+        en: Link to OpenAPI spec or collection
+    - name: spec_text
+      type: textarea
+      maxLength: 20000
+      label:
+        it: Oppure incolla la specifica
+        en: Or paste the spec
+    - name: test_accounts
+      type: textarea
+      maxLength: 2000
+      label:
+        it: Account di test e ruoli
+        en: Test accounts and roles
+      help:
+        it: Descrivi ruoli e account; usa token di test a breve scadenza, mai credenziali reali di produzione.
+        en: Describe roles and accounts; use short-lived test tokens, never real production credentials.
+    - name: categories
+      type: multiselect
+      label:
+        it: Categorie
+        en: Categories
+      options:
+      - value: bola
+        label:
+          it: Autorizzazione a livello di oggetto
+          en: Object level authorization
+      - value: auth
+        label:
+          it: Autenticazione debole
+          en: Weak authentication
+      - value: exposure
+        label:
+          it: Esposizione eccessiva di dati
+          en: Excessive data exposure
+      - value: mass_assignment
+        label: Mass assignment
+      - value: rate_limit
+        label: Rate limiting
+    - name: signatory
+      type: text
+      required: true
+      label:
+        it: Responsabile che firma il perimetro
+        en: Signatory of the perimeter
+    - name: scope_statement
+      type: textarea
+      required: true
+      maxLength: 1500
+      label:
+        it: Dichiarazione di autorizzazione
+        en: Authorization statement
+      help:
+        it: Dichiaro di essere autorizzato a far testare gli host indicati, nei limiti e nelle finestre sopra.
+        en: I declare I am authorized to have the listed hosts tested, within the limits and windows above.
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: SentinellaAPI
+    sections:
+    - type: hero
+      band: true
+      eyebrow:
+        it: Security testing per API REST
+        en: REST API security testing
+      title:
+        it: Trova le **vulnerabilità delle tue API** prima degli altri.
+        en: Find your **API vulnerabilities** before anyone else does.
+      text:
+        it: Un team di agenti AI mappa le API, testa l'OWASP API Top 10 nel perimetro che autorizzi e ti consegna un report
+          con prove e correzioni.
+        en: A team of AI agents maps your APIs, tests the OWASP API Top 10 inside the perimeter you authorize and delivers
+          a report with evidence and fixes.
+      actions:
+      - label:
+          it: Inizia
+          en: Get started
+        href: /v/new_scan
+        style: primary
+      - label:
+          it: Accedi
+          en: Sign in
+        href: /login
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Autorizza il perimetro
+          en: Authorize the perimeter
+        text:
+          it: Indichi URL, ambiente, limiti e finestre; il responsabile dichiara il perimetro e un admin lo verifica.
+          en: You give URL, environment, limits and windows; the signatory declares the perimeter and an admin verifies it.
+        badge: 📝
+      - title:
+          it: Mappa e progetta
+          en: Map and design
+        text:
+          it: Un agente mappa endpoint, parametri e ruoli; un altro genera i test OWASP.
+          en: One agent maps endpoints, parameters and roles; another generates the OWASP tests.
+        badge: 🗺️
+      - title:
+          it: Esegui e verifica
+          en: Run and verify
+        text:
+          it: Le chiamate vanno solo agli host dichiarati, entro i limiti; un verificatore elimina i falsi positivi.
+          en: Calls go only to declared hosts within the limits; a verifier removes false positives.
+        badge: 🛡️
+      - title:
+          it: Report e storico
+          en: Report and history
+        text:
+          it: Gravità, richiesta e risposta di prova, correzione. Su richiesta o ogni settimana.
+          en: Severity, test request and response, fix. On demand or weekly.
+        badge: 📊
+    - type: cards
+      id: sicurezza
+      title:
+        it: Sicurezza e limiti
+        en: Safety and limits
+      items:
+      - title:
+          it: Nessun test senza approvazione
+          en: No test without approval
+        text:
+          it: Senza autorizzazione verificata gli agenti non partono.
+          en: Without a verified authorization the agents do not start.
+      - title:
+          it: Test non distruttivi
+          en: Non-destructive tests
+        text:
+          it: Niente DoS, carico limitato, stop in caso di degrado.
+          en: No DoS, bounded load, stop on degradation.
+      - title:
+          it: Dati separati
+          en: Separate data
+        text:
+          it: Ogni azienda vede solo i propri target e report.
+          en: Each company sees only its own targets and reports.
+    - type: note
+      content:
+        it: Usa SentinellaAPI solo su sistemi di cui sei autorizzato a testare la sicurezza. Il report è un supporto tecnico,
+          non una certificazione.
+        en: Use SentinellaAPI only on systems you are authorized to test. The report is technical support, not a certification.
+  - key: new_scan
+    type: new_run
+    title:
+      it: Nuova scansione
+      en: New scan
+    roles:
+    - owner
+    - developer
+    - admin
+  - key: scans
+    type: history
+    title:
+      it: Storico scansioni
+      en: Scan history
+    source: run
+    roles:
+    - owner
+    - developer
+    - auditor
+    - admin
+  - key: scan_report
+    type: report
+    title:
+      it: Report
+      en: Report
+    source: run
+    printable: true
+    nav: false
+  - key: targets
+    type: instances
+    template: weekly_scan
+    title:
+      it: Target e scansioni settimanali
+      en: Targets and weekly scans
+    roles:
+    - owner
+    - developer
+    - admin
+  - key: authorizations
+    type: approvals
+    title:
+      it: Autorizzazioni da verificare
+      en: Authorizations to verify
+    approvals:
+    - scope_authorization
+    roles:
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Subscription
+    roles:
+    - owner
+    - admin
+  data:
+    collections:
+    - name: authorized_scopes
+      ownedBy: user
+      description: Perimeters approved by a platform admin for each customer
+      fields:
+      - name: host
+        type: text
+      - name: base_url
+        type: url
+      - name: environment
+        type: text
+      - name: status
+        type: text
+      - name: approved_on
+        type: date
+  approvals:
+  - key: scope_authorization
+    title:
+      it: Verifica autorizzazione al test
+      en: Test authorization check
+    description: A platform admin verifies the signed perimeter (ownership of the host, environment, limits, windows) before
+      any test.
+    role: admin
+    decidedBy: role
+    fields:
+    - base_url
+    - environment
+    - rps
+    - windows
+    - signatory
+    - scope_statement
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: on_scope_approved
+    description: When the admin approves a perimeter, the scan starts
+    'on':
+      approval: scope_authorization
+      decision: approved
+    start:
+      agent: scan_lead
+    goal: 'AUTHORIZATION APPROVED. Event: {event}. Record the perimeter in authorized_scopes and run the scan with the parameters
+      of the event.'
+    asUser: true
+  templates:
+  - key: weekly_scan
+    title:
+      it: Scansione settimanale
+      en: Weekly scan
+    description:
+      it: Un target scansionato ogni settimana, con le novità rispetto all'ultima.
+      en: A target scanned every week, with what is new since last time.
+    agent: scan_lead
+    params:
+    - name: base_url
+      type: url
+      required: true
+      label:
+        it: URL base
+        en: Base URL
+    - name: environment
+      type: select
+      required: true
+      default: staging
+      label:
+        it: Ambiente
+        en: Environment
+      options:
+      - value: staging
+        label: Staging
+      - value: test
+        label: Test
+      - value: production
+        label:
+          it: Produzione
+          en: Production
+    - name: rps
+      type: number
+      required: true
+      default: 5
+      label:
+        it: Richieste al secondo (max)
+        en: Max requests per second
+    - name: windows
+      type: text
+      required: true
+      label:
+        it: Finestre orarie
+        en: Time windows
+    - name: spec_url
+      type: url
+      label:
+        it: Link specifica OpenAPI
+        en: OpenAPI spec link
+    - name: test_accounts
+      type: textarea
+      maxLength: 2000
+      label:
+        it: Account di test e ruoli
+        en: Test accounts and roles
+    - name: signatory
+      type: text
+      required: true
+      label:
+        it: Responsabile firmatario
+        en: Signatory
+    - name: scope_statement
+      type: textarea
+      required: true
+      maxLength: 1500
+      label:
+        it: Dichiarazione di autorizzazione
+        en: Authorization statement
+    goal: 'Weekly scan of "{instance}". Target: {base_url}. Environment: {environment}. Max requests per second: {rps}. Allowed
+      time windows: {windows}. {?spec_url}OpenAPI link: {spec_url}.{/spec_url} {?test_accounts}Test accounts: {test_accounts}.{/test_accounts}
+      Signatory: {signatory}. Scope statement: {scope_statement}. Today is {date}. Write the report in the language with ISO
+      code {lang}, putting new and critical findings first.'
+    schedule:
+      cron: 0 2 * * 1
+      userCanChange: true
+    maxPerUser: 5
+    roles:
+    - owner
+    - developer
+    - admin
+    cost:
+      perRun: 150
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 0
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:scan_lead:
+        estimate: 150
+        metered: true
+    packs:
+    - key: scans_1000
+      credits: 1000
+      price: 12
+      label: 1000 crediti
+    plans:
+    - key: api_5
+      price: 79
+      interval: month
+      label:
+        it: Fino a 5 API
+        en: Up to 5 APIs
+      credits: 1500
+      creditsReset: monthly
+      roles:
+      - owner
+    - key: api_20
+      price: 249
+      interval: month
+      label:
+        it: Fino a 20 API
+        en: Up to 20 APIs
+      credits: 6000
+      creditsReset: monthly
+      roles:
+      - owner
+  extensions:
+  - key: email_alerts
+    description: 'Email alerts on critical findings are not available yet: criticals are shown at the top of each report and
+      in the history; the weekly report is read in the app.'
+  - key: file_upload
+    description: 'Uploading OpenAPI files or call collections is not available yet: the customer gives a link or pastes the
+      spec as text.'
+  - key: digital_signature
+    description: 'A qualified digital signature is not available: the signatory declares the perimeter in the form and a platform
+      admin verifies it in the approvals view before any scan.'
+  - key: hard_gate_and_host_enforcement
+    description: The authorization gate and the single-host restriction are enforced by the agents' instructions and the authorized_scopes
+      records, not by a runtime-level network filter; per-target egress allow-lists would need a platform feature.
+  - key: company_sharing
+    description: Sharing targets and reports between users of the same company (owner, developer, auditor) and plan limits
+      on the number of APIs are not expressible yet; records are per user and the API count is a commercial limit to enforce
+      manually.
+  - key: test_credentials
+    description: 'Per-target credential storage is not available: customers describe test accounts in notes and must use short-lived
+      staging test tokens, never production secrets.'

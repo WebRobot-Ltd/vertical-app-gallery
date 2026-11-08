@@ -1,0 +1,929 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: normavigile
+  displayName: NormaVigile
+  tagline:
+    it: La normativa finanziaria, leggibile e monitorata.
+    en: Financial regulation, readable and monitored.
+  description:
+    it: NormaVigile segue ogni notte EUR-Lex, Gazzetta Ufficiale, Banca d'Italia, EBA ed ESMA, confronta ogni atto articolo
+      per articolo con la versione precedente, classifica le modifiche per tema e impatto e risponde alle domande del tuo
+      ufficio compliance con citazioni puntuali.
+    en: NormaVigile follows EUR-Lex, Gazzetta Ufficiale, Banca d'Italia, EBA and ESMA every night, compares each act article
+      by article with its previous version, classifies changes by theme and impact and answers your compliance team's questions
+      with precise citations.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#12304a'
+      accent: '#0f7b8a'
+      background: '#f6f8fa'
+      foreground: '#16202b'
+    fonts:
+      body: Inter
+      display: Source Serif 4
+    wordmark:
+    - text: Norma
+      color: primary
+    - text: Vigile
+      color: accent
+    width: wide
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Fonti
+        en: Sources
+      href: '#fonti'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Super admin
+      assignedBy: admin_emails
+    - key: company_admin
+      label:
+        it: Admin azienda
+        en: Company admin
+      assignedBy: invite
+    - key: user
+      label:
+        it: Utente compliance
+        en: Compliance user
+      assignedBy: signup
+  limits:
+  - action: chat
+    per: user
+    max: 40
+    window: hour
+    roles:
+    - user
+    - company_admin
+  egress:
+    hosts: []
+    notes: 'No direct API calls: sources are read by the ingestion agent through the WebRobot MCP (public pages and feeds
+      of EUR-Lex, Gazzetta Ufficiale, Banca d''Italia, EBA, ESMA; respect each site''s reuse terms and cite the source).'
+  agents:
+  - key: ingestor
+    role: scheduled
+    description: 'Nightly: collects new and amended acts from the five sources, stores each version and computes the article-by-article
+      diff.'
+    profile:
+      inline:
+        display_name: NormaVigile ingestor
+        crews:
+        - id: ingestor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 2.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You collect financial regulation for Italian banks, investment firms (SIM) and fintechs. Sources:
+            EUR-Lex, Gazzetta Ufficiale, Banca d''Italia, EBA, ESMA. Use the WebRobot MCP to scrape the official listing pages/feeds
+            of the last 2 days (build and run the scraping pipelines through the MCP; never write code yourself). For each
+            act found: 1) call search_acts to see if it is already stored (match by official id or url); 2) read the full
+            text split by article; 3) if new, write_act and write_version (version 1, articles as a list of {number, text});
+            4) if it exists, compare with the latest stored version (read_versions): when the text differs, write a new version
+            and, for EVERY article added, removed or changed, write_change with act_id, act_title, authority, version_from,
+            version_to, article, change_summary (one factual sentence), before, after (short quotes), url (official link to
+            the article or act), detected_on (today) and classified=false. Never invent text or articles: only store what
+            you actually read from the official source, always with its official URL. If a source is unreachable, say so in
+            the final summary. Finish with a short Markdown report starting with ''# Ingestion <date>'' listing acts new/changed
+            per source and errors.'
+    appTools:
+    - name: search_acts
+      description: Search stored acts
+      action: search
+      collection: acts
+      scope: all
+    - name: read_versions
+      description: Read stored versions of an act
+      action: read
+      collection: act_versions
+      scope: all
+    - name: write_act
+      description: Create or update an act
+      action: write
+      collection: acts
+      scope: all
+    - name: write_version
+      description: Store a version of an act
+      action: write
+      collection: act_versions
+      scope: all
+    - name: write_change
+      description: Store or update an article-level change
+      action: write
+      collection: changes
+      scope: all
+    goalTemplate: Today is {date}. Run the nightly collection and diff for all five sources.
+    output: markdown
+    limits:
+      maxTurns: 60
+      maxBudgetUsd: 2.0
+      timeoutSeconds: 3000
+  - key: classifier
+    role: analyst
+    description: Classifies unclassified changes by theme and impact; records are searchable full text.
+    profile:
+      inline:
+        display_name: NormaVigile classifier
+        crews:
+        - id: classifier
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You classify regulatory changes. Use search_changes to get records with classified=false. For each,
+            decide theme (one of: aml, credit, ict, transparency, other), impact (low, medium, high, critical) and a one-sentence
+            impact_note on what a bank, SIM or fintech must do. Use critical only for new obligations with a deadline, sanctions
+            or scope changes. Base yourself only on the stored change text; if unclear, choose impact medium and say so in
+            impact_note. Then write_change the same record with theme, impact, impact_note and classified=true. Finish with
+            a Markdown report starting with ''# Classification <date>'' with counts per theme and impact.'
+    appTools:
+    - name: search_changes
+      description: Search changes
+      action: search
+      collection: changes
+      scope: all
+    - name: write_change
+      description: Store or update an article-level change
+      action: write
+      collection: changes
+      scope: all
+    goalTemplate: Today is {date}. Classify all changes not yet classified.
+    output: markdown
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.0
+  - key: assistant
+    role: main
+    description: 'Chat for compliance users: answers with article-level citations and official links.'
+    profile:
+      inline:
+        display_name: NormaVigile assistant
+        crews:
+        - id: assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are NormaVigile, an assistant for compliance officers of Italian banks, SIM and fintechs. Answer
+            ONLY from the stored acts, versions and changes (use search_acts, read_versions, search_changes). Every statement
+            of law must carry a citation in the form: *Act title, art. N (version/date)* followed by the official link. If
+            you find nothing, say so plainly; never invent articles, dates or links. When asked what changed, use the stored
+            article-level changes. Use read_company to tailor answers to the user''s intermediary type. When the user asks
+            to keep a note, use write_note; when they ask to mark an act as critical, use mark_critical. You support compliance
+            work and are not legal advice: remind this briefly when a question implies a legal decision. Answer in the language
+            of the user, concise, with short bullet lists.'
+    appTools:
+    - name: search_acts
+      description: Search stored acts
+      action: search
+      collection: acts
+      scope: all
+    - name: read_versions
+      description: Read stored versions of an act
+      action: read
+      collection: act_versions
+      scope: all
+    - name: search_changes
+      description: Search changes
+      action: search
+      collection: changes
+      scope: all
+    - name: read_company
+      description: Read the user's company profile
+      action: read
+      collection: company
+      scope: user
+    - name: write_note
+      description: Save a private note
+      action: write
+      collection: notes
+      scope: user
+    - name: mark_critical
+      description: Mark an act as critical for this company
+      action: write
+      collection: critical_marks
+      scope: user
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New message from {user} ({date}): {message}
+
+      Reply in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.5
+  - key: digester
+    role: helper
+    description: Weekly digest of relevant changes for one perimeter.
+    memory: instance
+    writesTo:
+      collection: weekly_digests
+    profile:
+      inline:
+        display_name: NormaVigile weekly digest
+        crews:
+        - id: digester
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the Monday regulatory digest for one perimeter (intermediary type, themes, authorities).
+            Use search_changes to get classified changes of the last 7 days, keep only those matching the themes and authorities,
+            and rank by impact. Start with ''# Novità normative — settimana del <date>'' (or English equivalent if asked).
+            Sections: ## Da fare subito (high/critical), ## Da monitorare, ## Nessun impatto per il perimetro (count only).
+            For each item: act, article, what changed, why it matters for the intermediary type, official link. Never invent
+            items; if nothing relevant, say so. Your memory holds last week''s items: do not repeat them unless updated. At
+            the end call remember with the item ids of this digest.'
+    appTools:
+    - name: search_changes
+      description: Search changes
+      action: search
+      collection: changes
+      scope: all
+    goalTemplate: Write the weekly digest for this regulatory perimeter. Today is {date}. Reply in the language with ISO code
+      {lang}.
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.6
+  - key: alerter
+    role: helper
+    description: Daily check of acts the company marked as critical; writes an alert when one changed.
+    memory: instance
+    writesTo:
+      collection: alerts
+    profile:
+      inline:
+        display_name: NormaVigile critical alerts
+        crews:
+        - id: alerter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You check whether acts marked critical by this company changed since the last check. Use read_marks
+            to list the marked acts, then search_changes for changes detected in the last 24 hours on those act ids. If none
+            changed, answer exactly ''# Nessuna variazione'' with one line. Otherwise start with ''# ALERT — <n> atti critici
+            modificati'' and list for each: act, article, what changed, impact, official link. Never invent changes.'
+    appTools:
+    - name: read_marks
+      description: Read the user's critical marks
+      action: read
+      collection: critical_marks
+      scope: user
+    - name: search_changes
+      description: Search changes
+      action: search
+      collection: changes
+      scope: all
+    goalTemplate: Check the critical acts of this user for changes. Today is {date}. Reply in the language with ISO code {lang}.
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.3
+  templates:
+  - key: perimeter
+    title:
+      it: Perimetro normativo
+      en: Regulatory perimeter
+    description:
+      it: 'Definisci tipo di intermediario, temi e autorità: ogni lunedì un digest delle novità rilevanti.'
+      en: 'Define intermediary type, themes and authorities: a digest of relevant news every Monday.'
+    agent: digester
+    params:
+    - name: intermediary
+      type: select
+      required: true
+      label:
+        it: Tipo di intermediario
+        en: Intermediary type
+      options:
+      - value: bank
+        label:
+          it: Banca
+          en: Bank
+      - value: sim
+        label: SIM
+      - value: fintech
+        label: Fintech
+      - value: other
+        label:
+          it: Altro
+          en: Other
+    - name: themes
+      type: multiselect
+      required: true
+      label:
+        it: Temi
+        en: Themes
+      options:
+      - value: aml
+        label:
+          it: Antiriciclaggio
+          en: AML
+      - value: credit
+        label:
+          it: Credito
+          en: Credit
+      - value: ict
+        label: ICT
+      - value: transparency
+        label:
+          it: Trasparenza
+          en: Transparency
+    - name: authorities
+      type: multiselect
+      required: true
+      label:
+        it: Autorità
+        en: Authorities
+      options:
+      - value: eurlex
+        label: EUR-Lex
+      - value: gu
+        label: Gazzetta Ufficiale
+      - value: bdi
+        label: Banca d'Italia
+      - value: eba
+        label: EBA
+      - value: esma
+        label: ESMA
+    goal: 'Perimeter "{instance}": intermediary {intermediary}, themes {themes}, authorities {authorities}. Today is {date}.
+      Write this week''s digest in the language with ISO code {lang}.'
+    schedule:
+      cron: 0 6 * * 1
+      userCanChange: true
+    maxPerUser: 5
+    roles:
+    - company_admin
+    - admin
+    cost:
+      perRun: 10
+  - key: critical_watch
+    title:
+      it: Alert atti critici
+      en: Critical act alerts
+    description:
+      it: Ogni giorno controlla gli atti che hai marcato come critici e avvisa se cambiano.
+      en: Daily check of the acts you marked critical, flagging any change.
+    agent: alerter
+    params:
+    - name: label
+      type: text
+      required: true
+      label:
+        it: Nome
+        en: Name
+    goal: Check critical acts for "{instance}". Today is {date}. Write in the language with ISO code {lang}.
+    schedule:
+      cron: 30 6 * * *
+      userCanChange: false
+    maxPerUser: 1
+    cost:
+      perRun: 2
+  data:
+    collections:
+    - name: acts
+      ownedBy: app
+      searchable: true
+      description: Acts collected from the official sources
+      fields:
+      - name: act_id
+        type: text
+      - name: title
+        type: text
+      - name: authority
+        type: text
+      - name: kind
+        type: text
+      - name: published
+        type: date
+      - name: latest_version
+        type: number
+      - name: url
+        type: url
+    - name: act_versions
+      ownedBy: app
+      searchable: true
+      description: Every version of every act, text by article
+      fields:
+      - name: act_id
+        type: text
+      - name: version
+        type: number
+      - name: version_date
+        type: date
+      - name: articles
+        type: json
+      - name: url
+        type: url
+    - name: changes
+      ownedBy: app
+      searchable: true
+      description: Article-level diffs with classification
+      fields:
+      - name: act_id
+        type: text
+      - name: act_title
+        type: text
+      - name: authority
+        type: text
+      - name: version_from
+        type: number
+      - name: version_to
+        type: number
+      - name: article
+        type: text
+      - name: change_summary
+        type: text
+      - name: before
+        type: textarea
+      - name: after
+        type: textarea
+      - name: theme
+        type: select
+        options:
+        - aml
+        - credit
+        - ict
+        - transparency
+        - other
+      - name: impact
+        type: select
+        options:
+        - low
+        - medium
+        - high
+        - critical
+      - name: impact_note
+        type: text
+      - name: classified
+        type: boolean
+      - name: detected_on
+        type: date
+      - name: url
+        type: url
+    - name: company
+      ownedBy: user
+      sharing:
+      - viewer
+      - editor
+      description: The customer's company profile
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: intermediary
+        type: text
+      - name: notes
+        type: textarea
+    - name: notes
+      ownedBy: user
+      sharing:
+      - viewer
+      - editor
+      searchable: true
+      description: Private compliance notes
+      fields:
+      - name: act_id
+        type: text
+      - name: article
+        type: text
+      - name: note
+        type: textarea
+    - name: critical_marks
+      ownedBy: user
+      sharing:
+      - viewer
+      - editor
+      description: Acts the company marked as critical
+      fields:
+      - name: act_id
+        type: text
+      - name: act_title
+        type: text
+      - name: reason
+        type: text
+    - name: weekly_digests
+      ownedBy: instance
+      description: Weekly digests of each perimeter
+    - name: alerts
+      ownedBy: instance
+      description: Critical-act alerts of each user
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: NormaVigile
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow:
+        it: Per banche, SIM e fintech
+        en: For banks, investment firms and fintechs
+      title:
+        it: La normativa finanziaria, **leggibile** e **monitorata**.
+        en: Financial regulation, **readable** and **monitored**.
+      text:
+        it: 'Ogni notte seguiamo cinque fonti ufficiali, confrontiamo ogni atto articolo per articolo e ti avvisiamo di ciò
+          che conta per il tuo perimetro. Chiedi alla chat: risposte con articolo e link ufficiale.'
+        en: 'Every night we follow five official sources, diff each act article by article and tell you what matters for your
+          perimeter. Ask the chat: answers with article and official link.'
+      actions:
+      - label:
+          it: Inizia
+          en: Get started
+        href: /login
+        style: primary
+      - label:
+          it: Come funziona
+          en: How it works
+        href: '#come-funziona'
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Definisci il perimetro
+          en: Define your perimeter
+        text:
+          it: Tipo di intermediario, temi e autorità da seguire.
+          en: Intermediary type, themes and authorities to follow.
+        badge: '1'
+      - title:
+          it: Monitoraggio notturno
+          en: Nightly monitoring
+        text:
+          it: Nuovi atti, versioni e diff articolo per articolo, classificati per tema e impatto.
+          en: New acts, versions and article-level diffs, classified by theme and impact.
+        badge: '2'
+      - title:
+          it: Chiedi e ricevi
+          en: Ask and receive
+        text:
+          it: Chat con citazioni puntuali, digest del lunedì e alert sugli atti critici.
+          en: Chat with precise citations, Monday digest and alerts on critical acts.
+        badge: '3'
+    - type: cards
+      id: fonti
+      title:
+        it: Fonti
+        en: Sources
+      items:
+      - title: EUR-Lex
+        text:
+          it: Legislazione dell'Unione europea.
+          en: European Union legislation.
+      - title: Gazzetta Ufficiale
+        text:
+          it: Atti normativi italiani.
+          en: Italian legislative acts.
+      - title: Banca d'Italia
+        text:
+          it: Disposizioni di vigilanza e comunicazioni.
+          en: Supervisory provisions and communications.
+      - title: EBA · ESMA
+        text:
+          it: Linee guida, standard tecnici e Q&A.
+          en: Guidelines, technical standards and Q&A.
+    - type: note
+      content:
+        it: NormaVigile è un supporto al lavoro di compliance, non consulenza legale. Verifica sempre sulla fonte ufficiale.
+        en: NormaVigile supports compliance work and is not legal advice. Always verify on the official source.
+  - key: assistant_chat
+    type: chat
+    title:
+      it: Chiedi alla normativa
+      en: Ask the regulation
+    source: agent:assistant
+    placeholder:
+      it: Es. Cosa è cambiato nelle norme ICT questa settimana?
+      en: E.g. What changed in ICT rules this week?
+    examples:
+    - it: Cosa è cambiato questa settimana in materia di antiriciclaggio?
+      en: What changed this week on AML?
+    - it: Cita l'articolo sui requisiti di resilienza operativa digitale
+      en: Cite the article on digital operational resilience requirements
+    - it: Segna come critico l'ultimo atto EBA sul credito
+      en: Mark the latest EBA credit act as critical
+    roles:
+    - user
+    - company_admin
+    - admin
+  - key: perimeters
+    type: instances
+    template: perimeter
+    title:
+      it: Perimetri
+      en: Perimeters
+    roles:
+    - company_admin
+    - admin
+  - key: critical
+    type: instances
+    template: critical_watch
+    title:
+      it: Alert critici
+      en: Critical alerts
+    roles:
+    - user
+    - company_admin
+    - admin
+  - key: digests
+    type: list
+    title:
+      it: Digest settimanali
+      en: Weekly digests
+    source: collection:weekly_digests
+    roles:
+    - user
+    - company_admin
+    - admin
+  - key: changes_feed
+    type: table
+    title:
+      it: Modifiche recenti
+      en: Recent changes
+    source: collection:changes
+    data:
+      display: table
+      fields:
+      - key: detected_on
+        label:
+          it: Data
+          en: Date
+        format: date
+      - key: authority
+        label:
+          it: Autorità
+          en: Authority
+        format: badge
+      - key: act_title
+        label:
+          it: Atto
+          en: Act
+      - key: article
+        label:
+          it: Articolo
+          en: Article
+      - key: theme
+        label:
+          it: Tema
+          en: Theme
+        format: badge
+      - key: impact
+        label:
+          it: Impatto
+          en: Impact
+        format: badge
+      - key: change_summary
+        label:
+          it: Modifica
+          en: Change
+      - key: url
+        label: Link
+        format: link
+      filters:
+      - field: classified
+        op: '='
+        value: true
+      sort:
+        field: detected_on
+        dir: desc
+      limit: 100
+      empty:
+        it: Nessuna modifica ancora.
+        en: No changes yet.
+    roles:
+    - user
+    - company_admin
+    - admin
+  - key: acts_archive
+    type: table
+    title:
+      it: Archivio atti
+      en: Acts archive
+    source: collection:acts
+    data:
+      display: table
+      fields:
+      - key: title
+        label:
+          it: Titolo
+          en: Title
+      - key: authority
+        label:
+          it: Autorità
+          en: Authority
+        format: badge
+      - key: published
+        label:
+          it: Pubblicato
+          en: Published
+        format: date
+      - key: latest_version
+        label:
+          it: Versione
+          en: Version
+        format: number
+      - key: url
+        label: Link
+        format: link
+      sort:
+        field: published
+        dir: desc
+      limit: 200
+    roles:
+    - user
+    - company_admin
+    - admin
+  - key: company_view
+    type: list
+    title:
+      it: Azienda
+      en: Company
+    source: collection:company
+    roles:
+    - company_admin
+    - admin
+  - key: notes_view
+    type: list
+    title:
+      it: Note
+      en: Notes
+    source: collection:notes
+    roles:
+    - user
+    - company_admin
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Subscription
+    roles:
+    - company_admin
+    - admin
+  schedules:
+  - agent: ingestor
+    cron: 0 1 * * *
+    action: run
+    owner: app
+    goal: Run the nightly collection and diff for all five sources.
+  - agent: classifier
+    cron: 0 4 * * *
+    action: run
+    owner: app
+    goal: Classify all changes not yet classified.
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 20
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:assistant:
+        estimate: 10
+        metered: true
+    plans:
+    - key: team_5
+      price: 149
+      interval: month
+      label:
+        it: Team — fino a 5 utenti
+        en: Team — up to 5 users
+      credits: 2000
+      creditsReset: monthly
+      roles:
+      - company_admin
+    - key: team_15
+      price: 399
+      interval: month
+      label:
+        it: Business — fino a 15 utenti
+        en: Business — up to 15 users
+      credits: 7000
+      creditsReset: monthly
+      roles:
+      - company_admin
+    - key: team_50
+      price: 999
+      interval: month
+      label:
+        it: Enterprise — fino a 50 utenti
+        en: Enterprise — up to 50 users
+      credits: 25000
+      creditsReset: monthly
+      roles:
+      - company_admin
+    packs:
+    - key: topup
+      credits: 1000
+      price: 15
+      label: Top-up
+  extensions:
+  - key: email_notifications
+    description: 'Not available yet: the Monday digest and the immediate critical-act alert are shown in the app (digests
+      and alerts views) but cannot be sent by email until notifications exist.'
+  - key: company_tenancy
+    description: 'Not available yet: there is no company/seat concept. Company profile, notes and critical marks are per user
+      and shared with colleagues through per-record invitations (viewer/editor); user seats per plan are tiers, not enforced
+      per-seat billing.'
+  - key: per_customer_critical_alert
+    description: Alerts on critical acts are produced by a daily per-user watch instance (cheap) rather than an instant event,
+      since app-wide data is shared and critical marks are private to each company.

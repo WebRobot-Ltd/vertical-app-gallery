@@ -1,0 +1,694 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: operapmi
+  displayName: OperaPMI
+  tagline: Gli agenti lavorano sulle email di ordini e offerte, tu approvi.
+  description: OperaPMI legge le email dei clienti (richieste d'offerta, ordini, solleciti), controlla listino e disponibilità,
+    prepara la bozza di risposta e la mette in coda per l'approvazione dell'impiegato responsabile. Ogni sera il titolare
+    trova il riepilogo della giornata.
+  langs:
+  - it
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f3a5f'
+      accent: '#e07a1f'
+      background: '#f6f7f9'
+      foreground: '#1b2430'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Opera
+      color: primary
+    - text: PMI
+      color: accent
+    byline: by WebRobot
+    width: wide
+  header:
+    links:
+    - label: Come funziona
+      href: '#come-funziona'
+    - label: Prezzi
+      href: '#prezzi'
+    cta:
+      label: Accedi
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Titolare
+      assignedBy: admin_emails
+    - key: vendite
+      label: Reparto vendite
+      assignedBy: invite
+    - key: magazzino
+      label: Reparto magazzino e consegne
+      assignedBy: invite
+  limits:
+  - action: agent:triage
+    per: app
+    max: 500
+    window: day
+  agents:
+  - key: triage
+    role: main
+    description: Legge una email del cliente, la classifica, estrae articoli, quantità e date, controlla il listino e prepara
+      la bozza di risposta da approvare.
+    profile:
+      inline:
+        display_name: OperaPMI - istruttoria email
+        crews:
+        - id: triage
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei l''assistente amministrativo di una piccola impresa italiana. Ricevi il testo di una email di
+            un cliente e prepari la bozza di risposta, che un impiegato approverà prima dell''invio: tu non invii nulla.
+
+
+            Passi: 1) classifica l''email: offerta (richiesta d''offerta), conferma_ordine (ordine), stato_consegna (sollecito
+            o richiesta di stato). 2) Estrai cliente, articoli (codice o descrizione), quantità e date richieste. 3) Per ogni
+            articolo usa lo strumento search_listino per prezzo, giacenza e tempi di consegna. Usa SOLO i dati trovati: se
+            un articolo non c''è o il dato manca, scrivilo come ''da verificare'', non inventare prezzi, disponibilità o date.
+            4) Scrivi una risposta cortese e professionale in italiano, con tabella degli articoli, totale imponibile se calcolabile,
+            tempi di consegna. 5) Assegna il reparto: vendite per offerte e ordini, magazzino per stato consegna. 6) Se mancano
+            dati essenziali, imposta stato ''bloccata'' e indica in note_blocco cosa serve. 7) Se non sei in stato bloccata
+            chiama request_approva_vendite o request_approva_magazzino secondo il reparto.
+
+
+            Formato dell''output: inizia con un titolo di livello 1 ''# <Tipo> - <Cliente>'', poi le sezioni ## Sintesi della
+            richiesta, ## Dati estratti, ## Verifica listino e disponibilità, ## Bozza di risposta (oggetto e testo). Chiudi
+            con un blocco ```json con un solo oggetto: {"email_id":"…","tipo":"offerta|conferma_ordine|stato_consegna","cliente":"…","reparto":"vendite|magazzino","righe":[{"articolo":"…","quantita":0,"prezzo":0,"disponibile":true}],"oggetto_risposta":"…","corpo_risposta":"…","stato":"da_approvare|bloccata","note_blocco":"…"}.
+            Non dare consulenza legale o fiscale e non promettere condizioni non presenti nel listino.'
+    goalTemplate: 'Email ricevuta da: {mittente}
+
+      Oggetto: {oggetto}
+
+      Identificativo: {?email_id}{email_id}{/email_id}{!email_id}manuale-{date}{/email_id}
+
+      Testo:
+
+      {corpo}
+
+      Oggi è {date}. Rispondi in italiano.'
+    output: markdown+json
+    writesTo:
+      collection: bozze
+      parse: json_last
+      keyBy: email_id
+    awaits:
+    - approva_vendite
+    - approva_magazzino
+    appTools:
+    - name: search_listino
+      description: Cerca articoli nel listino e nella disponibilità di magazzino per codice o descrizione
+      action: search
+      collection: listino
+      scope: all
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.4
+  - key: executor
+    role: helper
+    description: Dopo l'approvazione registra l'ordine e prepara il testo finale pronto per l'invio.
+    profile:
+      inline:
+        display_name: OperaPMI - esecuzione
+        crews:
+        - id: executor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Una bozza è stata approvata da un impiegato. Il goal contiene i dettagli dell''approvazione; se
+            servono altri dati leggi le bozze con leggi_bozze e usa quella approvata più recente. Se è una conferma d''ordine,
+            registra l''ordine con lo strumento registra_ordine (cliente, righe, data di consegna, stato ''inserito'') usando
+            solo i dati della bozza approvata. Per offerte e aggiornamenti non registrare ordini. Poi scrivi un titolo ''#
+            Pratica chiusa - <Cliente>'' e un breve elenco di cosa è stato fatto. Non inventare dati. L''invio dell''email
+            e la scrittura nel gestionale esterno non sono ancora automatici: segnalalo come ''da inviare manualmente''.'
+    goalTemplate: Una bozza è stata approvata da un impiegato. Leggi con leggi_bozze la bozza approvata più recente, registra
+      l'ordine se è una conferma d'ordine e chiudi la pratica. Oggi è {date}. Rispondi in italiano.
+    output: markdown
+    appTools:
+    - name: registra_ordine
+      description: Registra un ordine approvato
+      action: write
+      collection: ordini
+      scope: all
+    - name: leggi_bozze
+      description: Legge le bozze e le pratiche
+      action: read
+      collection: bozze
+      scope: all
+  - key: summarizer
+    role: scheduled
+    description: Ogni sera riassume la giornata per il titolare.
+    profile:
+      inline:
+        display_name: OperaPMI - riepilogo serale
+        crews:
+        - id: summarizer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Prepari il riepilogo serale per il titolare di una piccola impresa. Leggi con leggi_bozze le pratiche
+            di oggi. Struttura: ''# Riepilogo del <data>'', poi ## Richieste gestite (per tipo), ## Tempi di risposta, ##
+            Pratiche bloccate o in attesa di approvazione (con cliente e motivo), ## Da fare domani. Usa solo i dati letti;
+            se mancano i tempi dillo. Aggiungi un grafico ```chart``` a barre delle richieste per tipo se hai dati. Chiudi
+            con un blocco ```json: {"data":"AAAA-MM-GG","sintesi":"…","richieste":0,"tempo_medio_min":0,"bloccate":0}.'
+    goalTemplate: Prepara il riepilogo di oggi, {date}. Rispondi in italiano.
+    output: markdown+json
+    writesTo:
+      collection: riepiloghi
+      parse: json_last
+      keyBy: data
+    appTools:
+    - name: leggi_bozze
+      description: Legge le bozze e le pratiche
+      action: read
+      collection: bozze
+      scope: all
+  inputForm:
+    title: Nuova email da analizzare
+    fields:
+    - name: mittente
+      type: email
+      required: true
+      label: Mittente
+    - name: oggetto
+      type: text
+      required: true
+      label: Oggetto
+    - name: email_id
+      type: text
+      label: Identificativo (facoltativo)
+      help: Lascia vuoto per un identificativo automatico
+    - name: corpo
+      type: textarea
+      required: true
+      maxLength: 6000
+      label: Testo dell'email
+      help: Incolla il testo dell'email del cliente
+  data:
+    collections:
+    - name: email_in
+      ownedBy: org
+      description: Email dei clienti in arrivo (inoltro automatico via webhook o inserimento manuale)
+      fields:
+      - name: email_id
+        type: text
+      - name: mittente
+        type: email
+      - name: oggetto
+        type: text
+      - name: corpo
+        type: textarea
+      - name: ricevuta_il
+        type: date
+    - name: bozze
+      ownedBy: org
+      description: Bozze di risposta preparate dall'agente, in coda per l'approvazione
+      fields:
+      - name: email_id
+        type: text
+      - name: tipo
+        type: select
+        options:
+        - value: offerta
+          label: Offerta
+        - value: conferma_ordine
+          label: Conferma ordine
+        - value: stato_consegna
+          label: Stato consegna
+      - name: cliente
+        type: text
+      - name: reparto
+        type: select
+        options:
+        - value: vendite
+          label: Vendite
+        - value: magazzino
+          label: Magazzino
+      - name: righe
+        type: json
+      - name: oggetto_risposta
+        type: text
+      - name: corpo_risposta
+        type: textarea
+      - name: stato
+        type: select
+        options:
+        - value: da_approvare
+          label: Da approvare
+        - value: bloccata
+          label: Bloccata
+        - value: approvata
+          label: Approvata
+        - value: rifiutata
+          label: Rifiutata
+      - name: note_blocco
+        type: text
+    - name: listino
+      ownedBy: org
+      description: Listino e disponibilità (da gestionale o inserito a mano)
+      fields:
+      - name: codice
+        type: text
+      - name: descrizione
+        type: text
+      - name: prezzo
+        type: number
+      - name: giacenza
+        type: number
+      - name: tempo_consegna_gg
+        type: number
+    - name: ordini
+      ownedBy: org
+      description: Ordini confermati dopo approvazione
+      fields:
+      - name: cliente
+        type: text
+      - name: righe
+        type: json
+      - name: consegna
+        type: date
+      - name: stato
+        type: text
+    - name: riepiloghi
+      ownedBy: org
+      description: Riepilogo serale per il titolare
+      fields:
+      - name: data
+        type: text
+      - name: sintesi
+        type: textarea
+      - name: richieste
+        type: number
+      - name: tempo_medio_min
+        type: number
+      - name: bloccate
+        type: number
+  approvals:
+  - key: approva_vendite
+    title: Approvazione bozza (vendite)
+    role: vendite
+    fields:
+    - cliente
+    - tipo
+    - oggetto_risposta
+    - corpo_risposta
+    timeoutMinutes: 1440
+    onTimeout: reject
+  - key: approva_magazzino
+    title: Approvazione bozza (magazzino)
+    role: magazzino
+    fields:
+    - cliente
+    - tipo
+    - oggetto_risposta
+    - corpo_risposta
+    timeoutMinutes: 1440
+    onTimeout: reject
+  triggers:
+  - key: nuova_email
+    description: Ogni email inserita avvia l'istruttoria
+    'on':
+      collection: email_in
+      op: insert
+    start:
+      agent: triage
+    goal: 'Email ricevuta da: {record.mittente}
+
+      Oggetto: {record.oggetto}
+
+      Identificativo: {record.email_id}
+
+      Testo:
+
+      {record.corpo}
+
+      Rispondi in italiano.'
+    asUser: false
+  - key: webhook_email
+    description: Inoltro dalla casella ordini tramite webhook
+    'on':
+      webhook: true
+    start:
+      agent: triage
+    goal: 'Email in arrivo (JSON): {event}. Rispondi in italiano.'
+    asUser: false
+  - key: bozza_vendite_ok
+    'on':
+      approval: approva_vendite
+      decision: approved
+    start:
+      agent: executor
+    goal: 'Bozza approvata: {event}'
+    asUser: false
+  - key: bozza_magazzino_ok
+    'on':
+      approval: approva_magazzino
+      decision: approved
+    start:
+      agent: executor
+    goal: 'Bozza approvata: {event}'
+    asUser: false
+  schedules:
+  - agent: summarizer
+    action: run
+    cron: 0 18 * * 1-5
+    owner: app
+  views:
+  - key: home
+    type: page
+    title: OperaPMI
+    nav: false
+    sections:
+    - type: hero
+      title: Le email di offerte e ordini, **gestite dagli agenti**. Tu approvi.
+      text: OperaPMI legge le richieste dei clienti, controlla listino e disponibilità e prepara la risposta. Niente parte
+        senza l'approvazione dell'impiegato responsabile.
+      actions:
+      - label: Accedi
+        href: /login
+        style: primary
+      - label: Come funziona
+        href: '#come-funziona'
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title: Come funziona
+      items:
+      - title: L'email arriva
+        text: L'agente capisce se è una richiesta d'offerta, un ordine o un sollecito ed estrae articoli, quantità e date.
+        badge: 📩
+      - title: Controllo e bozza
+        text: Verifica prezzi e disponibilità nel listino e scrive la risposta, senza inventare dati.
+        badge: 🤖
+      - title: Approvazione
+        text: L'impiegato del reparto approva, modifica o rifiuta la bozza in coda.
+        badge: ✅
+      - title: Riepilogo serale
+        text: Il titolare vede richieste gestite, tempi di risposta e pratiche bloccate.
+        badge: 📊
+    - type: cards
+      id: prezzi
+      title: Abbonamento mensile in base al volume
+      items:
+      - title: Base
+        text: 49 € al mese, fino a 300 email gestite.
+      - title: Pro
+        text: 129 € al mese, fino a 1.000 email gestite.
+    - type: note
+      content: 'OperaPMI prepara bozze: la responsabilità dell''invio resta dell''impiegato che approva.'
+  - key: nuova
+    type: new_run
+    title: Analizza una email
+    roles:
+    - vendite
+    - magazzino
+    - admin
+  - key: coda_vendite
+    type: table
+    title: Coda vendite
+    source: collection:bozze
+    data:
+      display: table
+      fields:
+      - key: cliente
+        label: Cliente
+      - key: tipo
+        label: Tipo
+        format: badge
+      - key: oggetto_risposta
+        label: Oggetto
+      - key: stato
+        label: Stato
+        format: badge
+      - key: note_blocco
+        label: Note
+      filters:
+      - field: reparto
+        op: '='
+        value: vendite
+      limit: 100
+      empty: Nessuna pratica in coda.
+    roles:
+    - vendite
+  - key: coda_magazzino
+    type: table
+    title: Coda magazzino e consegne
+    source: collection:bozze
+    data:
+      display: table
+      fields:
+      - key: cliente
+        label: Cliente
+      - key: tipo
+        label: Tipo
+        format: badge
+      - key: oggetto_risposta
+        label: Oggetto
+      - key: stato
+        label: Stato
+        format: badge
+      - key: note_blocco
+        label: Note
+      filters:
+      - field: reparto
+        op: '='
+        value: magazzino
+      limit: 100
+      empty: Nessuna pratica in coda.
+    roles:
+    - magazzino
+  - key: da_approvare
+    type: approvals
+    title: Da approvare
+    roles:
+    - vendite
+    - magazzino
+  - key: tutte
+    type: table
+    title: Tutte le pratiche
+    source: collection:bozze
+    data:
+      display: table
+      fields:
+      - key: cliente
+        label: Cliente
+      - key: reparto
+        label: Reparto
+        format: badge
+      - key: tipo
+        label: Tipo
+        format: badge
+      - key: stato
+        label: Stato
+        format: badge
+      - key: note_blocco
+        label: Note
+      limit: 200
+      empty: Nessuna pratica.
+    roles:
+    - admin
+  - key: riepilogo
+    type: dashboard
+    title: Riepilogo serale
+    children:
+    - riepilogo_kpi
+    - riepilogo_elenco
+    roles:
+    - admin
+  - key: riepilogo_kpi
+    type: cards
+    source: collection:riepiloghi
+    data:
+      display: kpi
+      kpis:
+      - label: Richieste (ultimo giorno)
+        agg: last
+        field: richieste
+        format: number
+      - label: Tempo medio di risposta (min)
+        agg: last
+        field: tempo_medio_min
+        format: number
+      - label: Pratiche bloccate
+        agg: last
+        field: bloccate
+        format: number
+    nav: false
+  - key: riepilogo_elenco
+    type: list
+    source: collection:riepiloghi
+    data:
+      display: list
+      fields:
+      - key: data
+        label: Giorno
+        format: date
+      - key: sintesi
+        label: Sintesi
+      sort:
+        field: data
+        dir: desc
+      limit: 30
+    nav: false
+  - key: listino_vista
+    type: table
+    title: Listino e giacenze
+    source: collection:listino
+    data:
+      display: table
+      fields:
+      - key: codice
+        label: Codice
+      - key: descrizione
+        label: Descrizione
+      - key: prezzo
+        label: Prezzo
+        format: money
+      - key: giacenza
+        label: Giacenza
+        format: number
+      - key: tempo_consegna_gg
+        label: Consegna (gg)
+        format: number
+      limit: 200
+    roles:
+    - admin
+  - key: ordini_vista
+    type: table
+    title: Ordini registrati
+    source: collection:ordini
+    data:
+      display: table
+      fields:
+      - key: cliente
+        label: Cliente
+      - key: consegna
+        label: Consegna
+        format: date
+      - key: stato
+        label: Stato
+        format: badge
+      limit: 200
+    roles:
+    - admin
+    - vendite
+  - key: storico
+    type: history
+    title: Analisi eseguite
+    source: run
+    roles:
+    - admin
+    - vendite
+    - magazzino
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: account
+    type: account
+    title: Abbonamento
+    roles:
+    - admin
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 20
+    metering:
+      creditEur: 0.1
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:triage: 1
+      agent:executor: 0
+      agent:summarizer: 0
+    plans:
+    - key: base
+      price: 49
+      interval: month
+      label: Base - fino a 300 email al mese
+      credits: 300
+      creditsReset: monthly
+      roles:
+      - admin
+    - key: pro
+      price: 129
+      interval: month
+      label: Pro - fino a 1.000 email al mese
+      credits: 1000
+      creditsReset: monthly
+      roles:
+      - admin
+    packs:
+    - key: extra100
+      credits: 100
+      price: 20
+      label: 100 email extra
+  extensions:
+  - key: mailbox_connector
+    description: 'Collegamento diretto alla casella email aziendale (lettura) con accesso autorizzato: non disponibile. Per
+      ora le email arrivano con inoltro verso il webhook dell''app o incollate a mano.'
+  - key: email_send_after_approval
+    description: 'Invio automatico dell''email dopo l''approvazione e notifiche non ancora disponibili: la bozza approvata
+      va inviata dall''impiegato.'
+  - key: erp_connector
+    description: 'Lettura di listino/disponibilità e inserimento ordini nel gestionale (ERP o magazzino) richiedono le credenziali
+      dell''azienda: per ora il listino si carica nella collezione listino e gli ordini sono registrati in ordini.'
+  - key: nightly_email_digest
+    description: Il riepilogo serale è consultabile nella vista Riepilogo; l'invio via email al titolare non è ancora disponibile.
+  - key: department_filter
+    description: Le code sono separate per ruolo di reparto (vendite, magazzino); altri reparti si aggiungono come nuovi ruoli.

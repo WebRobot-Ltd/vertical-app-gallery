@@ -1,0 +1,860 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: agevolapmi
+  displayName: AgevolaPMI
+  tagline:
+    it: Il bando giusto per la tua impresa, dalla domanda alla rendicontazione.
+    en: The right grant for your business, from application to reporting.
+  description:
+    it: AgevolaPMI monitora ogni giorno i bandi di ministeri, regioni, camere di commercio e del portale incentivi, li confronta
+      con il profilo dell'impresa, prepara la bozza della domanda per il consulente e controlla le spese in rendicontazione.
+    en: AgevolaPMI monitors grants daily, ranks them against your company profile, drafts the application for the consultant's
+      review and checks reporting expenses.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12355b'
+      accent: '#0f8b6d'
+      background: '#f6f8fb'
+      foreground: '#16202c'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Agevola
+      color: primary
+    - text: PMI
+      color: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Bandi
+        en: Grants
+      href: '#bandi'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: consultant
+      label:
+        it: Consulente
+        en: Consultant
+      assignedBy: invite
+    - key: user
+      label:
+        it: Impresa
+        en: Company
+      assignedBy: signup
+  limits:
+  - action: run
+    per: user
+    max: 10
+    window: day
+    roles:
+    - user
+  agents:
+  - key: scanner
+    role: scheduled
+    description: Ogni giorno raccoglie i bandi pubblicati e ne estrae i dati chiave.
+    profile:
+      inline:
+        display_name: AgevolaPMI scanner
+        crews:
+        - id: scanner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'Sei un analista di finanza agevolata italiana. Usa il WebRobot MCP per raccogliere (costruendo ed
+            eseguendo tu la pipeline di scraping) i bandi pubblicati o aggiornati nelle ultime 48 ore da: ministeri (MIMIT),
+            regioni, camere di commercio e dal portale incentivi.gov.it. Per ogni bando estrai SOLO ciò che è scritto nella
+            fonte: titolo, ente, url, regioni ammesse, codici ATECO ammessi/esclusi, dimensione impresa, spese ammissibili,
+            intensità dell''aiuto (% e tipo: fondo perduto/finanziamento), dotazione, data apertura e scadenza. Se un dato
+            manca scrivi null; non inventare mai. Inizia con un titolo ''# Bandi del <data>'' e una breve sintesi in Markdown,
+            poi chiudi con un unico blocco JSON finale: {"bandi":[{"id":"<slug stabile>","title":"","ente":"","url":"","regioni":[],"ateco":"","dimensione":"","spese_ammissibili":"","intensita":"","dotazione":"","apertura":"","scadenza":"","fonte":""}]}.'
+    output: markdown+json
+    goalTemplate: 'Raccogli i bandi nuovi o aggiornati. Data di oggi: {date}.'
+    writesTo:
+      collection: bandi
+      parse: json_last
+      keyBy: id
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+  - key: matcher
+    role: main
+    when: mode == 'match'
+    description: Confronta il profilo dell'impresa con i bandi raccolti e propone una classifica motivata.
+    appTools:
+    - name: search_bandi
+      description: Cerca tra i bandi raccolti
+      action: search
+      collection: bandi
+      scope: all
+    profile:
+      inline:
+        display_name: AgevolaPMI matcher
+        crews:
+        - id: matcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei un consulente di finanza agevolata per PMI. Con lo strumento search_bandi leggi i bandi aperti
+            e li confronti con il profilo dell''impresa (ATECO, regione, dipendenti, fatturato, progetto, spesa prevista,
+            tempi). Scrivi in Markdown: ''# Bandi compatibili — <ragione/P.IVA>'' poi ''## Classifica'' (tabella: posizione,
+            bando, ente, intensità, scadenza, punteggio di compatibilità 0-100), poi per ogni bando ''## <titolo>'' con: perché
+            è compatibile, requisiti da verificare, spese ammissibili rispetto al progetto, rischi, scadenza e link alla fonte.
+            Aggiungi un grafico ```chart con i punteggi (solo dati reali). Segnala i bandi esclusi per un requisito evidente.
+            Non inventare requisiti o importi, non garantire l''ottenimento del contributo: indica sempre che l''esito dipende
+            dall''istruttoria e che serve verifica del consulente.'
+    goalTemplate: 'Profilo impresa: P.IVA {vat}, ATECO {ateco}, regione {region_label}, dipendenti {employees}, fatturato
+      {revenue} EUR.
+
+      Progetto: {project}
+
+      {?invest_amount}Investimento previsto: {invest_amount} EUR.{/invest_amount}
+
+      {?timing}Tempi: {timing}.{/timing}
+
+      Tipo di spesa: {spend_type_label}.
+
+      Proponi la classifica dei bandi compatibili. Data: {date}. Scrivi in lingua {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.8
+  - key: drafter
+    role: helper
+    when: mode == 'draft'
+    description: Squadra che scrive la bozza della domanda e la sottopone al consulente.
+    awaits:
+    - draft_review
+    appTools:
+    - name: read_bandi
+      description: Legge i dati del bando scelto
+      action: search
+      collection: bandi
+      scope: all
+    writesTo:
+      collection: practices
+      parse: whole
+    profile:
+      inline:
+        display_name: AgevolaPMI drafting team
+        crews:
+        - id: writer_project
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Scrivi la sezione ''Descrizione del progetto'' di una domanda di contributo: obiettivi, contesto
+            aziendale, innovazione/impatto, coerenza con le finalità del bando. Usa solo i dati forniti e quelli del bando
+            (strumento read_bandi); segnala con [DA COMPLETARE] ogni informazione mancante. Non inventare dati.'
+        - id: writer_costs
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Scrivi il ''Piano dei costi'': tabella voci di spesa, importo, ammissibilità secondo il bando, quota
+            di contributo applicando l''intensità del bando. Usa solo importi forniti; dove mancano scrivi [DA COMPLETARE].
+            Verifica che le voci rientrino nelle spese ammissibili e segnala quelle dubbie.'
+        - id: writer_timeline
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: Scrivi il 'Cronoprogramma' del progetto in tabella (fase, inizio, fine, deliverable), coerente con
+            i tempi dichiarati e con le scadenze/durata massima del bando.
+        - id: composer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Componi la bozza finale della domanda unendo le tre sezioni. Inizia con ''# Bozza domanda — <bando>
+            — <impresa>''. Aggiungi ''## Punti da verificare'' con tutte le lacune e i rischi per il consulente. Poi chiama
+            il tool request_draft_review per sottoporre la bozza al consulente: l''invio avviene solo dopo la sua approvazione
+            o correzione. Non inventare nulla.'
+        orchestration:
+          type: dag
+          entry: writer_project
+          nodes:
+          - id: writer_project
+            crew: writer_project
+          - id: writer_costs
+            crew: writer_costs
+          - id: writer_timeline
+            crew: writer_timeline
+          - id: composer
+            crew: composer
+          edges:
+          - from: writer_project
+            to: writer_costs
+          - from: writer_project
+            to: writer_timeline
+          - from: writer_costs
+            to: composer
+          - from: writer_timeline
+            to: composer
+    goalTemplate: 'Scrivi la bozza della domanda per il bando: {bando_ref}.
+
+      Impresa: P.IVA {vat}, ATECO {ateco}, regione {region_label}, dipendenti {employees}, fatturato {revenue} EUR.
+
+      Progetto: {project}
+
+      {?invest_amount}Investimento: {invest_amount} EUR.{/invest_amount}
+
+      {?timing}Tempi: {timing}.{/timing}
+
+      Spesa: {spend_type_label}. Lingua {lang}. Data {date}.'
+    output: markdown
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 2.0
+  - key: auditor
+    role: analyst
+    when: mode == 'audit'
+    description: Verifica che le spese in rendicontazione corrispondano al piano approvato.
+    appTools:
+    - name: read_practices
+      description: Legge le pratiche dell'utente (piano approvato)
+      action: read
+      collection: practices
+      scope: user
+    - name: read_expenses
+      description: Legge le spese dichiarate
+      action: read
+      collection: expenses
+      scope: user
+    profile:
+      inline:
+        display_name: AgevolaPMI auditor
+        crews:
+        - id: auditor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei un revisore di rendicontazione di contributi. Confronta le spese dichiarate (testo di fatture,
+            quietanze, contratti incollati o link) con il piano dei costi approvato (read_practices). Scrivi ''# Verifica
+            rendicontazione — <bando>'' con: tabella voce di piano / documento / importo / esito (conforme, scostamento, non
+            ammissibile, documento mancante), totale rendicontato vs approvato, elenco dei documenti mancanti (fattura, quietanza
+            di pagamento, contratto) e azioni correttive. Un grafico ```chart piano vs rendicontato. Usa solo i dati forniti;
+            non dichiarare ammissibile ciò che non puoi verificare; la decisione finale spetta all''ente e al consulente.'
+    goalTemplate: 'Verifica la rendicontazione del bando {bando_ref}.
+
+      Spese e documenti forniti:
+
+      {expenses_text}
+
+      {?docs_links}Link ai documenti: {docs_links}{/docs_links}
+
+      Data {date}. Lingua {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.8
+  inputForm:
+    title:
+      it: Nuova richiesta
+      en: New request
+    fields:
+    - name: mode
+      type: select
+      required: true
+      label:
+        it: Cosa vuoi fare
+        en: What to do
+      default: match
+      options:
+      - value: match
+        label:
+          it: Trova i bandi compatibili
+          en: Find matching grants
+      - value: draft
+        label:
+          it: Scrivi la bozza della domanda
+          en: Draft the application
+      - value: audit
+        label:
+          it: Verifica la rendicontazione
+          en: Check reporting
+    - name: vat
+      type: text
+      required: true
+      maxLength: 13
+      label:
+        it: Partita IVA
+        en: VAT number
+    - name: ateco
+      type: text
+      required: true
+      label:
+        it: Codice ATECO
+        en: ATECO code
+    - name: region
+      type: select
+      required: true
+      label:
+        it: Regione
+        en: Region
+      options:
+      - value: abruzzo
+        label: Abruzzo
+      - value: basilicata
+        label: Basilicata
+      - value: calabria
+        label: Calabria
+      - value: campania
+        label: Campania
+      - value: emilia-romagna
+        label: Emilia-Romagna
+      - value: friuli-venezia-giulia
+        label: Friuli-Venezia Giulia
+      - value: lazio
+        label: Lazio
+      - value: liguria
+        label: Liguria
+      - value: lombardia
+        label: Lombardia
+      - value: marche
+        label: Marche
+      - value: molise
+        label: Molise
+      - value: piemonte
+        label: Piemonte
+      - value: puglia
+        label: Puglia
+      - value: sardegna
+        label: Sardegna
+      - value: sicilia
+        label: Sicilia
+      - value: toscana
+        label: Toscana
+      - value: trentino-alto-adige
+        label: Trentino-Alto Adige
+      - value: umbria
+        label: Umbria
+      - value: valle-daosta
+        label: Valle d'Aosta
+      - value: veneto
+        label: Veneto
+    - name: employees
+      type: number
+      required: true
+      label:
+        it: Numero di dipendenti
+        en: Employees
+    - name: revenue
+      type: number
+      required: true
+      label:
+        it: Fatturato annuo (EUR)
+        en: Annual revenue (EUR)
+    - name: project
+      type: textarea
+      required: true
+      maxLength: 1500
+      label:
+        it: Progetto da finanziare
+        en: Project to fund
+    - name: invest_amount
+      type: number
+      label:
+        it: Investimento previsto (EUR)
+        en: Planned investment (EUR)
+    - name: timing
+      type: text
+      label:
+        it: Tempi (es. avvio e fine)
+        en: Timing
+    - name: spend_type
+      type: select
+      required: true
+      label:
+        it: Tipo di spesa
+        en: Spend type
+      options:
+      - value: macchinari
+        label:
+          it: Macchinari e impianti
+          en: Machinery
+      - value: digitale
+        label:
+          it: Digitalizzazione / software
+          en: Digital / software
+      - value: energia
+        label:
+          it: Efficienza energetica
+          en: Energy efficiency
+      - value: personale
+        label:
+          it: Personale / formazione
+          en: Staff / training
+      - value: ricerca
+        label:
+          it: Ricerca e sviluppo
+          en: R&D
+      - value: altro
+        label:
+          it: Altro
+          en: Other
+    - name: bando_ref
+      type: text
+      visibleWhen: mode == 'draft' || mode == 'audit'
+      label:
+        it: Bando scelto (titolo o link)
+        en: Chosen grant (title or link)
+    - name: expenses_text
+      type: textarea
+      maxLength: 6000
+      visibleWhen: mode == 'audit'
+      label:
+        it: Fatture, quietanze, contratti (testo incollato)
+        en: Invoices, receipts, contracts (pasted text)
+      help:
+        it: 'Il caricamento file non è ancora disponibile: incolla il testo o indica i link.'
+        en: 'File upload is not available yet: paste the text or give links.'
+    - name: docs_links
+      type: urls
+      visibleWhen: mode == 'audit'
+      label:
+        it: Link ai documenti
+        en: Document links
+  data:
+    collections:
+    - name: bandi
+      ownedBy: app
+      description: Bandi raccolti ogni giorno dall'agente scanner
+      fields:
+      - name: title
+        type: text
+      - name: ente
+        type: text
+      - name: url
+        type: url
+      - name: regioni
+        type: json
+      - name: ateco
+        type: text
+      - name: dimensione
+        type: text
+      - name: spese_ammissibili
+        type: text
+      - name: intensita
+        type: text
+      - name: dotazione
+        type: text
+      - name: apertura
+        type: date
+      - name: scadenza
+        type: date
+      - name: fonte
+        type: text
+      searchable: true
+    - name: practices
+      ownedBy: user
+      description: 'Pratiche dell''impresa: bozze, piano approvato. Condivisibili con il consulente.'
+      sharing:
+      - viewer
+      - editor
+      fields:
+      - name: bando
+        type: text
+      - name: status
+        type: select
+        options:
+        - bozza
+        - in_revisione
+        - approvata
+        - inviata
+        - concessa
+        - rendicontata
+      - name: draft
+        type: textarea
+      - name: approved_plan
+        type: textarea
+    - name: expenses
+      ownedBy: user
+      description: Spese di rendicontazione (testo o link, niente file)
+      sharing:
+      - viewer
+      - editor
+      fields:
+      - name: practice
+        type: text
+      - name: description
+        type: text
+      - name: amount
+        type: number
+      - name: doc_link
+        type: url
+  approvals:
+  - key: draft_review
+    title:
+      it: Revisione bozza domanda
+      en: Application draft review
+    role: consultant
+    decidedBy: role
+    fields:
+    - bando
+    - draft
+    timeoutMinutes: 10080
+    onTimeout: reject
+  schedules:
+  - agent: scanner
+    cron: 0 5 * * *
+    action: run
+    owner: app
+    goal: Raccogli i bandi nuovi o aggiornati.
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: AgevolaPMI
+    sections:
+    - type: hero
+      band: true
+      eyebrow:
+        it: Finanza agevolata per PMI e consulenti
+        en: Grants for SMEs and consultants
+      title:
+        it: Il **bando giusto** per la tua impresa, dalla ricerca alla rendicontazione.
+        en: The **right grant** for your business, from search to reporting.
+      text:
+        it: Ogni giorno controlliamo i bandi di ministeri, regioni, camere di commercio e del portale incentivi, li confrontiamo
+          con il tuo profilo e prepariamo la bozza della domanda per il tuo consulente.
+        en: We check grants daily, rank them against your profile and prepare the application draft for your consultant.
+      actions:
+      - label:
+          it: Trova i miei bandi
+          en: Find my grants
+        href: /v/new
+        style: primary
+      - label:
+          it: Accedi
+          en: Sign in
+        href: /login
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Profilo e progetto
+          en: Profile and project
+        text:
+          it: Inserisci P.IVA, ATECO, regione, dimensione e il progetto.
+          en: Enter VAT, ATECO, region, size and project.
+        badge: 📝
+      - title:
+          it: Classifica dei bandi
+          en: Grant ranking
+        text:
+          it: L'agente estrae requisiti, spese ammissibili, intensità e scadenze e ordina i bandi compatibili.
+          en: The agent extracts requirements, eligible costs, aid intensity and deadlines.
+        badge: 🎯
+      - title:
+          it: Bozza e revisione
+          en: Draft and review
+        text:
+          it: Una squadra di agenti scrive la domanda; il consulente approva o corregge prima dell'invio.
+          en: An agent team writes the application; the consultant approves or corrects it.
+        badge: ✍️
+      - title:
+          it: Rendicontazione
+          en: Reporting
+        text:
+          it: Dopo la concessione l'agente verifica le spese rispetto al piano approvato.
+          en: After the grant, the agent checks expenses against the approved plan.
+        badge: ✅
+    - type: data
+      id: bandi
+      title:
+        it: Ultimi bandi raccolti
+        en: Latest grants
+      source: collection:bandi
+      display: table
+      fields:
+      - key: title
+        label:
+          it: Bando
+          en: Grant
+      - key: ente
+        label:
+          it: Ente
+          en: Body
+      - key: intensita
+        label:
+          it: Intensità
+          en: Intensity
+      - key: scadenza
+        label:
+          it: Scadenza
+          en: Deadline
+        format: date
+      sort:
+        field: scadenza
+        dir: asc
+      limit: 20
+      empty:
+        it: Nessun bando ancora raccolto.
+        en: No grants collected yet.
+    - type: note
+      content:
+        it: Supporto alla decisione, non consulenza legale o finanziaria. L'esito di un bando dipende dall'istruttoria dell'ente;
+          la domanda è inviata solo dopo la revisione del consulente.
+        en: Decision support, not legal or financial advice. Outcome depends on the granting body; applications are sent only
+          after consultant review.
+  - key: new
+    type: new_run
+    title:
+      it: Nuova richiesta
+      en: New request
+    roles:
+    - user
+    - consultant
+    - admin
+  - key: history
+    type: history
+    title:
+      it: Le mie pratiche
+      en: My cases
+    source: run
+    roles:
+    - user
+    - consultant
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: bandi_list
+    type: table
+    title:
+      it: Bandi
+      en: Grants
+    source: collection:bandi
+    data:
+      display: table
+      fields:
+      - key: title
+        label:
+          it: Bando
+      - key: ente
+        label:
+          it: Ente
+      - key: regioni
+        label:
+          it: Regioni
+      - key: intensita
+        label:
+          it: Intensità
+      - key: scadenza
+        label:
+          it: Scadenza
+        format: date
+      sort:
+        field: scadenza
+        dir: asc
+      limit: 100
+    roles:
+    - user
+    - consultant
+    - admin
+  - key: practices_list
+    type: table
+    title:
+      it: Pratiche
+      en: Cases
+    source: collection:practices
+    data:
+      display: table
+      fields:
+      - key: bando
+        label:
+          it: Bando
+      - key: status
+        label:
+          it: Stato
+        format: badge
+      limit: 100
+    roles:
+    - user
+    - consultant
+    - admin
+  - key: reviews
+    type: approvals
+    title:
+      it: Bozze da approvare
+      en: Drafts to review
+    approvals:
+    - draft_review
+    roles:
+    - consultant
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Plan
+    roles:
+    - user
+    - consultant
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 20
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:matcher:
+        estimate: 10
+        metered: true
+      agent:drafter:
+        estimate: 60
+        metered: true
+      agent:auditor:
+        estimate: 20
+        metered: true
+    packs:
+    - key: small
+      credits: 500
+      price: 9
+      label: Extra 500
+    plans:
+    - key: base
+      price: 29
+      interval: month
+      label:
+        it: Base
+        en: Base
+      credits: 500
+      creditsReset: monthly
+      includes:
+      - classifica bandi
+      - bozze domanda
+      - verifica rendicontazione
+  extensions:
+  - key: file_upload
+    description: 'Caricamento di fatture, quietanze e contratti non ancora disponibile: l''utente incolla il testo o indica
+      link; i file andranno gestiti quando il tipo ''file'' sarà supportato.'
+  - key: email_alerts
+    description: 'Alert email per nuovi bandi compatibili e scadenze non ancora disponibili (notifiche non supportate): per
+      ora i bandi si consultano nella vista Bandi e nelle pratiche.'
+  - key: success_fee
+    description: 'Commissione per pratica approvata (oltre all''abbonamento base): serve un addebito a evento sulla concessione,
+      da configurare a parte; per ora solo abbonamento e crediti.'
+  - key: consultant_clients
+    description: Il consulente vede i clienti che condividono con lui le pratiche (sharing per record); un elenco clienti
+      dedicato con ruolo derivato è un'evoluzione futura.

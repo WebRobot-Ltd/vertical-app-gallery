@@ -1,0 +1,674 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: spiaggiagiusta
+  displayName: SpiaggiaGiusta
+  tagline:
+    it: La spiaggia migliore di oggi, in base a mare e vento.
+    en: Today's best beach, based on sea and wind.
+  description:
+    it: Ogni mattina un agente AI confronta onde, vento, nuvolosità e UV per le spiagge della tua zona e le ordina in base
+      alle tue preferenze, con punteggio da 0 a 10 e il perché in due righe.
+    en: Every morning an AI agent compares waves, wind, cloud cover and UV for the beaches in your area and ranks them by
+      your preferences, with a 0-10 score and a two-line explanation.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#0b4f6c'
+      accent: '#f28f3b'
+      background: '#f6fbfd'
+      foreground: '#14262e'
+    fonts:
+      body: Inter
+      display: Poppins
+    wordmark:
+    - text: Spiaggia
+      color: primary
+    - text: Giusta
+      color: accent
+    button: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Piani
+        en: Plans
+      href: '#piani'
+    cta:
+      label:
+        it: Inizia
+        en: Start
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      assignedBy: signup
+  limits:
+  - action: login
+    per: ip
+    max: 20
+    window: hour
+  egress:
+    hosts:
+    - api.open-meteo.com
+    - marine-api.open-meteo.com
+    notes: 'Open-Meteo forecast and marine APIs (CC BY 4.0). The free tier is for non-commercial use: a commercial plan/API
+      key is needed once the app charges. Marine data (waves, sea temperature, currents) comes from Open-Meteo Marine, which
+      is built on Copernicus/ECMWF-class models.'
+  agents:
+  - key: ranker
+    role: scheduled
+    description: 'Daily: scores each beach of the user''s zone from marine and weather forecasts according to the user''s
+      preferences.'
+    memory: none
+    profile:
+      inline:
+        display_name: SpiaggiaGiusta ranker
+        crews:
+        - id: ranker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a beach advisor. Steps: 1) call beaches_read and keep only beaches of the user''s zone (field
+            zone); each has name, lat, lon, sand_type (sand|rocks|mixed), orientation, kids_friendly, notes. 2) For each beach
+            call marine_forecast (GET query: latitude=<lat>&longitude=<lon>&daily=wave_height_max,wave_period_max,wave_direction_dominant&hourly=sea_surface_temperature,ocean_current_velocity&forecast_days=4&timezone=auto)
+            and weather_forecast (query: latitude=<lat>&longitude=<lon>&daily=weather_code,wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant,uv_index_max,cloud_cover_mean,temperature_2m_max&forecast_days=4&timezone=auto&wind_speed_unit=kmh).
+            3) Score each beach 0-10 for today and the next 3 days from the user''s preferences given in the goal: sea type
+            (calm: low waves, <0.5 m ideal; surf: waves 1-2.5 m with a decent period), ground type, wind tolerance (low/medium/high,
+            in km/h), children (if yes penalise waves >0.4 m, currents, strong wind, UV>8 and exclude non kids_friendly beaches
+            from the top), favourite beaches get a small +0.3 bonus. Consider exposure: wind and wave direction against the
+            beach orientation. Never invent figures: if a call fails, say so and score only what you know. Give each beach
+            a ''why'' of two lines max and a weather icon (emoji). Write the report in the language given. Output: first a
+            Markdown report starting with ''# Spiaggia del giorno — <zone> — <date>'' (or English equivalent) with top 3 and
+            a ranked table, then a final fenced ```json block: {"date":"YYYY-MM-DD","zone":"…","top3":"1. A (8.5), 2. B, 3.
+            C","ranking":[{"beach":"…","score":0,"icon":"☀️","why":"…","wave_m":0,"wind_kmh":0,"water_c":0,"uv":0,"next_days":[{"date":"…","score":0,"icon":"…"}]}]}'
+    appTools:
+    - name: beaches_read
+      description: List the beaches managed by the admin, with coordinates and characteristics
+      action: read
+      collection: beaches
+      scope: all
+    - name: marine_forecast
+      description: 'Open-Meteo Marine forecast: waves, sea temperature, currents'
+      action: http
+      http:
+        method: GET
+        url: https://marine-api.open-meteo.com/v1/marine
+        attribution: Open-Meteo.com, CC BY 4.0
+    - name: weather_forecast
+      description: 'Open-Meteo weather forecast: wind, cloud cover, UV'
+      action: http
+      http:
+        method: GET
+        url: https://api.open-meteo.com/v1/forecast
+        attribution: Open-Meteo.com, CC BY 4.0
+    goalTemplate: Today is {date}. Write the report in the language with ISO code {lang}.
+    output: markdown+json
+    writesTo:
+      collection: daily_ranking
+      parse: json_last
+      keyBy: date
+    limits:
+      maxTurns: 14
+      maxBudgetUsd: 0.4
+  - key: alert_agent
+    role: helper
+    description: Checks a user's alert condition on the forecast of one beach and records when it is met.
+    profile:
+      inline:
+        display_name: SpiaggiaGiusta alerts
+        crews:
+        - id: alert_agent
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You check one alert for one beach. Call beaches_read to find its coordinates, then marine_forecast
+            (query: latitude=..&longitude=..&daily=wave_height_max,wave_period_max&forecast_days=7&timezone=auto) and weather_forecast
+            (query: latitude=..&longitude=..&daily=wind_speed_10m_max,weather_code,uv_index_max&forecast_days=7&timezone=auto&wind_speed_unit=kmh).
+            Decide, day by day, whether the user''s condition holds (calm = waves <0.4 m and wind <15 km/h; surf = waves 1-2.5
+            m; nowind = wind <12 km/h). Consider only the requested days (weekend = Saturday and Sunday). Never invent figures.
+            Start with ''# <Beach> — alert'' and explain in 3 lines max. End with a fenced ```json block: {"date":"YYYY-MM-DD","beach":"…","matched":true,"days":"Sat
+            14, Sun 15","summary":"…"}'
+    appTools:
+    - name: beaches_read
+      description: List the beaches managed by the admin, with coordinates and characteristics
+      action: read
+      collection: beaches
+      scope: all
+    - name: marine_forecast
+      description: 'Open-Meteo Marine forecast: waves, sea temperature, currents'
+      action: http
+      http:
+        method: GET
+        url: https://marine-api.open-meteo.com/v1/marine
+        attribution: Open-Meteo.com, CC BY 4.0
+    - name: weather_forecast
+      description: 'Open-Meteo weather forecast: wind, cloud cover, UV'
+      action: http
+      http:
+        method: GET
+        url: https://api.open-meteo.com/v1/forecast
+        attribution: Open-Meteo.com, CC BY 4.0
+    goalTemplate: 'Check the alert. Today is {date}. Language: {lang}.'
+    output: markdown+json
+    writesTo:
+      collection: alert_hits
+      parse: json_last
+      keyBy: date
+  templates:
+  - key: beach_day
+    title:
+      it: La mia classifica quotidiana
+      en: My daily ranking
+    description:
+      it: Ogni mattina alle 7 la classifica delle spiagge della tua zona.
+      en: Every morning at 7 the ranking of the beaches in your area.
+    agent: ranker
+    params:
+    - name: zone
+      type: select
+      required: true
+      optionsFrom: collection:zones
+      label:
+        it: Zona costiera
+        en: Coastal area
+    - name: sea_pref
+      type: select
+      required: true
+      label:
+        it: Mare
+        en: Sea
+      options:
+      - value: calm
+        label:
+          it: Mare calmo
+          en: Calm sea
+      - value: surf
+        label:
+          it: Onde per il surf
+          en: Waves for surfing
+    - name: ground
+      type: select
+      required: true
+      label:
+        it: Fondale/spiaggia
+        en: Ground
+      options:
+      - value: sand
+        label:
+          it: Sabbia
+          en: Sand
+      - value: rocks
+        label:
+          it: Scogli
+          en: Rocks
+      - value: any
+        label:
+          it: Indifferente
+          en: No preference
+    - name: wind_tolerance
+      type: select
+      required: true
+      label:
+        it: Tolleranza al vento
+        en: Wind tolerance
+      options:
+      - value: low
+        label:
+          it: Bassa
+          en: Low
+      - value: medium
+        label:
+          it: Media
+          en: Medium
+      - value: high
+        label:
+          it: Alta
+          en: High
+    - name: children
+      type: boolean
+      label:
+        it: Viaggio con bambini
+        en: With children
+      default: false
+    - name: favorites
+      type: text
+      label:
+        it: Spiagge preferite (separate da virgola)
+        en: Favourite beaches (comma separated)
+    goal: 'Zone: {zone}. Today is {date}.
+
+      Sea preference: {sea_pref}. Ground: {ground}. Wind tolerance: {wind_tolerance}. Children: {children}.
+
+      {?favorites}Favourite beaches: {favorites}{/favorites}
+
+      Write the report in the language with ISO code {lang}.'
+    schedule:
+      cron: 0 5 * * *
+      userCanChange: false
+    maxPerUser: 1
+    cost:
+      perRun: 0
+  - key: beach_alert
+    title:
+      it: I miei avvisi
+      en: My alerts
+    description:
+      it: Ti avvisiamo quando le condizioni che scegli si verificano (abbonamento stagionale).
+      en: We flag when your chosen conditions occur (season plan).
+    agent: alert_agent
+    params:
+    - name: beach
+      type: text
+      required: true
+      label:
+        it: Spiaggia
+        en: Beach
+      help:
+        it: es. Torre dell'Orso
+        en: e.g. Torre dell'Orso
+    - name: condition
+      type: select
+      required: true
+      label:
+        it: Condizione
+        en: Condition
+      options:
+      - value: calm
+        label:
+          it: Mare calmo
+          en: Calm sea
+      - value: surf
+        label:
+          it: Onde da surf
+          en: Surf waves
+      - value: nowind
+        label:
+          it: Poco vento
+          en: Little wind
+    - name: when
+      type: select
+      required: true
+      label:
+        it: Quando
+        en: When
+      options:
+      - value: weekend
+        label:
+          it: Nel weekend
+          en: On the weekend
+      - value: any
+        label:
+          it: Nei prossimi 7 giorni
+          en: Next 7 days
+    schedule:
+      cron: 0 5 * * *
+      userCanChange: false
+    maxPerUser: 5
+    cost:
+      perRun: 0
+    goal: 'Alert "{instance}": beach {beach}, condition {condition}, when {when}. Today is {date}. Language: {lang}.'
+  inputForm:
+    title:
+      it: Preferenze
+      en: Preferences
+    fields: []
+  data:
+    collections:
+    - name: zones
+      ownedBy: shared
+      description: Coastal areas managed by the admin
+      fields:
+      - name: value
+        type: text
+        required: true
+      - name: label
+        type: text
+        required: true
+    - name: beaches
+      ownedBy: shared
+      description: Beaches and their characteristics, managed by the admin
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Name
+      - name: zone
+        type: text
+        required: true
+      - name: lat
+        type: number
+        required: true
+      - name: lon
+        type: number
+        required: true
+      - name: sand_type
+        type: select
+        options:
+        - sand
+        - rocks
+        - mixed
+      - name: orientation
+        type: text
+        help: e.g. east-facing
+      - name: kids_friendly
+        type: boolean
+      - name: notes
+        type: textarea
+    - name: daily_ranking
+      ownedBy: instance
+      description: The daily ranking of each user's zone
+      fields:
+      - name: date
+        type: date
+      - name: zone
+        type: text
+      - name: top3
+        type: text
+      - name: ranking
+        type: json
+    - name: alert_hits
+      ownedBy: instance
+      description: Results of each user's alerts
+      fields:
+      - name: date
+        type: date
+      - name: beach
+        type: text
+      - name: matched
+        type: boolean
+      - name: days
+        type: text
+      - name: summary
+        type: text
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: SpiaggiaGiusta
+    sections:
+    - type: hero
+      band: true
+      eyebrow:
+        it: Mare e vento, ogni mattina
+        en: Sea and wind, every morning
+      title:
+        it: Vai nella **spiaggia giusta**, oggi.
+        en: Go to the **right beach**, today.
+      text:
+        it: Una classifica giornaliera con punteggio da 0 a 10, icone meteo e previsioni a tre giorni, calcolata sulle tue
+          preferenze.
+        en: A daily ranking scored 0 to 10, with weather icons and a 3-day outlook, tailored to your preferences.
+      actions:
+      - label:
+          it: Registrati gratis
+          en: Sign up free
+        href: /login
+        style: primary
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Scegli
+          en: Choose
+        text:
+          it: Zona costiera, mare calmo o onde, sabbia o scogli, vento, bambini.
+          en: Coastal area, calm or waves, sand or rocks, wind, children.
+        badge: 🏖️
+      - title:
+          it: Ogni mattina
+          en: Every morning
+        text:
+          it: Alle 7 un agente legge onde, temperatura dell'acqua, correnti, vento, nuvole e UV.
+          en: At 7 an agent reads waves, water temperature, currents, wind, clouds and UV.
+        badge: 🌊
+      - title:
+          it: Classifica
+          en: Ranking
+        text:
+          it: Punteggi, motivazione in due righe e previsione dei prossimi tre giorni.
+          en: Scores, a two-line reason and the next three days.
+        badge: ⭐
+    - type: cards
+      id: piani
+      title:
+        it: Piani
+        en: Plans
+      items:
+      - title:
+          it: Gratis
+          en: Free
+        text:
+          it: Classifica giornaliera per la tua zona.
+          en: Daily ranking for your area.
+      - title:
+          it: Stagionale
+          en: Season
+        text:
+          it: Avvisi personalizzati, es. mare calmo nel weekend a Torre dell'Orso.
+          en: Custom alerts, e.g. calm sea on the weekend at Torre dell'Orso.
+    - type: note
+      content:
+        it: 'Dati: Open-Meteo.com (CC BY 4.0). Previsioni indicative: verifica sempre le condizioni e la bandiera sul posto.'
+        en: 'Data: Open-Meteo.com (CC BY 4.0). Forecasts are indicative: always check conditions and flags on site.'
+  - key: my_ranking_setup
+    type: instances
+    template: beach_day
+    title:
+      it: Le mie preferenze
+      en: My preferences
+    roles:
+    - user
+    - admin
+  - key: ranking
+    type: list
+    title:
+      it: Classifica di oggi
+      en: Today's ranking
+    source: collection:daily_ranking
+    roles:
+    - user
+    - admin
+    data:
+      display: cards
+      fields:
+      - key: date
+        label:
+          it: Data
+          en: Date
+        format: date
+      - key: zone
+        label:
+          it: Zona
+          en: Area
+      - key: top3
+        label:
+          it: Prime tre
+          en: Top 3
+      sort:
+        field: date
+        dir: desc
+      limit: 14
+      empty:
+        it: La prima classifica arriva domattina alle 7.
+        en: Your first ranking arrives tomorrow at 7.
+  - key: ranking_detail
+    type: table
+    title:
+      it: Dettaglio spiagge
+      en: Beach detail
+    source: collection:daily_ranking
+    roles:
+    - user
+    - admin
+    data:
+      path: ranking
+      display: table
+      fields:
+      - key: beach
+        label:
+          it: Spiaggia
+          en: Beach
+      - key: icon
+        label: ''
+      - key: score
+        label:
+          it: Punteggio
+          en: Score
+        format: number
+      - key: why
+        label:
+          it: Perché
+          en: Why
+      - key: wave_m
+        label:
+          it: Onda (m)
+          en: Wave (m)
+        format: number
+      - key: wind_kmh
+        label:
+          it: Vento (km/h)
+          en: Wind (km/h)
+        format: number
+      - key: water_c
+        label:
+          it: Acqua (°C)
+          en: Water (°C)
+        format: number
+      sort:
+        field: score
+        dir: desc
+      limit: 30
+  - key: alerts_setup
+    type: instances
+    template: beach_alert
+    title:
+      it: I miei avvisi
+      en: My alerts
+    roles:
+    - user
+    - admin
+  - key: alert_results
+    type: list
+    title:
+      it: Avvisi scattati
+      en: Triggered alerts
+    source: collection:alert_hits
+    roles:
+    - user
+    - admin
+    data:
+      display: list
+      fields:
+      - key: date
+        format: date
+      - key: beach
+      - key: days
+      - key: summary
+      filters:
+      - field: matched
+        op: '='
+        value: true
+      sort:
+        field: date
+        dir: desc
+      limit: 30
+  - key: admin_beaches
+    type: admin
+    title:
+      it: Spiagge
+      en: Beaches
+    source: collection:beaches
+    roles:
+    - admin
+  - key: admin_zones
+    type: admin
+    title:
+      it: Zone
+      en: Areas
+    source: collection:zones
+    roles:
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Plan
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: season
+      price: 19
+      interval: year
+      label:
+        it: Stagione estiva
+        en: Summer season
+      includes:
+      - custom alerts
+      roles:
+      - user
+    costs:
+      agent:ranker: 0
+      agent:alert_agent:
+        estimate: 2
+        metered: false
+        requiresPlan: season
+  extensions:
+  - key: morning_email
+    description: 'Email at 7 with the top 3 beaches, and an email when an alert matches: notifications are not available yet.
+      For now results are shown in the app (ranking and triggered alerts).'
+  - key: copernicus_direct
+    description: Copernicus Marine needs per-account credentials and NetCDF/Zarr downloads, which an HTTP tool cannot do.
+      Marine data (waves, sea temperature, currents) comes via the Open-Meteo Marine API instead.
+  - key: alerts_plan_gate
+    description: Alerts are limited to subscribers of the 'season' plan through the agent cost's requiresPlan; the free tier
+      only has the daily ranking.
+  - key: open_meteo_licence
+    description: 'Open-Meteo free API is non-commercial: buy a commercial API key before charging for the season plan.'

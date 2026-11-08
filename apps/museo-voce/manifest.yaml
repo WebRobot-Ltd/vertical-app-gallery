@@ -1,0 +1,694 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: museovoce
+  displayName: MuseoVoce
+  tagline:
+    it: Audioguide multilingua che rispondono solo con i materiali del tuo museo.
+    en: Multilingual audio guides that answer only from your museum's own materials.
+  description:
+    it: Il curatore registra le opere e incolla testi di sala e schede; un agente scrive il racconto per ogni opera, lo traduce
+      e adatta il tono ad adulti o bambini. Il curatore approva, il visitatore scansiona il QR e chiede in chat, con risposte
+      citate dalle fonti del museo.
+    en: The curator registers works and pastes room texts and fact sheets; an agent writes the story for each work, translates
+      it and adapts the tone for adults or children. The curator approves, the visitor scans the QR code and asks questions,
+      with answers cited from the museum's sources.
+  langs:
+  - it
+  - en
+  - fr
+  - de
+  - es
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#3b2a4a'
+      accent: '#c2410c'
+      background: '#faf6f0'
+      foreground: '#201a24'
+    fonts:
+      body: Inter
+      display: Playfair Display
+    wordmark:
+    - text: Museo
+      color: primary
+    - text: Voce
+      color: accent
+    width: wide
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Licenza
+        en: License
+      href: '#licenza'
+    cta:
+      label:
+        it: Area curatore
+        en: Curator area
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+      - visit
+      agents:
+      - guide_chat
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      label:
+        it: Curatore
+        en: Curator
+      assignedBy: signup
+  limits:
+  - action: chat
+    per: ip
+    max: 60
+    window: hour
+    roles:
+    - anonymous
+  - action: agent:author
+    per: user
+    max: 40
+    window: day
+    roles:
+    - user
+  egress:
+    hosts: []
+    notes: No external APIs.
+  agents:
+  - key: author
+    role: main
+    description: Writes the spoken story of a work from the museum's materials and translates it.
+    profile:
+      inline:
+        display_name: MuseoVoce author
+        crews:
+        - id: author
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are an audio-guide writer for museums. You receive one work with the museum''s own materials
+            (room texts, fact sheets, notes). Use ONLY those materials: never invent dates, names, attributions or facts;
+            if something is missing, leave it out and list it under ''Da verificare''. Write for the ear: short sentences,
+            no parentheses or tables, 60-120 seconds of speech (150-300 words per language). Adapt tone to the audience: adults
+            = rich and precise; children = playful, concrete images, simple words, a question to look at the work. Output:
+            a level-1 title ''# <Work title> — <audience>''. Then one ''## <language name> (<ISO code>)'' section per requested
+            language, first the source language, then the translations, each containing only the spoken text. Then ''## Fonti''
+            listing which material titles you used, and ''## Da verificare'' with doubts for the curator. Finally call request_publish_review
+            once so the curator can approve the texts.'
+    goalTemplate: 'Museum: {museum}
+
+      Work: {title} ({artist_year})
+
+      Audience: {audience_label}
+
+      Source language: {lang_label}
+
+      Translate into: {target_langs}
+
+      Materials provided by the curator:
+
+      {materials}
+
+      {?links}Further reading links (summarise only if pasted above): {links}{/links}
+
+      Today is {date}.'
+    appTools:
+    - name: save_guide
+      description: Store the draft of the guide for this work
+      action: write
+      collection: guides
+      scope: user
+    - name: find_materials
+      description: Search the curator's saved materials
+      action: search
+      collection: materials
+      scope: user
+    awaits:
+    - publish_review
+    output: markdown
+    writesTo:
+      collection: guides
+      parse: whole
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.6
+  - key: publisher
+    role: helper
+    description: After approval, copies the approved guide to the public catalogue the visitors' guide reads.
+    profile:
+      inline:
+        display_name: MuseoVoce publisher
+        crews:
+        - id: publisher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You publish an approved audio-guide text. Call publish_guide once with the museum, work title, audience,
+            the approved text of every language, and the sources list, copying them verbatim. Never change the text. Reply
+            with one line confirming the publication.
+    goalTemplate: The curator approved this guide. Publish it.
+    appTools:
+    - name: publish_guide
+      description: Write the approved guide to the public catalogue
+      action: write
+      collection: published_guides
+      scope: all
+    output: markdown
+  - key: guide_chat
+    role: helper
+    description: 'Visitor-facing voice guide: narrates a work and answers only from published museum texts, with sources.'
+    profile:
+      inline:
+        display_name: MuseoVoce visitor guide
+        crews:
+        - id: guide_chat
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the voice guide of a museum, speaking to a visitor on their phone. Answer in the visitor''s
+            language, in short spoken sentences (under 90 words), no lists, no markdown tables. Answer ONLY with what search_published
+            returns; never use outside knowledge. Always end with the source in the form ''Fonte: <material title>''. If the
+            materials do not say, answer that the museum''s materials do not cover it and suggest asking museum staff. If
+            the visitor opens a work without a question, read its story in the requested language and audience. Be kind with
+            children.'
+    goalTemplate: 'Work id (from QR): {?page}{page}{/page}
+
+      Conversation so far:
+
+      {history}
+
+      Visitor says: {message}
+
+      Reply in the visitor''s language.'
+    appTools:
+    - name: search_published
+      description: Search the published guides and sources
+      action: search
+      collection: published_guides
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 4
+      maxBudgetUsd: 0.1
+  inputForm:
+    title:
+      it: Nuova audioguida
+      en: New audio guide
+    fields:
+    - name: museum
+      type: text
+      required: true
+      label:
+        it: Museo
+        en: Museum
+    - name: title
+      type: text
+      required: true
+      label:
+        it: Titolo dell'opera
+        en: Work title
+    - name: artist_year
+      type: text
+      label:
+        it: Autore e data
+        en: Artist and date
+    - name: audience
+      type: select
+      required: true
+      default: adults
+      label:
+        it: Pubblico
+        en: Audience
+      options:
+      - value: adults
+        label:
+          it: Adulti
+          en: Adults
+      - value: children
+        label:
+          it: Bambini
+          en: Children
+    - name: lang
+      type: select
+      required: true
+      default: it
+      label:
+        it: Lingua del testo
+        en: Source language
+      options:
+      - value: it
+        label: Italiano
+      - value: en
+        label: English
+      - value: fr
+        label: Français
+      - value: de
+        label: Deutsch
+      - value: es
+        label: Español
+    - name: target_langs
+      type: multiselect
+      required: true
+      label:
+        it: Traduci in
+        en: Translate into
+      options:
+      - value: en
+        label: English
+      - value: fr
+        label: Français
+      - value: de
+        label: Deutsch
+      - value: es
+        label: Español
+      - value: it
+        label: Italiano
+      - value: pt
+        label: Português
+      - value: zh
+        label: 中文
+      - value: ja
+        label: 日本語
+      - value: ar
+        label: العربية
+    - name: materials
+      type: textarea
+      required: true
+      maxLength: 8000
+      label:
+        it: Testi di sala, schede e approfondimenti (incolla il testo)
+        en: Room texts, fact sheets, further reading (paste text)
+      help:
+        it: 'Il caricamento di file non è ancora disponibile: incolla il testo.'
+        en: 'File upload is not available yet: paste the text.'
+    - name: links
+      type: urls
+      label:
+        it: Link ai materiali (facoltativo)
+        en: Links to materials (optional)
+  data:
+    collections:
+    - name: artworks
+      ownedBy: user
+      description: The museum's works (title, room, artist, year, QR id)
+      fields:
+      - name: title
+        type: text
+        required: true
+      - name: room
+        type: text
+      - name: artist_year
+        type: text
+      - name: status
+        type: select
+        options:
+        - draft
+        - approved
+        - published
+    - name: materials
+      ownedBy: user
+      description: Room texts, fact sheets and further reading pasted by the curator, the knowledge base of each work
+      fields:
+      - name: artwork
+        type: relation
+        relation: artworks
+      - name: title
+        type: text
+        required: true
+      - name: kind
+        type: select
+        options:
+        - room_text
+        - fact_sheet
+        - further_reading
+      - name: text
+        type: textarea
+      - name: source_url
+        type: url
+      searchable: true
+    - name: guides
+      ownedBy: user
+      description: Draft and approved audio-guide texts per work, audience and language
+      fields:
+      - name: artwork
+        type: relation
+        relation: artworks
+      - name: audience
+        type: text
+      - name: text
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - draft
+        - approved
+        - published
+    - name: published_guides
+      ownedBy: shared
+      description: Approved texts and sources the visitors' guide reads, tagged by museum
+      fields:
+      - name: museum
+        type: text
+      - name: title
+        type: text
+      - name: audience
+        type: text
+      - name: text
+        type: textarea
+      - name: sources
+        type: textarea
+      searchable: true
+  approvals:
+  - key: publish_review
+    title:
+      it: Approva i testi prima della pubblicazione
+      en: Approve the texts before publishing
+    decidedBy: requester
+    fields:
+    - title
+    - audience
+  triggers:
+  - key: on_publish_approved
+    'on':
+      approval: publish_review
+      decision: approved
+    start:
+      agent: publisher
+    goal: 'Publish the approved guide: {event}'
+    asUser: true
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: MuseoVoce
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow:
+        it: Audioguide per musei e mostre
+        en: Audio guides for museums and exhibitions
+      title:
+        it: Ogni opera racconta la sua storia, **in ogni lingua**.
+        en: Every work tells its story, **in every language**.
+      text:
+        it: Il visitatore inquadra il QR, ascolta e fa domande. Le risposte vengono solo dai materiali del tuo museo, con
+          la fonte citata.
+        en: Visitors scan the QR code, listen and ask questions. Answers come only from your museum's materials, with the
+          source cited.
+      actions:
+      - label:
+          it: Area curatore
+          en: Curator area
+        href: /v/new_guide
+        style: primary
+      - label:
+          it: Prova la guida
+          en: Try the guide
+        href: /v/visit
+        style: ghost
+      aside: '<div style="padding:16px"><b>Esempio / Example</b><p>«Chi l''ha dipinto?»</p><p>«Fu dipinto nel 1503… Fonte:
+        Scheda di sala 12.»</p></div>'
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Carica i materiali
+          en: Add your materials
+        text:
+          it: 'Registra le opere e incolla testi di sala e schede: diventano la base di conoscenza.'
+          en: 'Register works and paste room texts and fact sheets: they become the knowledge base.'
+        badge: 📚
+      - title:
+          it: L'agente scrive e traduce
+          en: The agent writes and translates
+        text:
+          it: Racconto parlato per adulti o bambini, tradotto in molte lingue.
+          en: A spoken story for adults or children, translated into many languages.
+        badge: ✍️
+      - title:
+          it: Approvi tu
+          en: You approve
+        text:
+          it: Nulla viene pubblicato senza la tua revisione.
+          en: Nothing is published without your review.
+        badge: ✅
+      - title:
+          it: Il visitatore ascolta e chiede
+          en: Visitors listen and ask
+        text:
+          it: Dal telefono, con un QR accanto all'opera.
+          en: On their phone, via a QR code beside the work.
+        badge: 📱
+    - type: cards
+      id: licenza
+      title:
+        it: Licenza annuale per museo
+        en: Annual license per museum
+      items:
+      - title: Piccolo / Small
+        text:
+          it: Fino a 50 opere
+          en: Up to 50 works
+      - title: Medio / Medium
+        text:
+          it: Fino a 200 opere
+          en: Up to 200 works
+      - title: Grande / Large
+        text:
+          it: Fino a 1000 opere
+          en: Up to 1000 works
+    - type: note
+      content:
+        it: Le risposte si basano solo sui materiali caricati dal museo.
+        en: Answers are based only on materials uploaded by the museum.
+  - key: visit
+    type: chat
+    title:
+      it: Guida del visitatore
+      en: Visitor guide
+    source: agent:guide_chat
+    param: work
+    placement: page
+    nav: false
+    examples:
+    - Chi l'ha dipinto?
+    - Why these colours?
+    - Raconte-moi cette œuvre
+    - Erzähl es für Kinder
+    placeholder:
+      it: Fai una domanda sull'opera…
+      en: Ask about the work…
+  - key: new_guide
+    type: new_run
+    title:
+      it: Nuova audioguida
+      en: New audio guide
+    roles:
+    - user
+    - admin
+  - key: guides_history
+    type: history
+    title:
+      it: Le mie audioguide
+      en: My audio guides
+    source: run
+    roles:
+    - user
+    - admin
+  - key: guide_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: approvals
+    type: approvals
+    title:
+      it: Da approvare
+      en: To approve
+    roles:
+    - user
+    - admin
+  - key: works
+    type: table
+    title:
+      it: Opere
+      en: Works
+    source: collection:artworks
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: title
+        label:
+          it: Titolo
+          en: Title
+      - key: room
+        label:
+          it: Sala
+          en: Room
+      - key: artist_year
+        label:
+          it: Autore
+          en: Artist
+      - key: status
+        label:
+          it: Stato
+          en: Status
+        format: badge
+  - key: materials_view
+    type: table
+    title:
+      it: Materiali
+      en: Materials
+    source: collection:materials
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: title
+        label:
+          it: Titolo
+          en: Title
+      - key: kind
+        label:
+          it: Tipo
+          en: Kind
+        format: badge
+      - key: source_url
+        label: URL
+        format: link
+  - key: account
+    type: account
+    title:
+      it: Licenza
+      en: License
+    roles:
+    - user
+  billing:
+    modes:
+    - credits
+    - subscription
+    currency: eur
+    signupCredits: 30
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:author:
+        estimate: 10
+        metered: true
+    packs:
+    - key: translations
+      credits: 1000
+      price: 10
+      label: Crediti extra
+    plans:
+    - key: small
+      price: 490
+      interval: year
+      label:
+        it: Licenza annuale — fino a 50 opere
+        en: Annual license — up to 50 works
+      includes:
+      - up to 50 works
+      credits: 3000
+      creditsReset: monthly
+      roles:
+      - user
+    - key: medium
+      price: 1290
+      interval: year
+      label:
+        it: Licenza annuale — fino a 200 opere
+        en: Annual license — up to 200 works
+      includes:
+      - up to 200 works
+      credits: 12000
+      creditsReset: monthly
+      roles:
+      - user
+    - key: large
+      price: 2990
+      interval: year
+      label:
+        it: Licenza annuale — fino a 1000 opere
+        en: Annual license — up to 1000 works
+      includes:
+      - up to 1000 works
+      credits: 40000
+      creditsReset: monthly
+      roles:
+      - user
+  extensions:
+  - key: voice_io
+    description: 'Speech-to-text for visitor questions and text-to-speech audio playback in each language are not available
+      yet: the chat is text for now.'
+  - key: file_upload
+    description: 'Uploading PDFs and files is not available yet: the curator pastes text or links.'
+  - key: qr_codes
+    description: QR code generation per work (link /v/visit?work=<id>) and per-museum catalogue filtering are not available
+      yet.
+  - key: analytics
+    description: Most-listened works and most-asked questions need visitor events written by the guide, which anonymous agents
+      cannot do yet.
+  - key: work_quota
+    description: Enforcing the number of works allowed by the license plan is not available yet.

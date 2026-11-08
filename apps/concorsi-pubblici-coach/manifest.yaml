@@ -1,0 +1,749 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: bandopronto
+  displayName: BandoPronto
+  tagline:
+    it: Trova il concorso giusto, preparati meglio.
+  description:
+    it: BandoPronto monitora ogni giorno i bandi di concorso pubblico, li filtra per te e ti prepara con piani di studio,
+      quiz e una chat sulla normativa.
+  langs:
+  - it
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1d3557'
+      accent: '#2a9d8f'
+      background: '#f8f9fb'
+      foreground: '#1b1f24'
+    fonts:
+      body: Inter
+      display: Merriweather
+    wordmark:
+    - text: Bando
+      color: primary
+    - text: Pronto
+      color: accent
+    buttonShape: rounded
+  header:
+    links:
+    - label: Come funziona
+      href: '#come-funziona'
+    - label: Piani
+      href: '#piani'
+    cta:
+      label: Accedi
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: Utente
+      assignedBy: signup
+  limits:
+  - action: run
+    per: user
+    max: 20
+    window: day
+    roles:
+    - user
+  - action: chat
+    per: user
+    max: 50
+    window: day
+    roles:
+    - user
+  agents:
+  - key: scraper
+    role: scheduled
+    description: Ogni giorno raccoglie i nuovi bandi da inPA e Gazzetta Ufficiale serie concorsi, se le condizioni d'uso lo
+      consentono.
+    profile:
+      inline:
+        display_name: BandoPronto raccolta bandi
+        crews:
+        - id: scraper
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'Sei l''agente di raccolta di BandoPronto. Ogni giorno raccogli i NUOVI bandi di concorso pubblico
+            dal portale inPA (inpa.gov.it) e dalla Gazzetta Ufficiale, 4a Serie Speciale Concorsi ed Esami (gazzettaufficiale.it).
+            PRIMA di raccogliere da ciascuna fonte verifica con il MCP WebRobot robots.txt e le condizioni d''uso/licenza:
+            se il riutilizzo automatico non è consentito, NON raccogliere da quella fonte e segnalalo. Usa il MCP WebRobot
+            per costruire ed eseguire la pipeline di raccolta (non scrivere codice). Per ogni bando estrai solo ciò che è
+            scritto nel testo: id (stabile, es. fonte-codice), ente, profilo, posti (numero), requisiti (sintesi), titolo_studio
+            (licenza media/diploma/laurea triennale/laurea magistrale), regione, area (amministrativa/tecnica/informatica/sanitaria/istruzione/sicurezza/altro),
+            scadenza (AAAA-MM-GG), materie (elenco prove d''esame), url, fonte, pubblicato (AAAA-MM-GG). Non inventare mai
+            dati: se un campo manca lascialo vuoto. Rispondi con un titolo ''# Raccolta bandi del <data>'', una breve nota
+            per fonte (consentita o no, perché), e infine un unico blocco JSON con l''array dei bandi nuovi.'
+    mcpServers:
+    - name: webrobot
+      url: https://mcp-full.webrobot.eu/mcp
+      allow: all
+    goalTemplate: 'Data di oggi: {date}. Raccogli i bandi nuovi pubblicati nelle ultime 48 ore da inPA e Gazzetta Ufficiale
+      serie concorsi, verificando prima le condizioni d''uso.'
+    output: markdown+json
+    writesTo:
+      collection: bandi
+      parse: json_last
+      keyBy: id
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+  - key: matcher
+    role: helper
+    description: Per ogni filtro dell'utente seleziona i bandi compatibili e calcola il promemoria a 5 giorni dalla scadenza.
+    profile:
+      inline:
+        display_name: BandoPronto abbinamento
+        crews:
+        - id: matcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei l''abbinatore di bandi di BandoPronto. Leggi la collezione dei bandi con lo strumento di lettura
+            e seleziona solo quelli con scadenza non passata e compatibili con regione, titolo di studio (un titolo superiore
+            soddisfa un requisito inferiore) e area dell''utente. Non inventare dati. Rispondi con ''# Bandi compatibili —
+            <data>'', un elenco breve (ente, profilo, posti, scadenza, link) e infine un unico blocco JSON: array di oggetti
+            {id, ente, profilo, posti, scadenza, promemoria (scadenza meno 5 giorni, AAAA-MM-GG), materie, url}. Se non ci
+            sono bandi nuovi, array vuoto.'
+    appTools:
+    - name: read_bandi
+      description: Legge i bandi raccolti
+      action: read
+      collection: bandi
+      scope: all
+    output: markdown+json
+    writesTo:
+      collection: bandi_compatibili
+      parse: json_last
+      keyBy: id
+  - key: piano
+    role: main
+    when: mode == 'piano'
+    description: Piano di studio su un bando.
+    profile:
+      inline:
+        display_name: BandoPronto piano di studio
+        crews:
+        - id: piano
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei un tutor per concorsi pubblici italiani. Leggi il bando indicato con lo strumento di lettura
+            e costruisci un piano di studio sulle materie richieste. Inizia con ''# Piano di studio — <ente> / <profilo>''.
+            Sezioni ##: Il bando in breve (posti, scadenza, requisiti), Materie e peso, Calendario settimanale (fino alla
+            scadenza o alla data prova indicata; se la scadenza è la domanda e non la prova, dillo e proponi un orizzonte
+            di 8 settimane), Fonti normative da studiare, Come verificarti. Non inventare date di prova o contenuti del bando;
+            indica cosa non è noto. Non dare garanzie di esito.'
+    appTools:
+    - name: read_bandi
+      description: Legge i bandi raccolti
+      action: read
+      collection: bandi
+      scope: all
+    - name: read_corsi
+      description: Legge i corsi dell'admin
+      action: read
+      collection: corsi
+      scope: all
+    goalTemplate: 'Bando: {bando}
+
+      {?ore_settimana}Ore di studio a settimana: {ore_settimana}{/ore_settimana}
+
+      Oggi è {date}. Scrivi in italiano.'
+    output: markdown
+  - key: quiz
+    role: main
+    when: mode == 'quiz'
+    description: Genera quiz a risposta multipla.
+    profile:
+      inline:
+        display_name: BandoPronto quiz
+        crews:
+        - id: quiz
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: Generi quiz a risposta multipla per concorsi pubblici italiani. Inizia con '# Quiz — <materia>'.
+            Numera le domande, 4 opzioni A-D, una sola corretta, stile concorsuale. Prima tutte le domande, poi dopo una riga
+            '---' la chiave delle risposte con una breve spiegazione e il riferimento normativo solo se ne sei certo. Non
+            inventare articoli o sentenze.
+    goalTemplate: 'Materia: {materia_label}. Numero di domande: {n_domande}. Difficoltà: {livello_label}. Scrivi in italiano.'
+    output: markdown
+  - key: correttore
+    role: main
+    when: mode == 'correzione'
+    description: Corregge il quiz, calcola il punteggio e spiega gli errori.
+    profile:
+      inline:
+        display_name: BandoPronto correzione
+        crews:
+        - id: correttore
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Correggi un quiz a risposta multipla. L''utente incolla domande, chiave e le sue risposte. Inizia
+            con ''# Correzione — <materia> — <punteggio>/<totale>''. Elenca gli errori: domanda, risposta data, risposta corretta,
+            spiegazione e cosa ripassare. Chiudi con un breve piano di ripasso. Infine un unico blocco JSON {materia, punteggio,
+            totale, data, errori:[{domanda, data, corretta, argomento}]}. Non inventare: se mancano dati, dillo.'
+    goalTemplate: 'Materia: {materia_label}. Data: {date}.
+
+      Quiz, chiave e mie risposte:
+
+      {risposte}'
+    output: markdown+json
+    writesTo:
+      collection: quiz_scores
+      parse: json_last
+  - key: consulente
+    role: helper
+    description: Chat su bandi e normativa con citazioni dei testi ufficiali.
+    profile:
+      inline:
+        display_name: BandoPronto assistente
+        chat_mode: true
+        crews:
+        - id: consulente
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'Rispondi a domande su bandi di concorso pubblico e normativa italiana (D.P.R. 487/1994, T.U. Pubblico
+            impiego d.lgs. 165/2001, L. 241/1990, Costituzione, ecc.). Cerca i bandi nella collezione con lo strumento search_bandi
+            e i testi ufficiali (Normattiva, Gazzetta Ufficiale) tramite gli strumenti, e cita sempre fonte e articolo. Se
+            non trovi il testo ufficiale, dillo e non inventare. Non è consulenza legale: per ricorsi o casi specifici rimanda
+            al bando e a un professionista.'
+    mcpServers:
+    - name: webrobot
+      url: https://mcp-full.webrobot.eu/mcp
+      allow: all
+    appTools:
+    - name: search_bandi
+      description: Cerca nei bandi raccolti
+      action: search
+      collection: bandi
+      scope: all
+    goalTemplate: 'Conversazione finora:
+
+      {history}
+
+
+      Nuovo messaggio: {message}'
+    output: markdown
+  templates:
+  - key: filtro_bandi
+    title: I miei filtri bandi
+    description: Ogni mattina i bandi nuovi compatibili con regione, titolo e area, con promemoria a 5 giorni dalla scadenza.
+    agent: matcher
+    params:
+    - name: regione
+      type: text
+      required: true
+      label: Regione
+      help: es. Lombardia, oppure Tutte
+    - name: titolo
+      type: select
+      required: true
+      label: Titolo di studio
+      options:
+      - value: licenza media
+        label: Licenza media
+      - value: diploma
+        label: Diploma
+      - value: laurea triennale
+        label: Laurea triennale
+      - value: laurea magistrale
+        label: Laurea magistrale
+    - name: area
+      type: select
+      required: true
+      label: Area
+      options:
+      - value: amministrativa
+        label: Amministrativa
+      - value: tecnica
+        label: Tecnica
+      - value: informatica
+        label: Informatica
+      - value: sanitaria
+        label: Sanitaria
+      - value: istruzione
+        label: Istruzione
+      - value: sicurezza
+        label: Sicurezza
+      - value: qualsiasi
+        label: Qualsiasi
+    goal: 'Filtro "{instance}": regione {regione}, titolo di studio {titolo}, area {area}. Oggi è {date}. Elenca i bandi compatibili
+      pubblicati o ancora aperti.'
+    schedule:
+      cron: 30 5 * * *
+      userCanChange: false
+    maxPerUser: 3
+    cost:
+      perRun: 0
+  schedules:
+  - agent: scraper
+    action: run
+    cron: 0 4 * * *
+    owner: app
+  inputForm:
+    title: Preparati
+    fields:
+    - name: mode
+      type: select
+      required: true
+      label: Cosa vuoi fare
+      default: piano
+      options:
+      - value: piano
+        label: Piano di studio per un bando
+      - value: quiz
+        label: Genera un quiz
+      - value: correzione
+        label: Correggi il mio quiz
+    - name: bando
+      type: select
+      label: Bando
+      optionsFrom: collection:bandi
+      visibleWhen: mode == 'piano'
+    - name: ore_settimana
+      type: number
+      label: Ore di studio a settimana
+      visibleWhen: mode == 'piano'
+    - name: materia
+      type: select
+      label: Materia
+      visibleWhen: mode != 'piano'
+      options:
+      - value: amministrativo
+        label: Diritto amministrativo
+      - value: costituzionale
+        label: Diritto costituzionale
+      - value: logica
+        label: Logica
+      - value: informatica
+        label: Informatica
+    - name: n_domande
+      type: number
+      label: Numero di domande
+      default: 10
+      visibleWhen: mode == 'quiz'
+    - name: livello
+      type: select
+      label: Difficoltà
+      default: medio
+      visibleWhen: mode == 'quiz'
+      options:
+      - value: base
+        label: Base
+      - value: medio
+        label: Medio
+      - value: difficile
+        label: Difficile
+    - name: risposte
+      type: textarea
+      maxLength: 6000
+      label: Quiz, chiave e le tue risposte
+      visibleWhen: mode == 'correzione'
+  data:
+    collections:
+    - name: bandi
+      ownedBy: app
+      description: Bandi raccolti ogni giorno da inPA e Gazzetta Ufficiale
+      searchable: true
+      fields:
+      - name: id
+        type: text
+      - name: ente
+        type: text
+      - name: profilo
+        type: text
+      - name: posti
+        type: number
+      - name: requisiti
+        type: textarea
+      - name: titolo_studio
+        type: text
+      - name: regione
+        type: text
+      - name: area
+        type: text
+      - name: scadenza
+        type: date
+      - name: materie
+        type: textarea
+      - name: url
+        type: url
+      - name: fonte
+        type: text
+      - name: pubblicato
+        type: date
+    - name: bandi_compatibili
+      ownedBy: instance
+      description: Bandi compatibili con ciascun filtro, con promemoria
+      fields:
+      - name: id
+        type: text
+      - name: ente
+        type: text
+      - name: profilo
+        type: text
+      - name: posti
+        type: number
+      - name: scadenza
+        type: date
+      - name: promemoria
+        type: date
+      - name: materie
+        type: textarea
+      - name: url
+        type: url
+    - name: quiz_scores
+      ownedBy: user
+      description: Punteggi ed errori dei quiz di ciascun utente
+      fields:
+      - name: materia
+        type: text
+      - name: punteggio
+        type: number
+      - name: totale
+        type: number
+      - name: data
+        type: date
+      - name: errori
+        type: json
+    - name: corsi
+      ownedBy: shared
+      description: Corsi gestiti dall'admin
+      fields:
+      - name: titolo
+        type: text
+        required: true
+      - name: materia
+        type: text
+      - name: descrizione
+        type: textarea
+      - name: link
+        type: url
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: BandoPronto
+    sections:
+    - type: hero
+      title: Il concorso giusto, **pronto** per te.
+      text: Ogni giorno controlliamo inPA e Gazzetta Ufficiale, filtriamo i bandi per regione, titolo e area, e ti prepariamo
+        con piani di studio, quiz e una chat sulla normativa.
+      actions:
+      - label: Inizia gratis
+        href: /login
+        style: primary
+      - label: Come funziona
+        href: '#come-funziona'
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title: Come funziona
+      items:
+      - title: Imposta i filtri
+        text: 'Regione, titolo di studio e area: vedi i bandi compatibili con scadenza e promemoria.'
+        badge: 🎯
+      - title: Studia con un piano
+        text: Per ogni bando un piano sulle materie richieste.
+        badge: 📚
+      - title: Allenati
+        text: Quiz su diritto amministrativo, costituzionale, logica, informatica; ripassi gli errori.
+        badge: ✅
+      - title: Chiedi alla chat
+        text: Risposte su bandi e normativa con citazione dei testi ufficiali.
+        badge: 💬
+    - type: cards
+      id: piani
+      title: Piani
+      items:
+      - title: Gratis
+        text: Bandi e filtri personali.
+      - title: Pro — 9 € al mese
+        text: Piani di studio, quiz, correzione con ripasso errori e chat normativa.
+    - type: note
+      content: 'BandoPronto non è un servizio ufficiale. Verifica sempre i dati sul bando originale. Fonti: inPA e Gazzetta
+        Ufficiale, nei limiti delle loro condizioni d''uso.'
+  - key: filtri
+    type: instances
+    template: filtro_bandi
+    title: Filtri e bandi
+    roles:
+    - user
+    - admin
+  - key: bandi_aperti
+    type: table
+    title: Tutti i bandi
+    source: collection:bandi
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: ente
+        label: Ente
+      - key: profilo
+        label: Profilo
+      - key: posti
+        label: Posti
+        format: number
+      - key: regione
+        label: Regione
+      - key: scadenza
+        label: Scadenza
+        format: date
+      - key: url
+        label: Bando
+        format: link
+      sort:
+        field: scadenza
+        dir: asc
+      limit: 100
+      empty: Nessun bando disponibile.
+  - key: prepara
+    type: new_run
+    title: Preparati
+    roles:
+    - user
+    - admin
+  - key: storico
+    type: history
+    title: Le mie preparazioni
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: progressi
+    type: page
+    title: I miei progressi
+    roles:
+    - user
+    - admin
+    sections:
+    - type: data
+      title: Andamento punteggi
+      source: collection:quiz_scores
+      display: chart
+      chart: line
+      fields:
+      - key: data
+        label: Data
+      - key: punteggio
+        label: Punteggio
+      sort:
+        field: data
+        dir: asc
+      limit: 50
+      empty: Nessun quiz ancora.
+    - type: data
+      title: Quiz svolti ed errori
+      source: collection:quiz_scores
+      display: table
+      fields:
+      - key: data
+        label: Data
+        format: date
+      - key: materia
+        label: Materia
+      - key: punteggio
+        label: Punti
+        format: number
+      - key: totale
+        label: Su
+        format: number
+      - key: errori
+        label: Errori da ripassare
+      sort:
+        field: data
+        dir: desc
+      limit: 50
+  - key: chat
+    type: chat
+    title: Chiedi alla normativa
+    source: agent:consulente
+    placeholder: Es. Quali titoli servono per il bando X? Cosa dice l'art. 35 d.lgs. 165/2001?
+    examples:
+    - Quali requisiti generali servono per partecipare a un concorso pubblico?
+    - Come funziona la riserva dei posti per i volontari delle Forze Armate?
+    roles:
+    - user
+    - admin
+  - key: corsi_admin
+    type: table
+    title: Gestione corsi
+    source: collection:corsi
+    roles:
+    - admin
+    data:
+      display: table
+      fields:
+      - key: titolo
+        label: Titolo
+      - key: materia
+        label: Materia
+      - key: link
+        label: Link
+        format: link
+      limit: 100
+  - key: account
+    type: account
+    title: Abbonamento
+    roles:
+    - user
+  billing:
+    modes:
+    - credits
+    - subscription
+    currency: eur
+    signupCredits: 30
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:piano:
+        estimate: 10
+        metered: true
+        requiresPlan: pro
+      agent:quiz:
+        estimate: 10
+        metered: true
+        requiresPlan: pro
+      agent:correttore:
+        estimate: 10
+        metered: true
+        requiresPlan: pro
+      agent:consulente:
+        estimate: 10
+        metered: true
+        requiresPlan: pro
+    plans:
+    - key: pro
+      price: 9
+      interval: month
+      label: Pro
+      includes:
+      - Piani di studio
+      - Quiz e correzione
+      - Chat normativa
+      - Corsi
+      credits: 1000
+      creditsReset: monthly
+      roles:
+      - user
+  extensions:
+  - key: email_digest
+    description: 'Le email quotidiane con i bandi nuovi e il promemoria a 5 giorni dalla scadenza non sono ancora disponibili:
+      per ora i bandi compatibili e le date di promemoria si vedono nell''app, nella vista Filtri e bandi.'
+  - key: quiz_interattivo
+    description: Il quiz è generato come report e corretto incollando le risposte; un quiz interattivo con punteggio automatico
+      richiede codice dedicato.
+  - key: indice_normativa
+    description: 'Un indice dei testi ufficiali (Normattiva, Gazzetta Ufficiale) per la chat non è dichiarabile qui: la chat
+      li consulta tramite il MCP WebRobot, citando la fonte.'

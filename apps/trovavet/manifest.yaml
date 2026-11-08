@@ -1,0 +1,625 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: trovavet
+  displayName: TrovaVet
+  tagline:
+    it: Il veterinario specialista giusto, vicino a casa.
+  description:
+    it: 'Descrivi il problema del tuo animale: un agente AI lo collega alla specializzazione corretta (senza fare diagnosi)
+      e ti propone i veterinari verificati più pertinenti e vicini. Poi richiedi una visita.'
+  langs:
+  - it
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0f4c5c'
+      accent: '#e36414'
+      background: '#f8f6f1'
+      foreground: '#1c2b33'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Trova
+      color: primary
+    - text: Vet
+      color: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+      href: '#come-funziona'
+    - label:
+        it: Per le cliniche
+      href: '#cliniche'
+    cta:
+      label:
+        it: Cerca uno specialista
+      href: /v/new_search
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: vet
+      label:
+        it: Veterinario / clinica
+      assignedBy: invite
+    - key: owner
+      label:
+        it: Proprietario
+      assignedBy: signup
+  limits:
+  - action: agent:matcher
+    per: user
+    max: 10
+    window: day
+    roles:
+    - owner
+  agents:
+  - key: matcher
+    role: main
+    description: Interpreta il problema, sceglie la specializzazione (senza diagnosi) e ordina i veterinari verificati per
+      pertinenza e distanza.
+    profile:
+      inline:
+        display_name: TrovaVet matcher
+        crews:
+        - id: matcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei l''assistente di TrovaVet. Aiuti il proprietario di un animale a trovare un veterinario specialista.
+            NON fai diagnosi e non dai consigli terapeutici: traduci solo il sintomo o l''esame richiesto nella specializzazione
+            più adatta (cardiologia, dermatologia, ortopedia, animali esotici, altro). Se l''urgenza è alta o i sintomi sembrano
+            gravi (difficoltà respiratoria, trauma, collasso, avvelenamento), dillo subito in cima: contattare un pronto soccorso
+            veterinario, non attendere una prenotazione.
+
+            Usa lo strumento di ricerca sulla collezione vets_published (solo professionisti verificati) filtrando per specializzazione
+            e specie trattata. Stima la distanza dal comune dell''utente usando comune/indirizzo del professionista e dichiarala
+            come approssimativa; escludi chi supera la distanza massima. Non inventare mai professionisti, tariffe o orari:
+            usa solo i dati trovati.
+
+            Struttura del report: titolo di livello 1 "# Specialisti per <specie> — <specializzazione>"; poi ## Cosa ho capito
+            (specializzazione e motivazione, senza diagnosi); ## Elenco ordinato (tabella: posizione, nome, specializzazioni,
+            comune, distanza approssimativa, tariffa indicativa, prossimi slot liberi, perché è pertinente); ## Come prenotare
+            (invita a usare la sezione Prenotazioni con il nome del professionista e lo slot scelto); ## Avvertenze. Se non
+            trovi nessuno, dillo e suggerisci di ampliare la distanza.'
+    goalTemplate: 'Specie: {species_label}
+
+      Razza: {breed}
+
+      Età: {age}
+
+      Sintomo o esame richiesto: {problem}
+
+      Comune: {city}
+
+      Distanza massima: {max_km} km
+
+      Urgenza: {urgency_label}
+
+      Data: {date}. Scrivi in italiano.'
+    appTools:
+    - name: search_vets
+      description: Cerca tra i professionisti verificati e pubblicati
+      action: search
+      collection: vets_published
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.4
+  - key: publisher
+    role: helper
+    description: Dopo la verifica dell'admin pubblica il profilo del veterinario nella collezione pubblica.
+    awaits:
+    - vet_verification
+    profile:
+      inline:
+        display_name: TrovaVet publisher
+        crews:
+        - id: publisher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: Ricevi un profilo veterinario approvato dall'admin. Copialo nella collezione vets_published con lo
+            strumento di scrittura, senza modificare i dati e senza includere contatti privati oltre a quelli del profilo.
+            Rispondi con un titolo "# Profilo pubblicato" e una riga di conferma.
+    goalTemplate: 'Pubblica il profilo veterinario approvato. Data: {date}.'
+    appTools:
+    - name: publish_vet
+      description: Scrive il profilo verificato tra i pubblicati
+      action: write
+      collection: vets_published
+      scope: all
+    output: markdown
+  - key: booker
+    role: helper
+    description: Registra la richiesta di prenotazione del proprietario e la manda al veterinario per accettare o proporre
+      un altro orario.
+    awaits:
+    - booking_confirm
+    profile:
+      inline:
+        display_name: TrovaVet booker
+        crews:
+        - id: booker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Registra la richiesta di prenotazione dell''utente nella collezione bookings (animale, veterinario,
+            slot scelto, motivo) con stato ''richiesta'' e chiedi al veterinario la conferma con request_booking_confirm.
+            Non inventare slot: usa solo quelli indicati. Concludi con "# Richiesta inviata" e il riepilogo.'
+    goalTemplate: 'Richiesta di prenotazione (veterinario, slot, animale, motivo): {message}'
+    appTools:
+    - name: save_booking
+      description: Salva la richiesta di prenotazione
+      action: write
+      collection: bookings
+      scope: user
+    output: markdown
+  - key: moderator
+    role: helper
+    description: Prepara le recensioni dopo la visita per la moderazione dell'admin.
+    awaits:
+    - review_moderation
+    profile:
+      inline:
+        display_name: TrovaVet moderator
+        crews:
+        - id: moderator
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: Ricevi una recensione scritta dopo una visita. Segnala brevemente se contiene insulti, dati personali
+            o accuse non verificabili, poi chiedi la decisione dell'admin con request_review_moderation. Concludi con "# Recensione
+            in moderazione" e una riga di riepilogo.
+    goalTemplate: 'Recensione da moderare: {message}'
+    output: markdown
+  inputForm:
+    title:
+      it: Cerca uno specialista
+    fields:
+    - name: species
+      type: select
+      required: true
+      label:
+        it: Specie
+      options:
+      - value: cane
+        label: Cane
+      - value: gatto
+        label: Gatto
+      - value: coniglio
+        label: Coniglio
+      - value: rettile
+        label: Rettile
+      - value: uccello
+        label: Uccello
+      - value: altro
+        label: Altro esotico
+    - name: breed
+      type: text
+      label:
+        it: Razza
+    - name: age
+      type: text
+      label:
+        it: Età
+    - name: problem
+      type: textarea
+      required: true
+      maxLength: 800
+      label:
+        it: Sintomo o esame richiesto
+    - name: city
+      type: text
+      required: true
+      label:
+        it: Comune
+    - name: max_km
+      type: number
+      required: true
+      default: 20
+      label:
+        it: Distanza massima (km)
+    - name: urgency
+      type: select
+      required: true
+      label:
+        it: Urgenza
+      options:
+      - value: bassa
+        label: Può attendere
+      - value: media
+        label: Entro pochi giorni
+      - value: alta
+        label: Il prima possibile
+  data:
+    collections:
+    - name: pets
+      ownedBy: user
+      description: Schede degli animali del proprietario
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Nome
+      - name: species
+        type: text
+        label: Specie
+      - name: breed
+        type: text
+        label: Razza
+      - name: age
+        type: text
+        label: Età
+      - name: notes
+        type: textarea
+        label: Note
+    - name: vet_profiles
+      ownedBy: user
+      description: Profilo del veterinario o clinica, in attesa di verifica
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Nome / clinica
+      - name: specializations
+        type: multiselect
+        required: true
+        label: Specializzazioni
+        options:
+        - cardiologia
+        - dermatologia
+        - ortopedia
+        - esotici
+        - altro
+      - name: species
+        type: text
+        label: Specie trattate
+      - name: address
+        type: text
+        required: true
+        label: Indirizzo
+      - name: city
+        type: text
+        required: true
+        label: Comune
+      - name: hours
+        type: textarea
+        label: Orari
+      - name: fees
+        type: text
+        label: Tariffe indicative
+      - name: titles
+        type: textarea
+        label: Titoli
+      - name: order_number
+        type: text
+        required: true
+        label: N. iscrizione all'Ordine
+      - name: slots
+        type: textarea
+        label: Slot liberi (uno per riga, data e ora)
+      - name: status
+        type: text
+        label: Stato
+    - name: vets_published
+      ownedBy: shared
+      searchable: true
+      description: Professionisti verificati dall'admin, visibili ai proprietari
+    - name: bookings
+      ownedBy: user
+      sharing:
+      - editor
+      description: Richieste di prenotazione; il veterinario interessato vi accede per invito
+      fields:
+      - name: vet_name
+        type: text
+        label: Veterinario
+      - name: pet_name
+        type: text
+        label: Animale
+      - name: slot
+        type: text
+        label: Slot
+      - name: reason
+        type: text
+        label: Motivo
+      - name: status
+        type: text
+        label: Stato
+    - name: reviews
+      ownedBy: user
+      sharing:
+      - viewer
+      description: Recensioni dopo la visita, soggette a moderazione
+      fields:
+      - name: vet_name
+        type: text
+        label: Veterinario
+      - name: rating
+        type: number
+        label: Voto (1-5)
+      - name: comment
+        type: textarea
+        label: Commento
+      - name: status
+        type: text
+        label: Stato
+  approvals:
+  - key: vet_verification
+    title: Verifica iscrizione all'Ordine
+    role: admin
+    fields:
+    - name
+    - order_number
+    - city
+    decidedBy: role
+  - key: booking_confirm
+    title: Conferma o riproponi orario
+    role: vet
+    fields:
+    - pet_name
+    - slot
+    - reason
+    timeoutMinutes: 2880
+    decidedBy: role
+  - key: review_moderation
+    title: Moderazione recensione
+    role: admin
+    fields:
+    - vet_name
+    - rating
+    - comment
+    decidedBy: role
+  triggers:
+  - key: on_vet_approved
+    'on':
+      approval: vet_verification
+      decision: approved
+    start:
+      agent: publisher
+    goal: 'Pubblica il profilo approvato: {event}'
+    asUser: false
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: TrovaVet
+    sections:
+    - type: hero
+      eyebrow:
+        it: Per proprietari di animali
+      title:
+        it: Trova lo **specialista giusto** per il tuo animale, vicino a casa
+      text:
+        it: 'Descrivi il problema: l''agente lo collega alla specializzazione corretta (senza diagnosi) e ti propone veterinari
+          verificati, ordinati per pertinenza e distanza. Gratis per i proprietari.'
+      actions:
+      - label:
+          it: Cerca uno specialista
+        href: /v/new_search
+        style: primary
+      - label:
+          it: Accedi
+        href: /login
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+      items:
+      - title:
+          it: Racconta il caso
+        text:
+          it: Specie, razza, età, sintomo o esame, comune, distanza e urgenza.
+        badge: 📝
+      - title:
+          it: Ricevi l'elenco
+        text:
+          it: Solo professionisti con iscrizione all'Ordine verificata.
+        badge: 📍
+      - title:
+          it: Prenota
+        text:
+          it: Scegli uno slot libero; il veterinario accetta o propone un altro orario.
+        badge: 📅
+    - type: cards
+      id: cliniche
+      title:
+        it: Per veterinari e cliniche
+      intro:
+        it: Crea il profilo con specializzazioni, orari e tariffe; dopo la verifica dell'Ordine compari nelle ricerche. Abbonamento
+          mensile.
+      items:
+      - title:
+          it: Profilo verificato
+        text:
+          it: Pubblicazione dopo il controllo dell'iscrizione all'Ordine.
+      - title:
+          it: Richieste mirate
+        text:
+          it: Ricevi solo richieste coerenti con le tue specializzazioni.
+    - type: note
+      content:
+        it: TrovaVet non fornisce diagnosi né consulenza medica. In caso di emergenza contatta subito un pronto soccorso veterinario.
+  - key: new_search
+    type: new_run
+    title:
+      it: Cerca uno specialista
+    roles:
+    - owner
+    - admin
+  - key: searches
+    type: history
+    title:
+      it: Le mie ricerche
+    source: run
+    roles:
+    - owner
+    - admin
+  - key: result
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: my_pets
+    type: table
+    title:
+      it: I miei animali
+    source: collection:pets
+    roles:
+    - owner
+  - key: my_bookings
+    type: table
+    title:
+      it: Le mie prenotazioni
+    source: collection:bookings
+    roles:
+    - owner
+  - key: my_reviews
+    type: table
+    title:
+      it: Le mie recensioni
+    source: collection:reviews
+    roles:
+    - owner
+  - key: my_profile
+    type: table
+    title:
+      it: Il mio profilo professionale
+    source: collection:vet_profiles
+    roles:
+    - vet
+  - key: requests
+    type: table
+    title:
+      it: Richieste ricevute
+    source: collection:bookings
+    roles:
+    - vet
+  - key: decisions
+    type: approvals
+    title:
+      it: Da decidere
+    roles:
+    - vet
+    - admin
+  - key: all_vets
+    type: table
+    title:
+      it: Professionisti pubblicati
+    source: collection:vets_published
+    roles:
+    - admin
+  - key: all_reviews
+    type: table
+    title:
+      it: Recensioni
+    source: collection:reviews
+    roles:
+    - admin
+  - key: admin
+    type: admin
+    title: Admin
+    roles:
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+    roles:
+    - vet
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: clinica
+      price: 39
+      interval: month
+      label:
+        it: TrovaVet Clinica
+      includes:
+      - profilo pubblicato nelle ricerche
+      - richieste di prenotazione illimitate
+      roles:
+      - vet
+  extensions:
+  - key: map_view
+    description: 'Visualizzazione dei risultati su mappa e calcolo esatto della distanza (geocodifica) non disponibili: la
+      distanza è stimata dall''agente e l''elenco è testuale.'
+  - key: calendar_sync
+    description: 'Sincronizzazione con il calendario esterno del veterinario (Google/Outlook) richiede credenziali per utente,
+      non ancora disponibili: gli slot liberi sono inseriti a mano nel profilo.'
+  - key: notifications
+    description: 'Email di conferma, promemoria 24 ore prima e SMS opzionale non sono ancora disponibili: lo stato della prenotazione
+      si vede nelle viste.'
+  - key: vet_visibility
+    description: Il veterinario vede la richiesta tramite condivisione (sharing editor) del record e la decisione in 'Da decidere';
+      l'invio del record al veterinario scelto va completato nello studio.
+  - key: documents
+    description: 'Il caricamento di file (titoli, referti) non è disponibile: usare link o testo.'
+  - key: free_for_owners
+    description: 'I proprietari usano l''app gratuitamente: nessun costo per ricerca è dichiarato; solo le cliniche hanno
+      un abbonamento.'

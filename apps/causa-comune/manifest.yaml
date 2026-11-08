@@ -1,0 +1,591 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: causacomune
+  displayName: CausaComune
+  tagline:
+    it: Le imprese sostengono le cause, gli enti verificati ricevono i fondi.
+    en: Companies back causes, verified nonprofits receive the funds.
+  description:
+    it: CausaComune collega imprese ed enti del terzo settore. Gli enti sono verificati sul RUNTS prima di ricevere fondi;
+      le imprese donano, seguono l'impatto e comunicano il loro sostegno.
+    en: CausaComune connects companies and third-sector organisations. Nonprofits are checked against RUNTS before receiving
+      funds; companies donate, track impact and communicate their support.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f4d4a'
+      accent: '#e07a3f'
+      background: '#fbf8f3'
+      foreground: '#1d2a2a'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Causa
+      color: primary
+    - text: Comune
+      color: accent
+    button: accent
+  header:
+    links:
+    - label: Come funziona
+      href: '#come-funziona'
+    - label: Garanzie
+      href: '#garanzie'
+    cta:
+      label: Accedi
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Amministratore
+      assignedBy: admin_emails
+    - key: operator
+      label: Operatore verifiche
+      assignedBy: admin
+    - key: user
+      label: Impresa o ente
+      assignedBy: signup
+  limits:
+  - action: agent:impact
+    per: user
+    max: 5
+    window: day
+    roles:
+    - user
+  agents:
+  - key: verifier
+    role: helper
+    description: Confronta i dati dichiarati dall'ente con il RUNTS e segnala le incongruenze all'operatore.
+    profile:
+      inline:
+        display_name: Verificatore RUNTS
+        crews:
+        - id: verifier
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'Sei un assistente che supporta la verifica di enti del terzo settore. Leggi il profilo dell''ente
+            (tool di lettura di ente_profiles), poi cerca l''ente nel RUNTS, il Registro unico nazionale del terzo settore
+            (servizi.lavoro.gov.it, sezione RUNTS), tramite il tool di scraping WebRobot, usando codice fiscale o denominazione.
+            Confronta: denominazione, codice fiscale, forma giuridica, sezione di iscrizione, sede legale, stato dell''iscrizione.
+            Non inventare mai dati: se il registro non risponde o l''ente non si trova, dillo. Scrivi un record in verification_checks
+            e poi chiama request_ente_verification con un riepilogo per l''operatore. Il tuo report inizia con un titolo "#
+            Verifica RUNTS — <denominazione>" e ha le sezioni ## Dati dichiarati, ## Dati nel RUNTS, ## Incongruenze, ## Raccomandazione
+            (approvare, respingere o chiedere chiarimenti). La decisione spetta sempre all''operatore.'
+    goalTemplate: 'Verifica il nuovo ente appena registrato (leggilo con read_ente). Data: {date}.'
+    appTools:
+    - name: read_ente
+      description: Legge il profilo dell'ente
+      action: read
+      collection: ente_profiles
+      scope: user
+    - name: save_check
+      description: Registra l'esito del confronto con il RUNTS
+      action: write
+      collection: verification_checks
+      scope: user
+    awaits:
+    - ente_verification
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 0.8
+  - key: publisher
+    role: helper
+    description: Dopo l'approvazione pubblica l'ente nel catalogo condiviso delle cause.
+    profile:
+      inline:
+        display_name: Pubblicatore enti
+        crews:
+        - id: publisher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Ricevi l''evento di approvazione di un ente. Leggi il suo profilo con read_ente e scrivi in enti_verificati
+            un solo record con: name, causes, summary, projects, region. Non copiare codice fiscale, email o dati di contatto
+            privati. Rispondi con un titolo "# Ente pubblicato — <nome>" e una riga di conferma.'
+    goalTemplate: 'Un ente è stato approvato: leggi il suo profilo e pubblicalo. Data: {date}.'
+    appTools:
+    - name: read_ente
+      description: Legge il profilo dell'ente
+      action: read
+      collection: ente_profiles
+      scope: user
+    - name: publish_ente
+      description: Pubblica l'ente nel catalogo
+      action: write
+      collection: enti_verificati
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.2
+  - key: impact
+    role: main
+    description: Scrive il rendiconto d'impatto dell'impresa dalle sue donazioni.
+    profile:
+      inline:
+        display_name: Rendiconto d'impatto
+        crews:
+        - id: impact
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Scrivi il rendiconto d''impatto di un''impresa che dona a enti del terzo settore, da poter condividere
+            con clienti e dipendenti. Leggi le sue donazioni (read_donations) e i dati degli enti (read_enti). Usa solo cifre
+            presenti nei dati: mai inventare risultati o beneficiari; se i progetti non hanno ancora dati di impatto dillo.
+            Inizia con "# Rendiconto d''impatto — <impresa> — <periodo>". Sezioni: ## In sintesi (totale donato, numero di
+            enti, cause), ## A chi è andato il sostegno (tabella), ## Progetti sostenuti, ## Come comunicarlo (3 frasi pronte
+            per social e sito, tono sobrio, senza enfasi eccessiva). Aggiungi un grafico con un blocco ```chart di tipo bar
+            con gli importi per ente. Scrivi in italiano.'
+    goalTemplate: 'Periodo: {period_label}.
+
+      {?notes}Note: {notes}{/notes}
+
+      Data: {date}. Scrivi in italiano.'
+    appTools:
+    - name: read_donations
+      description: Donazioni dell'impresa
+      action: read
+      collection: donations
+      scope: user
+    - name: read_enti
+      description: Catalogo degli enti verificati
+      action: read
+      collection: enti_verificati
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.5
+  inputForm:
+    title: Nuovo rendiconto d'impatto
+    fields:
+    - name: period
+      type: select
+      required: true
+      label: Periodo
+      options:
+      - value: month
+        label: Ultimo mese
+      - value: quarter
+        label: Ultimo trimestre
+      - value: year
+        label: Ultimo anno
+    - name: notes
+      type: textarea
+      maxLength: 400
+      label: Note (facoltative)
+  data:
+    collections:
+    - name: company_profiles
+      ownedBy: user
+      description: Profilo dell'impresa
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Ragione sociale
+      - name: vat
+        type: text
+        label: Partita IVA
+      - name: sector
+        type: text
+        label: Settore
+      - name: causes
+        type: multiselect
+        label: Cause scelte
+        options:
+        - ambiente
+        - infanzia
+        - anziani
+        - salute
+        - cultura
+        - inclusione
+        - animali
+    - name: ente_profiles
+      ownedBy: user
+      description: Profilo dell'ente, visibile solo a lui e all'operatore
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Denominazione
+      - name: tax_code
+        type: text
+        required: true
+        label: Codice fiscale
+      - name: legal_form
+        type: text
+        label: Forma giuridica
+      - name: runts_section
+        type: text
+        label: Sezione RUNTS dichiarata
+      - name: region
+        type: text
+        label: Regione
+      - name: causes
+        type: multiselect
+        label: Cause
+        options:
+        - ambiente
+        - infanzia
+        - anziani
+        - salute
+        - cultura
+        - inclusione
+        - animali
+      - name: summary
+        type: textarea
+        label: Attività
+      - name: projects
+        type: textarea
+        label: Progetti
+      - name: status
+        type: select
+        label: Stato
+        options:
+        - in_verifica
+        - approvato
+        - respinto
+        default: in_verifica
+    - name: verification_checks
+      ownedBy: user
+      description: Esito del confronto con il RUNTS
+      fields:
+      - name: ente
+        type: text
+      - name: match
+        type: select
+        options:
+        - coerente
+        - incongruenze
+        - non_trovato
+      - name: details
+        type: textarea
+    - name: enti_verificati
+      ownedBy: shared
+      description: Catalogo pubblico degli enti approvati
+      fields:
+      - name: name
+        type: text
+        label: Ente
+      - name: region
+        type: text
+        label: Regione
+      - name: causes
+        type: text
+        label: Cause
+      - name: summary
+        type: textarea
+        label: Attività
+      - name: projects
+        type: textarea
+        label: Progetti
+    - name: donations
+      ownedBy: user
+      sharing:
+      - viewer
+      description: Donazioni dell'impresa
+      fields:
+      - name: ente
+        type: text
+        label: Ente
+      - name: amount
+        type: number
+        label: Importo (EUR)
+      - name: kind
+        type: select
+        label: Tipo
+        options:
+        - una_tantum
+        - ricorrente
+      - name: date
+        type: date
+        label: Data
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: CausaComune
+    sections:
+    - type: hero
+      eyebrow: Terzo settore e imprese
+      title: Dona dove conta, con enti **verificati**.
+      text: Le imprese scelgono le cause e donano in modo semplice e tracciabile. Gli enti ricevono i fondi solo dopo il controllo
+        sul RUNTS.
+      actions:
+      - label: Inizia
+        href: /login
+        style: primary
+      - label: Come funziona
+        href: '#come-funziona'
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title: Come funziona
+      items:
+      - title: Registrati
+        text: 'Impresa o ente: ognuno vede solo i propri dati.'
+        badge: 📝
+      - title: Verifica
+        text: Un agente confronta l'ente con il RUNTS e un operatore lo approva.
+        badge: 🔎
+      - title: Dona
+        text: Una tantum o ricorrente, tramite la piattaforma e Stripe Connect.
+        badge: 💚
+      - title: Comunica
+        text: Dashboard e rendiconto d'impatto da condividere.
+        badge: 📣
+    - type: cards
+      id: garanzie
+      title: Garanzie
+      items:
+      - title: Enti controllati
+        text: Nessun fondo agli enti non approvati.
+      - title: Dati separati
+        text: Aziende ed enti non vedono i dati degli altri.
+      - title: Commissione chiara
+        text: La piattaforma trattiene una piccola commissione sulle donazioni.
+    - type: note
+      content: 'CausaComune · l''agente di verifica è un supporto: la decisione finale spetta a un operatore umano.'
+  - key: dashboard
+    type: page
+    title: La mia dashboard
+    roles:
+    - user
+    sections:
+    - type: data
+      source: collection:donations
+      display: kpi
+      kpis:
+      - label: Totale donato
+        agg: sum
+        field: amount
+        format: money
+      - label: Donazioni
+        agg: count
+    - type: data
+      title: Le mie donazioni
+      source: collection:donations
+      display: table
+      fields:
+      - key: date
+        label: Data
+        format: date
+      - key: ente
+        label: Ente
+      - key: amount
+        label: Importo
+        format: money
+      - key: kind
+        label: Tipo
+        format: badge
+      sort:
+        field: date
+        dir: desc
+      limit: 50
+      empty: Nessuna donazione ancora.
+    - type: text
+      title: Materiali
+      content: 'Genera il rendiconto d''impatto dalla voce **Rendiconto**: include frasi pronte per comunicare il tuo sostegno.'
+  - key: enti_catalog
+    type: cards
+    title: Cause ed enti
+    source: collection:enti_verificati
+    roles:
+    - user
+    - admin
+    data:
+      display: cards
+      fields:
+      - key: name
+        label: Ente
+      - key: region
+        label: Regione
+      - key: causes
+        label: Cause
+      - key: summary
+        label: Attività
+      limit: 100
+      empty: Nessun ente verificato per ora.
+  - key: company_profile
+    type: list
+    title: Profilo impresa
+    source: collection:company_profiles
+    roles:
+    - user
+  - key: ente_profile
+    type: list
+    title: Profilo ente
+    source: collection:ente_profiles
+    roles:
+    - user
+  - key: new_report
+    type: new_run
+    title: Rendiconto
+    roles:
+    - user
+  - key: reports
+    type: history
+    title: I miei rendiconti
+    source: run
+    roles:
+    - user
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: supporters
+    type: table
+    title: Donazioni ricevute
+    source: collection:donations
+    roles:
+    - user
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Data
+        format: date
+      - key: amount
+        label: Importo
+        format: money
+      - key: kind
+        label: Tipo
+        format: badge
+      limit: 100
+  - key: checks
+    type: approvals
+    title: Verifiche enti
+    roles:
+    - operator
+    - admin
+  - key: account
+    type: account
+    title: Crediti
+    roles:
+    - user
+  approvals:
+  - key: ente_verification
+    title: Approvazione ente
+    description: L'operatore approva un ente dopo il confronto con il RUNTS.
+    role: operator
+    decidedBy: role
+    fields:
+    - ente
+    - match
+    - details
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: verify_new_ente
+    'on':
+      collection: ente_profiles
+      op: insert
+    start:
+      agent: verifier
+    goal: Verifica l'ente {record.name}, codice fiscale {record.tax_code}.
+    asUser: true
+  - key: publish_approved
+    'on':
+      approval: ente_verification
+      decision: approved
+    start:
+      agent: publisher
+    goal: 'Pubblica l''ente approvato: {event}'
+    asUser: true
+  billing:
+    modes:
+    - per_transaction
+    - credits
+    currency: eur
+    transactionFeePct: 3
+    sellers: collection:ente_profiles
+    signupCredits: 30
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:impact:
+        estimate: 10
+        metered: true
+    packs:
+    - key: small
+      credits: 300
+      price: 5
+      label: 300 crediti
+  extensions:
+  - key: donation_checkout
+    description: 'Flusso di donazione (scelta ente, importo, una tantum o ricorrente, pagamento Stripe Connect con commissione)
+      che crea il record in donations: non esprimibile con le viste attuali.'
+  - key: per_sale_donations
+    description: 'Donazioni legate a ogni vendita: richiedono connettori allo store/POS con le credenziali di ogni impresa,
+      non ancora disponibili.'
+  - key: ente_side_visibility
+    description: 'Gli enti vedono solo le donazioni a loro destinate e i sostenitori: serve la condivisione per-record da
+      impresa a ente (sharing viewer), da completare.'
+  - key: email_impact_reports
+    description: 'Invio via email dei rendiconti d''impatto: notifiche non ancora disponibili; per ora il rendiconto si consulta
+      e stampa nell''app.'
+  - key: badges
+    description: 'Badge scaricabili del sostegno: per ora solo frasi pronte nel rendiconto, i file grafici non sono ancora
+      gestiti.'

@@ -1,0 +1,473 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: gararadar
+  displayName: GaraRadar
+  tagline:
+    it: Le gare pubbliche giuste per la tua impresa, ogni mattina.
+  description:
+    it: GaraRadar legge ogni giorno i nuovi bandi ANAC e TED, li confronta con il profilo della tua azienda, assegna un punteggio
+      di compatibilità e ti prepara la scheda di sintesi e la bozza della relazione tecnica.
+  langs:
+  - it
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#12355b'
+      accent: '#e07a1f'
+      background: '#f6f8fb'
+      foreground: '#17212b'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Gara
+      color: primary
+    - text: Radar
+      color: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+      href: '#come-funziona'
+    - label:
+        it: Fonti
+      href: '#fonti'
+    cta:
+      label:
+        it: Inizia
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label:
+        it: Account aziendale
+      assignedBy: signup
+  limits:
+  - action: agent:briefer
+    per: user
+    max: 20
+    window: day
+    roles:
+    - user
+  egress:
+    hosts:
+    - api.ted.europa.eu
+    - dati.anticorruzione.it
+    notes: 'TED: riuso libero anche commerciale, CC BY 4.0 (Publications Office of the EU). ANAC: dati aperti del portale
+      dati.anticorruzione.it, licenza aperta (IODL 2.0 / CC BY 4.0), con attribuzione.'
+  agents:
+  - key: watcher
+    role: scheduled
+    description: Ogni mattina legge i nuovi bandi ANAC e TED e li valuta sul profilo di una singola azienda.
+    memory: instance
+    writesTo:
+      collection: matches
+      parse: markdown_sections
+    appTools:
+    - name: ted_search
+      description: Cerca avvisi di gara su TED
+      action: http
+      http:
+        method: POST
+        url: https://api.ted.europa.eu/v3/notices/search
+        attribution: TED, Publications Office of the EU, CC BY 4.0
+    - name: anac_search
+      description: Interroga il catalogo dati aperti ANAC (CKAN) per bandi e gare recenti
+      action: http
+      http:
+        method: GET
+        url: https://dati.anticorruzione.it/opendata/api/3/action/package_search
+        allowPath: false
+        attribution: ANAC, dati aperti, licenza aperta con attribuzione
+    profile:
+      inline:
+        display_name: GaraRadar watcher
+        crews:
+        - id: watcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei un analista di gare pubbliche italiane ed europee. Ogni giorno cerchi i nuovi bandi pubblicati
+            nelle ultime 24 ore (72 se oggi è lunedì) con i tool ted_search e anac_search.
+
+            TED: POST con body JSON {"query":"buyer-country=ITA AND classification-cpv=<prefisso>* AND publication-date>=AAAAMMGG","fields":["publication-number","notice-title","buyer-name","deadline-receipt-tender-date-lot","estimated-value-lot","links"],"limit":50,"page":1}.
+            Fai una ricerca per ogni codice CPV del profilo.
+
+            ANAC: GET con query q=<parola chiave>&rows=20 sul catalogo CKAN; usa solo ciò che è davvero presente nella risposta.
+
+            Filtra sul profilo dell''azienda (CPV, categorie SOA, regioni, importo minimo e massimo, fatturato, certificazioni).
+            Per ogni gara compatibile scrivi una sezione con titolo di secondo livello "## <titolo gara>" e queste righe:
+            Riferimento (id o numero di avviso), Ente, Importo, Scadenza, Link, Punteggio di compatibilità (0-100), Perché
+            è compatibile, Requisiti mancanti o da verificare (SOA, fatturato, certificazioni, importo fuori fascia). Ordina
+            per punteggio decrescente, tieni solo punteggio >= 50, massimo 15 gare. Il report inizia con "# Nuove gare — <data>"
+            e una riga di sintesi. Non inventare mai importi, scadenze o requisiti: se un dato manca scrivi "non indicato".
+            Non sono consulenza legale: i requisiti vanno verificati sul bando. Se non ci sono gare nuove compatibili, dillo
+            in una riga. Alla fine chiama una volta il tool remember con i riferimenti delle gare già proposte, per non ripeterle.'
+  - key: briefer
+    role: main
+    description: Prepara scheda di sintesi, checklist e bozza di relazione tecnica per una gara salvata.
+    writesTo:
+      collection: saved_tenders
+      parse: whole
+      keyBy: reference
+    appTools:
+    - name: ted_search
+      description: Cerca avvisi di gara su TED
+      action: http
+      http:
+        method: POST
+        url: https://api.ted.europa.eu/v3/notices/search
+        attribution: TED, Publications Office of the EU, CC BY 4.0
+    - name: anac_search
+      description: Interroga il catalogo dati aperti ANAC (CKAN) per bandi e gare recenti
+      action: http
+      http:
+        method: GET
+        url: https://dati.anticorruzione.it/opendata/api/3/action/package_search
+        allowPath: false
+        attribution: ANAC, dati aperti, licenza aperta con attribuzione
+    profile:
+      inline:
+        display_name: GaraRadar briefer
+        crews:
+        - id: briefer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 1.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei un esperto di partecipazione a gare pubbliche. Data una gara (riferimento TED/ANAC o testo incollato
+            dall''utente) recuperi i dati con ted_search/anac_search e prepari:
+
+            # <titolo della gara>
+
+            ## Scheda di sintesi — ente, oggetto, CPV, importo, procedura, scadenze (offerte, chiarimenti, sopralluogo), criterio
+            di aggiudicazione con pesi (offerta tecnica/economica) se noti.
+
+            ## Documenti richiesti — elenco.
+
+            ## Requisiti e compatibilità — confronto con il profilo aziendale fornito, con requisiti mancanti.
+
+            ## Checklist di preparazione — voci con scadenza interna suggerita, come elenco puntato.
+
+            ## Bozza di relazione tecnica — struttura per i criteri di valutazione, con sezioni, paragrafi guida e segnaposto
+            [DA COMPLETARE] per i dati aziendali che non conosci. Scrivila come bozza modificabile.
+
+            Non inventare mai importi, date, pesi o requisiti: se non li trovi scrivi "non indicato nel bando, da verificare".
+            Non è consulenza legale. Scrivi in italiano.'
+    goalTemplate: 'Gara: {reference}
+
+      {?details}Testo o note del bando: {details}{/details}
+
+      {?company_notes}Profilo e punti di forza dell''azienda: {company_notes}{/company_notes}
+
+      Data di oggi: {date}. Scrivi in italiano.'
+  templates:
+  - key: tender_watch
+    title:
+      it: Profilo e monitoraggio gare
+    description:
+      it: 'Il profilo della tua azienda: ogni mattina l''agente cerca i nuovi bandi compatibili.'
+    agent: watcher
+    params:
+    - name: cpv
+      type: text
+      required: true
+      label:
+        it: Codici CPV (separati da virgola)
+    - name: soa
+      type: text
+      label:
+        it: Categorie SOA e classifiche (es. OG1 III, OS30 II)
+    - name: regions
+      type: text
+      required: true
+      label:
+        it: Regioni di interesse
+    - name: min_value
+      type: number
+      label:
+        it: Importo minimo (€)
+    - name: max_value
+      type: number
+      label:
+        it: Importo massimo (€)
+    - name: turnover
+      type: number
+      label:
+        it: Fatturato annuo (€)
+    - name: certifications
+      type: textarea
+      maxLength: 500
+      label:
+        it: Certificazioni possedute (ISO 9001, SOA, ecc.)
+    goal: 'Profilo azienda "{instance}": CPV {cpv}; SOA {?soa}{soa}{/soa}{!soa}nessuna{/soa}; regioni {regions}; importo tra
+      {min_value} e {max_value} €; fatturato {turnover} €; certificazioni {certifications}. Oggi è {date}. Trova i nuovi bandi
+      compatibili e scrivi il report in italiano.'
+    schedule:
+      cron: 0 6 * * *
+      userCanChange: false
+    maxPerUser: 3
+    roles:
+    - user
+    - admin
+  inputForm:
+    title:
+      it: Prepara una gara salvata
+    fields:
+    - name: reference
+      type: text
+      required: true
+      label:
+        it: Riferimento o link della gara
+      help:
+        it: Numero avviso TED, CIG o link al bando
+    - name: details
+      type: textarea
+      maxLength: 4000
+      label:
+        it: Testo del bando (facoltativo)
+    - name: company_notes
+      type: textarea
+      maxLength: 800
+      label:
+        it: Punti di forza dell'azienda per la relazione (facoltativo)
+  data:
+    collections:
+    - name: matches
+      ownedBy: instance
+      description: Gare compatibili trovate ogni mattina, con punteggio e requisiti mancanti
+    - name: saved_tenders
+      ownedBy: user
+      description: Gare salvate con scheda, checklist e bozza di relazione tecnica
+      sharing:
+      - viewer
+      - editor
+      fields:
+      - name: reference
+        type: text
+      - name: title
+        type: text
+      - name: deadline
+        type: date
+      - name: status
+        type: text
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: GaraRadar
+    sections:
+    - type: hero
+      title:
+        it: Le gare giuste per la tua impresa, **ogni mattina**.
+      text:
+        it: GaraRadar legge i nuovi bandi ANAC e TED, li filtra sul tuo profilo, assegna un punteggio di compatibilità e ti
+          spiega i requisiti che mancano. Per le gare che salvi prepara scheda, checklist e bozza della relazione tecnica.
+      actions:
+      - label:
+          it: Inizia ora
+        href: /login
+        style: primary
+      band: true
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+      items:
+      - title:
+          it: Il profilo
+        text:
+          it: CPV, SOA, regioni, importi, fatturato e certificazioni.
+        badge: '1'
+      - title:
+          it: Il radar
+        text:
+          it: Ogni mattina nuove gare con punteggio e requisiti mancanti.
+        badge: '2'
+      - title:
+          it: La scheda
+        text:
+          it: Scadenze, criteri, documenti, checklist e bozza di relazione tecnica.
+        badge: '3'
+    - type: cards
+      id: fonti
+      title:
+        it: Fonti
+      items:
+      - title: ANAC
+        text:
+          it: Dati aperti dell'Autorità Nazionale Anticorruzione.
+      - title: TED
+        text:
+          it: Avvisi europei, Publications Office of the EU, CC BY 4.0.
+    - type: note
+      content:
+        it: 'Supporto alla decisione, non consulenza legale: verifica sempre i requisiti sul bando ufficiale.'
+  - key: watches
+    type: instances
+    template: tender_watch
+    title:
+      it: Il mio profilo
+    roles:
+    - user
+    - admin
+  - key: radar
+    type: table
+    title:
+      it: Nuove gare compatibili
+    source: collection:matches
+    roles:
+    - user
+    - admin
+    data:
+      display: cards
+      fields:
+      - key: title
+        label:
+          it: Gara
+      - key: score
+        label:
+          it: Compatibilità
+        format: number
+      - key: deadline
+        label:
+          it: Scadenza
+        format: date
+      sort:
+        field: createdAt
+        dir: desc
+      limit: 50
+      empty:
+        it: 'Nessuna gara ancora: crea il tuo profilo.'
+  - key: new
+    type: new_run
+    title:
+      it: Salva e prepara una gara
+    roles:
+    - user
+    - admin
+  - key: saved
+    type: table
+    title:
+      it: Le mie gare salvate
+    source: collection:saved_tenders
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: title
+        label:
+          it: Gara
+      - key: deadline
+        label:
+          it: Scadenza
+        format: date
+      - key: status
+        label:
+          it: Stato
+        format: badge
+      limit: 100
+  - key: history
+    type: history
+    title:
+      it: Schede generate
+    source: run
+    roles:
+    - user
+    - admin
+  - key: scheda
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: account
+    type: account
+    title:
+      it: Abbonamento e crediti
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 20
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:briefer:
+        estimate: 10
+        metered: true
+    packs:
+    - key: extra
+      credits: 500
+      price: 9
+      label: 500 crediti bozze
+    - key: extra_plus
+      credits: 2000
+      price: 30
+      label: 2000 crediti bozze
+    plans:
+    - key: monthly
+      price: 39
+      interval: month
+      label:
+        it: GaraRadar mensile
+      includes:
+      - Monitoraggio quotidiano delle gare
+      - Schede di sintesi illimitate sulle gare salvate
+      credits: 0
+  extensions:
+  - key: email_alerts
+    description: 'Email alle 8:00 con le nuove gare compatibili e promemoria 3 giorni prima di ogni scadenza: le notifiche
+      non sono ancora disponibili. Per ora le gare si leggono nella vista ''Nuove gare compatibili''.'
+  - key: team_invites
+    description: 'Inviti di colleghi con ruolo editor o sola lettura: la condivisione per singola gara (viewer/editor) è attiva
+      su saved_tenders; un account aziendale con più utenti e ruoli a livello di organizzazione richiede lavoro dedicato.'
+  - key: draft_editing
+    description: 'Modifica in-app della bozza della relazione tecnica: oggi la bozza è nel report stampabile/copiabile; un
+      editor sul record richiede un''estensione.'
+  - key: save_from_radar
+    description: 'Il pulsante ''Salva gara'' direttamente dalla lista dei match non è espresso dal manifesto: l''utente inserisce
+      il riferimento nel modulo ''Salva e prepara una gara''.'

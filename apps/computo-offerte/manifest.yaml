@@ -1,0 +1,609 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: computo-offerte
+  displayName: ComputoOfferte
+  tagline:
+    it: Dal computo metrico all'ordine, con il confronto offerte già fatto.
+    en: From bill of quantities to order, with the offer comparison done for you.
+  description:
+    it: L'agente estrae le voci del computo metrico, le raggruppa per categoria di fornitore, prepara le richieste d'offerta,
+      confronta le risposte voce per voce ed evidenzia il fornitore più conveniente. Tu approvi e confermi.
+    en: The agent extracts the bill of quantities items, groups them by supplier category, prepares requests for quotation,
+      compares replies item by item and highlights the cheapest supplier. You approve and confirm.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f3a4d'
+      accent: '#e08a00'
+      background: '#f7f6f2'
+      foreground: '#1c2329'
+    fonts:
+      body: Inter
+      display: Barlow
+    wordmark:
+    - text: Computo
+      color: primary
+    - text: Offerte
+      color: accent
+    button: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Prezzi
+        en: Pricing
+      href: '#prezzi'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label:
+        it: Impresa
+        en: Company
+      assignedBy: signup
+  limits:
+  - action: run
+    per: user
+    max: 20
+    window: day
+    roles:
+    - user
+  agents:
+  - key: extractor
+    role: main
+    when: mode == 'extract'
+    description: Extracts items from the bill of quantities, groups them by supplier category and prepares the RFQs for approval.
+    memory: none
+    awaits:
+    - rfq_send
+    profile:
+      inline:
+        display_name: Computo extractor
+        crews:
+        - id: extractor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei un computista di un''impresa edile. Ricevi il testo di un computo metrico (incollato dal tecnico).
+            Estrai ogni voce: codice, descrizione, unità di misura, quantità. Non inventare mai voci, quantità o unità: se
+            un dato manca scrivilo come ''da verificare''. Raggruppa le voci per categoria di fornitore (es. calcestruzzi
+            e inerti, ferro e armature, laterizi, impianti elettrici, impianti idraulici, serramenti, finiture, noli). Leggi
+            con lo strumento suppliers_read i fornitori in rubrica dell''impresa e indica per ogni categoria quali fornitori
+            riceveranno la richiesta (solo quelli in rubrica; se non ce ne sono, segnalalo). Salva le voci con items_write
+            e una bozza di richiesta per categoria con rfqs_write (stato ''bozza''). Poi chiedi l''approvazione con request_rfq_send:
+            nulla parte senza approvazione. Report: inizia con ''# Richieste d''offerta — <cantiere>''. Sezioni ## Voci estratte
+            (tabella), ## Categorie e fornitori, ## Testo delle richieste (una bozza per categoria, con termine di risposta),
+            ## Da verificare. Non dare consulenza tecnica o legale come fatto certa.'
+          mcp_servers: []
+    goalTemplate: 'Cantiere: {site}
+
+      Categoria/e da trattare: {?only_category}{only_category}{/only_category}{!only_category}tutte{/only_category}
+
+      Termine risposta fornitori: {?deadline}{deadline}{/deadline}{!deadline}7 giorni da oggi{/deadline}
+
+      Computo metrico:
+
+      {?computo_url}Link: {computo_url}{/computo_url}
+
+      {computo_text}
+
+      Data: {date}. Scrivi in lingua con codice ISO {lang}.'
+    appTools:
+    - name: suppliers_read
+      description: Read the company's supplier address book
+      action: read
+      collection: suppliers
+      scope: user
+    - name: items_write
+      description: Save extracted items of the site
+      action: append
+      collection: rfq_items
+      scope: user
+    - name: rfqs_write
+      description: Save a draft request for quotation
+      action: write
+      collection: rfqs
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.8
+      timeoutSeconds: 300
+  - key: comparer
+    role: main
+    when: mode == 'compare'
+    description: Reads supplier replies pasted by the technician, extracts prices/lead time/terms and builds the comparison.
+    awaits:
+    - order_confirm
+    profile:
+      inline:
+        display_name: Offer comparer
+        crews:
+        - id: comparer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei un analista acquisti per un''impresa edile. Ricevi le risposte dei fornitori (testo incollato)
+            per un cantiere. Leggi le voci richieste con items_read. Per ogni offerta estrai: fornitore, voce, prezzo unitario,
+            totale, tempi di consegna, condizioni (pagamento, trasporto incluso, validità, IVA). Non inventare mai cifre:
+            se un dato manca scrivi ''n.d.'' e non considerarlo nel confronto. Normalizza le unità di misura e segnala le
+            differenze. Salva ogni offerta con offers_write. Costruisci una tabella di confronto per voce (righe = voci, colonne
+            = fornitori) ed evidenzia in **grassetto** il più conveniente per voce, tenendo conto di costo totale con trasporto
+            e tempi. Aggiungi un grafico per i totali per fornitore con un blocco ```chart (bar, valori reali). Report: inizia
+            con ''# Confronto offerte — <cantiere>''. Sezioni ## Tabella di confronto, ## Totale per fornitore, ## Raccomandazione
+            (con motivazioni e rischi: tempi, condizioni), ## Dati mancanti. Se il tecnico indica un ordine da confermare,
+            chiedi la conferma con request_order_confirm; non emettere ordini senza di essa.'
+          mcp_servers: []
+    goalTemplate: 'Cantiere: {site}
+
+      Risposte dei fornitori:
+
+      {offers_text}
+
+      Data: {date}. Scrivi in lingua con codice ISO {lang}.'
+    appTools:
+    - name: items_read
+      description: Read the items requested for the site
+      action: read
+      collection: rfq_items
+      scope: user
+    - name: offers_write
+      description: Save an extracted supplier offer
+      action: append
+      collection: offers
+      scope: user
+    - name: orders_write
+      description: Save the confirmed order
+      action: write
+      collection: orders
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.8
+      timeoutSeconds: 300
+  approvals:
+  - key: rfq_send
+    title:
+      it: Approva le richieste d'offerta
+      en: Approve the requests for quotation
+    decidedBy: requester
+    fields:
+    - site
+    - category
+    - suppliers
+    - text
+    timeoutMinutes: 10080
+  - key: order_confirm
+    title:
+      it: Conferma l'ordine
+      en: Confirm the order
+    decidedBy: requester
+    fields:
+    - site
+    - supplier
+    - items
+    - total
+    timeoutMinutes: 10080
+  inputForm:
+    title:
+      it: Nuovo computo / confronto
+      en: New takeoff / comparison
+    fields:
+    - name: mode
+      type: select
+      required: true
+      label:
+        it: Cosa vuoi fare
+        en: What to do
+      default: extract
+      options:
+      - value: extract
+        label:
+          it: Estrai voci e prepara richieste
+          en: Extract items and prepare RFQs
+      - value: compare
+        label:
+          it: Confronta le offerte ricevute
+          en: Compare received offers
+    - name: site
+      type: text
+      required: true
+      maxLength: 120
+      label:
+        it: Cantiere
+        en: Site
+    - name: computo_text
+      type: textarea
+      visibleWhen: mode == 'extract'
+      maxLength: 60000
+      label:
+        it: Computo metrico (incolla il testo)
+        en: Bill of quantities (paste text)
+      help:
+        it: 'Il caricamento diretto di PDF/Excel non è ancora disponibile: copia le righe dal file.'
+        en: 'Direct PDF/Excel upload is not available yet: paste the rows.'
+    - name: computo_url
+      type: url
+      visibleWhen: mode == 'extract'
+      label:
+        it: Oppure link al computo
+        en: Or link to the file
+    - name: only_category
+      type: text
+      visibleWhen: mode == 'extract'
+      label:
+        it: Solo categoria (facoltativo)
+        en: Only category (optional)
+    - name: deadline
+      type: date
+      visibleWhen: mode == 'extract'
+      label:
+        it: Rispondere entro (facoltativo)
+        en: Reply by (optional)
+    - name: offers_text
+      type: textarea
+      visibleWhen: mode == 'compare'
+      maxLength: 60000
+      label:
+        it: Risposte dei fornitori (incolla le email)
+        en: Supplier replies (paste emails)
+  data:
+    collections:
+    - name: sites
+      ownedBy: user
+      description: Construction sites of the company
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Cantiere
+      - name: address
+        type: text
+        label: Indirizzo
+      - name: notes
+        type: textarea
+        label: Note
+    - name: suppliers
+      ownedBy: user
+      description: The company's supplier address book
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Fornitore
+      - name: email
+        type: email
+        required: true
+        label: Email
+      - name: category
+        type: text
+        required: true
+        label: Categoria
+      - name: phone
+        type: text
+        label: Telefono
+    - name: rfq_items
+      ownedBy: user
+      description: Items extracted from bills of quantities
+      fields:
+      - name: site
+        type: text
+      - name: code
+        type: text
+      - name: description
+        type: text
+      - name: unit
+        type: text
+      - name: quantity
+        type: number
+      - name: category
+        type: text
+    - name: rfqs
+      ownedBy: user
+      description: Requests for quotation per supplier category
+      fields:
+      - name: site
+        type: text
+      - name: category
+        type: text
+      - name: suppliers
+        type: text
+      - name: text
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - bozza
+        - approvata
+        - inviata
+    - name: offers
+      ownedBy: user
+      description: Offers extracted from supplier replies
+      fields:
+      - name: site
+        type: text
+      - name: supplier
+        type: text
+      - name: item
+        type: text
+      - name: unit_price
+        type: number
+      - name: total
+        type: number
+      - name: lead_time
+        type: text
+      - name: terms
+        type: text
+    - name: orders
+      ownedBy: user
+      description: Confirmed orders
+      fields:
+      - name: site
+        type: text
+      - name: supplier
+        type: text
+      - name: items
+        type: textarea
+      - name: total
+        type: number
+      - name: status
+        type: text
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: ComputoOfferte
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow:
+        it: Per imprese edili
+        en: For building contractors
+      title:
+        it: Dal computo all'ordine, **senza rifare i conti** a mano.
+        en: From bill of quantities to order, **without redoing the maths**.
+      text:
+        it: Un agente estrae le voci del computo metrico, prepara le richieste d'offerta per categoria e confronta le risposte
+          dei fornitori. Tu approvi e decidi.
+        en: An agent extracts the BoQ items, prepares RFQs by category and compares supplier replies. You approve and decide.
+      actions:
+      - label:
+          it: Inizia
+          en: Start
+        href: /login
+        style: primary
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Estrazione
+          en: Extraction
+        text:
+          it: 'Incolli il computo: voci, unità e quantità, raggruppate per categoria di fornitore.'
+          en: 'Paste the BoQ: items, units and quantities grouped by supplier category.'
+        badge: 📄
+      - title:
+          it: Approvazione
+          en: Approval
+        text:
+          it: Rivedi e approvi le richieste d'offerta per i fornitori della tua rubrica.
+          en: Review and approve the RFQs for suppliers in your address book.
+        badge: ✅
+      - title:
+          it: Confronto
+          en: Comparison
+        text:
+          it: Prezzi, consegne e condizioni per voce, con il più conveniente evidenziato.
+          en: Prices, delivery and terms per item, cheapest highlighted.
+        badge: 📊
+      - title:
+          it: Ordine
+          en: Order
+        text:
+          it: Scegli e confermi l'ordine. I dati restano solo della tua impresa.
+          en: Choose and confirm the order. Your data stays private to your company.
+        badge: 🔒
+    - type: cards
+      id: prezzi
+      title:
+        it: Prezzi
+        en: Pricing
+      items:
+      - title:
+          it: Abbonamento per impresa
+          en: Company subscription
+        text:
+          it: Un abbonamento mensile per impresa, cantieri e fornitori illimitati nel limite dei crediti inclusi.
+          en: One monthly subscription per company, with included credits.
+    - type: note
+      content:
+        it: 'Supporto alle decisioni di acquisto: verifica sempre prezzi e condizioni prima di confermare un ordine.'
+        en: 'Purchasing decision support: always verify prices and terms before confirming an order.'
+  - key: new
+    type: new_run
+    title:
+      it: Nuovo computo / confronto
+      en: New takeoff / comparison
+    roles:
+    - user
+    - admin
+  - key: runs
+    type: history
+    title:
+      it: Le mie analisi
+      en: My runs
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: approvals
+    type: approvals
+    title:
+      it: Da approvare
+      en: To approve
+    roles:
+    - user
+    - admin
+  - key: sites_list
+    type: table
+    title:
+      it: Cantieri
+      en: Sites
+    source: collection:sites
+    roles:
+    - user
+    - admin
+  - key: suppliers_list
+    type: table
+    title:
+      it: Rubrica fornitori
+      en: Suppliers
+    source: collection:suppliers
+    roles:
+    - user
+    - admin
+  - key: offers_list
+    type: table
+    title:
+      it: Offerte
+      en: Offers
+    source: collection:offers
+    data:
+      display: table
+      fields:
+      - key: site
+        label: Cantiere
+      - key: supplier
+        label: Fornitore
+      - key: item
+        label: Voce
+      - key: unit_price
+        label: Prezzo unit.
+        format: money
+      - key: total
+        label: Totale
+        format: money
+      - key: lead_time
+        label: Consegna
+      sort:
+        field: item
+        dir: asc
+      limit: 200
+    roles:
+    - user
+    - admin
+  - key: orders_list
+    type: table
+    title:
+      it: Ordini
+      en: Orders
+    source: collection:orders
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Subscription
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 0
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:extractor:
+        estimate: 10
+        metered: true
+      agent:comparer:
+        estimate: 10
+        metered: true
+    plans:
+    - key: impresa
+      price: 49
+      interval: month
+      label:
+        it: Impresa
+        en: Company
+      credits: 1500
+      creditsReset: monthly
+      roles:
+      - user
+      includes:
+      - cantieri e rubrica propri
+      - estrazione computi e confronto offerte
+  extensions:
+  - key: file_upload
+    description: 'Upload of PDF/Excel bills of quantities is not available yet: the technician pastes the text or gives a
+      link.'
+  - key: email_out
+    description: 'Sending approved RFQs by email to suppliers is not available yet: after approval the RFQ texts are shown
+      and stored with status approvata, to be sent by the technician.'
+  - key: inbound_mailbox
+    description: 'A dedicated mailbox receiving supplier replies is not available yet: the technician pastes the replies into
+      the comparison form.'

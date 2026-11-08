@@ -1,0 +1,585 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: flussoagenti
+  displayName: FlussoAgenti
+  tagline:
+    it: Agenti conversazionali per l'assistenza clienti, con passaggio all'operatore.
+    en: Conversational agents for customer support, with human handoff.
+  description:
+    it: Configura un agente AI per la tua azienda, alimentalo con la tua base di conoscenza, passa le conversazioni difficili
+      agli operatori e controlla i risultati in una dashboard.
+    en: Set up an AI agent for your company, feed it your knowledge base, hand tough conversations to operators and track
+      results on a dashboard.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#16324f'
+      accent: '#2f7de1'
+      background: '#f7f9fc'
+      foreground: '#1a2433'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Flusso
+      color: primary
+    - text: Agenti
+      color: accent
+    width: wide
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Piani
+        en: Plans
+      href: '#piani'
+    cta:
+      label:
+        it: Inizia gratis
+        en: Start free
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label:
+        it: Admin azienda
+        en: Company admin
+      assignedBy: admin_emails
+    - key: user
+      label:
+        it: Azienda
+        en: Company
+      assignedBy: signup
+    - key: operator
+      label:
+        it: Operatore
+        en: Operator
+      assignedBy: derived
+      from: collection:operators.email
+  limits:
+  - action: chat
+    per: user
+    max: 200
+    window: day
+  agents:
+  - key: support
+    role: main
+    description: Answers customers from the company's knowledge base and hands over to a human when needed.
+    memory: user
+    awaits:
+    - handoff
+    profile:
+      inline:
+        display_name: FlussoAgenti support agent
+        chat_mode: true
+        crews:
+        - id: support
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a customer-support agent for the company that owns this account. Always search the knowledge
+            base with kb_search before answering and answer ONLY from what it returns, in the customer''s language, with a
+            friendly, concise tone (follow the tone in the agent settings if present). Never invent policies, prices, order
+            data or delivery dates. If the answer is not in the knowledge base, the customer is angry, or asks for a human,
+            call request_handoff with a short summary and tell the customer an operator will take over. When a conversation
+            ends, call log_conversation once with: channel, customer, status (open|resolved|handed_off), resolved_auto (1
+            if you solved it alone, otherwise 0), first_response_seconds, satisfaction (1-5 if the customer gave it, else
+            empty) and a one-line summary. Keep replies under 120 words.'
+    appTools:
+    - name: kb_search
+      description: Search the company's knowledge base
+      action: search
+      collection: knowledge
+      scope: user
+    - name: agent_settings
+      description: Read the agent settings (tone, welcome, rules)
+      action: read
+      collection: agent_settings
+      scope: user
+    - name: log_conversation
+      description: Record or update the conversation outcome
+      action: append
+      collection: conversations
+      scope: user
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New customer message: {message}
+
+      Today is {date}. Reply in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.3
+  - key: order_notifier
+    role: helper
+    description: Reacts to a webhook event (e.g. a new order) and writes the proactive message to send to the customer.
+    profile:
+      inline:
+        display_name: FlussoAgenti event handler
+        crews:
+        - id: events
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 3
+          max_budget_usd: 0.1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You receive an event from an external system as JSON in your task. Start with a level-1 title "#
+            <event type> — <reference>". Then write a short, friendly proactive message (under 60 words) for the customer
+            and one line 'Action for operator' if something needs attention. Use only data present in the event; never invent
+            figures.
+    appTools:
+    - name: log_event
+      description: Store the handled event
+      action: append
+      collection: events
+      scope: user
+    output: markdown
+    writesTo:
+      collection: events
+      parse: whole
+  triggers:
+  - key: external_event
+    description: Webhook from external systems (new order, ticket update…)
+    'on':
+      webhook: true
+    start:
+      agent: order_notifier
+    goal: 'New external event: {event}. Prepare the proactive message.'
+    asUser: true
+  approvals:
+  - key: handoff
+    title:
+      it: Passaggio a operatore
+      en: Handoff to operator
+    description: The agent asks a human operator to take over a conversation.
+    role: operator
+    fields:
+    - summary
+    - customer
+    - channel
+    timeoutMinutes: 60
+    onTimeout: reject
+  inputForm:
+    title:
+      it: Impostazioni agente
+      en: Agent settings
+    fields:
+    - name: agent_name
+      type: text
+      required: true
+      label:
+        it: Nome agente
+        en: Agent name
+    - name: tone
+      type: select
+      label:
+        it: Tono
+        en: Tone
+      options:
+      - value: friendly
+        label:
+          it: Cordiale
+          en: Friendly
+      - value: formal
+        label:
+          it: Formale
+          en: Formal
+  data:
+    collections:
+    - name: agent_settings
+      ownedBy: user
+      description: Agent name, tone, welcome message, handoff rules and flow outline of each company
+      fields:
+      - name: agent_name
+        type: text
+        required: true
+      - name: tone
+        type: text
+      - name: welcome
+        type: textarea
+      - name: handoff_rules
+        type: textarea
+      - name: flow
+        type: json
+    - name: knowledge
+      ownedBy: user
+      searchable: true
+      description: The company's knowledge base
+      fields:
+      - name: title
+        type: text
+        required: true
+      - name: content
+        type: textarea
+        required: true
+      - name: source_url
+        type: url
+    - name: operators
+      ownedBy: user
+      description: Operators of the company and their group
+      fields:
+      - name: email
+        type: email
+        required: true
+      - name: group
+        type: text
+        required: true
+    - name: conversations
+      ownedBy: user
+      sharing:
+      - editor
+      description: Conversations handled by the agent and operators
+      fields:
+      - name: channel
+        type: text
+      - name: customer
+        type: text
+      - name: group
+        type: text
+      - name: status
+        type: select
+        options:
+        - open
+        - resolved
+        - handed_off
+      - name: resolved_auto
+        type: number
+      - name: first_response_seconds
+        type: number
+      - name: satisfaction
+        type: number
+      - name: summary
+        type: textarea
+    - name: events
+      ownedBy: user
+      description: Events received by webhook and the messages prepared
+      fields:
+      - name: title
+        type: text
+      - name: content
+        type: textarea
+  views:
+  - key: home
+    type: page
+    title: FlussoAgenti
+    nav: false
+    sections:
+    - type: hero
+      eyebrow:
+        it: Assistenza clienti con AI
+        en: AI customer support
+      title:
+        it: Un agente che risponde, **un operatore** che chiude.
+        en: An agent that answers, **an operator** that closes.
+      text:
+        it: Alimenta l'agente con la tua base di conoscenza, passa le conversazioni difficili al tuo team e misura risoluzione,
+          tempi e soddisfazione.
+        en: Feed the agent your knowledge base, hand difficult conversations to your team and measure resolution, speed and
+          satisfaction.
+      actions:
+      - label:
+          it: Inizia gratis
+          en: Start free
+        href: /login
+        style: primary
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Configura
+          en: Set up
+        text:
+          it: Imposta nome, tono e regole di passaggio; carica gli articoli della base di conoscenza.
+          en: Set name, tone and handoff rules; add your knowledge articles.
+        badge: ⚙️
+      - title:
+          it: Conversa
+          en: Chat
+        text:
+          it: L'agente risponde solo da ciò che sai; se non basta chiama un operatore.
+          en: The agent answers only from what you know; if it is not enough it calls an operator.
+        badge: 💬
+      - title:
+          it: Misura
+          en: Measure
+        text:
+          it: Dashboard con conversazioni, risoluzione automatica, tempi e soddisfazione.
+          en: Dashboard with conversations, auto-resolution, response times and satisfaction.
+        badge: 📈
+    - type: cards
+      id: piani
+      title:
+        it: Piani
+        en: Plans
+      items:
+      - title:
+          it: Gratuito
+          en: Free
+        text:
+          it: Crediti di prova per provare l'agente.
+          en: Trial credits to try the agent.
+      - title:
+          it: Team
+          en: Team
+        text:
+          it: Abbonamento mensile con più conversazioni e operatori.
+          en: Monthly subscription with more conversations and operators.
+    - type: note
+      content:
+        it: 'Le risposte AI si basano sulla tua base di conoscenza: verificale prima di usarle per decisioni importanti.'
+        en: 'AI answers rely on your knowledge base: verify them before using them for important decisions.'
+  - key: test_chat
+    type: chat
+    title:
+      it: Prova l'agente
+      en: Try the agent
+    source: agent:support
+    examples:
+    - it: Dov'è il mio ordine?
+      en: Where is my order?
+    - it: Vorrei parlare con una persona
+      en: I want to talk to a person
+    placeholder:
+      it: Scrivi come un cliente…
+      en: Write like a customer…
+    roles:
+    - user
+    - admin
+  - key: settings
+    type: table
+    title:
+      it: Agente
+      en: Agent
+    source: collection:agent_settings
+    columns:
+    - agent_name
+    - tone
+    - welcome
+    - handoff_rules
+    roles:
+    - user
+    - admin
+  - key: kb
+    type: table
+    title:
+      it: Base di conoscenza
+      en: Knowledge base
+    source: collection:knowledge
+    columns:
+    - title
+    - content
+    - source_url
+    roles:
+    - user
+    - admin
+  - key: team
+    type: table
+    title:
+      it: Operatori
+      en: Operators
+    source: collection:operators
+    columns:
+    - email
+    - group
+    roles:
+    - user
+    - admin
+  - key: console
+    type: table
+    title:
+      it: Console operatori
+      en: Operator console
+    source: collection:conversations
+    columns:
+    - channel
+    - customer
+    - group
+    - status
+    - summary
+    roles:
+    - operator
+    - user
+    - admin
+  - key: handoffs
+    type: approvals
+    title:
+      it: Da prendere in carico
+      en: To take over
+    approvals:
+    - handoff
+    roles:
+    - operator
+    - admin
+  - key: events_log
+    type: table
+    title:
+      it: Eventi webhook
+      en: Webhook events
+    source: collection:events
+    columns:
+    - title
+    - content
+    roles:
+    - user
+    - admin
+  - key: dashboard
+    type: page
+    title:
+      it: Dashboard
+      en: Dashboard
+    roles:
+    - user
+    - admin
+    sections:
+    - type: data
+      title:
+        it: Risultati
+        en: Results
+      source: collection:conversations
+      display: kpi
+      kpis:
+      - label:
+          it: Conversazioni
+          en: Conversations
+        agg: count
+      - label:
+          it: Risoluzione automatica
+          en: Auto-resolution
+        agg: avg
+        field: resolved_auto
+        format: percent
+      - label:
+          it: Primo riscontro (s)
+          en: First response (s)
+        agg: avg
+        field: first_response_seconds
+        format: number
+      - label:
+          it: Soddisfazione (1-5)
+          en: Satisfaction (1-5)
+        agg: avg
+        field: satisfaction
+        format: number
+    - type: data
+      title:
+        it: Ultime conversazioni
+        en: Latest conversations
+      source: collection:conversations
+      display: table
+      fields:
+      - key: channel
+        label: Canale
+      - key: status
+        label: Stato
+        format: badge
+      - key: satisfaction
+        label: CSAT
+        format: number
+      - key: summary
+        label: Sintesi
+      limit: 20
+      empty:
+        it: Ancora nessuna conversazione.
+        en: No conversations yet.
+  - key: account
+    type: account
+    title:
+      it: Piano e crediti
+      en: Plan and credits
+    roles:
+    - user
+  billing:
+    modes:
+    - credits
+    - subscription
+    currency: eur
+    signupCredits: 100
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:support:
+        estimate: 2
+        metered: true
+      agent:order_notifier:
+        estimate: 1
+        metered: true
+    packs:
+    - key: small
+      credits: 1000
+      price: 10
+      label: 1000 crediti
+    plans:
+    - key: team
+      price: 49
+      interval: month
+      label: Team
+      credits: 6000
+      creditsReset: monthly
+      includes:
+      - up to 5 operators
+      - about 3000 conversations per month
+      roles:
+      - user
+  extensions:
+  - key: visual_flow_editor
+    description: 'Block-based visual flow editor (message, question, condition, HTTP call, handoff, AI answer). Not available
+      yet: the flow outline is stored as JSON in agent_settings.flow and the agent follows rules written in plain words.'
+  - key: chat_widget
+    description: 'Embeddable website chat widget and public anonymous chat: not available yet. Chat is for signed-in users
+      (testing).'
+  - key: channels_and_connections
+    description: 'WhatsApp, Telegram, email, CRM and helpdesk through authorised per-customer connections need customer credentials:
+      not available yet.'
+  - key: customer_http_calls
+    description: HTTP calls to each company's own APIs cannot be declared (egress hosts are fixed per app). Only the webhook
+      intake is supported.
+  - key: operator_reply_console
+    description: Operators see handoffs and conversations and approve takeovers, but live replies in the conversation and
+      group-level isolation of operators are not available yet; conversations are shared per record with editors.

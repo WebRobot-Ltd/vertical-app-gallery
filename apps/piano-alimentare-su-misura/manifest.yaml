@@ -1,0 +1,589 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: nutripasso
+  displayName: NutriPasso
+  tagline:
+    it: Il tuo piano alimentare settimanale, calcolato su di te.
+  description:
+    it: NutriPasso calcola il tuo fabbisogno con formule standard e un agente AI compone sette giorni di ricette, porzioni
+      e lista della spesa, usando le tabelle pubbliche CREA e USDA. Ogni domenica il piano si aggiorna con il tuo peso e i
+      piatti che hai gradito.
+  langs:
+  - it
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f5d3a'
+      accent: '#e07a1f'
+      background: '#fbf9f4'
+      foreground: '#1d2a22'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Nutri
+      color: primary
+    - text: Passo
+      color: accent
+    button: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+      href: '#come-funziona'
+    - label:
+        it: Fonti
+      href: '#fonti'
+    cta:
+      label:
+        it: Inizia
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      assignedBy: signup
+  limits:
+  - action: agent:planner
+    per: user
+    max: 5
+    window: day
+    roles:
+    - user
+  slots:
+  - key: needs
+    description: Fabbisogno calorico (Mifflin-St Jeor) e macronutrienti dal profilo
+    timeoutMs: 2000
+    example:
+      values:
+        sex: f
+        age: 35
+        weight: 65
+        height: 167
+        activity: moderate
+        goal: lose
+      lang: it
+    code: "ACT = {'sedentary': 1.2, 'light': 1.375, 'moderate': 1.55, 'high': 1.725}\n\ndef main(input):\n    v = input.get('values')\
+      \ or input.get('args') or {}\n    try:\n        age = float(v.get('age') or 30)\n        w = float(v.get('weight') or\
+      \ 70)\n        h = float(v.get('height') or 170)\n    except Exception:\n        return {'error': 'dati non validi'}\n\
+      \    sex = v.get('sex') or 'f'\n    bmr = 10 * w + 6.25 * h - 5 * age + (5 if sex == 'm' else -161)\n    tdee = bmr\
+      \ * ACT.get(v.get('activity'), 1.375)\n    goal = v.get('goal') or 'maintain'\n    if goal == 'lose':\n        kcal\
+      \ = tdee * 0.85\n        p_per_kg = 1.8\n    elif goal == 'gain':\n        kcal = tdee * 1.10\n        p_per_kg = 2.0\n\
+      \    else:\n        kcal = tdee\n        p_per_kg = 1.4\n    floor = 1500 if sex == 'm' else 1200\n    kcal = max(kcal,\
+      \ floor)\n    protein = p_per_kg * w\n    fat = kcal * 0.28 / 9\n    carb = max((kcal - protein * 4 - fat * 9) / 4,\
+      \ 0)\n    bmi = w / ((h / 100) ** 2)\n    return {\n        'bmr': round(bmr),\n        'tdee': round(tdee),\n     \
+      \   'kcal': round(kcal),\n        'protein_g': round(protein),\n        'fat_g': round(fat),\n        'carb_g': round(carb),\n\
+      \        'bmi': round(bmi, 1)\n    }\n"
+  agents:
+  - key: planner
+    role: main
+    description: Compone il piano di 7 giorni con ricette, porzioni e lista della spesa.
+    profile:
+      inline:
+        display_name: NutriPasso planner
+        crews:
+        - id: planner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'Sei un assistente di pianificazione alimentare per persone sane. Non sei un medico né un dietista
+            e non fai diagnosi. Ricevi il fabbisogno già calcolato (kcal e macronutrienti): usalo senza ricalcolarlo.
+
+            Valori nutrizionali: usa le tabelle pubbliche CREA (Tabelle di composizione degli alimenti) e USDA FoodData Central;
+            se serve consultarle, leggi le pagine pubbliche con gli strumenti WebRobot. Se un valore non è verificabile, dichiaralo
+            approssimato; non inventare cifre. Cita le fonti in fondo.
+
+            Rispetta SEMPRE allergie, dieta (vegetariana/vegana) e cibi non graditi; rispetta budget settimanale e tempo massimo
+            di cucina al giorno.
+
+            Se l''utente segnala patologie, apri il report con un avviso: NutriPasso non sostituisce il parere medico, rivolgiti
+            a un medico o dietista prima di seguire il piano. Non adattare il piano a patologie.
+
+            Struttura del report: titolo di livello 1 "# Piano alimentare — settimana del <data>"; ## Il tuo fabbisogno (tabella
+            kcal, proteine, grassi, carboidrati); ## Piano dei 7 giorni (per ogni giorno ### Giorno, pasti con ricetta breve,
+            porzioni in grammi, kcal e macro per pasto, tempo di preparazione); ## Lista della spesa (per reparto, quantità
+            totali, costo stimato); ## Note e fonti. Aggiungi un blocco ```chart di tipo bar con le kcal per giorno. Italiano,
+            tono chiaro e non prescrittivo.'
+    context:
+    - key: needs
+      from: slot:needs
+    goalTemplate: 'Profilo: {sex_label}, {age} anni, {weight} kg, {height} cm, attività {activity_label}. Obiettivo: {goal_label}.
+
+      Fabbisogno calcolato: {kcal} kcal/giorno, proteine {protein_g} g, grassi {fat_g} g, carboidrati {carb_g} g (BMI {bmi}).
+
+      Dieta: {diet_label}.
+
+      {?allergies}Allergie/intolleranze: {allergies}{/allergies}{!allergies}Nessuna allergia dichiarata.{/allergies}
+
+      {?dislikes}Cibi non graditi: {dislikes}{/dislikes}
+
+      Budget settimanale: {budget} EUR. Tempo di cucina al giorno: {cook_time} minuti.
+
+      {?health_flag}L''utente segnala una condizione di salute: inserisci l''avviso di rivolgersi a un professionista.{/health_flag}
+
+      Oggi è {date}. Scrivi il piano in italiano.'
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 1.0
+  - key: weekly
+    role: helper
+    description: Ogni domenica rigenera il piano con il peso aggiornato e i piatti graditi o no.
+    memory: instance
+    writesTo:
+      collection: weekly_plans
+      parse: whole
+    profile:
+      inline:
+        display_name: NutriPasso weekly
+        crews:
+        - id: weekly
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'Rigeneri ogni domenica il piano alimentare settimanale di una persona sana. Non sei un medico e
+            non fai diagnosi.
+
+            Passi: 1) leggi il profilo con read_profile; 2) leggi gli ultimi pesi con read_weights; 3) leggi i giudizi sui
+            piatti con read_feedback; 4) calcola il fabbisogno con calc_needs usando il peso più recente; 5) componi il piano.
+            Evita i piatti non graditi, riproponi in variante quelli graditi, non ripetere identica la settimana precedente
+            (la tua memoria contiene i piatti di quella). Se non ci sono pesi nuovi, usa il peso del profilo e ricordalo.
+
+            Valori nutrizionali da tabelle pubbliche CREA e USDA; non inventare cifre, segnala le approssimazioni. Rispetta
+            allergie, dieta, cibi non graditi, budget e tempo.
+
+            Se il profilo segnala patologie, apri con l''avviso di rivolgersi a un medico o dietista.
+
+            Struttura: "# Piano alimentare — settimana del <data>"; ## Cosa è cambiato (peso, fabbisogno, piatti); ## Il tuo
+            fabbisogno; ## Piano dei 7 giorni (pasti, ricette brevi, porzioni, kcal/macro); ## Lista della spesa con costo
+            stimato; ## Note e fonti. Italiano.
+
+            Alla fine chiama remember una volta con i piatti proposti e le kcal target (sostituiscono i precedenti).'
+    appTools:
+    - name: read_profile
+      description: Profilo alimentare dell'utente
+      action: read
+      collection: nutrition_profile
+      scope: user
+    - name: read_weights
+      description: Registro dei pesi dell'utente
+      action: read
+      collection: weight_log
+      scope: user
+    - name: read_feedback
+      description: Piatti graditi o non graditi
+      action: read
+      collection: dish_feedback
+      scope: user
+    - name: calc_needs
+      description: Calcola kcal e macro da sex, age, weight, height, activity, goal
+      action: call
+      slot: needs
+    goalTemplate: Genera il piano della settimana per "{instance}". Oggi è {date}. Scrivi in italiano.
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 1.0
+  inputForm:
+    title:
+      it: Nuovo piano settimanale
+    fields:
+    - name: age
+      type: number
+      required: true
+      label:
+        it: Età
+    - name: sex
+      type: select
+      required: true
+      label:
+        it: Sesso
+      options:
+      - value: f
+        label:
+          it: Donna
+      - value: m
+        label:
+          it: Uomo
+    - name: weight
+      type: number
+      required: true
+      label:
+        it: Peso (kg)
+    - name: height
+      type: number
+      required: true
+      label:
+        it: Altezza (cm)
+    - name: activity
+      type: select
+      required: true
+      label:
+        it: Livello di attività
+      options:
+      - value: sedentary
+        label:
+          it: Sedentario
+      - value: light
+        label:
+          it: Leggero (1-3 allenamenti/sett.)
+      - value: moderate
+        label:
+          it: Moderato (3-5 allenamenti/sett.)
+      - value: high
+        label:
+          it: Alto (6-7 allenamenti/sett.)
+    - name: goal
+      type: select
+      required: true
+      label:
+        it: Obiettivo
+      options:
+      - value: lose
+        label:
+          it: Dimagrire
+      - value: maintain
+        label:
+          it: Mantenere
+      - value: gain
+        label:
+          it: Massa muscolare
+    - name: diet
+      type: select
+      required: true
+      label:
+        it: Preferenze
+      default: omni
+      options:
+      - value: omni
+        label:
+          it: Onnivoro
+      - value: veg
+        label:
+          it: Vegetariano
+      - value: vegan
+        label:
+          it: Vegano
+    - name: allergies
+      type: text
+      label:
+        it: Allergie e intolleranze
+      help:
+        it: es. glutine, lattosio, arachidi
+    - name: dislikes
+      type: text
+      label:
+        it: Cibi che non ami
+    - name: budget
+      type: number
+      required: true
+      label:
+        it: Budget spesa settimanale (€)
+    - name: cook_time
+      type: number
+      required: true
+      label:
+        it: Minuti al giorno per cucinare
+    - name: health_flag
+      type: boolean
+      label:
+        it: Ho una patologia o una condizione medica
+      help:
+        it: 'Non raccogliamo dati clinici: ti inviteremo a sentire un professionista.'
+  templates:
+  - key: weekly_plan
+    title:
+      it: Piano che si rigenera ogni domenica
+    description:
+      it: Ogni domenica un nuovo piano, con il tuo peso aggiornato e i piatti che hai gradito.
+    agent: weekly
+    params:
+    - name: label
+      type: text
+      required: true
+      label:
+        it: Nome del piano
+    schedule:
+      cron: 0 6 * * 0
+      userCanChange: false
+    maxPerUser: 1
+    cost:
+      perRun: 10
+    goal: Genera il piano della settimana per "{instance}". Oggi è {date}. Scrivi in italiano.
+  data:
+    collections:
+    - name: nutrition_profile
+      ownedBy: user
+      description: Profilo alimentare dell'utente (nessun dato clinico)
+      fields:
+      - name: sex
+        type: text
+      - name: age
+        type: number
+      - name: weight
+        type: number
+      - name: height
+        type: number
+      - name: activity
+        type: text
+      - name: goal
+        type: text
+      - name: diet
+        type: text
+      - name: allergies
+        type: text
+      - name: dislikes
+        type: text
+      - name: budget
+        type: number
+      - name: cook_time
+        type: number
+      - name: health_flag
+        type: boolean
+    - name: weight_log
+      ownedBy: user
+      description: Pesi inseriti dall'utente
+      fields:
+      - name: date
+        type: date
+        required: true
+        label:
+          it: Data
+      - name: weight
+        type: number
+        required: true
+        label:
+          it: Peso (kg)
+    - name: dish_feedback
+      ownedBy: user
+      description: Piatti graditi o no
+      fields:
+      - name: dish
+        type: text
+        required: true
+        label:
+          it: Piatto
+      - name: rating
+        type: select
+        required: true
+        label:
+          it: Giudizio
+        options:
+        - value: liked
+          label:
+            it: Gradito
+        - value: disliked
+          label:
+            it: Non gradito
+    - name: weekly_plans
+      ownedBy: instance
+      description: I piani generati ogni domenica
+  schedules: []
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: NutriPasso
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow:
+        it: Piani alimentari personalizzati
+      title:
+        it: Sette giorni di **pasti su misura**, ogni settimana.
+      text:
+        it: 'Inserisci i tuoi dati: calcoliamo il fabbisogno con formule standard e un agente AI compone ricette, porzioni
+          e lista della spesa. Ogni domenica il piano si aggiorna con il tuo peso e i piatti che ti sono piaciuti.'
+      actions:
+      - label:
+          it: Crea il tuo piano
+        href: /login
+        style: primary
+      note:
+        it: Una settimana di prova, poi abbonamento mensile.
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+      items:
+      - title:
+          it: Compila il modulo
+        text:
+          it: Età, peso, obiettivo, preferenze, allergie, budget e tempo in cucina.
+        badge: 📝
+      - title:
+          it: Calcolo del fabbisogno
+        text:
+          it: Calorie e macronutrienti con la formula di Mifflin-St Jeor.
+      - title:
+          it: Piano e spesa
+        text:
+          it: Sette giorni di ricette con porzioni e lista della spesa.
+      - title:
+          it: Aggiornamento domenicale
+        text:
+          it: Nuovo piano ogni domenica in base a peso e piatti graditi.
+    - type: cards
+      id: fonti
+      title:
+        it: Fonti
+      items:
+      - title: CREA
+        text:
+          it: Tabelle di composizione degli alimenti italiani.
+      - title: USDA FoodData Central
+        text:
+          it: Valori nutrizionali degli alimenti, dati pubblici.
+    - type: note
+      content:
+        it: 'NutriPasso offre indicazioni generali per persone sane e non sostituisce il parere di un medico o di un dietista.
+          Non raccogliamo dati clinici né diagnosi: se hai una patologia, rivolgiti a un professionista.'
+  - key: new_plan
+    type: new_run
+    title:
+      it: Nuovo piano
+    roles:
+    - user
+    - admin
+  - key: plans
+    type: history
+    title:
+      it: I miei piani
+    source: run
+    roles:
+    - user
+    - admin
+  - key: plan
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: weekly
+    type: instances
+    template: weekly_plan
+    title:
+      it: Rigenerazione domenicale
+    roles:
+    - user
+    - admin
+  - key: weekly_history
+    type: list
+    title:
+      it: Piani settimanali
+    source: collection:weekly_plans
+    roles:
+    - user
+    - admin
+  - key: weights
+    type: list
+    title:
+      it: Il mio peso
+    source: collection:weight_log
+    roles:
+    - user
+    - admin
+  - key: feedback
+    type: list
+    title:
+      it: Piatti graditi
+    source: collection:dish_feedback
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 20
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:planner:
+        estimate: 10
+        metered: true
+    plans:
+    - key: monthly
+      price: 9.9
+      interval: month
+      label:
+        it: NutriPasso mensile
+      includes:
+      - piani illimitati nei limiti giornalieri
+      - rigenerazione ogni domenica
+      credits: 600
+      creditsReset: monthly
+      roles:
+      - user
+    packs:
+    - key: extra
+      credits: 500
+      price: 5
+      label: Extra
+  extensions:
+  - key: trial_week
+    description: 'Una settimana di prova gratuita prima dell''abbonamento: non esprimibile nel manifesto; per ora signupCredits
+      copre le prime prove.'
+  - key: email_delivery
+    description: 'Invio del piano via email ogni domenica: le notifiche non sono ancora disponibili. Il piano resta consultabile
+      nella pagina.'
+  - key: profile_and_weight_entry
+    description: 'Salvataggio del profilo del modulo in nutrition_profile e inserimento rapido del peso: oggi l''utente aggiunge
+      i record dalle viste; il salvataggio automatico del modulo richiede logica dedicata.'
+  - key: food_tables
+    description: CREA e USDA sono consultate dall'agente tramite WebRobot MCP su pagine pubbliche; USDA FoodData Central via
+      API richiederebbe una chiave, non prevista.

@@ -1,0 +1,722 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: misterlega
+  displayName: MisterLega
+  tagline:
+    it: L'assistente che ti aiuta a schierare la formazione. Decidi sempre tu.
+  description:
+    it: MisterLega raccoglie probabili formazioni, infortuni, squalifiche e rendimento, calcola un punteggio atteso per ogni
+      giocatore e ti propone formazione, scambi e acquisti allo svincolo. Nessuna formazione parte senza la tua conferma.
+  langs:
+  - it
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0b5d3b'
+      accent: '#f2b705'
+      background: '#f6f8f4'
+      foreground: '#14231a'
+    fonts:
+      body: Barlow
+      display: Barlow Condensed
+    wordmark:
+    - text: Mister
+      color: primary
+    - text: Lega
+      color: accent
+    button: primary
+  header:
+    links:
+    - label: Come funziona
+      href: '#come-funziona'
+    - label: Fonti dati
+      href: '#fonti'
+    - label: Piani
+      href: '#piani'
+    cta:
+      label: Accedi
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Amministratore app
+      assignedBy: admin_emails
+    - key: user
+      label: Utente
+      assignedBy: signup
+    - key: league_admin
+      label: Amministratore di lega
+      assignedBy: derived
+      from: collection:leagues.admin_email
+  limits:
+  - action: run
+    per: user
+    max: 6
+    window: day
+    roles:
+    - user
+  - action: chat
+    per: user
+    max: 40
+    window: day
+    roles:
+    - user
+  agents:
+  - key: scout
+    role: scheduled
+    description: Prima di ogni giornata raccoglie statistiche pubbliche (probabili formazioni, infortuni, squalifiche, calendario,
+      rendimento recente) e le salva per tutti.
+    profile:
+      inline:
+        display_name: MisterLega scout
+        crews:
+        - id: scout
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'Sei lo scout di MisterLega. Prima della prossima giornata di Serie A raccogli, tramite il MCP WebRobot,
+            dati sportivi PUBBLICI e consultabili: probabili formazioni, infortunati, squalificati/diffidati, calendario e
+            avversario, rendimento recente (media voto e fantamedia delle ultime 5 giornate, se pubblicate). Rispetta robots.txt
+            e i termini d''uso di ogni sito: non aggirare blocchi, login o paywall, non copiare testi lunghi, cita sempre
+            la fonte. Non usare dati a licenza salvo che siano forniti alla lega tramite un connettore autorizzato. Non inventare
+            mai un dato: se manca, lascia il campo vuoto e segnalalo. Chiudi la risposta con UN SOLO blocco JSON finale: {"matchday":
+            <numero>, "updated_at": "AAAA-MM-GG", "fixtures": [{"home":"","away":"","date":""}], "players": [{"player":"","team":"","role":"P|D|C|A","mantra_roles":"","opponent":"","home":true,"prob_starter":0-100,"status":"ok|infortunato|squalificato|dubbio","form_avg":0,"fanta_avg":0,"fixture_difficulty":1-5,"source":""}],
+            "notes":""}. Prima del JSON scrivi un breve riepilogo in Markdown che inizia con ''# Dati giornata <n>''.'
+    goalTemplate: Raccogli i dati per la prossima giornata. Oggi è {date}.
+    output: markdown+json
+    writesTo:
+      collection: matchday_stats
+      parse: json_last
+      keyBy: matchday
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+      timeoutSeconds: 900
+  - key: advisor
+    role: main
+    when: mode == 'advice'
+    description: Calcola il punteggio atteso, propone formazione ottimale, scambi e acquisti allo svincolo. Non invia nulla.
+    profile:
+      inline:
+        display_name: MisterLega allenatore
+        crews:
+        - id: advisor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei l''assistente fantacalcio di MisterLega. Leggi con i tuoi strumenti la lega dell''utente (regolamento
+            classico o mantra, bonus/malus, modulo), la sua rosa (giocatori, ruoli, prezzo pagato) e i dati della giornata
+            (matchday_stats). Usa SOLO questi dati: se mancano per un giocatore dichiaralo e non inventare cifre. Per ogni
+            giocatore calcola un punteggio atteso semplice e spiegabile: probabilità di giocare x (fantamedia recente + effetto
+            avversario/casa + bonus/malus tipici del ruolo secondo il regolamento della lega), azzerato per infortunati e
+            squalificati. Struttura del report, con titolo di livello 1 ''# Giornata <n> — consigli per <lega>'': ## Formazione
+            consigliata (modulo, 11 titolari con ruolo e punteggio atteso, panchina in ordine di ingresso), ## Perché queste
+            scelte (in parole semplici, 1-2 righe per i casi dubbi), ## Rischi e dubbi (infortuni, ballottaggi), ## Scambi
+            suggeriti, ## Acquisti allo svincolo (solo se hai dati sufficienti; rispetta il budget). Aggiungi un blocco ```chart
+            con barre dei punteggi attesi dei titolari. Se l''utente ha chiesto le ottimizzazioni avanzate, confronta 2-3
+            moduli alternativi e valuta il rischio (varianza) di ogni scelta; altrimenti proponi un solo modulo. Sei un supporto
+            alla decisione: non garantire risultati e non dire mai che la formazione è stata inviata. Alla fine chiama request_confirm_lineup
+            con la formazione proposta, perché l''utente la confermi o la modifichi. Rispondi in italiano.'
+    goalTemplate: 'Lega: {league}
+
+      Giornata: {matchday}
+
+      {?module}Modulo preferito: {module}{/module}
+
+      {?advanced}Ottimizzazioni avanzate richieste.{/advanced}
+
+      {?notes}Note dell''utente: {notes}{/notes}
+
+      Data di oggi: {date}. Scrivi in italiano.'
+    appTools:
+    - name: read_league
+      description: Regolamento, bonus/malus, modulo e budget della lega dell'utente
+      action: read
+      collection: leagues
+      scope: user
+    - name: read_roster
+      description: La rosa dell'utente
+      action: read
+      collection: rosters
+      scope: user
+    - name: read_stats
+      description: Dati pubblici della giornata
+      action: read
+      collection: matchday_stats
+      scope: all
+    - name: save_advice
+      description: Salva il consiglio dato per il confronto post-giornata
+      action: append
+      collection: advice
+      scope: user
+    awaits:
+    - confirm_lineup
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.8
+  - key: reviewer
+    role: analyst
+    when: mode == 'review'
+    description: 'Dopo la giornata: voti e confronto tra consiglio e scelta fatta.'
+    profile:
+      inline:
+        display_name: MisterLega cronista
+        crews:
+        - id: reviewer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei il cronista di MisterLega. Leggi il consiglio salvato (advice), la formazione effettivamente
+            scelta dall''utente (lineups), i voti e i dati della giornata (matchday_stats). Usa solo voti presenti nei dati:
+            se un voto manca, scrivilo. Report con titolo ''# Giornata <n> — com''è andata''. Sezioni: ## Il tuo punteggio
+            (calcolato col regolamento della lega), ## Consiglio vs scelta (tabella con le differenze e il punteggio di ciascuna
+            alternativa), ## Cosa ha deciso la giornata (3-4 punti), ## Cosa imparare per la prossima. Tono semplice, niente
+            giudizi sulle persone, nessuna cifra inventata. In italiano.'
+    goalTemplate: 'Lega: {league}
+
+      Giornata da commentare: {matchday}
+
+      Data di oggi: {date}. Scrivi in italiano.'
+    appTools:
+    - name: review_read_league
+      description: Regolamento della lega (per il report post-giornata)
+      action: read
+      collection: leagues
+      scope: user
+    - name: read_advice
+      description: Consigli dati
+      action: read
+      collection: advice
+      scope: user
+    - name: read_lineups
+      description: Formazioni scelte dall'utente
+      action: read
+      collection: lineups
+      scope: user
+    - name: review_read_stats
+      description: Dati e voti della giornata (per il report post-giornata)
+      action: read
+      collection: matchday_stats
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.6
+  - key: assistant
+    role: helper
+    description: 'Chat: crea o unisce alla lega, registra regolamento, rosa e formazione scelta.'
+    profile:
+      inline:
+        display_name: MisterLega assistente
+        crews:
+        - id: assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei l''assistente di MisterLega, in italiano e con tono amichevole. Aiuti l''utente a: creare una
+            lega (nome, regolamento classico o mantra, bonus e malus, budget d''asta, calendario; genera un codice invito
+            di 6 caratteri; chi crea è amministratore di lega), entrare in una lega con un codice invito, inserire la propria
+            rosa (giocatore, squadra, ruolo, prezzo pagato) e registrare la formazione che ha deciso di schierare. Chiedi
+            i dati mancanti uno alla volta e riepiloga prima di salvare. Solo l''amministratore modifica il regolamento. Non
+            puoi inviare formazioni a nessun sito. Rispondi anche a domande sul regolamento e sulla classifica leggendo i
+            dati; non inventare risultati.'
+    goalTemplate: 'Conversazione finora:
+
+      {history}
+
+      Nuovo messaggio: {message}'
+    appTools:
+    - name: league_write
+      description: Crea o aggiorna una lega
+      action: write
+      collection: leagues
+      scope: user
+    - name: league_read
+      description: Legge le leghe dell'utente
+      action: read
+      collection: leagues
+      scope: user
+    - name: roster_write
+      description: Aggiunge o modifica giocatori della rosa
+      action: write
+      collection: rosters
+      scope: user
+    - name: roster_read
+      description: Legge la rosa
+      action: read
+      collection: rosters
+      scope: user
+    - name: lineup_write
+      description: Registra la formazione scelta
+      action: write
+      collection: lineups
+      scope: user
+    - name: standings_read
+      description: Classifica della lega
+      action: read
+      collection: standings
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.3
+  approvals:
+  - key: confirm_lineup
+    title: Conferma la formazione
+    description: L'assistente propone, tu decidi. Nulla viene inviato in automatico.
+    decidedBy: requester
+    fields:
+    - league
+    - matchday
+    - module
+    - starters
+    - bench
+  inputForm:
+    title: Scheda giornata
+    fields:
+    - name: mode
+      type: select
+      required: true
+      label: Cosa vuoi?
+      default: advice
+      options:
+      - value: advice
+        label: Consigli per la prossima giornata
+      - value: review
+        label: Report dopo la giornata
+    - name: league
+      type: text
+      required: true
+      label: Nome della tua lega
+    - name: matchday
+      type: number
+      required: true
+      label: Giornata
+    - name: module
+      type: select
+      label: Modulo preferito
+      visibleWhen: mode == 'advice'
+      options:
+      - Libero
+      - 3-4-3
+      - 3-5-2
+      - 4-3-3
+      - 4-4-2
+      - 4-5-1
+    - name: advanced
+      type: boolean
+      label: Ottimizzazioni avanzate (Premium)
+      gatedBy: premium_season
+      visibleWhen: mode == 'advice'
+    - name: notes
+      type: textarea
+      maxLength: 400
+      label: Note (facoltative)
+      visibleWhen: mode == 'advice'
+  data:
+    collections:
+    - name: leagues
+      ownedBy: user
+      sharing:
+      - viewer
+      - editor
+      description: 'Leghe: nome, codice invito, email amministratore, regolamento (classico o mantra), bonus e malus, budget
+        d''asta, calendario'
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Nome
+      - name: invite_code
+        type: text
+        label: Codice invito
+      - name: admin_email
+        type: email
+        label: Email amministratore
+      - name: ruleset
+        type: select
+        label: Regolamento
+        options:
+        - value: classic
+          label: Classico
+        - value: mantra
+          label: Mantra
+      - name: bonus_malus
+        type: json
+        label: Bonus e malus
+      - name: auction_budget
+        type: number
+        label: Budget d'asta
+      - name: calendar
+        type: json
+        label: Calendario
+    - name: standings
+      ownedBy: user
+      parent: leagues
+      description: Classifica comune della lega
+      fields:
+      - name: team
+        type: text
+        label: Squadra
+      - name: matchday
+        type: number
+        label: Giornata
+      - name: points
+        type: number
+        label: Punti giornata
+      - name: total
+        type: number
+        label: Totale
+    - name: rosters
+      ownedBy: user
+      description: 'La rosa personale: visibile solo al proprietario'
+      fields:
+      - name: league
+        type: text
+        label: Lega
+      - name: player
+        type: text
+        required: true
+        label: Giocatore
+      - name: team
+        type: text
+        label: Squadra
+      - name: role
+        type: text
+        label: Ruolo
+      - name: price_paid
+        type: number
+        label: Prezzo pagato
+    - name: lineups
+      ownedBy: user
+      description: Formazioni scelte dall'utente per ogni giornata
+      fields:
+      - name: league
+        type: text
+        label: Lega
+      - name: matchday
+        type: number
+        label: Giornata
+      - name: module
+        type: text
+        label: Modulo
+      - name: starters
+        type: json
+        label: Titolari
+      - name: bench
+        type: json
+        label: Panchina
+      - name: confirmed
+        type: boolean
+        label: Confermata
+    - name: advice
+      ownedBy: user
+      description: Consigli dati dall'assistente, per il confronto post-giornata
+      fields:
+      - name: league
+        type: text
+        label: Lega
+      - name: matchday
+        type: number
+        label: Giornata
+      - name: module
+        type: text
+        label: Modulo
+      - name: starters
+        type: json
+        label: Titolari consigliati
+      - name: bench
+        type: json
+        label: Panchina
+    - name: matchday_stats
+      ownedBy: app
+      description: Dati pubblici per giornata, scritti dallo scout per tutti
+      fields:
+      - name: matchday
+        type: number
+        label: Giornata
+      - name: updated_at
+        type: date
+        label: Aggiornato
+      - name: fixtures
+        type: json
+        label: Calendario
+      - name: players
+        type: json
+        label: Giocatori
+      - name: notes
+        type: text
+        label: Note
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: MisterLega
+    sections:
+    - type: hero
+      eyebrow: Fantacalcio con assistente
+      title: Schiera la formazione con **dati veri**, decidi sempre tu.
+      text: Crea la tua lega o entra con un codice invito. Prima di ogni giornata MisterLega raccoglie infortuni, squalifiche
+        e probabili formazioni, calcola un punteggio atteso per ogni giocatore e ti spiega in parole semplici chi schierare.
+      actions:
+      - label: Inizia gratis
+        href: /login
+        style: primary
+      - label: Come funziona
+        href: '#come-funziona'
+        style: ghost
+      note: Nessuna formazione viene inviata da sola.
+    - type: steps
+      id: come-funziona
+      title: Come funziona
+      items:
+      - title: Crea o entra in una lega
+        text: L'amministratore imposta regolamento (classico o mantra), bonus e malus, budget d'asta e calendario. Gli altri
+          entrano con il codice invito.
+        badge: 🏆
+      - title: Inserisci la tua rosa
+        text: Giocatori, ruoli e prezzo pagato. La tua rosa la vedi solo tu; la classifica è comune alla lega.
+        badge: 📋
+      - title: Ricevi la scheda giornata
+        text: Formazione ottimale con modulo, titolari e panchina, scambi e acquisti allo svincolo, con le motivazioni.
+        badge: ⚽
+      - title: Conferma e rivedi
+        text: Confermi tu la formazione. Dopo la giornata, il report confronta il consiglio con la tua scelta.
+        badge: 📊
+    - type: cards
+      id: fonti
+      title: Fonti dei dati
+      items:
+      - title: Fonti pubbliche
+        text: Probabili formazioni, infortuni, squalifiche, calendario e rendimento da pagine consultabili, nel rispetto di
+          robots.txt e termini d'uso, con la fonte indicata.
+      - title: Dati a licenza
+        text: Se la lega acquista un feed sportivo a licenza, potrà usarlo al posto delle fonti pubbliche (in arrivo).
+    - type: cards
+      id: piani
+      title: Piani
+      items:
+      - title: Base — gratis
+        text: Lega, rosa, scheda giornata con la formazione consigliata, report dopo la giornata.
+      - title: Premium stagionale
+        text: 'Ottimizzazioni avanzate: confronto tra moduli, valutazione del rischio, scambi e svincolati più approfonditi.'
+    - type: note
+      content: 'MisterLega è un supporto alle decisioni: non garantisce risultati. Non è affiliato a leghe o club.'
+  - key: assistant_chat
+    type: chat
+    title: Assistente
+    source: agent:assistant
+    examples:
+    - Voglio creare una lega con regolamento mantra
+    - Entro nella lega con il codice AB12CD
+    - Aggiungi alla mia rosa Lautaro, A, pagato 45
+    - 'Ho schierato il 3-5-2: registralo'
+    placeholder: Scrivi all'assistente…
+    roles:
+    - user
+    - admin
+  - key: new_matchday
+    type: new_run
+    title: Scheda giornata
+    roles:
+    - user
+    - admin
+  - key: matchdays
+    type: history
+    title: Le mie giornate
+    source: run
+    roles:
+    - user
+    - admin
+  - key: matchday_report
+    type: report
+    title: Giornata
+    source: run
+    printable: true
+    nav: false
+  - key: confirmations
+    type: approvals
+    title: Conferma formazione
+    approvals:
+    - confirm_lineup
+    roles:
+    - user
+    - admin
+  - key: my_roster
+    type: table
+    title: La mia rosa
+    source: collection:rosters
+    columns:
+    - player
+    - team
+    - role
+    - price_paid
+    - league
+    roles:
+    - user
+    - admin
+  - key: leagues_list
+    type: table
+    title: Le mie leghe
+    source: collection:leagues
+    columns:
+    - name
+    - ruleset
+    - invite_code
+    - auction_budget
+    roles:
+    - user
+    - admin
+  - key: league_standings
+    type: table
+    title: Classifica
+    source: collection:standings
+    columns:
+    - team
+    - matchday
+    - points
+    - total
+    data:
+      display: table
+      sort:
+        field: total
+        dir: desc
+      limit: 50
+    roles:
+    - user
+    - admin
+  - key: public_stats
+    type: table
+    title: Dati della giornata
+    source: collection:matchday_stats
+    data:
+      path: players
+      display: table
+      fields:
+      - key: player
+        label: Giocatore
+      - key: team
+        label: Squadra
+      - key: role
+        label: Ruolo
+      - key: prob_starter
+        label: '% titolare'
+        format: number
+      - key: status
+        label: Stato
+        format: badge
+      - key: fanta_avg
+        label: Fantamedia
+        format: number
+      - key: opponent
+        label: Avversario
+      limit: 100
+      empty: Dati non ancora disponibili per la prossima giornata.
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title: Piano
+    roles:
+    - user
+  schedules:
+  - agent: scout
+    action: run
+    cron: 0 7 * * 5
+    owner: app
+    goal: Raccogli i dati pubblici per la prossima giornata di campionato.
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: premium_season
+      price: 29.9
+      interval: year
+      label: Premium stagionale
+      includes:
+      - Ottimizzazioni avanzate
+      - Confronto tra moduli
+      - Valutazione del rischio
+      roles:
+      - user
+  egress:
+    hosts:
+    - example.invalid
+    notes: 'Nessuna API esterna al momento: i dati pubblici sono raccolti dallo scout via WebRobot MCP.'
+  extensions:
+  - key: email_push_alerts
+    description: 'Alert via email e notifica push sull''app mobile due ore prima della scadenza se la formazione non è confermata:
+      non disponibile ancora (le notifiche non sono supportate). Per ora l''utente trova le formazioni da confermare nella
+      vista Conferma formazione.'
+  - key: licensed_sports_data
+    description: 'Feed sportivo a licenza acquistato dalla lega: richiede credenziali per lega e un connettore dedicato; per
+      ora solo fonti pubbliche.'
+  - key: league_record_forms
+    description: Inserimento di leghe, rose e formazioni tramite l'assistente in chat; maschere di modifica dedicate e unione
+      con codice invito verificato dal runtime non sono ancora disponibili.
+  - key: league_matchday_schedule
+    description: Lo scout gira ogni venerdì; le giornate infrasettimanali e le scadenze per lega richiedono una pianificazione
+      dedicata.

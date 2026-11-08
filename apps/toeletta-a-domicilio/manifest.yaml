@@ -1,0 +1,863 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: toeletta-a-domicilio
+  displayName: Toeletta a Domicilio
+  tagline:
+    it: Il toelettatore arriva a casa tua, con il furgone attrezzato.
+    en: The groomer comes to your door, in a fully equipped van.
+  description:
+    it: Crea la scheda del tuo animale, prenota un servizio a casa e ricevi preventivo di durata e prezzo, verifica della
+      zona e slot ottimizzati sui giri dei furgoni.
+    en: Create your pet's profile, book a home grooming service and get a duration and price quote, coverage check and slots
+      optimised around the van routes.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f4e5f'
+      accent: '#f08a4b'
+      background: '#fbf8f3'
+      foreground: '#1d2a30'
+    fonts:
+      body: Inter
+      display: Nunito
+    wordmark:
+    - text: 'Toeletta '
+      color: primary
+    - text: a Domicilio
+      color: accent
+    buttonShape: pill
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Servizi
+        en: Services
+      href: '#servizi'
+    cta:
+      label:
+        it: Prenota
+        en: Book
+      href: /v/new_booking
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: groomer
+      label:
+        it: Toelettatore
+        en: Groomer
+      assignedBy: invite
+    - key: user
+      label:
+        it: Cliente
+        en: Customer
+      assignedBy: signup
+  limits:
+  - action: agent:planner
+    per: user
+    max: 15
+    window: day
+    roles:
+    - user
+  slots:
+  - key: quote_rules
+    description: Duration and price from size, coat and services
+    timeoutMs: 2000
+    example:
+      values:
+        weight_kg: 12
+        coat: long
+        services:
+        - bath
+        - nails
+      lang: it
+    code: "BASE = {'bath': (40, 25), 'trim': (60, 35), 'nails': (15, 10), 'antiparasitic': (15, 15)}\nCOAT = {'short': 1.0,\
+      \ 'medium': 1.2, 'long': 1.5, 'curly': 1.6}\n\ndef main(input):\n    v = input.get('values') or {}\n    try:\n     \
+      \   w = float(v.get('weight_kg') or 10)\n    except Exception:\n        w = 10.0\n    size = 1.0 if w < 8 else 1.25\
+      \ if w < 20 else 1.5 if w < 35 else 1.8\n    coat = COAT.get(v.get('coat'), 1.2)\n    services = v.get('services') or\
+      \ []\n    if isinstance(services, str):\n        services = [services]\n    minutes = 0.0\n    price = 0.0\n    for\
+      \ s in services:\n        m, p = BASE.get(s, (0, 0))\n        k = size * coat if s in ('bath', 'trim') else size\n \
+      \       minutes += m * k\n        price += p * k\n    minutes = int(round(minutes / 5.0) * 5) + 10\n    return {'quote_minutes':\
+      \ minutes, 'quote_price_eur': round(price, 0), 'size_factor': size, 'coat_factor': coat}\n"
+  agents:
+  - key: planner
+    role: main
+    description: Checks the coverage zone, confirms the quote and proposes the best van slots.
+    profile:
+      inline:
+        display_name: Toeletta planner
+        crews:
+        - id: planner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei il pianificatore di Toeletta a Domicilio, un servizio di toelettatura con furgoni attrezzati
+            che vanno a casa del cliente. Hai gli strumenti read_zones (CAP e comuni coperti, con furgone di riferimento),
+            read_availability (slot liberi per furgone, giorno e zona, con l''ultimo indirizzo/zona del giro) e read_pets
+            (schede degli animali del cliente).
+
+            Passi: 1) verifica che il CAP/comune dell''indirizzo sia in read_zones; se non lo è, scrivi un report che lo dice
+            con gentilezza e non proporre slot. 2) Usa durata e prezzo indicativi già calcolati dalle regole dell''app (quote_minutes,
+            quote_price_eur) e adattali SOLO se la scheda dell''animale indica carattere difficile o note sanitarie rilevanti
+            (spiega perché, max +30%). 3) Dagli slot liberi coerenti con la fascia oraria scelta, proponi 3 opzioni ordinate
+            privilegiando i furgoni che nello stesso giorno hanno già un appuntamento nella stessa zona o in zone vicine,
+            per ridurre i chilometri; indica per ciascuna il motivo in una frase. Non inventare slot, distanze o prezzi: usa
+            solo i dati degli strumenti. Se non ci sono slot, dillo e suggerisci altre fasce. Non dare consigli veterinari:
+            per note sanitarie importanti suggerisci di sentire il veterinario.
+
+            Struttura del report: titolo di livello 1 "# Preventivo e slot — <animale>, <data richiesta>"; poi ## Zona di
+            copertura, ## Servizi, durata e prezzo (tabella), ## Slot proposti (3 opzioni numerate), ## Prossimi passi. Alla
+            fine, se ci sono slot, chiama request_booking_slot con la scelta che consigli (animale, indirizzo, servizi, furgone,
+            data, ora, durata, prezzo) così il cliente la conferma. Meno di 350 parole.'
+          mcp_servers: []
+    context:
+    - key: quote_minutes
+      from: slot:quote_rules
+    - key: quote_price_eur
+      from: slot:quote_rules
+    appTools:
+    - name: read_zones
+      description: Covered zones (postcodes, municipalities) with reference van
+      action: read
+      collection: zones
+      scope: all
+    - name: read_availability
+      description: Free slots per van, day and zone, with the zone of adjacent appointments
+      action: read
+      collection: van_availability
+      scope: all
+    - name: read_pets
+      description: The customer's own pet profiles
+      action: read
+      collection: pets
+      scope: user
+    - name: save_booking
+      description: Save the booking of the customer
+      action: write
+      collection: bookings
+      scope: user
+    awaits:
+    - booking_slot
+    goalTemplate: 'Animale (scheda): {pet_name}
+
+      Indirizzo: {address}, CAP {postcode}, {city}
+
+      Servizi richiesti: {services}
+
+      Peso (kg): {weight_kg}; tipo di pelo: {coat_label}
+
+      Data desiderata: {date_wanted}, fascia oraria: {time_band_label}
+
+      {?notes}Note del cliente: {notes}{/notes}
+
+      Preventivo indicativo dalle regole dell''app: {quote_minutes} minuti, {quote_price_eur} EUR.
+
+      Oggi è {date}. Scrivi il report nella lingua con codice ISO {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.5
+  - key: dispatcher
+    role: helper
+    description: Turns a confirmed booking into a route stop for the van's groomer.
+    profile:
+      inline:
+        display_name: Toeletta dispatcher
+        crews:
+        - id: dispatcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 3
+          max_budget_usd: 0.1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Ricevi un evento con una prenotazione confermata. Rispondi solo con un blocco JSON con i campi:
+            booking_id, van, date, start_time, duration_min, address, city, pet_name, species, breed, temperament, health_notes,
+            services, customer_name. Usa solo i dati dell''evento, lascia vuoto ciò che manca, non inventare nulla.'
+    output: json
+    writesTo:
+      collection: routes
+      parse: json_last
+      keyBy: booking_id
+    limits:
+      maxTurns: 3
+      maxBudgetUsd: 0.1
+  approvals:
+  - key: booking_slot
+    title:
+      it: Conferma lo slot proposto
+      en: Confirm the proposed slot
+    decidedBy: requester
+    fields:
+    - pet_name
+    - address
+    - services
+    - van
+    - date
+    - start_time
+    - price
+    timeoutMinutes: 1440
+    onTimeout: reject
+  triggers:
+  - key: slot_confirmed
+    description: When the customer confirms a slot, add the stop to the van's route
+    'on':
+      approval: booking_slot
+      decision: approved
+    start:
+      agent: dispatcher
+    goal: 'Prenotazione confermata: {event}'
+    asUser: false
+  inputForm:
+    title:
+      it: Nuova prenotazione
+      en: New booking
+    fields:
+    - name: pet_name
+      type: relation
+      relation: pets
+      required: true
+      label:
+        it: Animale
+        en: Pet
+      help:
+        it: Crea prima la scheda in «I miei animali»
+        en: Create the profile first in “My pets”
+    - name: weight_kg
+      type: number
+      required: true
+      label:
+        it: Peso (kg)
+        en: Weight (kg)
+    - name: coat
+      type: select
+      required: true
+      label:
+        it: Tipo di pelo
+        en: Coat
+      options:
+      - value: short
+        label:
+          it: Corto
+          en: Short
+      - value: medium
+        label:
+          it: Medio
+          en: Medium
+      - value: long
+        label:
+          it: Lungo
+          en: Long
+      - value: curly
+        label:
+          it: Riccio / lanoso
+          en: Curly / woolly
+    - name: services
+      type: multiselect
+      required: true
+      label:
+        it: Servizi
+        en: Services
+      options:
+      - value: bath
+        label:
+          it: Bagno
+          en: Bath
+      - value: trim
+        label:
+          it: Tosatura
+          en: Trim
+      - value: nails
+        label:
+          it: Unghie
+          en: Nails
+      - value: antiparasitic
+        label:
+          it: Trattamento antiparassitario
+          en: Antiparasitic treatment
+    - name: address
+      type: text
+      required: true
+      label:
+        it: Indirizzo
+        en: Address
+    - name: postcode
+      type: text
+      required: true
+      maxLength: 10
+      label:
+        it: CAP
+        en: Postcode
+    - name: city
+      type: text
+      required: true
+      label:
+        it: Comune
+        en: City
+    - name: date_wanted
+      type: date
+      required: true
+      label:
+        it: Data desiderata
+        en: Preferred date
+    - name: time_band
+      type: select
+      required: true
+      label:
+        it: Fascia oraria
+        en: Time band
+      options:
+      - value: morning
+        label:
+          it: Mattina (8-12)
+          en: Morning (8-12)
+      - value: afternoon
+        label:
+          it: Pomeriggio (13-17)
+          en: Afternoon (1-5pm)
+      - value: evening
+        label:
+          it: Sera (17-20)
+          en: Evening (5-8pm)
+    - name: notes
+      type: textarea
+      maxLength: 400
+      label:
+        it: Note (facoltative)
+        en: Notes (optional)
+  data:
+    collections:
+    - name: pets
+      ownedBy: user
+      description: Pet profiles of each customer
+      fields:
+      - name: name
+        type: text
+        required: true
+        label:
+          it: Nome
+          en: Name
+      - name: species
+        type: select
+        required: true
+        label:
+          it: Specie
+          en: Species
+        options:
+        - value: dog
+          label:
+            it: Cane
+            en: Dog
+        - value: cat
+          label:
+            it: Gatto
+            en: Cat
+        - value: other
+          label:
+            it: Altro
+            en: Other
+      - name: breed
+        type: text
+        label:
+          it: Razza
+          en: Breed
+      - name: weight_kg
+        type: number
+        label:
+          it: Peso (kg)
+          en: Weight (kg)
+      - name: coat
+        type: select
+        label:
+          it: Pelo
+          en: Coat
+        options:
+        - short
+        - medium
+        - long
+        - curly
+      - name: temperament
+        type: textarea
+        maxLength: 300
+        label:
+          it: Carattere
+          en: Temperament
+      - name: health_notes
+        type: textarea
+        maxLength: 500
+        label:
+          it: Note sanitarie
+          en: Health notes
+    - name: bookings
+      ownedBy: user
+      description: A customer's own bookings
+      fields:
+      - name: pet_name
+        type: text
+      - name: address
+        type: text
+      - name: services
+        type: text
+      - name: van
+        type: text
+      - name: date
+        type: date
+      - name: start_time
+        type: text
+      - name: duration_min
+        type: number
+      - name: price
+        type: number
+      - name: status
+        type: select
+        options:
+        - proposed
+        - confirmed
+        - done
+        - cancelled
+      - name: rating
+        type: number
+      - name: review
+        type: textarea
+        maxLength: 500
+      - name: service_notes
+        type: textarea
+        maxLength: 600
+    - name: zones
+      ownedBy: shared
+      description: Covered postcodes and municipalities, maintained by the admin
+      fields:
+      - name: postcode
+        type: text
+      - name: city
+        type: text
+      - name: van
+        type: text
+    - name: van_availability
+      ownedBy: shared
+      description: Free slots per van and day, with the zone of the adjacent stops (no customer data)
+      fields:
+      - name: van
+        type: text
+      - name: date
+        type: date
+      - name: start_time
+        type: text
+      - name: free_minutes
+        type: number
+      - name: zone
+        type: text
+      - name: adjacent_zone
+        type: text
+    - name: routes
+      ownedBy: org
+      description: 'Back office: the stops of each van''s day, for groomers and admins'
+      fields:
+      - name: booking_id
+        type: text
+      - name: van
+        type: text
+      - name: date
+        type: date
+      - name: start_time
+        type: text
+      - name: duration_min
+        type: number
+      - name: address
+        type: text
+      - name: city
+        type: text
+      - name: pet_name
+        type: text
+      - name: species
+        type: text
+      - name: breed
+        type: text
+      - name: temperament
+        type: text
+      - name: health_notes
+        type: text
+      - name: services
+        type: text
+      - name: customer_name
+        type: text
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Toeletta a Domicilio
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow:
+        it: Toelettatura a casa tua
+        en: Grooming at your door
+      title:
+        it: Il tuo animale **coccolato a casa**, senza stress di viaggio.
+        en: Your pet **pampered at home**, no travel stress.
+      text:
+        it: 'Prenota bagno, tosatura, unghie o antiparassitario: un agente verifica la zona, calcola durata e prezzo e ti
+          propone gli slot migliori.'
+        en: 'Book a bath, trim, nails or antiparasitic treatment: an agent checks your area, works out duration and price
+          and proposes the best slots.'
+      actions:
+      - label:
+          it: Prenota ora
+          en: Book now
+        href: /v/new_booking
+        style: primary
+      - label:
+          it: Accedi
+          en: Sign in
+        href: /login
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Crea la scheda
+          en: Create the profile
+        text:
+          it: Specie, razza, peso, pelo, carattere e note sanitarie.
+          en: Species, breed, weight, coat, temperament and health notes.
+        badge: 🐕
+      - title:
+          it: Prenota
+          en: Book
+        text:
+          it: 'Indirizzo, servizi e fascia oraria: ricevi preventivo e 3 slot.'
+          en: 'Address, services and time band: get a quote and 3 slots.'
+        badge: 📅
+      - title:
+          it: Conferma e paga
+          en: Confirm and pay
+        text:
+          it: Scegli lo slot e paga online con crediti o abbonamento.
+          en: Pick the slot and pay online with credits or a subscription.
+        badge: 💳
+      - title:
+          it: Il furgone arriva
+          en: The van arrives
+        text:
+          it: Il toelettatore lavora davanti a casa tua e lascia foto e note.
+          en: The groomer works at your door and leaves photos and notes.
+        badge: 🚐
+    - type: cards
+      id: servizi
+      title:
+        it: Servizi
+        en: Services
+      items:
+      - title:
+          it: Bagno
+          en: Bath
+        text:
+          it: Shampoo adatto al pelo e asciugatura.
+          en: Coat-appropriate shampoo and drying.
+        badge: 🛁
+      - title:
+          it: Tosatura
+          en: Trim
+        text:
+          it: Taglio secondo razza e stagione.
+          en: Cut by breed and season.
+        badge: ✂️
+      - title:
+          it: Unghie
+          en: Nails
+        text:
+          it: Taglio e limatura.
+          en: Clipping and filing.
+        badge: 🐾
+      - title:
+          it: Antiparassitario
+          en: Antiparasitic
+        text:
+          it: Trattamento contro pulci e zecche.
+          en: Flea and tick treatment.
+        badge: 🛡️
+    - type: note
+      content:
+        it: 'Preventivi indicativi: il prezzo finale può variare per carattere e condizioni del pelo. Per problemi di salute
+          consulta il veterinario.'
+        en: 'Indicative quotes: the final price may vary with temperament and coat condition. For health issues consult your
+          vet.'
+  - key: pets
+    type: list
+    title:
+      it: I miei animali
+      en: My pets
+    source: collection:pets
+    roles:
+    - user
+    - admin
+    data:
+      display: cards
+      fields:
+      - key: name
+        label:
+          it: Nome
+          en: Name
+      - key: species
+        label:
+          it: Specie
+          en: Species
+        format: badge
+      - key: breed
+        label:
+          it: Razza
+          en: Breed
+      - key: weight_kg
+        label:
+          it: Peso
+          en: Weight
+        format: number
+      empty:
+        it: 'Nessun animale: aggiungi la prima scheda.'
+        en: 'No pets yet: add the first profile.'
+  - key: new_booking
+    type: new_run
+    title:
+      it: Prenota
+      en: Book
+    roles:
+    - user
+    - admin
+  - key: bookings
+    type: history
+    title:
+      it: Le mie prenotazioni
+      en: My bookings
+    source: run
+    roles:
+    - user
+    - admin
+  - key: booking
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: confirmations
+    type: approvals
+    title:
+      it: Da confermare
+      en: To confirm
+    approvals:
+    - booking_slot
+    roles:
+    - user
+  - key: my_route
+    type: table
+    title:
+      it: Il mio giro
+      en: My route
+    source: collection:routes
+    roles:
+    - groomer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: date
+        label:
+          it: Data
+          en: Date
+        format: date
+      - key: start_time
+        label:
+          it: Ora
+          en: Time
+      - key: van
+        label:
+          it: Furgone
+          en: Van
+      - key: address
+        label:
+          it: Indirizzo
+          en: Address
+      - key: pet_name
+        label:
+          it: Animale
+          en: Pet
+      - key: breed
+        label:
+          it: Razza
+          en: Breed
+      - key: services
+        label:
+          it: Servizi
+          en: Services
+      - key: temperament
+        label:
+          it: Carattere
+          en: Temperament
+      - key: health_notes
+        label:
+          it: Note sanitarie
+          en: Health notes
+      sort:
+        field: start_time
+        dir: asc
+      limit: 100
+      empty:
+        it: Nessuna tappa in programma.
+        en: No stops scheduled.
+  - key: admin_calendar
+    type: table
+    title:
+      it: Calendario furgoni
+      en: Van calendar
+    source: collection:routes
+    roles:
+    - admin
+    data:
+      display: table
+      fields:
+      - key: date
+        label:
+          it: Data
+          en: Date
+        format: date
+      - key: van
+        label:
+          it: Furgone
+          en: Van
+      - key: start_time
+        label:
+          it: Ora
+          en: Time
+      - key: duration_min
+        label:
+          it: Min
+          en: Min
+        format: number
+      - key: city
+        label:
+          it: Comune
+          en: City
+      - key: pet_name
+        label:
+          it: Animale
+          en: Pet
+      - key: customer_name
+        label:
+          it: Cliente
+          en: Customer
+      sort:
+        field: date
+        dir: desc
+      limit: 200
+  - key: admin
+    type: admin
+    title:
+      it: Incassi e utenti
+      en: Revenue and users
+    roles:
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Crediti e abbonamento
+      en: Credits and plan
+    roles:
+    - user
+  billing:
+    modes:
+    - credits
+    - subscription
+    currency: eur
+    signupCredits: 20
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:planner:
+        estimate: 10
+        metered: true
+    packs:
+    - key: service
+      credits: 2500
+      price: 25
+      label:
+        it: Pagamento a servizio — 25 €
+        en: Pay per service — €25
+    - key: bundle
+      credits: 6000
+      price: 55
+      label:
+        it: Pacchetto 3 servizi — 55 €
+        en: 3-service bundle — €55
+    plans:
+    - key: monthly
+      price: 39
+      interval: month
+      label:
+        it: Abbonamento mensile toelettature periodiche
+        en: Monthly subscription, periodic grooming
+      credits: 2500
+      creditsReset: monthly
+      roles:
+      - user
+      includes:
+      - 1 toelettatura al mese
+      - priorità sugli slot
+  extensions:
+  - key: whatsapp_notifications
+    description: 'WhatsApp message when the van is on its way and automatic reminder for the next appointment: notifications
+      and WhatsApp connectors are not available yet. For now reminders must be sent by staff.'
+  - key: service_photos
+    description: 'The groomer cannot upload photos after the service (file fields are not available): they can paste a link
+      and notes in service_notes of the booking.'
+  - key: route_optimisation
+    description: 'Real map routing and kilometre calculation are not available: the planner favours slots next to stops in
+      the same or nearby zones using the zone data kept by the admin in van_availability.'
+  - key: service_payment_per_booking
+    description: Payment is by credits (packs) or monthly plan through Stripe Connect; a direct card payment for each single
+      booking is not modelled.
+  - key: admin_reviews_and_revenue
+    description: Aggregated reviews across customers and a cross-customer bookings list for the admin are not available because
+      bookings are owned by each customer; revenue comes from the admin panel.

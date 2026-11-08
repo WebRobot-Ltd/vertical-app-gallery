@@ -1,0 +1,491 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: catalogo-brillante
+  displayName: CatalogoBrillante
+  tagline:
+    it: Schede prodotto complete, chiare e pronte a vendere.
+    en: Complete, clear product listings that sell.
+  description:
+    it: Analizza il feed prodotti del tuo e-commerce, trova i problemi, propone titoli, descrizioni, categorie e attributi
+      migliori e riesporta il feed corretto solo dopo la tua approvazione.
+    en: Analyses your e-commerce product feed, finds the problems, proposes better titles, descriptions, categories and attributes,
+      and re-exports the corrected feed only after your approval.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f2a44'
+      accent: '#e0a21b'
+      background: '#fbfaf7'
+      foreground: '#1b1f24'
+    fonts:
+      body: Inter
+      display: Poppins
+    wordmark:
+    - text: Catalogo
+      color: primary
+    - text: Brillante
+      color: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#how'
+    cta:
+      label:
+        it: Inizia
+        en: Start
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      assignedBy: signup
+  limits:
+  - action: agent:optimizer
+    per: user
+    max: 10
+    window: day
+    roles:
+    - user
+  agents:
+  - key: optimizer
+    role: main
+    description: Analyses the pasted product feed, records proposals (before/after) without touching the originals, asks for
+      approval and prepares the corrected feed.
+    awaits:
+    - approve_changes
+    appTools:
+    - name: save_proposal
+      description: Save one product proposal (original and proposed values, issues, status pending)
+      action: write
+      collection: proposals
+      scope: user
+    - name: read_proposals
+      description: Read the user's proposals
+      action: read
+      collection: proposals
+      scope: user
+    profile:
+      inline:
+        display_name: CatalogoBrillante optimizer
+        crews:
+        - id: optimizer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are an e-commerce catalog quality specialist. You receive a product feed pasted as CSV/TSV text.
+            For every product: detect issues (description too short or duplicated, missing attributes, wrong category, unclear
+            title), then propose a better title and description optimised for search, the correct category, and missing attributes
+            ONLY when deducible from existing data (never invent sizes, materials, certifications, EANs or figures; leave
+            blank and flag instead). Never overwrite the originals: for each product call save_proposal with fields product_id,
+            title_before, title_after, description_before, description_after, category_before, category_after, attributes_added
+            (text), issues (text), status "pending". Then call request_approve_changes once for the batch. Final answer is
+            the report: a level-1 title "# Catalog optimisation — <catalog name>", sections ## Summary (counts of issues by
+            type), ## Before / After (table of the main changes, max 30 rows), ## Corrected feed (a fenced csv block with
+            the proposed feed, same columns as the input plus any new attribute columns; original values kept where no change
+            is proposed), ## Needs your input (items that could not be deduced). Write in the requested language. Be honest
+            about uncertainty.'
+    goalTemplate: 'Catalog: {catalog_name}
+
+      Marketplace/target: {target_label}
+
+      Tone: {tone_label}
+
+      {?notes}Notes: {notes}{/notes}
+
+      Feed (CSV/TSV pasted by the user):
+
+      {feed_text}
+
+      Write the report in the language with ISO code {lang}. Today is {date}.'
+    output: markdown
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 1.5
+  - key: rechecker
+    role: helper
+    description: Periodically checks products added since the last check and proposes fixes.
+    memory: instance
+    appTools:
+    - name: read_products
+      description: Read the user's catalog products
+      action: read
+      collection: products
+      scope: user
+    - name: save_proposal
+      description: Save one product proposal (original and proposed values, issues, status pending)
+      action: write
+      collection: proposals
+      scope: user
+    writesTo:
+      collection: watch_reports
+    profile:
+      inline:
+        display_name: CatalogoBrillante rechecker
+        crews:
+        - id: rechecker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You re-check a store''s catalog. Use read_products to list products; your memory holds the product
+            ids already checked: handle only new ones. For each new product detect issues and call save_proposal (status pending;
+            never invent attributes; originals stay untouched). Start the answer with "# Catalog check — <date>", then ##
+            New products, ## Issues found, ## Proposals waiting for your approval. Under 250 words. At the end call remember
+            once with the ids checked so far.'
+  inputForm:
+    title:
+      it: Nuova ottimizzazione
+      en: New optimisation
+    fields:
+    - name: catalog_name
+      type: text
+      required: true
+      label:
+        it: Nome catalogo
+        en: Catalog name
+    - name: feed_text
+      type: textarea
+      required: true
+      maxLength: 20000
+      label:
+        it: Feed prodotti (CSV incollato)
+        en: Product feed (pasted CSV)
+      help:
+        it: Incolla le righe del CSV con intestazioni. Il caricamento di file non è ancora disponibile.
+        en: Paste the CSV rows with headers. File upload is not available yet.
+    - name: target
+      type: select
+      required: true
+      label:
+        it: Destinazione
+        en: Target
+      default: store
+      options:
+      - value: store
+        label:
+          it: Mio negozio
+          en: My store
+      - value: amazon
+        label: Amazon
+      - value: google
+        label: Google Shopping
+      - value: generic
+        label:
+          it: Marketplace generico
+          en: Generic marketplace
+    - name: tone
+      type: select
+      label:
+        it: Tono
+        en: Tone
+      default: neutral
+      options:
+      - value: neutral
+        label:
+          it: Neutro
+          en: Neutral
+      - value: premium
+        label: Premium
+      - value: friendly
+        label:
+          it: Amichevole
+          en: Friendly
+    - name: notes
+      type: textarea
+      maxLength: 500
+      label:
+        it: Note (facoltative)
+        en: Notes (optional)
+  data:
+    collections:
+    - name: products
+      ownedBy: user
+      description: The shop's own products (original content)
+      fields:
+      - name: product_id
+        type: text
+      - name: title
+        type: text
+      - name: description
+        type: textarea
+      - name: category
+        type: text
+      - name: attributes
+        type: textarea
+      - name: image_url
+        type: url
+    - name: proposals
+      ownedBy: user
+      description: Before/after proposals per product, pending until approved
+      fields:
+      - name: product_id
+        type: text
+      - name: title_before
+        type: text
+      - name: title_after
+        type: text
+      - name: description_before
+        type: textarea
+      - name: description_after
+        type: textarea
+      - name: category_before
+        type: text
+      - name: category_after
+        type: text
+      - name: attributes_added
+        type: textarea
+      - name: issues
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - pending
+        - approved
+        - rejected
+    - name: watch_reports
+      ownedBy: instance
+      description: Periodic recheck reports of each watch
+  templates:
+  - key: catalog_watch
+    title:
+      it: Controllo periodico nuovi prodotti
+      en: New products check
+    description:
+      it: Ogni settimana ricontrolla i prodotti aggiunti al tuo catalogo.
+      en: Every week re-checks the products added to your catalog.
+    agent: rechecker
+    params:
+    - name: catalog
+      type: text
+      required: true
+      label:
+        it: Catalogo
+        en: Catalog
+    goal: Re-check the catalog "{catalog}" for new products. Today is {date}. Write in the language with ISO code {lang}.
+    schedule:
+      cron: 0 6 * * 1
+      userCanChange: true
+    maxPerUser: 3
+    cost:
+      perRun: 10
+  approvals:
+  - key: approve_changes
+    title:
+      it: Approva le modifiche al catalogo
+      en: Approve catalog changes
+    decidedBy: requester
+    description: The shop owner approves the proposed changes before the corrected feed is final.
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: CatalogoBrillante
+    sections:
+    - type: hero
+      title:
+        it: Schede prodotto **complete** che vendono di più.
+        en: '**Complete** product listings that sell more.'
+      text:
+        it: 'Incolla il tuo feed: un agente AI trova i problemi, propone titoli, descrizioni, categorie e attributi migliori.
+          Gli originali restano intatti finché non approvi.'
+        en: 'Paste your feed: an AI agent finds the problems and proposes better titles, descriptions, categories and attributes.
+          Originals stay untouched until you approve.'
+      actions:
+      - label:
+          it: Ottimizza il catalogo
+          en: Optimise your catalog
+        href: /v/new_run
+        style: primary
+      - label:
+          it: Accedi
+          en: Sign in
+        href: /login
+        style: ghost
+    - type: steps
+      id: how
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Analisi
+          en: Analysis
+        text:
+          it: Descrizioni corte o duplicate, attributi mancanti, categorie errate, titoli poco chiari.
+          en: Short or duplicate descriptions, missing attributes, wrong categories, unclear titles.
+        badge: 🔍
+      - title:
+          it: Prima e dopo
+          en: Before and after
+        text:
+          it: 'Una tabella per prodotto: approvi in blocco o singolarmente.'
+          en: 'A table per product: approve in bulk or one by one.'
+        badge: ✅
+      - title:
+          it: Riesporta
+          en: Re-export
+        text:
+          it: Feed corretto pronto da ricaricare su store e marketplace.
+          en: Corrected feed ready to upload to your store and marketplaces.
+        badge: 📤
+      - title:
+          it: Controllo periodico
+          en: Periodic check
+        text:
+          it: I nuovi prodotti vengono ricontrollati ogni settimana.
+          en: New products are re-checked every week.
+        badge: 🔁
+    - type: note
+      content:
+        it: 'Ogni negozio vede solo i propri cataloghi. Il caricamento file e i feed collegati non sono ancora disponibili:
+          incolla il CSV.'
+        en: 'Each shop sees only its own catalogs. File upload and linked feeds are not available yet: paste the CSV.'
+  - key: new_run
+    type: new_run
+    title:
+      it: Nuova ottimizzazione
+      en: New optimisation
+    roles:
+    - user
+    - admin
+  - key: history
+    type: history
+    title:
+      it: I miei cataloghi
+      en: My catalogs
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: before_after
+    type: table
+    title:
+      it: Prima e dopo
+      en: Before and after
+    source: collection:proposals
+    columns:
+    - product_id
+    - title_before
+    - title_after
+    - description_after
+    - category_before
+    - category_after
+    - attributes_added
+    - issues
+    - status
+    roles:
+    - user
+    - admin
+  - key: approvals
+    type: approvals
+    title:
+      it: Approvazioni
+      en: Approvals
+    roles:
+    - user
+    - admin
+  - key: watches
+    type: instances
+    template: catalog_watch
+    title:
+      it: Controlli periodici
+      en: Periodic checks
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Crediti e abbonamento
+      en: Credits and plan
+    roles:
+    - user
+  exports:
+  - path: /api/proposals.csv
+    source: collection:proposals
+    format: csv
+    access: user
+  billing:
+    modes:
+    - credits
+    - subscription
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:optimizer:
+        estimate: 10
+        metered: true
+    packs:
+    - key: small
+      credits: 500
+      price: 9
+      label: Starter
+    - key: large
+      credits: 3000
+      price: 45
+      label: Pro
+    plans:
+    - key: monthly
+      price: 39
+      interval: month
+      credits: 4000
+      creditsReset: monthly
+      label:
+        it: Abbonamento mensile
+        en: Monthly plan
+  extensions:
+  - key: file_upload
+    description: 'Uploading CSV/Excel files is not available yet: the feed is pasted as text.'
+  - key: linked_feed
+    description: Linked feeds from a customer's URL or store connector (credentials per shop) are not available yet.
+  - key: approve_in_bulk
+    description: Per-product bulk approval buttons and a ready-to-download corrected feed file are limited to the approvals
+      view and the CSV export; a dedicated bulk-approve UI is a future extension.

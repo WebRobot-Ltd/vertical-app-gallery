@@ -1,0 +1,760 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: conciergedesk
+  displayName: ConciergeDesk
+  tagline:
+    it: Il receptionist virtuale per hotel indipendenti.
+    en: The virtual receptionist for independent hotels.
+    de: Der virtuelle Empfang für unabhängige Hotels.
+    fr: Le réceptionniste virtuel des hôtels indépendants.
+    es: El recepcionista virtual para hoteles independientes.
+  description:
+    it: Un agente risponde agli ospiti nella loro lingua, prepara preventivi con le tariffe dell'hotel e passa al receptionist
+      le richieste fuori standard.
+    en: An agent answers guests in their language, prepares quotes with the hotel's rates and sends non-standard requests
+      to the human receptionist.
+  langs:
+  - it
+  - en
+  - de
+  - fr
+  - es
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#1f3a4d'
+      accent: '#b8863b'
+      background: '#faf8f4'
+      foreground: '#1d2630'
+    fonts:
+      body: Inter
+      display: Playfair Display
+    wordmark:
+    - text: Concierge
+      color: primary
+    - text: Desk
+      color: accent
+    buttonShape: rounded
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+        de: So funktioniert's
+        fr: Comment ça marche
+        es: Cómo funciona
+      href: '#come-funziona'
+    - label:
+        it: Chiedi al concierge
+        en: Ask the concierge
+        de: Concierge fragen
+        fr: Demander au concierge
+        es: Pregunta al conserje
+      href: '#chat'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+        de: Anmelden
+        fr: Connexion
+        es: Acceder
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+      - chat_public
+      agents:
+      - faq
+    roles:
+    - key: admin
+      label:
+        it: Direttore
+        en: Manager
+      assignedBy: admin_emails
+    - key: receptionist
+      label:
+        it: Receptionist
+        en: Receptionist
+      assignedBy: invite
+    - key: user
+      label:
+        it: Ospite
+        en: Guest
+      assignedBy: signup
+  limits:
+  - action: chat
+    per: ip
+    max: 40
+    window: hour
+    roles:
+    - anonymous
+  - action: chat
+    per: user
+    max: 100
+    window: day
+    roles:
+    - user
+  agents:
+  - key: faq
+    role: helper
+    description: Answers guests' general questions without signing in, from the hotel's FAQ, policies and rates.
+    profile:
+      inline:
+        display_name: ConciergeDesk FAQ
+        crews:
+        - id: faq
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You are the virtual receptionist of an independent hotel. Always answer in the language the guest
+            writes in (Italian, English, German, French or Spanish). Use ONLY the data returned by your tools (hotel_info,
+            faqs, policies, room_types, rates, extras). If the answer is not there, say you will pass the question to the
+            reception and never invent hours, prices or rules. You may give indicative 'from' prices; for an exact quote or
+            a booking, invite the guest to sign in (link /login) so you can prepare a personal quote. Be warm, concise, at
+            most 120 words.
+    appTools:
+    - name: read_hotel_info
+      description: 'Hotel profile: name, address, contacts, check-in/out times'
+      action: read
+      collection: hotel_info
+      scope: all
+    - name: read_faqs
+      description: 'FAQ: parking, pets, breakfast hours, etc.'
+      action: read
+      collection: faqs
+      scope: all
+    - name: read_policies
+      description: Cancellation and deposit policies
+      action: read
+      collection: policies
+      scope: all
+    - name: read_room_types
+      description: Room types and capacity
+      action: read
+      collection: room_types
+      scope: all
+    - name: read_rates
+      description: Seasonal rates per room type
+      action: read
+      collection: rates
+      scope: all
+    - name: read_extras
+      description: Extra services and prices
+      action: read
+      collection: extras
+      scope: all
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      Guest message: {message}
+
+      Today is {date}.'
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.2
+  - key: concierge
+    role: main
+    description: 'Signed-in guest assistant: collects stay details, checks availability, computes the quote with the hotel''s
+      rates, sends non-standard requests to the receptionist, records the booking.'
+    profile:
+      inline:
+        display_name: ConciergeDesk concierge
+        crews:
+        - id: concierge
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the virtual receptionist of an independent hotel, speaking with a signed-in guest. Always
+            answer in the guest''s language (Italian, English, German, French or Spanish). Use ONLY data from your tools;
+            never invent availability, prices or policies.
+
+            QUOTE FLOW: collect check-in and check-out dates, number of adults and children, room type and special requests
+            (ask only for what is missing). Call read_availability for the dates; if the room is not available propose alternatives
+            from room_types. Compute the price night by night with the rate of the season for each night (read_rates), add
+            extras (read_extras) and any taxes in hotel_info; show the calculation as a small table with the total and the
+            deposit due according to the deposit policy. Save the offer with save_quote (status ''proposed'').
+
+            STANDARD vs NON-STANDARD: groups (more than the maximum in the policy), discounts, late check-out, early check-in,
+            or anything not covered by the policies are NON-STANDARD: do NOT promise anything; save_quote with status ''pending_review''
+            and call request_receptionist_review with the quote details, then tell the guest that the reception will reply
+            shortly.
+
+            ACCEPTANCE: when the guest accepts a proposed quote, set the quote status to ''accepted'' with save_quote and
+            explain that the deposit is paid by card through the secure payment link; the booking is registered only after
+            the payment is confirmed. Never ask for card numbers in the chat.
+
+            With show_my_bookings you may show the guest''s own bookings. Be warm and concise. Never give legal advice.'
+    mcpServers: []
+    appTools:
+    - name: read_hotel_info
+      description: 'Hotel profile: name, address, contacts, check-in/out times'
+      action: read
+      collection: hotel_info
+      scope: all
+    - name: read_room_types
+      description: Room types and capacity
+      action: read
+      collection: room_types
+      scope: all
+    - name: read_rates
+      description: Seasonal rates per room type
+      action: read
+      collection: rates
+      scope: all
+    - name: read_extras
+      description: Extra services and prices
+      action: read
+      collection: extras
+      scope: all
+    - name: read_policies
+      description: Cancellation and deposit policies
+      action: read
+      collection: policies
+      scope: all
+    - name: read_faqs
+      description: 'FAQ: parking, pets, breakfast hours, etc.'
+      action: read
+      collection: faqs
+      scope: all
+    - name: read_availability
+      description: Rooms available per date and room type
+      action: search
+      collection: availability
+      scope: all
+    - name: save_quote
+      description: Create or update the guest's quote
+      action: write
+      collection: quotes
+      scope: user
+    - name: show_my_bookings
+      description: The guest's own bookings
+      action: show
+      collection: bookings
+      scope: user
+    awaits:
+    - receptionist_review
+    memory: user
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      Guest message: {message}
+
+      Guest: {user}. Today is {date}. Reply in the guest''s language (default {lang}).'
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  approvals:
+  - key: receptionist_review
+    title:
+      it: Richiesta fuori standard
+      en: Non-standard request
+      de: Sonderanfrage
+      fr: Demande hors standard
+      es: Solicitud especial
+    description: 'Groups, discounts, late check-out: the receptionist approves or edits the offer before the guest gets an
+      answer.'
+    role: receptionist
+    fields:
+    - guest
+    - dates
+    - room_type
+    - request
+    - proposed_price
+    timeoutMinutes: 720
+    onTimeout: reject
+    decidedBy: role
+  data:
+    collections:
+    - name: hotel_info
+      ownedBy: shared
+      description: Hotel profile managed by the manager
+      fields:
+      - name: name
+        type: text
+      - name: address
+        type: text
+      - name: phone
+        type: text
+      - name: checkin_time
+        type: text
+      - name: checkout_time
+        type: text
+      - name: city_tax_per_person
+        type: number
+      - name: vat_pct
+        type: number
+    - name: room_types
+      ownedBy: shared
+      fields:
+      - name: code
+        type: text
+        required: true
+      - name: name
+        type: text
+      - name: max_guests
+        type: number
+      - name: description
+        type: textarea
+    - name: rates
+      ownedBy: shared
+      fields:
+      - name: room_code
+        type: text
+        required: true
+      - name: season
+        type: text
+      - name: from_date
+        type: date
+      - name: to_date
+        type: date
+      - name: price_per_night
+        type: number
+    - name: extras
+      ownedBy: shared
+      fields:
+      - name: name
+        type: text
+      - name: price
+        type: number
+      - name: unit
+        type: text
+    - name: policies
+      ownedBy: shared
+      fields:
+      - name: kind
+        type: select
+        options:
+        - cancellation
+        - deposit
+        - group
+        - pets
+        - other
+      - name: text
+        type: textarea
+    - name: faqs
+      ownedBy: shared
+      fields:
+      - name: topic
+        type: text
+      - name: answer
+        type: textarea
+    - name: availability
+      ownedBy: shared
+      description: Rooms free per date and room type (maintained by the manager; live channel manager sync is an extension)
+      fields:
+      - name: date
+        type: date
+        required: true
+      - name: room_code
+        type: text
+        required: true
+      - name: rooms_free
+        type: number
+    - name: quotes
+      ownedBy: user
+      description: The guest's quotes
+      fields:
+      - name: check_in
+        type: date
+      - name: check_out
+        type: date
+      - name: adults
+        type: number
+      - name: children
+        type: number
+      - name: room_code
+        type: text
+      - name: requests
+        type: textarea
+      - name: total
+        type: number
+      - name: deposit
+        type: number
+      - name: status
+        type: select
+        options:
+        - proposed
+        - pending_review
+        - accepted
+        - expired
+        - declined
+    - name: bookings
+      ownedBy: user
+      description: Confirmed bookings, one set per guest
+      fields:
+      - name: check_in
+        type: date
+      - name: check_out
+        type: date
+      - name: guests
+        type: number
+      - name: room_code
+        type: text
+      - name: total
+        type: number
+      - name: deposit_paid
+        type: number
+      - name: status
+        type: select
+        options:
+        - confirmed
+        - cancelled
+        - completed
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: ConciergeDesk
+    sections:
+    - type: hero
+      title:
+        it: Il receptionist che non dorme **mai**.
+        en: The receptionist that **never** sleeps.
+        de: Der Empfang, der **nie** schläft.
+        fr: Le réceptionniste qui ne dort **jamais**.
+        es: El recepcionista que **nunca** duerme.
+      text:
+        it: Risponde agli ospiti nella loro lingua, prepara preventivi con le tariffe dell'hotel e passa a un umano ciò che
+          non è standard.
+        en: Answers guests in their language, prepares quotes with the hotel's rates and hands anything non-standard to a
+          human.
+      actions:
+      - label:
+          it: Prenota o chiedi un preventivo
+          en: Book or ask for a quote
+          de: Buchen oder Angebot anfragen
+          fr: Réserver ou demander un devis
+          es: Reservar o pedir presupuesto
+        href: /login
+        style: primary
+      - label:
+          it: Fai una domanda
+          en: Ask a question
+          de: Frage stellen
+          fr: Poser une question
+          es: Hacer una pregunta
+        href: '#chat'
+        style: ghost
+    - type: view
+      id: chat
+      view: chat_public
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+        de: So funktioniert's
+        fr: Comment ça marche
+        es: Cómo funciona
+      items:
+      - title:
+          it: Chiedi
+          en: Ask
+        text:
+          it: 'Parcheggio, animali, colazione: risposte subito, in cinque lingue.'
+          en: 'Parking, pets, breakfast: instant answers in five languages.'
+        badge: 💬
+      - title:
+          it: Preventivo
+          en: Quote
+        text:
+          it: 'Date, ospiti e camera: l''agente verifica la disponibilità e calcola il prezzo.'
+          en: 'Dates, guests and room: the agent checks availability and computes the price.'
+        badge: 🧾
+      - title:
+          it: Conferma
+          en: Confirm
+        text:
+          it: Le richieste speciali le approva il receptionist; poi caparra con carta.
+          en: Special requests are approved by the receptionist; then pay the deposit by card.
+        badge: ✅
+    - type: note
+      content:
+        it: 'Supporto alla prenotazione: le condizioni valide sono quelle confermate dall''hotel.'
+        en: 'Booking assistant: the conditions confirmed by the hotel prevail.'
+  - key: chat_public
+    type: chat
+    title:
+      it: Chiedi al concierge
+      en: Ask the concierge
+    source: agent:faq
+    examples:
+    - A che ora è la colazione?
+    - Do you accept pets?
+    - Gibt es einen Parkplatz?
+    - Quelle est la politique d'annulation ?
+    - ¿Cuánto cuesta una doble en agosto?
+    placeholder:
+      it: Scrivi la tua domanda…
+      en: Type your question…
+    nav: false
+  - key: chat
+    type: chat
+    title:
+      it: Preventivo e prenotazione
+      en: Quote and booking
+    source: agent:concierge
+    examples:
+    - Vorrei una doppia dal 12 al 15 marzo
+    - We are 2 adults and a child, 3 nights in July
+    - Late check-out possible?
+    placeholder:
+      it: Scrivi al concierge…
+      en: Message the concierge…
+    roles:
+    - user
+    - admin
+    - receptionist
+  - key: my_quotes
+    type: table
+    title:
+      it: I miei preventivi
+      en: My quotes
+    source: collection:quotes
+    data:
+      display: table
+      fields:
+      - key: check_in
+        label: Check-in
+        format: date
+      - key: check_out
+        label: Check-out
+        format: date
+      - key: room_code
+        label: Room
+      - key: total
+        label: Total
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: check_in
+        dir: desc
+    roles:
+    - user
+  - key: my_bookings
+    type: table
+    title:
+      it: La mia prenotazione
+      en: My booking
+    source: collection:bookings
+    data:
+      display: cards
+      fields:
+      - key: check_in
+        label: Check-in
+        format: date
+      - key: check_out
+        label: Check-out
+        format: date
+      - key: room_code
+        label: Room
+      - key: deposit_paid
+        label: Deposit
+        format: money
+      - key: status
+        label: Status
+        format: badge
+    roles:
+    - user
+  - key: review_queue
+    type: approvals
+    title:
+      it: Richieste da approvare
+      en: Requests to approve
+    approvals:
+    - receptionist_review
+    roles:
+    - receptionist
+    - admin
+  - key: dashboard
+    type: dashboard
+    title:
+      it: Cruscotto
+      en: Dashboard
+    children:
+    - staff_kpis
+    - staff_quotes
+    - staff_bookings
+    roles:
+    - admin
+    - receptionist
+  - key: staff_kpis
+    type: cards
+    source: run
+    title:
+      it: Conversazioni
+      en: Conversations
+    data:
+      display: kpi
+      kpis:
+      - label:
+          it: Conversazioni
+          en: Conversations
+        agg: count
+    nav: false
+  - key: staff_quotes
+    type: table
+    title:
+      it: Preventivi aperti
+      en: Open quotes
+    source: collection:quotes
+    data:
+      display: table
+      fields:
+      - key: check_in
+        format: date
+        label: Check-in
+      - key: room_code
+        label: Room
+      - key: total
+        format: money
+        label: Total
+      - key: status
+        format: badge
+        label: Status
+      filters:
+      - field: status
+        op: '='
+        value: proposed
+      kpis:
+      - label: Open quotes
+        agg: count
+    nav: false
+  - key: staff_bookings
+    type: table
+    title:
+      it: Prenotazioni
+      en: Bookings
+    source: collection:bookings
+    data:
+      display: table
+      fields:
+      - key: check_in
+        format: date
+        label: Check-in
+      - key: check_out
+        format: date
+        label: Check-out
+      - key: room_code
+        label: Room
+      - key: total
+        format: money
+        label: Total
+      - key: status
+        format: badge
+        label: Status
+      sort:
+        field: check_in
+        dir: asc
+      kpis:
+      - label: Bookings
+        agg: count
+      - label: Deposits
+        agg: sum
+        field: deposit_paid
+        format: money
+    nav: false
+  - key: hotel_setup
+    type: table
+    title:
+      it: Configurazione hotel
+      en: Hotel setup
+    source: collection:rates
+    data:
+      display: table
+      fields:
+      - key: room_code
+        label: Room
+      - key: season
+        label: Season
+      - key: from_date
+        format: date
+        label: From
+      - key: to_date
+        format: date
+        label: To
+      - key: price_per_night
+        format: money
+        label: €/night
+    roles:
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Subscription
+    roles:
+    - admin
+  billing:
+    modes:
+    - subscription
+    - per_transaction
+    currency: eur
+    transactionFeePct: 2
+    plans:
+    - key: property_monthly
+      price: 79
+      interval: month
+      label:
+        it: Per struttura / mese
+        en: Per property / month
+      includes:
+      - unlimited guest chat
+      - quotes and bookings
+      - receptionist queue
+      roles:
+      - admin
+  extensions:
+  - key: channel_manager_sync
+    description: 'Live availability check and booking sync with the hotel''s channel manager need the hotel''s own credentials/API:
+      not available yet. For now availability is a collection kept by the manager; bookings must be forwarded manually.'
+  - key: voice_and_whatsapp
+    description: Phone number voice agent and WhatsApp channel are not set up by this manifest (WhatsApp connector unavailable;
+      the phone channel is activated in the studio). Web chat is active.
+  - key: deposit_card_payment
+    description: Per-booking card deposit via Stripe Connect with the registration of the booking into 'bookings' after payment,
+      and the platform commission on direct bookings, need a payment-to-record flow not expressible here.
+  - key: email_notifications
+    description: 'Confirmation email and day-before reminder: notifications are not available yet.'
+  - key: staff_cross_guest_view
+    description: Quotes and bookings are owned by each guest; the staff dashboard listing every guest's records and the conversion
+      rate (accepted/proposed quotes) need a back-office view across users.

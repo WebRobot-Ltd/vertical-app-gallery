@@ -1,0 +1,664 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: tariffa-giusta
+  displayName: Tariffa Giusta
+  tagline:
+    it: Il prezzo giusto per ogni camera e ogni notte, spiegato.
+    en: The right price for every room and night, explained.
+  description:
+    it: 'Ogni mattina un agente analizza il ritmo delle prenotazioni, lo confronta con l''anno scorso e con festività ed eventi,
+      e propone le tariffe dei prossimi 365 giorni. Tu approvi in blocco o modifichi. Solo dati interni dell''hotel: nessun
+      confronto con i concorrenti.'
+    en: 'Every morning an agent analyses booking pace against last year, holidays and events, and proposes rates for the next
+      365 days. You approve in bulk or edit. Only the hotel''s own data: no competitor scraping.'
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#16324f'
+      accent: '#d98324'
+      background: '#f8f6f1'
+      foreground: '#1c2430'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Tariffa
+      color: primary
+    - text: Giusta
+      color: accent
+    width: wide
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Dati e limiti
+        en: Data and limits
+      href: '#dati'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      label:
+        it: Hotel / Gruppo
+        en: Hotel / Group
+      assignedBy: signup
+  limits:
+  - action: agent:revenue_agent
+    per: user
+    max: 20
+    window: day
+    roles:
+    - user
+  agents:
+  - key: revenue_agent
+    role: scheduled
+    description: Ogni mattina, per una struttura, propone i prezzi per camera e notte dei prossimi 365 giorni e segnala variazioni
+      brusche di occupazione.
+    memory: instance
+    awaits:
+    - price_approval
+    writesTo:
+      collection: price_proposals
+      parse: json_last
+      keyBy: run_date
+    output: markdown+json
+    resultSchema:
+      type: object
+      properties:
+        run_date:
+          type: string
+        summary:
+          type: string
+        days:
+          type: array
+          items:
+            type: object
+            properties:
+              date:
+                type: string
+              room_type:
+                type: string
+              current_price:
+                type: number
+              proposed_price:
+                type: number
+              change_pct:
+                type: number
+              min_stay:
+                type: number
+              signal:
+                type: string
+              reason:
+                type: string
+    appTools:
+    - name: read_room_types
+      description: Tipologie di camera, numero camere, prezzo minimo e massimo
+      action: read
+      collection: room_types
+      scope: user
+    - name: read_stay_rules
+      description: Regole di soggiorno minimo e restrizioni
+      action: read
+      collection: stay_rules
+      scope: user
+    - name: read_local_events
+      description: Eventi in città inseriti dall'albergatore
+      action: read
+      collection: local_events
+      scope: user
+    - name: read_pms_data
+      description: 'Esportazioni PMS incollate: prenotazioni, occupazione, tariffe, cancellazioni'
+      action: read
+      collection: pms_exports
+      scope: user
+    - name: write_alert
+      description: Registra un alert su una variazione brusca di occupazione
+      action: write
+      collection: alerts
+      scope: user
+    profile:
+      inline:
+        display_name: Tariffa Giusta revenue agent
+        crews:
+        - id: revenue
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Sei un revenue manager alberghiero esperto. Lavori per UNA struttura. Usi SOLO: dati interni dell''hotel
+            (export PMS incollati, tipologie camera, regole di soggiorno) e gli eventi inseriti a mano dall''albergatore,
+            più il calendario delle festività che conosci per il paese della struttura. NON confronti i prezzi dei concorrenti
+            e non consulti OTA: se serve un dato che manca, dillo.
+
+
+            Passi: 1) leggi camere, regole, eventi ed export PMS con gli strumenti. 2) Per ogni data futura confronta il ritmo
+            di prenotazione (pickup) con lo stesso periodo dell''anno prima, considerando cancellazioni, festività ed eventi.
+            3) Proponi un prezzo per ogni tipologia di camera e notte dei prossimi 365 giorni; rispetta SEMPRE prezzo minimo/massimo
+            e soggiorno minimo; proponi solo variazioni motivate e lascia invariate le altre. 4) Se l''occupazione di una
+            data cambia bruscamente rispetto all''ultima analisi (la tua memoria la contiene), chiama write_alert con data,
+            variazione e motivo. 5) Chiedi l''approvazione con request_price_approval. 6) Alla fine chiama remember con i
+            5 punti chiave (occupazione per mese, date critiche).
+
+
+            Non inventare cifre: se i dati PMS sono insufficienti, proponi solo cio'' che e'' supportato e dichiaralo. Non
+            dire che i prezzi sono stati inviati al PMS: l''invio non e'' ancora automatico.
+
+
+            Formato: titolo ''# Proposte tariffe — <struttura> — <data>'', poi ## Sintesi, ## Date critiche (con motivo),
+            ## Variazioni principali, ## Dati mancanti. Aggiungi un blocco ```chart con l''occupazione prevista per mese.
+            In fondo un unico blocco JSON finale {run_date, summary, days:[{date, room_type, current_price, proposed_price,
+            change_pct, min_stay, signal (up|down|hold), reason}]} con le sole date con variazione o attenzione.'
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 1.0
+  templates:
+  - key: hotel_property
+    title:
+      it: Struttura
+      en: Property
+    description:
+      it: Una struttura con la sua analisi quotidiana. I gruppi creano una struttura per hotel.
+      en: One property with its daily analysis. Groups create one per hotel.
+    agent: revenue_agent
+    params:
+    - name: hotel_name
+      type: text
+      required: true
+      label:
+        it: Nome struttura
+        en: Property name
+    - name: country
+      type: country
+      required: true
+      label:
+        it: Paese
+        en: Country
+    - name: city
+      type: city
+      required: true
+      label:
+        it: Città
+        en: City
+    - name: currency
+      type: select
+      label:
+        it: Valuta
+        en: Currency
+      default: EUR
+      options:
+      - EUR
+      - GBP
+      - CHF
+      - USD
+    goal: 'Struttura: {hotel_name} ({city}, {country}), valuta {currency}. Oggi è {date}. Analizza i prossimi 365 giorni e
+      proponi le tariffe. Scrivi in lingua ISO {lang}.'
+    schedule:
+      cron: 0 6 * * *
+      userCanChange: true
+    maxPerUser: 50
+  approvals:
+  - key: price_approval
+    title:
+      it: Approva le tariffe proposte
+      en: Approve proposed rates
+    description: Il revenue manager approva in blocco o modifica le proposte.
+    decidedBy: requester
+    fields:
+    - run_date
+    - summary
+  data:
+    collections:
+    - name: room_types
+      ownedBy: user
+      description: Tipologie di camera e limiti di prezzo
+      fields:
+      - name: hotel_name
+        type: text
+        required: true
+        label: Struttura
+      - name: name
+        type: text
+        required: true
+        label: Tipologia
+      - name: rooms
+        type: number
+        required: true
+        label: N. camere
+      - name: min_price
+        type: number
+        required: true
+        label: Prezzo minimo
+      - name: max_price
+        type: number
+        required: true
+        label: Prezzo massimo
+      - name: base_price
+        type: number
+        label: Prezzo base
+    - name: stay_rules
+      ownedBy: user
+      description: Soggiorno minimo e restrizioni
+      fields:
+      - name: hotel_name
+        type: text
+        required: true
+        label: Struttura
+      - name: room_type
+        type: text
+        label: Tipologia (vuoto = tutte)
+      - name: date_from
+        type: date
+        required: true
+        label: Dal
+      - name: date_to
+        type: date
+        required: true
+        label: Al
+      - name: min_stay
+        type: number
+        required: true
+        label: Notti minime
+    - name: local_events
+      ownedBy: user
+      description: Eventi in città noti all'albergatore
+      fields:
+      - name: hotel_name
+        type: text
+        required: true
+        label: Struttura
+      - name: title
+        type: text
+        required: true
+        label: Evento
+      - name: date_from
+        type: date
+        required: true
+        label: Dal
+      - name: date_to
+        type: date
+        required: true
+        label: Al
+      - name: impact
+        type: select
+        label: Impatto atteso
+        options:
+        - low
+        - medium
+        - high
+      - name: notes
+        type: textarea
+        maxLength: 500
+        label: Note
+    - name: pms_exports
+      ownedBy: user
+      description: Export del PMS incollati (prenotazioni, occupazione, tariffe, cancellazioni) in attesa del collegamento
+        diretto
+      fields:
+      - name: hotel_name
+        type: text
+        required: true
+        label: Struttura
+      - name: kind
+        type: select
+        required: true
+        label: Tipo
+        options:
+        - bookings
+        - occupancy
+        - rates
+        - cancellations
+      - name: period
+        type: text
+        label: Periodo
+      - name: content
+        type: textarea
+        required: true
+        maxLength: 20000
+        label: Dati (CSV incollato)
+    - name: alerts
+      ownedBy: user
+      description: Alert su variazioni brusche di occupazione
+      fields:
+      - name: hotel_name
+        type: text
+        label: Struttura
+      - name: date
+        type: date
+        label: Data
+      - name: change
+        type: text
+        label: Variazione
+      - name: reason
+        type: textarea
+        label: Motivo
+    - name: price_proposals
+      ownedBy: instance
+      description: Proposte giornaliere di tariffe per una struttura
+      fields:
+      - name: run_date
+        type: text
+        label: Data analisi
+      - name: summary
+        type: textarea
+        label: Sintesi
+      - name: days
+        type: array
+        label: Giorni
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Tariffa Giusta
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow:
+        it: Revenue management per hotel
+        en: Hotel revenue management
+      title:
+        it: Il **prezzo giusto** per ogni camera e ogni notte.
+        en: The **right price** for every room and night.
+      text:
+        it: Ogni mattina un agente confronta il ritmo delle prenotazioni con l'anno scorso, festività ed eventi, e propone
+          le tariffe dei prossimi 365 giorni, spiegando ogni variazione.
+        en: Every morning an agent compares booking pace with last year, holidays and events, and proposes rates for the next
+          365 days, explaining every change.
+      actions:
+      - label:
+          it: Inizia
+          en: Get started
+        href: /login
+        style: primary
+      aside: <div style="padding:16px"><b>12 mar</b> · Doppia Superior<br>€142 → <b style="color:#d98324">€168 (+18%)</b><br><small>Pickup
+        +22% sul 2025, fiera in città</small></div>
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Inserisci i dati
+          en: Enter your data
+        text:
+          it: Camere, prezzi minimi e massimi, soggiorno minimo, eventi e gli export del PMS.
+          en: Rooms, min/max prices, minimum stay, events and PMS exports.
+        badge: '1'
+      - title:
+          it: L'agente analizza
+          en: The agent analyses
+        text:
+          it: 'Ogni mattina: ritmo di prenotazione, cancellazioni, calendario.'
+          en: 'Every morning: booking pace, cancellations, calendar.'
+        badge: '2'
+      - title:
+          it: Approvi
+          en: You approve
+        text:
+          it: 'Calendario a colori: approva in blocco o modifica.'
+          en: 'Colour calendar: approve in bulk or edit.'
+        badge: '3'
+    - type: cards
+      id: dati
+      title:
+        it: Dati e limiti
+        en: Data and limits
+      items:
+      - title:
+          it: Solo dati tuoi
+          en: Only your data
+        text:
+          it: Nessun confronto con i concorrenti e nessuno scraping delle OTA.
+          en: No competitor comparison and no OTA scraping.
+      - title:
+          it: Ogni hotel vede i suoi dati
+          en: Each hotel sees its own data
+        text:
+          it: I gruppi gestiscono più strutture dallo stesso account.
+          en: Groups manage several properties from one account.
+    - type: note
+      content:
+        it: 'Supporto alle decisioni: le tariffe restano sotto la tua approvazione.'
+        en: 'Decision support: rates remain under your approval.'
+  - key: properties
+    type: instances
+    template: hotel_property
+    title:
+      it: Le mie strutture
+      en: My properties
+    roles:
+    - user
+    - admin
+  - key: calendar
+    type: table
+    title:
+      it: Calendario tariffe
+      en: Rate calendar
+    source: collection:price_proposals
+    roles:
+    - user
+    - admin
+    data:
+      path: days
+      display: table
+      fields:
+      - key: date
+        label:
+          it: Data
+          en: Date
+        format: date
+      - key: room_type
+        label:
+          it: Camera
+          en: Room
+      - key: current_price
+        label:
+          it: Attuale
+          en: Current
+        format: money
+      - key: proposed_price
+        label:
+          it: Proposto
+          en: Proposed
+        format: money
+      - key: change_pct
+        label: '%'
+        format: percent
+      - key: signal
+        label:
+          it: Segnale
+          en: Signal
+        format: badge
+      - key: reason
+        label:
+          it: Motivo
+          en: Reason
+      sort:
+        field: date
+        dir: asc
+      limit: 200
+      empty:
+        it: Nessuna proposta ancora.
+        en: No proposals yet.
+  - key: approvals
+    type: approvals
+    title:
+      it: Da approvare
+      en: To approve
+    approvals:
+    - price_approval
+    roles:
+    - user
+    - admin
+  - key: alerts
+    type: table
+    title:
+      it: Alert occupazione
+      en: Occupancy alerts
+    source: collection:alerts
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: hotel_name
+        label:
+          it: Struttura
+          en: Property
+      - key: date
+        label:
+          it: Data
+          en: Date
+        format: date
+      - key: change
+        label:
+          it: Variazione
+          en: Change
+      - key: reason
+        label:
+          it: Motivo
+          en: Reason
+      limit: 100
+  - key: rooms
+    type: table
+    title:
+      it: Camere e prezzi
+      en: Rooms and prices
+    source: collection:room_types
+    roles:
+    - user
+    - admin
+  - key: rules
+    type: table
+    title:
+      it: Soggiorno minimo
+      en: Minimum stay
+    source: collection:stay_rules
+    roles:
+    - user
+    - admin
+  - key: events
+    type: table
+    title:
+      it: Eventi in città
+      en: City events
+    source: collection:local_events
+    roles:
+    - user
+    - admin
+  - key: pms
+    type: table
+    title:
+      it: Dati PMS
+      en: PMS data
+    source: collection:pms_exports
+    roles:
+    - user
+    - admin
+  - key: proposal
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: history
+    type: history
+    title:
+      it: Storico analisi
+      en: Analysis history
+    source: run
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Plan
+    roles:
+    - user
+  schedules: []
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: small
+      price: 49
+      interval: month
+      label:
+        it: Fino a 30 camere
+        en: Up to 30 rooms
+      includes:
+      - 1 struttura
+      - analisi quotidiana 365 giorni
+    - key: medium
+      price: 119
+      interval: month
+      label:
+        it: Fino a 100 camere
+        en: Up to 100 rooms
+      includes:
+      - fino a 3 strutture
+    - key: group
+      price: 1.8
+      interval: month
+      label:
+        it: 'Gruppi: per camera'
+        en: 'Groups: per room'
+      includes:
+      - tutte le strutture del gruppo
+  egress:
+    hosts: []
+    notes: 'Nessuna chiamata esterna: solo dati interni e inseriti a mano. Niente OTA né concorrenti.'
+  extensions:
+  - key: pms_connector
+    description: 'Collegamento diretto al PMS (prenotazioni, occupazione, tariffe, cancellazioni) richiede credenziali di
+      ogni hotel: non disponibile. Per ora l''hotel incolla export CSV nella sezione Dati PMS.'
+  - key: price_push
+    description: 'Invio automatico dei prezzi approvati al PMS e al channel manager non disponibile: richiede connettori con
+      credenziali del cliente. Per ora le tariffe approvate si esportano e si caricano a mano.'
+  - key: alert_notifications
+    description: Gli alert di occupazione compaiono in app; email o notifiche push non sono ancora disponibili.
+  - key: calendar_heatmap
+    description: 'Calendario a colori mese per mese e approvazione in blocco con modifica cella per cella: oggi tabella con
+      badge di segnale; il calendario grafico richiede un blocco dedicato.'
+  - key: group_overview
+    description: 'Vista consolidata per gruppi: oggi un gruppo crea una struttura per hotel nello stesso account; un riepilogo
+      aggregato tra strutture non e'' ancora disponibile.'
+  - key: per_room_billing
+    description: 'Abbonamento mensile per camera: oggi piani a scaglioni; il conteggio per camera richiede un''estensione
+      di fatturazione.'

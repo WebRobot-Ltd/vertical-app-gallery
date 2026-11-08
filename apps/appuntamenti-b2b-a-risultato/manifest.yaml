@@ -1,0 +1,780 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: incontrocerto
+  displayName: IncontroCerto
+  tagline:
+    it: 'Appuntamenti B2B qualificati: paghi solo quelli fissati.'
+    en: 'Qualified B2B meetings: you only pay for the ones booked.'
+  description:
+    it: Definisci il cliente ideale e i segnali di acquisto. Ogni giorno un agente li cerca su notizie, comunicati e pagine
+      lavora con noi, trova il contatto giusto, scrive la sequenza di email e classifica le risposte fino all'appuntamento.
+    en: Define your ideal customer and the buying signals. Every day an agent looks for them in news, press releases and careers
+      pages, finds the right contact, writes the email sequence and classifies replies up to the booked meeting.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: pipeline
+  branding:
+    theme: light
+    palette:
+      primary: '#12304a'
+      accent: '#e07a1f'
+      background: '#f7f8fa'
+      foreground: '#17212b'
+    fonts:
+      body: Inter
+      display: Sora
+    wordmark:
+    - text: Incontro
+      color: primary
+    - text: Certo
+      color: accent
+    button: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Prezzi
+        en: Pricing
+      href: '#prezzi'
+    cta:
+      label:
+        it: Inizia
+        en: Start
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      assignedBy: signup
+  limits:
+  - action: run
+    per: user
+    max: 30
+    window: day
+    roles:
+    - user
+  agents:
+  - key: scout
+    role: scheduled
+    description: 'Daily, for one customer''s ideal profile: finds buying signals on news, press releases and company careers
+      pages, and the right contact.'
+    memory: instance
+    profile:
+      inline:
+        display_name: IncontroCerto scout
+        crews:
+        - id: scout
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You find B2B sales prospects with a fresh buying signal for ONE customer. Use the WebRobot MCP to
+            scrape ONLY: news sites, company press releases, and careers/''work with us'' pages of company websites. NEVER
+            scrape social networks (LinkedIn, Facebook, Instagram, X) or anything whose terms forbid extraction. Look for
+            the requested signals (new funding, new site/office opening, hiring in a given department) published in the last
+            7 days, for companies matching sector, size and area. For each company find the decision maker role requested
+            using only public company pages or press releases; if no named person is publicly stated, leave contact_name empty
+            and never guess emails: give only an email publicly published on the company site. Your memory holds companies
+            already reported: skip them, and at the end call remember with the updated list of company names. Never invent
+            companies, quotes, figures or people. Answer with a short markdown summary starting with ''# Signals — <date>''
+            and then, as the LAST thing, a single fenced json block: a JSON array of objects {company, website, sector, size,
+            area, signal_type, signal_summary, signal_url, signal_date, contact_name, contact_role, contact_email, fit_score
+            (0-100), status:''new''}. Empty array if nothing found.'
+    goalTemplate: Find new prospects today ({date}).
+    output: markdown+json
+    writesTo:
+      collection: prospects
+      parse: json_last
+      keyBy: company
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+      timeoutSeconds: 900
+  - key: writer
+    role: main
+    when: mode == 'sequence'
+    description: Writes a personalised email sequence for one prospect and asks the customer to approve the first one.
+    awaits:
+    - first_sequence
+    profile:
+      inline:
+        display_name: IncontroCerto writer
+        crews:
+        - id: writer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a B2B outreach copywriter. Write a sequence of 3 short emails (day 0, day 3, day 8) to one
+            prospect, in the requested language, based ONLY on the facts supplied (company, signal, role, what the customer
+            sells). Start with a level-1 title ''# Sequence — <company>''. For each email: ''## Email N (day X)'', Subject
+            line, body under 110 words, one clear call to action proposing a 20-minute call. Reference the buying signal naturally,
+            no flattery, no invented facts, no false urgency, include a one-line opt-out. Comply with B2B cold-email rules
+            (identify the sender, honest subject). After the sequence list ''## Personalisation notes'' with the facts used.
+            If the customer has not yet approved a sequence for this offer, call request_first_sequence with the full text
+            and wait.'
+    goalTemplate: 'Write the sequence in language {lang}.
+
+      Prospect company: {company}
+
+      Contact: {?contact}{contact}{/contact}{!contact}role {contact_role}{/contact}
+
+      Buying signal: {signal}
+
+      What we sell: {offer}
+
+      Sender: {sender}
+
+      Tone: {tone_label}'
+    output: markdown
+  - key: replier
+    role: main
+    when: mode == 'reply'
+    description: Reads a prospect's reply, classifies it and drafts the answer proposing slots from the availability given.
+    profile:
+      inline:
+        display_name: IncontroCerto reply handler
+        crews:
+        - id: replier
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You classify and answer replies to B2B outreach. Start with ''# Reply — <company>''. Then ''## Classification''
+            with exactly one of: interested, not_now, no, other, plus a one-line reason. If ''no'', draft nothing and say
+            to stop the sequence. If ''not_now'', draft a short polite reply and suggest a follow-up date. If ''interested'',
+            draft a reply proposing up to 3 slots taken ONLY from the seller availability supplied (never invent availability).
+            Then ''## Draft reply''. Then call the tool save_conversation once with company, classification, reply_text, draft.
+            Never promise anything not in the supplied facts.'
+    appTools:
+    - name: save_conversation
+      description: Save the classified conversation
+      action: append
+      collection: conversations
+      scope: user
+    goalTemplate: 'Language {lang}. Company: {company}
+
+      What we sell: {offer}
+
+      Seller availability: {availability}
+
+      Prospect reply:
+
+      {reply_text}'
+    output: markdown
+  - key: booker
+    role: main
+    when: mode == 'booking'
+    description: Confirms a meeting once the prospect accepts a slot, writes the appointment and a CRM-ready record.
+    profile:
+      inline:
+        display_name: IncontroCerto booker
+        crews:
+        - id: booker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 5
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You confirm a meeting the prospect has accepted. Start with ''# Appointment — <company>''. Write
+            the confirmation email draft, a calendar invitation text (title, date, time, duration, link or place if supplied)
+            and a CRM note (company, contact, signal, outcome, next step). Use only the slot and facts supplied. Then call
+            the tool save_appointment once with company, contact, slot, notes. Do not confirm if the slot is missing: ask
+            for it instead and do not call the tool.'
+    appTools:
+    - name: save_appointment
+      description: Save the confirmed appointment
+      action: append
+      collection: appointments
+      scope: user
+    goalTemplate: 'Language {lang}. Company: {company}
+
+      Accepted slot: {slot}
+
+      What we sell: {offer}
+
+      Contact: {?contact}{contact}{/contact}
+
+      Prospect message: {reply_text}'
+    output: markdown
+  approvals:
+  - key: first_sequence
+    title:
+      it: Approva la prima sequenza
+      en: Approve the first sequence
+    decidedBy: requester
+    fields:
+    - company
+    - sequence
+  templates:
+  - key: radar
+    title:
+      it: Radar segnali
+      en: Signal radar
+    description:
+      it: Ogni giorno cerca nuovi prospect che corrispondono al tuo cliente ideale e ai segnali scelti.
+      en: Every day looks for new prospects matching your ideal customer and chosen signals.
+    agent: scout
+    params:
+    - name: sector
+      type: text
+      required: true
+      label:
+        it: Settore
+        en: Sector
+    - name: size
+      type: select
+      required: true
+      label:
+        it: Dimensione
+        en: Size
+      options:
+      - value: 1-10
+        label: 1–10
+      - value: 11-50
+        label: 11–50
+      - value: 51-250
+        label: 51–250
+      - value: 250+
+        label: 250+
+    - name: area
+      type: text
+      required: true
+      label:
+        it: Area geografica
+        en: Area
+    - name: decision_role
+      type: text
+      required: true
+      label:
+        it: Ruolo del decisore
+        en: Decision-maker role
+    - name: signals
+      type: multiselect
+      required: true
+      label:
+        it: Segnali di acquisto
+        en: Buying signals
+      options:
+      - value: funding
+        label:
+          it: Nuovo finanziamento
+          en: New funding
+      - value: new_site
+        label:
+          it: Apertura sede
+          en: New site opening
+      - value: hiring
+        label:
+          it: Assunzioni in un reparto
+          en: Hiring in a department
+    - name: department
+      type: text
+      visibleWhen: signals contains 'hiring'
+      label:
+        it: Reparto per le assunzioni
+        en: Hiring department
+    goal: 'Radar "{instance}". Today is {date}. Find companies in sector {sector}, size {size}, area {area}; decision maker
+      role: {decision_role}. Signals: {signals}. Hiring department: {department}. Report in the language with ISO code {lang}.'
+    schedule:
+      cron: 0 6 * * *
+      userCanChange: true
+    maxPerUser: 5
+    cost:
+      perRun: 25
+  inputForm:
+    title:
+      it: Azione su un prospect
+      en: Action on a prospect
+    fields:
+    - name: mode
+      type: select
+      required: true
+      label:
+        it: Cosa vuoi fare
+        en: What to do
+      default: sequence
+      options:
+      - value: sequence
+        label:
+          it: Scrivere la sequenza email
+          en: Write the email sequence
+      - value: reply
+        label:
+          it: Classificare una risposta
+          en: Classify a reply
+      - value: booking
+        label:
+          it: Confermare un appuntamento
+          en: Confirm a meeting
+    - name: company
+      type: text
+      required: true
+      label:
+        it: Azienda prospect
+        en: Prospect company
+    - name: contact
+      type: text
+      label:
+        it: Nome del contatto
+        en: Contact name
+    - name: contact_role
+      type: text
+      visibleWhen: mode == 'sequence'
+      label:
+        it: Ruolo del contatto
+        en: Contact role
+    - name: signal
+      type: textarea
+      maxLength: 600
+      visibleWhen: mode == 'sequence'
+      label:
+        it: Segnale di acquisto rilevato
+        en: Buying signal found
+    - name: offer
+      type: textarea
+      required: true
+      maxLength: 600
+      label:
+        it: Cosa vendi
+        en: What you sell
+    - name: sender
+      type: text
+      visibleWhen: mode == 'sequence'
+      label:
+        it: Nome e ruolo del mittente
+        en: Sender name and role
+    - name: tone
+      type: select
+      visibleWhen: mode == 'sequence'
+      default: professional
+      label:
+        it: Tono
+        en: Tone
+      options:
+      - value: professional
+        label:
+          it: Professionale
+          en: Professional
+      - value: friendly
+        label:
+          it: Cordiale
+          en: Friendly
+      - value: direct
+        label:
+          it: Diretto
+          en: Direct
+    - name: reply_text
+      type: textarea
+      maxLength: 3000
+      visibleWhen: mode != 'sequence'
+      label:
+        it: Testo della risposta del prospect
+        en: Prospect's reply text
+    - name: availability
+      type: textarea
+      maxLength: 600
+      visibleWhen: mode == 'reply'
+      label:
+        it: Tue disponibilità (giorni e orari)
+        en: Your availability (days and times)
+    - name: slot
+      type: text
+      visibleWhen: mode == 'booking'
+      label:
+        it: Orario accettato
+        en: Accepted slot
+  data:
+    collections:
+    - name: prospects
+      ownedBy: instance
+      description: Prospects with a buying signal found by each radar
+      fields:
+      - name: company
+        type: text
+      - name: website
+        type: url
+      - name: sector
+        type: text
+      - name: size
+        type: text
+      - name: area
+        type: text
+      - name: signal_type
+        type: text
+      - name: signal_summary
+        type: text
+      - name: signal_url
+        type: url
+      - name: signal_date
+        type: date
+      - name: contact_name
+        type: text
+      - name: contact_role
+        type: text
+      - name: contact_email
+        type: email
+      - name: fit_score
+        type: number
+      - name: status
+        type: text
+    - name: conversations
+      ownedBy: user
+      description: Classified replies
+      fields:
+      - name: company
+        type: text
+      - name: classification
+        type: text
+      - name: reply_text
+        type: textarea
+      - name: draft
+        type: textarea
+    - name: appointments
+      ownedBy: user
+      description: Confirmed meetings
+      fields:
+      - name: company
+        type: text
+      - name: contact
+        type: text
+      - name: slot
+        type: text
+      - name: notes
+        type: textarea
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: IncontroCerto
+    sections:
+    - type: hero
+      title:
+        it: Appuntamenti B2B qualificati. **Paghi solo quelli fissati.**
+        en: Qualified B2B meetings. **You only pay for booked ones.**
+      text:
+        it: 'Descrivi il tuo cliente ideale e i segnali di acquisto: gli agenti trovano i prospect, scrivono le email e classificano
+          le risposte fino all''appuntamento.'
+        en: 'Describe your ideal customer and buying signals: agents find prospects, write the emails and classify replies
+          up to the meeting.'
+      actions:
+      - label:
+          it: Inizia
+          en: Start
+        href: /login
+        style: primary
+      - label:
+          it: Come funziona
+          en: How it works
+        href: '#come-funziona'
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Definisci il cliente ideale
+          en: Define your ideal customer
+        text:
+          it: Settore, dimensione, area, ruolo del decisore e segnali di acquisto.
+          en: Sector, size, area, decision-maker role and buying signals.
+        badge: 🎯
+      - title:
+          it: Ogni giorno nuovi segnali
+          en: New signals every day
+        text:
+          it: Notizie, comunicati e pagine «lavora con noi». Nessun social network.
+          en: News, press releases and careers pages. No social networks.
+        badge: 📡
+      - title:
+          it: Sequenza email approvata da te
+          en: Email sequence you approve
+        text:
+          it: Un secondo agente scrive email personalizzate; tu approvi la prima.
+          en: A second agent writes personalised emails; you approve the first.
+        badge: ✉️
+      - title:
+          it: Risposte e appuntamento
+          en: Replies and meeting
+        text:
+          it: Le risposte sono classificate (interessato, non ora, no) e l'appuntamento è confermato.
+          en: Replies are classified (interested, not now, no) and the meeting is confirmed.
+        badge: 📅
+    - type: cards
+      id: prezzi
+      title:
+        it: Prezzi
+        en: Pricing
+      items:
+      - title:
+          it: Radar giornaliero
+          en: Daily radar
+        text:
+          it: Crediti per ogni esecuzione, in base all'uso reale.
+          en: Credits per run, based on real usage.
+      - title:
+          it: Appuntamento confermato
+          en: Confirmed meeting
+        text:
+          it: Un addebito fisso per ogni appuntamento fissato.
+          en: A fixed charge for each meeting booked.
+    - type: note
+      content:
+        it: 'Le email commerciali B2B rispettano GDPR e ePrivacy: ogni messaggio identifica il mittente e permette l''opt-out.
+          I contatti provengono solo da fonti pubbliche aziendali.'
+        en: 'B2B commercial emails respect GDPR and ePrivacy: every message identifies the sender and offers an opt-out. Contacts
+          come only from public company sources.'
+  - key: radars
+    type: instances
+    template: radar
+    title:
+      it: I miei radar
+      en: My radars
+    roles:
+    - user
+    - admin
+  - key: pipeline
+    type: table
+    title:
+      it: Pipeline prospect
+      en: Prospect pipeline
+    source: collection:prospects
+    data:
+      display: table
+      fields:
+      - key: company
+        label:
+          it: Azienda
+          en: Company
+      - key: signal_type
+        label:
+          it: Segnale
+          en: Signal
+        format: badge
+      - key: signal_summary
+        label:
+          it: Dettaglio
+          en: Detail
+      - key: contact_name
+        label:
+          it: Contatto
+          en: Contact
+      - key: contact_role
+        label:
+          it: Ruolo
+          en: Role
+      - key: fit_score
+        label: Fit
+        format: number
+      - key: status
+        label:
+          it: Stato
+          en: Status
+        format: badge
+      sort:
+        field: fit_score
+        dir: desc
+      limit: 100
+      empty:
+        it: 'Nessun prospect ancora: crea un radar.'
+        en: 'No prospects yet: create a radar.'
+    roles:
+    - user
+    - admin
+  - key: new
+    type: new_run
+    title:
+      it: Sequenza, risposte, appuntamenti
+      en: Sequence, replies, meetings
+    roles:
+    - user
+    - admin
+  - key: approvals
+    type: approvals
+    title:
+      it: Da approvare
+      en: To approve
+    roles:
+    - user
+    - admin
+  - key: conversations
+    type: table
+    title:
+      it: Conversazioni
+      en: Conversations
+    source: collection:conversations
+    data:
+      display: table
+      fields:
+      - key: company
+        label:
+          it: Azienda
+          en: Company
+      - key: classification
+        label:
+          it: Esito
+          en: Outcome
+        format: badge
+      - key: reply_text
+        label:
+          it: Risposta
+          en: Reply
+      - key: draft
+        label:
+          it: Bozza
+          en: Draft
+      limit: 100
+    roles:
+    - user
+    - admin
+  - key: appointments
+    type: table
+    title:
+      it: Appuntamenti
+      en: Appointments
+    source: collection:appointments
+    data:
+      display: table
+      fields:
+      - key: company
+        label:
+          it: Azienda
+          en: Company
+      - key: contact
+        label:
+          it: Contatto
+          en: Contact
+      - key: slot
+        label:
+          it: Data e ora
+          en: Date and time
+      - key: notes
+        label:
+          it: Note CRM
+          en: CRM notes
+      limit: 100
+    roles:
+    - user
+    - admin
+  - key: history
+    type: history
+    title:
+      it: Storico
+      en: History
+    source: run
+    roles:
+    - user
+    - admin
+  - key: result
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: account
+    type: account
+    title:
+      it: Crediti
+      en: Credits
+    roles:
+    - user
+  billing:
+    modes:
+    - credits
+    signupCredits: 100
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:writer:
+        estimate: 10
+        metered: true
+      agent:replier:
+        estimate: 10
+        metered: true
+      agent:booker: 150
+    packs:
+    - key: starter
+      credits: 1000
+      price: 10
+      label: Starter
+    - key: pro
+      credits: 5000
+      price: 45
+      label: Pro
+  extensions:
+  - key: mailbox_sending
+    description: 'Not available yet: automatic sending from the customer''s connected mailbox and reading replies automatically.
+      For now the customer copies the approved emails and pastes prospects'' replies into the form.'
+  - key: calendar_crm
+    description: 'Not available yet: reading the seller''s calendar, creating the calendar event and saving to the customer''s
+      CRM (connectors needing customer credentials). For now the seller gives availability as text and the appointment plus
+      a CRM note are saved in the app.'
+  - key: auto_charge_per_meeting
+    description: The charge per confirmed appointment is approximated by a fixed credit cost on the booking agent run; a true
+      per-confirmation charge and email notifications are not available yet.

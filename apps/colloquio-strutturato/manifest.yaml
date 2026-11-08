@@ -1,0 +1,714 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: colloquio-strutturato
+  displayName: Colloquio Strutturato
+  tagline:
+    it: Colloqui oggettivi, valutati con rubriche chiare. La decisione resta a te.
+    en: Objective interviews scored against clear rubrics. The decision stays with you.
+  description:
+    it: L'admin HR definisce posizioni, competenze e rubriche 1-5. Il candidato sostiene un colloquio guidato da un agente
+      AI. L'agente trascrive, valuta ogni risposta con una motivazione e produce report e classifica. Il recruiter rivede,
+      corregge e decide.
+    en: HR defines positions, competencies and 1-5 rubrics. The candidate takes an interview led by an AI agent. The agent
+      transcribes, scores every answer with a rationale, and produces a report and ranking. The recruiter reviews, corrects
+      and decides.
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#1f3a5f'
+      accent: '#2a9d8f'
+      background: '#f7f9fb'
+      foreground: '#18222e'
+    fonts:
+      body: Inter
+      display: DM Serif Display
+    wordmark:
+    - text: Colloquio
+      color: primary
+    - text: Strutturato
+      color: accent
+    buttonShape: rounded
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#how'
+    - label:
+        it: Garanzie
+        en: Safeguards
+      href: '#safeguards'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin HR
+      assignedBy: admin_emails
+    - key: recruiter
+      label: Recruiter
+      assignedBy: invite
+    - key: candidate
+      label:
+        it: Candidato
+        en: Candidate
+      assignedBy: derived
+      from: collection:invitations.email
+  limits:
+  - action: chat
+    per: user
+    max: 200
+    window: day
+    roles:
+    - candidate
+  - action: agent:evaluator
+    per: user
+    max: 50
+    window: day
+    roles:
+    - recruiter
+    - admin
+  agents:
+  - key: interviewer
+    role: main
+    description: Conduce il colloquio vocale/testuale strutturato con il candidato.
+    memory: user
+    profile:
+      inline:
+        display_name: Interviewer
+        crews:
+        - id: interviewer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a structured-interview agent. Read the candidate''s invitation (tool read_invitation): position,
+            competencies and rubric. First message: introduce yourself, say that the interview lasts about 20 minutes, that
+            answers are recorded and transcribed and that a human recruiter makes every decision; ask for explicit consent
+            and do NOT start until the candidate clearly answers yes (tool save_consent). Then ask one question at a time:
+            behavioural (past situations, STAR) and situational questions covering every competency, with 1-2 follow-up probes
+            on vague answers. Never reveal the rubric or scores, never comment on quality, never ask about protected characteristics
+            (age, health, family, origin, religion). Around 8-10 main questions, then close politely and state that the recruiter
+            will follow up. After each answer call append_transcript with the question and the answer. At the end call save_transcript_complete.
+            Reply in the candidate''s language. If the candidate withdraws consent, stop and say so.'
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New message from the candidate: {message}
+
+      Language ISO code: {lang}. Today is {date}.'
+    appTools:
+    - name: read_invitation
+      description: 'Read the candidate''s own invitation: position, competencies, rubric'
+      action: read
+      collection: invitations
+      scope: user
+    - name: save_consent
+      description: Record the candidate's explicit consent with date
+      action: write
+      collection: consents
+      scope: user
+    - name: append_transcript
+      description: Append question and answer to the interview transcript
+      action: append
+      collection: interviews
+      scope: user
+    - name: save_transcript_complete
+      description: Mark the interview as completed
+      action: write
+      collection: interviews
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.5
+  - key: evaluator
+    role: analyst
+    description: Valuta ogni risposta rispetto alla rubrica e scrive il report del candidato.
+    writesTo:
+      collection: evaluations
+      parse: whole
+      keyBy: interview
+    profile:
+      inline:
+        display_name: Evaluator
+        crews:
+        - id: evaluator
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You evaluate a structured interview objectively. Use ONLY the transcript and the rubric given (levels
+            1-5 with example answers). Never use or infer protected characteristics, accent, appearance or personal data;
+            never invent evidence; if there is no evidence for a competency write ''insufficient evidence'' instead of a score.
+            You only propose scores: a human recruiter reviews, may change them and decides. Output Markdown starting with
+            ''# Candidate report — <name> — <position>''. Sections: ## Summary (5 lines), ## Scores (table: competency | score
+            1-5 | rationale | quote from the transcript), ## Per-answer evaluation (each question, level reached, motivation),
+            ## Strengths, ## Areas to probe in the next interview, ## Confidence and limits. Then add a chart block ```chart
+            {"type":"bar","title":"Scores","labels":[...],"series":[{"name":"Score","values":[...]}]}``` with real figures.
+            End with ''Overall score: X.X/5 (proposal, not a decision)''. Write in the requested language.'
+    goalTemplate: 'Interview record: {interview}
+
+      Transcript:
+
+      {transcript}
+
+      Rubric:
+
+      {rubric}
+
+      Position: {position_title}
+
+      Write the report in the language with ISO code {lang}.'
+    context:
+    - key: transcript
+      from: collection:interviews.transcript
+    - key: rubric
+      from: collection:interviews.rubric
+    - key: position_title
+      from: collection:interviews.position_title
+    awaits:
+    - advance_candidate
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.8
+  - key: ranker
+    role: helper
+    description: Classifica comparativa dei candidati di una posizione.
+    profile:
+      inline:
+        display_name: Ranker
+        crews:
+        - id: ranker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You compare candidates of ONE position using the evaluations (tool list_evaluations), using the
+            recruiter''s corrected scores when present. Output Markdown starting with ''# Ranking — <position>''. Table: rank
+            | candidate | score per competency | overall | one-line rationale. Add a chart block ```chart with a bar chart
+            of overall scores. Note ties and low-confidence evaluations explicitly. It is a decision-support ordering, never
+            a hiring decision; do not use protected characteristics.'
+    appTools:
+    - name: list_evaluations
+      description: Evaluations of the position the recruiter can access
+      action: read
+      collection: evaluations
+      scope: user
+    goalTemplate: 'Position: {position}
+
+      Build the comparative ranking. Language ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 4
+      maxBudgetUsd: 0.5
+  approvals:
+  - key: advance_candidate
+    title:
+      it: Passa al colloquio successivo
+      en: Advance to next interview
+    description: Decisione umana sul candidato; mai automatica.
+    role: recruiter
+    fields:
+    - candidate
+    - position
+    - overall_score
+    - recruiter_note
+    timeoutMinutes: 10080
+    onTimeout: reject
+    decidedBy: role
+  inputForm:
+    title:
+      it: Valuta un colloquio
+      en: Evaluate an interview
+    fields:
+    - name: interview
+      type: relation
+      relation: interviews
+      required: true
+      label:
+        it: Colloquio completato
+        en: Completed interview
+    - name: position
+      type: relation
+      relation: positions
+      label:
+        it: Posizione (per la classifica)
+        en: Position (for ranking)
+  data:
+    collections:
+    - name: positions
+      ownedBy: user
+      sharing:
+      - viewer
+      - editor
+      description: Posizioni create dall'admin HR; condivise con i recruiter assegnati
+      fields:
+      - name: title
+        type: text
+        required: true
+        label:
+          it: Posizione
+          en: Position
+      - name: description
+        type: textarea
+      - name: competencies
+        type: array
+        label:
+          it: Competenze e rubrica
+          en: Competencies and rubric
+        fields:
+        - name: name
+          type: text
+          required: true
+        - name: weight
+          type: number
+        - name: level_1
+          type: textarea
+        - name: level_2
+          type: textarea
+        - name: level_3
+          type: textarea
+        - name: level_4
+          type: textarea
+        - name: level_5
+          type: textarea
+        - name: example_answers
+          type: textarea
+      - name: video_option
+        type: boolean
+        label:
+          it: Registrazione video
+          en: Video recording
+    - name: invitations
+      ownedBy: user
+      parent: positions
+      description: Inviti ai candidati (email e link) con snapshot della rubrica
+      fields:
+      - name: email
+        type: email
+        required: true
+      - name: candidate_name
+        type: text
+      - name: position_title
+        type: text
+      - name: rubric
+        type: json
+      - name: status
+        type: select
+        options:
+        - invited
+        - consented
+        - completed
+        - declined
+      - name: link
+        type: url
+    - name: consents
+      ownedBy: user
+      fields:
+      - name: candidate_email
+        type: email
+      - name: accepted
+        type: boolean
+      - name: accepted_at
+        type: date
+      - name: text_version
+        type: text
+    - name: interviews
+      ownedBy: user
+      sharing:
+      - viewer
+      parent: positions
+      description: Trascrizioni dei colloqui
+      fields:
+      - name: candidate_name
+        type: text
+      - name: position_title
+        type: text
+      - name: rubric
+        type: json
+      - name: transcript
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - in_progress
+        - completed
+    - name: evaluations
+      ownedBy: user
+      sharing:
+      - viewer
+      - editor
+      parent: positions
+      description: Report per candidato con punteggi proposti e corretti dal recruiter
+      fields:
+      - name: interview
+        type: text
+      - name: candidate
+        type: text
+      - name: overall_score
+        type: number
+      - name: corrected_overall
+        type: number
+      - name: recruiter_note
+        type: textarea
+      - name: decision
+        type: select
+        options:
+        - pending
+        - advance
+        - reject
+      - name: feedback_to_candidate
+        type: textarea
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Colloquio Strutturato
+    sections:
+    - type: hero
+      title:
+        it: Colloqui **oggettivi**, con rubriche chiare.
+        en: '**Objective** interviews, with clear rubrics.'
+      text:
+        it: 'Un agente AI conduce il colloquio, valuta ogni risposta rispetto alla tua rubrica 1-5 e motiva i punteggi. Tu
+          rivedi, correggi e decidi: nessuna decisione è automatica.'
+        en: 'An AI agent runs the interview, scores every answer against your 1-5 rubric and explains each score. You review,
+          correct and decide: no decision is automatic.'
+      actions:
+      - label:
+          it: Accedi
+          en: Sign in
+        href: /login
+        style: primary
+    - type: steps
+      id: how
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Definisci la posizione
+          en: Define the position
+        text:
+          it: Competenze, livelli 1-5 ed esempi di risposta.
+          en: Competencies, 1-5 levels and example answers.
+        badge: 📝
+      - title:
+          it: Invita i candidati
+          en: Invite candidates
+        text:
+          it: Ogni candidato riceve un link personale.
+          en: Each candidate gets a personal link.
+        badge: ✉️
+      - title:
+          it: Colloquio guidato
+          en: Guided interview
+        text:
+          it: Circa 20 minuti, domande comportamentali e situazionali, dopo consenso esplicito.
+          en: About 20 minutes of behavioural and situational questions, after explicit consent.
+        badge: 🎙️
+      - title:
+          it: Report e classifica
+          en: Report and ranking
+        text:
+          it: Punteggi motivati; il recruiter corregge e decide.
+          en: Scores with rationale; the recruiter corrects and decides.
+        badge: 📊
+    - type: cards
+      id: safeguards
+      title:
+        it: Garanzie
+        en: Safeguards
+      items:
+      - title:
+          it: Decisione umana
+          en: Human decision
+        text:
+          it: L'AI propone punteggi, la persona decide.
+          en: AI proposes scores, a person decides.
+      - title:
+          it: Consenso esplicito
+          en: Explicit consent
+        text:
+          it: Nessun colloquio inizia senza il consenso del candidato.
+          en: No interview starts without the candidate's consent.
+      - title:
+          it: Riservatezza
+          en: Privacy
+        text:
+          it: Il candidato vede solo il proprio colloquio; il recruiter solo le posizioni assegnate.
+          en: Candidates see only their own interview; recruiters only their assigned positions.
+    - type: note
+      content:
+        it: Strumento di supporto alla valutazione, non sostituisce il giudizio umano. Il trattamento dei dati dei candidati
+          richiede informativa e base giuridica da parte del datore di lavoro.
+        en: Evaluation support tool; it does not replace human judgement. Processing candidate data requires a privacy notice
+          and legal basis from the employer.
+  - key: positions_list
+    type: list
+    title:
+      it: Posizioni
+      en: Positions
+    source: collection:positions
+    roles:
+    - admin
+    - recruiter
+    data:
+      display: table
+      fields:
+      - key: title
+        label:
+          it: Posizione
+          en: Position
+      - key: video_option
+        label: Video
+        format: badge
+  - key: invites
+    type: table
+    title:
+      it: Inviti
+      en: Invitations
+    source: collection:invitations
+    roles:
+    - admin
+    - recruiter
+    data:
+      display: table
+      fields:
+      - key: candidate_name
+        label:
+          it: Candidato
+          en: Candidate
+      - key: email
+        label: Email
+      - key: position_title
+        label:
+          it: Posizione
+          en: Position
+      - key: status
+        label:
+          it: Stato
+          en: Status
+        format: badge
+      - key: link
+        label: Link
+        format: link
+  - key: interview
+    type: chat
+    title:
+      it: Il mio colloquio
+      en: My interview
+    source: agent:interviewer
+    placeholder:
+      it: Scrivi la tua risposta…
+      en: Type your answer…
+    examples:
+    - it: Sì, acconsento e sono pronto/a a iniziare
+      en: Yes, I consent and I am ready to start
+    roles:
+    - candidate
+  - key: my_feedback
+    type: table
+    title:
+      it: Riscontro finale
+      en: Final feedback
+    source: collection:evaluations
+    roles:
+    - candidate
+    data:
+      display: cards
+      fields:
+      - key: feedback_to_candidate
+        label:
+          it: Riscontro
+          en: Feedback
+  - key: new_eval
+    type: new_run
+    title:
+      it: Valuta / classifica
+      en: Evaluate / rank
+    roles:
+    - recruiter
+    - admin
+  - key: reports
+    type: history
+    title:
+      it: Report
+      en: Reports
+    source: run
+    roles:
+    - recruiter
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: ranking
+    type: table
+    title:
+      it: Classifica e punteggi
+      en: Ranking and scores
+    source: collection:evaluations
+    roles:
+    - recruiter
+    - admin
+    data:
+      display: table
+      fields:
+      - key: candidate
+        label:
+          it: Candidato
+          en: Candidate
+      - key: overall_score
+        label:
+          it: Proposto
+          en: Proposed
+        format: number
+      - key: corrected_overall
+        label:
+          it: Corretto
+          en: Corrected
+        format: number
+      - key: decision
+        label:
+          it: Decisione
+          en: Decision
+        format: badge
+      - key: recruiter_note
+        label:
+          it: Nota
+          en: Note
+      sort:
+        field: overall_score
+        dir: desc
+  - key: decisions
+    type: approvals
+    title:
+      it: Decisioni
+      en: Decisions
+    approvals:
+    - advance_candidate
+    roles:
+    - recruiter
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Subscription
+    roles:
+    - admin
+    - recruiter
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 0
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:evaluator:
+        estimate: 40
+        metered: true
+      agent:ranker:
+        estimate: 20
+        metered: true
+      agent:interviewer:
+        estimate: 150
+        metered: true
+    plans:
+    - key: start
+      price: 99
+      interval: month
+      label:
+        it: Start — 30 colloqui/mese
+        en: Start — 30 interviews/month
+      credits: 6000
+      creditsReset: monthly
+      roles:
+      - admin
+    - key: team
+      price: 299
+      interval: month
+      label:
+        it: Team — 120 colloqui/mese
+        en: Team — 120 interviews/month
+      credits: 24000
+      creditsReset: monthly
+      roles:
+      - admin
+    packs:
+    - key: extra
+      credits: 3000
+      price: 55
+      label: +15 colloqui
+  extensions:
+  - key: ats_sync
+    description: 'Sincronizzazione dei risultati con l''ATS aziendale: richiede credenziali per cliente (connettore non ancora
+      disponibile). Per ora i risultati sono esportabili dal report stampabile.'
+  - key: email_invites
+    description: 'Invio automatico degli inviti via email non disponibile: il recruiter copia il link personale e lo invia;
+      il candidato accede con magic link all''email invitata.'
+  - key: voice_video
+    description: 'Colloquio vocale in browser e registrazione video (con upload) non disponibili: oggi il colloquio è in chat
+      testuale e la trascrizione è salvata dall''agente. Il campo video_option della posizione è predisposto.'
+  - key: candidate_feedback_release
+    description: Il riscontro finale al candidato è scritto dal recruiter nel campo feedback_to_candidate dopo la decisione
+      umana.

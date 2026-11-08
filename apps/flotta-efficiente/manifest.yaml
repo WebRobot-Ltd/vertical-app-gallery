@@ -1,0 +1,615 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: flotta-efficiente
+  displayName: FlottaEfficiente
+  tagline:
+    it: Il costo reale per chilometro di ogni veicolo aziendale, e una flotta più snella.
+    en: The true cost per kilometre of every company vehicle, and a leaner fleet.
+  description:
+    it: 'Carica la tua flotta, incolla ogni mese i dati di km, rifornimenti/ricariche e manutenzioni: un agente calcola il
+      costo per km, trova i veicoli sottoutilizzati o troppo costosi e propone cosa eliminare, sostituire con elettrici o
+      condividere, con il risparmio annuo stimato. Tu approvi o scarti.'
+    en: 'Load your fleet, paste each month''s km, fuel/charging and maintenance data: an agent computes cost per km, finds
+      underused or too expensive vehicles and proposes what to remove, replace with EVs or share, with estimated yearly savings.
+      You approve or discard.'
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12355b'
+      accent: '#2a9d6f'
+      background: '#f6f8fa'
+      foreground: '#16212c'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Flotta
+      color: primary
+    - text: Efficiente
+      color: accent
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Prezzi
+        en: Pricing
+      href: '#prezzi'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      label:
+        it: Fleet manager
+        en: Fleet manager
+      assignedBy: signup
+  limits:
+  - action: run
+    per: user
+    max: 20
+    window: day
+    roles:
+    - user
+  agents:
+  - key: importer
+    role: setup
+    description: Turns the pasted vehicle list into vehicle records of this company.
+    when: mode == 'vehicles'
+    profile:
+      inline:
+        display_name: FlottaEfficiente importer
+        crews:
+        - id: importer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You load a company''s vehicle list. The user pastes rows (CSV or free text) with plate, model, fuel
+            type (diesel, petrol, hybrid, electric, lpg_cng), odometer km, monthly cost (lease/rental/insurance, EUR) and
+            assignee. For each row call the tool save_vehicle once, normalising fuel to one of the listed values. Update a
+            vehicle if the plate already exists (key by plate). Never invent values: if a field is missing leave it empty
+            and list it in the report. Finish with a report starting with "# Import flotta" containing a table of loaded vehicles
+            and a list of rows skipped or incomplete.'
+    appTools:
+    - name: save_vehicle
+      description: Create or update a vehicle of the user's fleet (keyed by plate)
+      action: write
+      collection: vehicles
+      scope: user
+    - name: list_vehicles
+      description: Read the vehicles of the user's fleet
+      action: read
+      collection: vehicles
+      scope: user
+    goalTemplate: 'Vehicle list pasted by the fleet manager:
+
+      {vehicles_text}
+
+      Reply in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 0.5
+  - key: analyst
+    role: main
+    description: Computes cost per km from the monthly CSV, flags anomalies, proposes an optimised fleet and asks the manager
+      to approve.
+    when: mode == 'analysis'
+    profile:
+      inline:
+        display_name: FlottaEfficiente analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a fleet cost analyst for a company fleet manager. Steps: 1) read the fleet with list_vehicles;
+            2) parse the monthly CSV given in the goal (plate, km, fuel_or_charging_cost, maintenance_cost; tolerate separators
+            , or ; and decimal commas) and store each row with save_monthly_row (period, plate, km, energy_cost, maintenance_cost);
+            3) for every vehicle compute total cost per km = (monthly fixed cost + energy + maintenance) / km driven in the
+            month, and compare with the fleet median and with the last months if present (read_monthly_rows); 4) flag underused
+            vehicles (km clearly below the fleet median or below ~1000 km/month), too expensive ones (cost per km well above
+            the median), and anomalies (km or costs jumping, missing rows, plates not in the fleet, zero km with costs, odometer
+            inconsistencies); 5) propose an optimised fleet: for each affected vehicle choose one action - remove, replace
+            with electric (only where km and routes make it plausible), share between employees, or keep - with a short reason
+            and the estimated yearly saving in EUR, stating the assumptions (annualised from the month, energy price differences,
+            resale not included unless given). Save each proposal with save_proposal (plate, action, reason, yearly_saving_eur,
+            status ''proposed'', period), then call request_fleet_plan once so the manager approves or discards. Never invent
+            figures: state when data is missing or an estimate is rough; savings are estimates, not guarantees, and no legal
+            or tax advice is given. Report format: a level-1 title "# Flotta <period> — indicatori e proposte" (in the user''s
+            language), then ## Indicatori (KPI table: vehicles, km, total cost, fleet cost per km, potential yearly saving),
+            ## Costo per km per veicolo (table sorted worst first, plus a ```chart block of type bar with cost per km by vehicle:
+            {"type":"bar","title":"…","labels":[…],"series":[{"name":"€/km","values":[…]}],"unit":"€/km"}), ## Anomalie, ##
+            Flotta ottimizzata proposta (table: vehicle, action, reason, yearly saving, total), ## Ipotesi e limiti.'
+    appTools:
+    - name: list_vehicles
+      description: Read the vehicles of the user's fleet
+      action: read
+      collection: vehicles
+      scope: user
+    - name: read_monthly_rows
+      description: Read previous monthly data rows of the user's fleet
+      action: read
+      collection: monthly_data
+      scope: user
+    - name: save_monthly_row
+      description: Store one vehicle's row of the monthly data
+      action: append
+      collection: monthly_data
+      scope: user
+    - name: save_proposal
+      description: Store one optimisation proposal
+      action: write
+      collection: proposals
+      scope: user
+    awaits:
+    - fleet_plan
+    goalTemplate: 'Period: {period}. Today is {date}.
+
+      Monthly CSV (km, fuel/charging, maintenance per vehicle):
+
+      {csv}
+
+      {?notes}Notes: {notes}{/notes}
+
+      Write the report in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+  approvals:
+  - key: fleet_plan
+    title:
+      it: Approva la flotta ottimizzata
+      en: Approve the optimised fleet
+    description: The fleet manager approves or discards the analyst's proposals for the period.
+    decidedBy: requester
+    fields:
+    - period
+    - plate
+    - action
+    - yearly_saving_eur
+  inputForm:
+    title:
+      it: Nuovo caricamento
+      en: New upload
+    fields:
+    - name: mode
+      type: select
+      required: true
+      label:
+        it: Cosa vuoi fare
+        en: What to do
+      default: analysis
+      options:
+      - value: vehicles
+        label:
+          it: Carica/aggiorna elenco veicoli
+          en: Load/update vehicle list
+      - value: analysis
+        label:
+          it: Importa dati del mese e analizza
+          en: Import monthly data and analyse
+    - name: vehicles_text
+      type: textarea
+      maxLength: 20000
+      visibleWhen: mode == 'vehicles'
+      label:
+        it: Elenco veicoli (incolla CSV)
+        en: Vehicle list (paste CSV)
+      help:
+        it: targa;modello;alimentazione;km;costo_mensile;assegnatario
+        en: plate;model;fuel;km;monthly_cost;assignee
+    - name: period
+      type: text
+      visibleWhen: mode == 'analysis'
+      label:
+        it: Mese (es. 2026-10)
+        en: Month (e.g. 2026-10)
+    - name: csv
+      type: textarea
+      maxLength: 30000
+      visibleWhen: mode == 'analysis'
+      label:
+        it: CSV del mese (incolla)
+        en: Month CSV (paste)
+      help:
+        it: targa;km;rifornimenti_ricariche;manutenzione
+        en: plate;km;fuel_charging;maintenance
+    - name: notes
+      type: textarea
+      maxLength: 500
+      visibleWhen: mode == 'analysis'
+      label:
+        it: Note (facoltative)
+        en: Notes (optional)
+  data:
+    collections:
+    - name: vehicles
+      ownedBy: user
+      description: The company's vehicles
+      fields:
+      - name: plate
+        type: text
+        required: true
+        label:
+          it: Targa
+          en: Plate
+      - name: model
+        type: text
+        label:
+          it: Modello
+          en: Model
+      - name: fuel
+        type: select
+        label:
+          it: Alimentazione
+          en: Fuel
+        options:
+        - diesel
+        - petrol
+        - hybrid
+        - electric
+        - lpg_cng
+      - name: odometer_km
+        type: number
+        label: Km
+      - name: monthly_cost
+        type: number
+        label:
+          it: Costo mensile
+          en: Monthly cost
+      - name: assignee
+        type: text
+        label:
+          it: Assegnatario
+          en: Assignee
+    - name: monthly_data
+      ownedBy: user
+      description: Monthly km, energy and maintenance per vehicle
+      fields:
+      - name: period
+        type: text
+      - name: plate
+        type: text
+      - name: km
+        type: number
+      - name: energy_cost
+        type: number
+      - name: maintenance_cost
+        type: number
+    - name: proposals
+      ownedBy: user
+      description: Optimisation proposals awaiting the manager's decision
+      fields:
+      - name: period
+        type: text
+      - name: plate
+        type: text
+      - name: action
+        type: select
+        options:
+        - remove
+        - replace_electric
+        - share
+        - keep
+      - name: reason
+        type: text
+      - name: yearly_saving_eur
+        type: number
+      - name: status
+        type: select
+        options:
+        - proposed
+        - approved
+        - discarded
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: FlottaEfficiente
+    sections:
+    - type: hero
+      eyebrow:
+        it: Per fleet manager
+        en: For fleet managers
+      title:
+        it: Sai quanto **costa davvero al km** ogni veicolo aziendale?
+        en: Do you know what each company vehicle **really costs per km**?
+      text:
+        it: 'Carica la flotta, incolla i dati del mese: un agente AI trova mezzi sottoutilizzati o troppo costosi e ti propone
+          una flotta ottimizzata con il risparmio annuo stimato.'
+        en: 'Load your fleet, paste the month''s data: an AI agent finds underused or too expensive vehicles and proposes
+          an optimised fleet with the estimated yearly saving.'
+      actions:
+      - label:
+          it: Inizia
+          en: Get started
+        href: /login
+        style: primary
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Carica la flotta
+          en: Load the fleet
+        text:
+          it: Modello, alimentazione, km, costo mensile e assegnatario.
+          en: Model, fuel, km, monthly cost and assignee.
+        badge: 🚗
+      - title:
+          it: Importa il mese
+          en: Import the month
+        text:
+          it: Incolla il CSV con km, rifornimenti/ricariche e manutenzioni.
+          en: Paste the CSV with km, fuel/charging and maintenance.
+        badge: 📄
+      - title:
+          it: Decidi
+          en: Decide
+        text:
+          it: 'Costo per km, anomalie e proposte: elimina, sostituisci con elettrico, condividi. Tu approvi o scarti.'
+          en: 'Cost per km, anomalies and proposals: remove, switch to EV, share. You approve or discard.'
+        badge: ✅
+    - type: cards
+      id: prezzi
+      title:
+        it: Abbonamento per numero di veicoli
+        en: Subscription by number of vehicles
+      items:
+      - title: Fino a 10 veicoli
+        text: € 29 / mese
+      - title: Fino a 30 veicoli
+        text: € 69 / mese
+      - title: Fino a 100 veicoli
+        text: € 179 / mese
+    - type: note
+      content:
+        it: I risparmi sono stime basate sui dati forniti, non garanzie né consulenza fiscale. Ogni azienda vede solo la propria
+          flotta.
+        en: Savings are estimates based on the data provided, not guarantees or tax advice. Each company sees only its own
+          fleet.
+  - key: new
+    type: new_run
+    title:
+      it: Carica dati
+      en: Upload data
+    roles:
+    - user
+    - admin
+  - key: fleet
+    type: table
+    title:
+      it: La mia flotta
+      en: My fleet
+    source: collection:vehicles
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: plate
+        label:
+          it: Targa
+          en: Plate
+      - key: model
+        label:
+          it: Modello
+          en: Model
+      - key: fuel
+        label:
+          it: Alimentazione
+          en: Fuel
+        format: badge
+      - key: odometer_km
+        label: Km
+        format: number
+      - key: monthly_cost
+        label:
+          it: Costo mensile
+          en: Monthly cost
+        format: money
+      - key: assignee
+        label:
+          it: Assegnatario
+          en: Assignee
+      empty:
+        it: 'Nessun veicolo: caricane l''elenco da «Carica dati».'
+        en: 'No vehicles yet: load the list from “Upload data”.'
+  - key: proposals_list
+    type: table
+    title:
+      it: Proposte
+      en: Proposals
+    source: collection:proposals
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: period
+        label:
+          it: Mese
+          en: Month
+      - key: plate
+        label:
+          it: Targa
+          en: Plate
+      - key: action
+        label:
+          it: Azione
+          en: Action
+        format: badge
+      - key: reason
+        label:
+          it: Motivo
+          en: Reason
+      - key: yearly_saving_eur
+        label:
+          it: Risparmio annuo
+          en: Yearly saving
+        format: money
+      - key: status
+        label:
+          it: Stato
+          en: Status
+        format: badge
+      sort:
+        field: period
+        dir: desc
+      kpis:
+      - label:
+          it: Risparmio annuo stimato
+          en: Estimated yearly saving
+        agg: sum
+        field: yearly_saving_eur
+        format: money
+  - key: approve
+    type: approvals
+    title:
+      it: Da approvare
+      en: To approve
+    approvals:
+    - fleet_plan
+    roles:
+    - user
+    - admin
+  - key: reports
+    type: history
+    title:
+      it: Report mensili
+      en: Monthly reports
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Plan
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:analyst:
+        estimate: 10
+        metered: true
+      agent:importer:
+        estimate: 5
+        metered: true
+    packs:
+    - key: extra
+      credits: 500
+      price: 6
+      label: Extra
+    plans:
+    - key: fleet_10
+      price: 29
+      interval: month
+      label:
+        it: Fino a 10 veicoli
+        en: Up to 10 vehicles
+      includes:
+      - up to 10 vehicles
+      credits: 300
+      creditsReset: monthly
+      roles:
+      - user
+    - key: fleet_30
+      price: 69
+      interval: month
+      label:
+        it: Fino a 30 veicoli
+        en: Up to 30 vehicles
+      includes:
+      - up to 30 vehicles
+      credits: 600
+      creditsReset: monthly
+      roles:
+      - user
+    - key: fleet_100
+      price: 179
+      interval: month
+      label:
+        it: Fino a 100 veicoli
+        en: Up to 100 vehicles
+      includes:
+      - up to 100 vehicles
+      credits: 1500
+      creditsReset: monthly
+      roles:
+      - user
+  extensions:
+  - key: monthly_email
+    description: 'Monthly report by email with indicators and anomalies: email notifications are not available yet. The report
+      is produced in the app (Monthly reports) after each import.'
+  - key: file_upload
+    description: 'CSV file upload is not available yet: the vehicle list and the monthly CSV are pasted as text.'
+  - key: vehicle_cap
+    description: Enforcing the vehicle limit of each subscription plan (10/30/100) needs custom logic; for now it is a plan
+      description.

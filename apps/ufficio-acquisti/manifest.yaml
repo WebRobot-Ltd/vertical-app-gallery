@@ -1,0 +1,819 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: ufficio-acquisti
+  displayName: Ufficio Acquisti Agentico
+  tagline:
+    it: Dalla richiesta d'acquisto all'ordine approvato, con un team di agenti.
+    en: From purchase request to approved order, with a team of agents.
+  description:
+    it: Il buyer descrive cosa serve; gli agenti preparano la richiesta di offerta, leggono le risposte dei fornitori, confrontano
+      le offerte, propongono il migliore e preparano l'ordine. Nulla parte senza la tua approvazione (e quella del responsabile
+      acquisti sopra soglia).
+    en: The buyer describes what is needed; agents draft the RFQ, read supplier replies, compare offers, recommend the best
+      and prepare the order. Nothing is placed without your approval (and the purchasing manager's above the threshold).
+  langs:
+  - it
+  - en
+  defaultLang: it
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f3a4d'
+      accent: '#d9731a'
+      background: '#f6f7f8'
+      foreground: '#18222b'
+    fonts:
+      body: Inter
+      display: IBM Plex Sans
+    wordmark:
+    - text: Ufficio
+      color: primary
+    - text: Acquisti
+      color: accent
+    byline: agentico
+  header:
+    links:
+    - label:
+        it: Come funziona
+        en: How it works
+      href: '#come-funziona'
+    - label:
+        it: Approvazioni
+        en: Approvals
+      href: '#approvazioni'
+    cta:
+      label:
+        it: Accedi
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label:
+        it: Responsabile acquisti
+        en: Purchasing manager
+      assignedBy: admin_emails
+    - key: user
+      label: Buyer
+      assignedBy: signup
+  limits:
+  - action: run
+    per: user
+    max: 30
+    window: day
+    roles:
+    - user
+  agents:
+  - key: rfq_writer
+    role: main
+    description: Prepares the request for quotation (RFQ) texts for each supplier and records the request.
+    when: mode == 'rfq'
+    profile:
+      inline:
+        display_name: RFQ writer
+        crews:
+        - id: rfq_writer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a procurement assistant for a manufacturing company''s buyer. From the purchase request
+            (item, specs, quantity, delivery date, budget, suppliers, pasted specification text) you prepare one ready-to-send
+            RFQ email per supplier, in the language of each supplier (default: the app language). Start with a level-1 title
+            "# RFQ <item> — <date>". Then sections: ## Riepilogo richiesta (table: item, specs, quantity, delivery date, budget,
+            reply-by date), ## Dati mancanti da chiarire (list gaps in specs; never invent them), ## Bozze email (one ###
+            per supplier with Subject and Body; ask explicitly for unit price, lead time, payment terms, minimum order quantity,
+            validity of the offer, incoterms). Record the request with the tool write_rfqs (status ''draft'') and suppliers
+            with write_suppliers if new. You cannot send emails yourself: tell the buyer the drafts are ready to be sent from
+            the company mailbox, and that once replies arrive they can paste them (or links) into a new ''Compare offers''
+            request. Never invent supplier data or prices.'
+    appTools:
+    - name: write_rfqs
+      description: Save the RFQ record
+      action: write
+      collection: rfqs
+      scope: user
+    - name: read_suppliers
+      description: Read the buyer's suppliers
+      action: read
+      collection: suppliers
+      scope: user
+    - name: write_suppliers
+      description: Save a supplier
+      action: write
+      collection: suppliers
+      scope: user
+    goalTemplate: 'New purchase request.
+
+      Item: {item}
+
+      Specs: {specs}
+
+      Quantity: {quantity}
+
+      Delivery date: {delivery_date}
+
+      {?budget}Budget (EUR): {budget}{/budget}
+
+      Suppliers to contact (name, email): {suppliers}
+
+      {?spec_text}Specification / bill of materials (pasted text or link): {spec_text}{/spec_text}
+
+      Today: {date}. Write in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.5
+  - key: offer_reader
+    role: helper
+    description: Extracts price, lead time, payment terms and minimum order from the supplier replies.
+    profile:
+      inline:
+        display_name: Offer reader
+        crews:
+        - id: offer_reader
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You read supplier replies (pasted email text or offer text) and extract, for each supplier: unit
+            price, currency, total price, lead time / delivery date, payment terms, minimum order quantity, offer validity,
+            incoterms, deviations from the specs and open questions. Use only what the text says: write ''n/d'' for anything
+            missing, never guess. Save each offer with the tool write_offers. Reply with a JSON-like markdown table of the
+            extracted fields, one row per supplier, and a list of anomalies (e.g. price per unit vs total mismatch, unit-of-measure
+            ambiguity).'
+    appTools:
+    - name: write_offers
+      description: Save an extracted offer
+      action: write
+      collection: offers
+      scope: user
+    - name: read_rfqs
+      description: Read the buyer's RFQs
+      action: read
+      collection: rfqs
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.5
+  - key: comparer
+    role: main
+    description: Compares the offers, recommends the best supplier and prepares the draft order for approval.
+    when: mode == 'compare'
+    profile:
+      inline:
+        display_name: Offer comparer
+        crews:
+        - id: comparer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the purchasing analyst. First call ask_offer_reader with the pasted supplier replies to
+            get the extracted offers. Then compare them. Start with a level-1 title "# Confronto offerte — <item>". Sections:
+            ## Tabella comparativa (supplier, unit price, total, lead time, payment terms, MOQ, validity, notes), ## Raccomandazione
+            (best supplier and why: weigh total cost, delivery vs required date, payment terms, MOQ, reliability notes given
+            by the buyer; state trade-offs and runner-up), ## Rischi e punti da verificare, ## Bozza d''ordine (supplier,
+            item, quantity, unit price, total, delivery date, payment terms, delivery address placeholder). If the numbers
+            allow, add a chart block ```chart {"type":"bar","title":"Costo totale per fornitore","labels":[...],"series":[{"name":"EUR","values":[...]}],"unit":"EUR"}
+            ``` with real figures only. Save the draft order with write_orders (status ''pending_approval'', amount_eur).
+            Then call request_order_buyer with the order summary: the order only goes out after the buyer approves. Never
+            invent figures; if offers are incomplete say so and do not request approval.'
+    delegates:
+    - offer_reader
+    awaits:
+    - order_buyer
+    appTools:
+    - name: write_orders
+      description: Save the draft order
+      action: write
+      collection: orders
+      scope: user
+    - name: read_rfqs
+      description: Read the buyer's RFQs
+      action: read
+      collection: rfqs
+      scope: user
+    - name: read_offers
+      description: Read saved offers
+      action: read
+      collection: offers
+      scope: user
+    goalTemplate: 'Compare supplier offers for: {item}.
+
+      {?request_ref}RFQ reference: {request_ref}{/request_ref}
+
+      Supplier replies (pasted text or links):
+
+      {offers_text}
+
+      Required delivery date: {delivery_date}. {?budget}Budget (EUR): {budget}{/budget}
+
+      Today: {date}. Write in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.8
+  - key: order_registrar
+    role: helper
+    description: After approval, escalates to the purchasing manager above the threshold or registers the approved order.
+    profile:
+      inline:
+        display_name: Order registrar
+        crews:
+        - id: order_registrar
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You handle approved orders. You receive an approval event. Use read_orders to find the order concerned.
+            The manager-approval threshold is 5000 EUR. If the event is the buyer''s approval and the order amount_eur exceeds
+            the threshold, call request_order_manager with the order summary and stop (status ''awaiting_manager''). If the
+            amount is within the threshold, or the event is the manager''s approval, set the order status to ''approved''
+            with update_orders and produce a short final order sheet starting with "# Ordine approvato — <supplier>" plus
+            the email text to send to the supplier. If the decision was rejected, set status ''rejected''. Never place an
+            order that lacks the required approvals. You cannot write to the ERP: state that the order is ready for ERP registration.'
+    awaits:
+    - order_manager
+    appTools:
+    - name: read_orders
+      description: Read the orders
+      action: read
+      collection: orders
+      scope: all
+    - name: update_orders
+      description: Update the order status
+      action: write
+      collection: orders
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.3
+  - key: expediter
+    role: scheduled
+    description: Follows order confirmation and delivery delays, writing reminder drafts.
+    memory: instance
+    writesTo:
+      collection: order_followups
+    profile:
+      inline:
+        display_name: Order expediter
+        crews:
+        - id: expediter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You follow one purchase order after it is placed. Start with "# Sollecito <order> — <date>". From
+            the order data and the buyer''s notes on confirmation/shipping status, say: ## Stato (confirmed? shipped? days
+            to due date), ## Rischio ritardo (low/medium/high with reason), ## Bozza sollecito (a polite email to the supplier,
+            firmer as the date approaches or passes). If no news is given, assume nothing and ask the supplier for written
+            confirmation. Your memory holds what you said last time: lead with what changed, then call remember once with
+            the key points. Never invent shipping data.'
+    goalTemplate: 'Follow the purchase order described in the task of this watch (reference, supplier, due date, notes). Today:
+      {date}. Language: {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 4
+      maxBudgetUsd: 0.3
+  teams:
+  - key: purchasing_office
+    mode: sequence
+    title:
+      it: Ufficio acquisti
+      en: Purchasing office
+    description: RFQ writer, offer reader and comparer working in sequence.
+    steps:
+    - agent: rfq_writer
+    - agent: offer_reader
+      after:
+      - rfq_writer
+    - agent: comparer
+      after:
+      - offer_reader
+  approvals:
+  - key: order_buyer
+    title:
+      it: Conferma ordine (buyer)
+      en: Order confirmation (buyer)
+    description: The buyer confirms the draft order before it is placed.
+    decidedBy: requester
+    fields:
+    - supplier
+    - item
+    - amount_eur
+    - delivery_date
+    timeoutMinutes: 10080
+  - key: order_manager
+    title:
+      it: Approvazione responsabile acquisti (sopra soglia)
+      en: Purchasing manager approval (above threshold)
+    description: Required when the order exceeds 5000 EUR.
+    role: admin
+    decidedBy: role
+    fields:
+    - supplier
+    - item
+    - amount_eur
+    - delivery_date
+    timeoutMinutes: 10080
+  triggers:
+  - key: on_buyer_decision
+    'on':
+      approval: order_buyer
+      decision: any
+    start:
+      agent: order_registrar
+    goal: 'Buyer decision event on an order: {event}. Apply the approval rules.'
+    asUser: true
+  - key: on_manager_decision
+    'on':
+      approval: order_manager
+      decision: any
+    start:
+      agent: order_registrar
+    goal: 'Purchasing manager decision event on an order: {event}. Apply the approval rules.'
+    asUser: false
+  templates:
+  - key: order_follow
+    title:
+      it: Sollecito ordine
+      en: Order follow-up
+    description:
+      it: Un agente segue conferma e consegna di un ordine e scrive i solleciti.
+      en: An agent follows confirmation and delivery of an order and drafts reminders.
+    agent: expediter
+    params:
+    - name: order_ref
+      type: text
+      required: true
+      label:
+        it: Riferimento ordine
+        en: Order reference
+    - name: supplier
+      type: text
+      required: true
+      label:
+        it: Fornitore
+        en: Supplier
+    - name: due_date
+      type: date
+      required: true
+      label:
+        it: Consegna prevista
+        en: Due date
+    - name: notes
+      type: textarea
+      maxLength: 600
+      label:
+        it: Note su conferma/spedizione
+        en: Confirmation / shipping notes
+    goal: 'Follow order {order_ref} with {supplier}, due {due_date}. Notes: {notes}. Today: {date}. Language: {lang}.'
+    schedule:
+      cron: 0 7 * * 1-5
+      userCanChange: true
+    maxPerUser: 50
+    cost:
+      perRun: 5
+  inputForm:
+    title:
+      it: Nuova pratica d'acquisto
+      en: New purchase request
+    fields:
+    - name: mode
+      type: select
+      required: true
+      default: rfq
+      label:
+        it: Cosa vuoi fare
+        en: What to do
+      options:
+      - value: rfq
+        label:
+          it: Preparare richieste di offerta
+          en: Prepare RFQs
+      - value: compare
+        label:
+          it: Confrontare le offerte ricevute
+          en: Compare received offers
+    - name: item
+      type: text
+      required: true
+      label:
+        it: Articolo
+        en: Item
+    - name: specs
+      type: textarea
+      maxLength: 2000
+      visibleWhen: mode == 'rfq'
+      label:
+        it: Specifiche
+        en: Specifications
+    - name: quantity
+      type: number
+      visibleWhen: mode == 'rfq'
+      label:
+        it: Quantità
+        en: Quantity
+    - name: delivery_date
+      type: date
+      label:
+        it: Data di consegna richiesta
+        en: Required delivery date
+    - name: budget
+      type: number
+      label:
+        it: Budget (EUR)
+        en: Budget (EUR)
+    - name: suppliers
+      type: textarea
+      visibleWhen: mode == 'rfq'
+      maxLength: 1500
+      label:
+        it: Fornitori da interpellare (nome, email)
+        en: Suppliers to contact (name, email)
+    - name: spec_text
+      type: textarea
+      visibleWhen: mode == 'rfq'
+      maxLength: 8000
+      label:
+        it: Capitolato o distinta (testo incollato o link)
+        en: Specification or BOM (pasted text or link)
+      help:
+        it: 'Il caricamento di PDF non è ancora disponibile: incolla il testo o un link.'
+        en: 'PDF upload is not available yet: paste the text or a link.'
+    - name: request_ref
+      type: text
+      visibleWhen: mode == 'compare'
+      label:
+        it: Riferimento richiesta (facoltativo)
+        en: Request reference (optional)
+    - name: offers_text
+      type: textarea
+      visibleWhen: mode == 'compare'
+      maxLength: 20000
+      label:
+        it: Risposte dei fornitori (testo incollato o link)
+        en: Supplier replies (pasted text or links)
+  data:
+    collections:
+    - name: suppliers
+      ownedBy: user
+      description: Suppliers known to the buyer
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: email
+        type: email
+      - name: category
+        type: text
+      - name: erp_code
+        type: text
+    - name: rfqs
+      ownedBy: user
+      description: Requests for quotation
+      fields:
+      - name: item
+        type: text
+      - name: quantity
+        type: number
+      - name: delivery_date
+        type: date
+      - name: budget
+        type: number
+      - name: status
+        type: text
+    - name: offers
+      ownedBy: user
+      description: Extracted supplier offers
+      fields:
+      - name: supplier
+        type: text
+      - name: item
+        type: text
+      - name: unit_price
+        type: number
+      - name: total_eur
+        type: number
+      - name: lead_time
+        type: text
+      - name: payment_terms
+        type: text
+      - name: moq
+        type: text
+    - name: orders
+      ownedBy: user
+      description: Draft and approved orders
+      fields:
+      - name: supplier
+        type: text
+      - name: item
+        type: text
+      - name: quantity
+        type: number
+      - name: amount_eur
+        type: number
+      - name: delivery_date
+        type: date
+      - name: status
+        type: text
+    - name: order_followups
+      ownedBy: instance
+      description: Reminders written by the expediter
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Ufficio Acquisti Agentico
+    sections:
+    - type: hero
+      eyebrow:
+        it: Per i buyer di aziende manifatturiere
+        en: For manufacturing buyers
+      title:
+        it: Dalla richiesta all'ordine, con **un team di agenti**.
+        en: From request to order, with **a team of agents**.
+      text:
+        it: 'Descrivi cosa ti serve: gli agenti preparano le richieste di offerta, leggono le risposte, confrontano i fornitori
+          e preparano l''ordine. Tu approvi.'
+        en: 'Describe what you need: agents draft RFQs, read replies, compare suppliers and prepare the order. You approve.'
+      actions:
+      - label:
+          it: Nuova pratica
+          en: New request
+        href: /v/new_request
+        style: primary
+      - label:
+          it: Accedi
+          en: Sign in
+        href: /login
+        style: ghost
+    - type: steps
+      id: come-funziona
+      title:
+        it: Come funziona
+        en: How it works
+      items:
+      - title:
+          it: Richiesta di offerta
+          en: RFQ
+        text:
+          it: 'Articolo, specifiche, quantità, data e fornitori: l''agente scrive una bozza per ciascuno.'
+          en: 'Item, specs, quantity, date and suppliers: the agent drafts one email per supplier.'
+        badge: ✉️
+      - title:
+          it: Lettura e confronto
+          en: Reading and comparison
+        text:
+          it: Un agente estrae prezzi, tempi, pagamenti e minimi d'ordine; un altro li confronta e motiva la scelta.
+          en: One agent extracts prices, lead times, payment terms and MOQs; another compares and justifies the choice.
+        badge: 📊
+      - title:
+          it: Ordine e solleciti
+          en: Order and reminders
+        text:
+          it: Dopo l'approvazione un agente segue conferme e ritardi e scrive i solleciti.
+          en: After approval an agent tracks confirmations and delays and drafts reminders.
+        badge: 🚚
+    - type: cards
+      id: approvazioni
+      title:
+        it: Approvazioni
+        en: Approvals
+      items:
+      - title:
+          it: Il buyer conferma
+          en: The buyer confirms
+        text:
+          it: Nessun ordine parte senza la tua conferma.
+          en: No order goes out without your confirmation.
+      - title:
+          it: Sopra soglia, il responsabile
+          en: Above threshold, the manager
+        text:
+          it: Oltre 5.000 € serve anche l'approvazione del responsabile acquisti.
+          en: Above 5,000 EUR the purchasing manager must also approve.
+    - type: note
+      content:
+        it: 'Supporto alle decisioni d''acquisto: verifica sempre prezzi e condizioni prima di impegnarti.'
+        en: 'Procurement decision support: always verify prices and terms before committing.'
+  - key: new_request
+    type: new_run
+    title:
+      it: Nuova pratica
+      en: New request
+    roles:
+    - user
+    - admin
+  - key: requests
+    type: history
+    title:
+      it: Le mie pratiche
+      en: My requests
+    source: run
+    roles:
+    - user
+  - key: all_requests
+    type: history
+    title:
+      it: Tutte le pratiche
+      en: All requests
+    source: run
+    roles:
+    - admin
+  - key: result
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: orders_list
+    type: table
+    title:
+      it: Ordini
+      en: Orders
+    source: collection:orders
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: supplier
+        label:
+          it: Fornitore
+          en: Supplier
+      - key: item
+        label:
+          it: Articolo
+          en: Item
+      - key: amount_eur
+        label:
+          it: Importo
+          en: Amount
+        format: money
+      - key: delivery_date
+        label:
+          it: Consegna
+          en: Delivery
+        format: date
+      - key: status
+        label:
+          it: Stato
+          en: Status
+        format: badge
+      limit: 100
+  - key: approvals_inbox
+    type: approvals
+    title:
+      it: Approvazioni
+      en: Approvals
+    roles:
+    - user
+    - admin
+  - key: follow
+    type: instances
+    template: order_follow
+    title:
+      it: Solleciti ordini
+      en: Order follow-ups
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title:
+      it: Abbonamento
+      en: Plan
+    roles:
+    - user
+    - admin
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:rfq_writer:
+        estimate: 10
+        metered: true
+      agent:comparer:
+        estimate: 20
+        metered: true
+    packs:
+    - key: extra
+      credits: 1000
+      price: 12
+      label: Extra 1000
+    plans:
+    - key: team_s
+      price: 99
+      interval: month
+      label: Team S — fino a 3 utenti, 100 richieste/mese
+      includes:
+      - up to 3 users
+      - about 100 requests per month
+      credits: 5000
+      creditsReset: monthly
+      roles:
+      - admin
+    - key: team_m
+      price: 299
+      interval: month
+      label: Team M — fino a 10 utenti, 400 richieste/mese
+      includes:
+      - up to 10 users
+      - about 400 requests per month
+      credits: 20000
+      creditsReset: monthly
+      roles:
+      - admin
+  extensions:
+  - key: company_mailbox
+    description: Sending RFQs from, and reading replies (including PDF attachments) in, the company mailbox needs per-company
+      credentials and email connectors, not available yet. For now agents write the email drafts and the buyer pastes the
+      replies.
+  - key: pdf_upload
+    description: 'Uploading the PDF specification or bill of materials is not available yet: the buyer pastes text or a link.'
+  - key: erp_integration
+    description: Registering approved orders in the company ERP and reading the supplier master data from it need a connector
+      with the company's ERP credentials, not available yet. Approved orders are stored in the orders collection with status
+      'approved', ready for export; suppliers are kept in the suppliers collection.
+  - key: approval_threshold
+    description: The 5000 EUR threshold for the manager's approval is written in the registrar agent's prompt; make it configurable
+      per company when slots/settings allow.
+  - key: seat_limits
+    description: Plans are described by users and request volume, but the runtime does not enforce a per-plan user count;
+      volume is controlled through plan credits.
