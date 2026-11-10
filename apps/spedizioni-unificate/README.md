@@ -1,8 +1,8 @@
 # Spedizioni Unificate
 
-_Un pannello unico per spedire con più corrieri: tariffe a confronto, tracking e reclami._
+_Tutti i tuoi corrieri in un solo pannello: tariffe, etichette, tracking e reclami._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (18 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,12 @@ Ci serve Spedizioni Unificate, un pannello unico per negozi online che spediscon
 
 ## Features not expressible today (spec.extensions)
 
-- **shop_oauth**: Collegamento OAuth a Shopify, WooCommerce e marketplace con import automatico degli ordini: non disponibile, gli ordini si inseriscono a mano.
-- **carrier_api**: Chiavi API dei corrieri, tariffe live, creazione spedizione e stampa etichetta, webhook di tracking: non disponibili (servono credenziali per cliente); si usano tabelle tariffarie inserite dal negoziante e il tracking pubblico.
-- **customer_emails**: Email brandizzate al cliente finale a ogni cambio di stato e notifiche al negoziante: non disponibili.
-- **public_tracking_returns**: Pagina di tracking pubblica per il cliente finale e modulo di reso: richiede lettura/scrittura anonima su dati del negoziante, non disponibile.
-- **team_sharing**: Più membri del team sugli stessi negozi con visibilità per negozio: oggi i dati sono per singolo utente.
+- **oauth_stores**: Il collegamento OAuth a Shopify, WooCommerce e marketplace non è ancora disponibile: Shopify si collega con il token di un'app personalizzata, WooCommerce e i marketplace inviano gli ordini via webhook (/api/hooks/order_in).
+- **carrier_webhooks_routing**: I webhook dei corrieri sono salvati come eventi (codice e stato) e letti al controllo successivo; l'instradamento istantaneo per negozio e le API esatte dei corrieri vanno verificati con la documentazione di ciascun contratto.
+- **return_routing**: Il modulo di reso pubblico arriva all'inbox del proprietario e al negoziante tramite l'email indicata nel link; l'instradamento automatico al negozio e l'etichetta di reso non sono ancora disponibili.
+- **label_printing**: L'etichetta è salvata come link restituito dal corriere; la stampa avviene dal browser.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,33 +26,35 @@ Ci serve Spedizioni Unificate, un pannello unico per negozi online che spediscon
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### new_shipment
-![03-new_shipment.png](screenshots/03-new_shipment.png)
+### dashboard
+![03-dashboard.png](screenshots/03-dashboard.png)
 
-### history
-![04-history.png](screenshots/04-history.png)
+### shop_form
+![04-shop_form.png](screenshots/04-shop_form.png)
 
-### approvals
-![05-approvals.png](screenshots/05-approvals.png)
+### shops
+![05-shops.png](screenshots/05-shops.png)
 
-### shops_view
-![06-shops_view.png](screenshots/06-shops_view.png)
+### orders
+![06-orders.png](screenshots/06-orders.png)
 
-### carriers_view
-![07-carriers_view.png](screenshots/07-carriers_view.png)
+### shipments
+![07-shipments.png](screenshots/07-shipments.png)
 
-### orders_view
-![08-orders_view.png](screenshots/08-orders_view.png)
-
-### shipments_view
-![09-shipments_view.png](screenshots/09-shipments_view.png)
+### queue
+![08-queue.png](screenshots/08-queue.png)
 
 ### watches
-![10-watches.png](screenshots/10-watches.png)
+![09-watches.png](screenshots/09-watches.png)
 
-### stats
-![11-stats.png](screenshots/11-stats.png)
+### watch_reports
+![10-watch_reports.png](screenshots/10-watch_reports.png)
+
+### track
+![11-track.png](screenshots/11-track.png)
+
+### return
+![12-return.png](screenshots/12-return.png)
 
 ### account
-![12-account.png](screenshots/12-account.png)
-
+![13-account.png](screenshots/13-account.png)

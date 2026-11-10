@@ -1,8 +1,8 @@
 # SapereRiservato
 
-_L'assistente aziendale che risponde dai tuoi documenti, e solo a chi può leggerli._
+_L'assistente AI che conosce i tuoi documenti e non li fa uscire dall'azienda._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (18 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,11 @@ Vorrei SapereRiservato, un assistente AI aziendale per organizzazioni che non vo
 
 ## Features not expressible today (spec.extensions)
 
-- **dedicated_llm**: The language model running on the customer's dedicated infrastructure with no external services is a deployment choice, not expressible in the manifest. This draft uses the platform's standard model.
-- **file_upload**: Uploading files (PDF, Word) is not available yet: the admin pastes the document text into the documents collection.
-- **hard_group_enforcement**: Group filtering is enforced by the assistant's instructions over a shared documents collection. Strict per-group enforcement in the runtime (records filtered by group before the agent sees them) is needed for stronger guarantees.
-- **email_report**: Emailing the monthly report to the admin is not available yet: the report appears in the Monthly reports view.
-- **seat_limit**: The per-user-count license is modelled as three annual plans by user band; automatic enforcement of the seat count is not available.
+- **dedicated_llm**: Il modello linguistico su infrastruttura dedicata del cliente, senza servizi esterni, non è configurabile dal manifest: richiede un deployment dedicato del runtime e del modello.
+- **seat_limit**: Il tetto sul numero di utenti invitati per piano (25/100/500) non è applicabile dal manifest: va controllato dall'admin degli inviti o da logica del runtime.
+- **groups_directory**: I gruppi di dipendenti sono gestiti come elenco di email per documento; un'anagrafica gruppi riutilizzabile non è disponibile.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -30,12 +28,17 @@ Vorrei SapereRiservato, un assistente AI aziendale per organizzazioni che non vo
 ### chat
 ![03-chat.png](screenshots/03-chat.png)
 
-### documents_admin
-![04-documents_admin.png](screenshots/04-documents_admin.png)
+### upload_doc
+![04-upload_doc.png](screenshots/04-upload_doc.png)
 
-### members_admin
-![05-members_admin.png](screenshots/05-members_admin.png)
+### docs
+![05-docs.png](screenshots/05-docs.png)
 
 ### unanswered
 ![06-unanswered.png](screenshots/06-unanswered.png)
 
+### reports
+![07-reports.png](screenshots/07-reports.png)
+
+### account
+![08-account.png](screenshots/08-account.png)

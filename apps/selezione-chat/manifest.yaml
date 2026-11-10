@@ -4,15 +4,15 @@ metadata:
   slug: selezionechat
   displayName: SelezioneChat
   tagline:
-    it: 'Selezione del personale in chat: screening, punteggio e colloquio fissato.'
-    en: 'Hiring by chat: screening, scoring and interview booked.'
-    ro: 'Recrutare prin chat: screening, scor și interviu programat.'
-    es: 'Selección de personal por chat: cribado, puntuación y entrevista agendada.'
+    it: Selezione del personale in chat, dal link al colloquio fissato.
+    en: Chat-based candidate screening, from link to booked interview.
+    ro: Selecție de personal prin chat, de la link la interviu programat.
+    es: Selección de personal por chat, del enlace a la entrevista fijada.
   description:
-    it: 'Per aziende che assumono molto (retail, logistica, ristorazione): il candidato parla con un agente, che presenta
-      l''offerta, fa le domande di screening, raccoglie disponibilità e CV, assegna un punteggio e propone gli slot del responsabile.'
-    en: 'For high-volume employers (retail, logistics, food service): the candidate chats with an agent that presents the
-      job, asks screening questions, collects availability and CV, scores fit and offers the manager''s interview slots.'
+    it: Il recruiter crea una posizione; i candidati arrivano da un link o QR, parlano con un agente che fa lo screening,
+      valuta l'aderenza, raccoglie il CV e fissa il colloquio.
+    en: The recruiter creates a position; candidates arrive from a link or QR, talk to an agent that screens them, scores
+      the fit, collects the CV and books the interview.
   langs:
   - it
   - en
@@ -28,7 +28,7 @@ spec:
       primary: '#0f3d3e'
       accent: '#25a06b'
       background: '#f6faf8'
-      foreground: '#14242a'
+      foreground: '#14211f'
     fonts:
       body: Inter
       display: Manrope
@@ -50,7 +50,7 @@ spec:
         it: Accedi
         en: Sign in
         ro: Autentificare
-        es: Acceder
+        es: Entrar
       href: /login
   auth:
     method: magic_link
@@ -60,34 +60,74 @@ spec:
     roles:
     - key: admin
       assignedBy: admin_emails
+    - key: user
+      assignedBy: signup
     - key: recruiter
       label:
         it: Recruiter
         en: Recruiter
-      assignedBy: signup
+        ro: Recruiter
+        es: Reclutador
+      assignedBy: derived
+      from: collection:positions.recruiter_email
   limits:
+  - action: create:positions
+    max: 1
+    window: total
+    plans:
+      start: 5
+      growth: 25
+      scale: -1
   - action: chat
     per: user
-    max: 200
+    max: 300
     window: day
   agents:
   - key: screener
     role: main
-    description: 'Talks with candidates: presents the job, screens, scores, books the interview.'
-    memory: user
-    writesTo:
+    description: Presents the open position, asks the screening questions, collects availability, scores the fit and guides
+      the candidate to the CV upload and the interview booking.
+    context:
+    - key: email
+      from: user.email
+    goalTemplate: 'Candidate email: {email}
+
+      Page: {page}
+
+      Conversation so far:
+
+      {history}
+
+      New message from the candidate:
+
+      {message}
+
+      Today is {date}. Reply in the candidate''s language (default ISO code {lang}).'
+    appTools:
+    - name: search_positions
+      description: List the open positions (title, location, requirements, shifts, salary, screening questions, threshold,
+        recruiter_email)
+      action: search
+      collection: positions
+      scope: all
+    - name: read_candidate
+      description: Read the candidate's own application records
+      action: read
       collection: candidates
-      parse: json_last
-      keyBy: candidate_id
+      scope: user
+    - name: update_candidate
+      description: Create or update the candidate's application record (answers, availability, score, status)
+      action: write
+      collection: candidates
+      scope: user
     profile:
       inline:
         display_name: SelezioneChat screener
-        chat_mode: true
         crews:
         - id: screener
           engine: agent_sdk
           model: claude-sonnet-5-5
-          max_turns: 12
+          max_turns: 8
           max_budget_usd: 0.3
           permission_mode: bypassPermissions
           disallowed_tools:
@@ -100,217 +140,283 @@ spec:
           - NotebookEdit
           - WebFetch
           - WebSearch
-          system_prompt: 'You are a friendly, concise recruiting assistant for one company''s open position. Reply in the
-            candidate''s language (Italian, English, Romanian or Spanish). Steps: 1) present the job (role, site, shifts,
-            salary) using the position record; 2) ask the screening questions one at a time; 3) collect weekly availability;
-            4) ask for the CV as a link or pasted text (file upload is not supported yet); 5) compute a fit score 0-100 against
-            the requirements and explain it briefly in notes. If the score is at or above the position''s threshold, read
-            the free interview slots with the slots tool and offer 3 of them, then book the one chosen. If below, send a polite,
-            kind closing message and never reveal the score. Never invent job details, never promise a job, never ask for
-            sensitive data (health, religion, origin, politics). Tell candidates their data is kept 12 months and seen only
-            by the hiring company. At the end of each relevant turn, end your reply with a fenced JSON block with fields:
-            candidate_id, position, name, answers, availability, cv, score, status (new|screening|qualified|interview|rejected),
-            interview_slot, notes.'
-    goalTemplate: 'Conversation so far:
-
-      {history}
-
-
-      New candidate message: {message}
-
-      Today is {date}. Reply in the language with ISO code {lang}.'
+          system_prompt: 'You are a friendly, concise recruiting assistant talking to a job candidate in chat. Always answer
+            in the candidate''s language (Italian, English, Romanian or Spanish). Steps: 1) call search_positions and identify
+            the position the candidate applies for (ask if unclear); 2) present the offer briefly: role, location, shifts,
+            salary; 3) ask the screening questions one or two at a time, then availability (days, shifts, start date); 4)
+            after each useful answer call update_candidate with position_id, position_title, recruiter_email (copied from
+            the position), name, email, phone, answers, availability, language, status screening; 5) when done, compute a
+            fit score 0-100 against the position''s requirements only (never on age, gender, origin, health or other protected
+            traits) and save score and status: qualified if score >= the position threshold, otherwise rejected. 6) If qualified:
+            tell the candidate to send their CV (photo or document) on the page /v/send_cv and then choose an interview slot
+            on /v/book. If rejected: thank them kindly and say that a courtesy message follows. Never promise a job, never
+            invent details of the offer, and do not ask for sensitive personal data. Keep replies under 90 words.'
+  - key: cv_reader
+    role: helper
+    description: Reads an uploaded CV (photo or document) and adds a summary to the candidate's record.
     appTools:
-    - name: read_position
-      description: Read the open position the candidate is applying for
-      action: read
-      collection: positions
-      scope: all
-    - name: free_slots
-      description: List the interview slots still free
-      action: search
-      collection: interview_slots
-      scope: all
-    - name: book_slot
-      description: Book an interview slot for the candidate
-      action: write
-      collection: interview_slots
-      scope: all
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
     - name: read_candidate
-      description: Read this candidate's record
+      description: Read the candidate's own application records
       action: read
       collection: candidates
-      scope: session
+      scope: user
+    - name: update_candidate
+      description: Create or update the candidate's application record (answers, availability, score, status)
+      action: write
+      collection: candidates
+      scope: user
+    profile:
+      inline:
+        display_name: SelezioneChat CV reader
+        crews:
+        - id: cv_reader
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You read a candidate's CV with the read_upload tool (call it with the file id; it reads images and
+            OCR). Write a factual summary of at most 120 words limited to work experience, skills, languages and certifications
+            relevant to the job. Ignore and do not record age, photo, gender, nationality, marital status or health. Then
+            call read_candidate and update_candidate to store the summary in cv_summary of the candidate's latest record.
+            Never invent information. Start your final answer with a level-1 title '# CV summary'.
   views:
   - key: home
     type: page
     nav: false
+    title: SelezioneChat
     sections:
     - type: hero
-      layout: split
-      band: true
       eyebrow:
-        it: Per aziende che assumono molto
-        en: For high-volume employers
+        it: Per chi assume molto
+        en: For high-volume hiring
+        ro: Pentru angajări în volum mare
+        es: Para contratación masiva
       title:
-        it: Dal link al **colloquio fissato**, senza telefonate.
-        en: From link to **interview booked**, no phone tag.
-        ro: De la link la **interviu programat**.
-        es: Del enlace a la **entrevista agendada**.
+        it: Dal link al **colloquio fissato**, in chat.
+        en: From link to **booked interview**, in chat.
+        ro: De la link la **interviu programat**, în chat.
+        es: Del enlace a la **entrevista fijada**, por chat.
       text:
-        it: 'Pubblica una posizione, condividi link o QR: un agente fa screening, punteggio e prenotazione. Tu vedi la pipeline
-          e intervieni quando vuoi.'
-        en: 'Publish a position, share a link or QR: an agent screens, scores and books. You see the pipeline and step in
-          whenever you want.'
+        it: Crea una posizione, condividi link o QR. Un agente presenta l'offerta, fa lo screening, valuta l'aderenza e fissa
+          il colloquio.
+        en: Create a position and share a link or QR. An agent presents the offer, screens, scores the fit and books the interview.
+        ro: Creează o poziție și distribuie linkul sau codul QR. Un agent prezintă oferta, face screeningul, evaluează potrivirea
+          și programează interviul.
+        es: Crea una posición y comparte enlace o QR. Un agente presenta la oferta, filtra, puntúa el encaje y fija la entrevista.
       actions:
       - label:
           it: Inizia
-          en: Get started
+          en: Start
           ro: Începe
           es: Empezar
         href: /login
         style: primary
-      aside: <div style="padding:16px"><b>Esempio / Example</b><p>🤖 Ciao! Cerchiamo un addetto vendite a Torino, turni 9-17.
-        Posso farti 4 domande?</p><p>👤 Sì!</p></div>
+      band: true
     - type: steps
       id: come-funziona
       title:
         it: Come funziona
         en: How it works
+        ro: Cum funcționează
+        es: Cómo funciona
       items:
       - title:
           it: Crea la posizione
           en: Create the position
+          ro: Creează poziția
+          es: Crea la posición
         text:
           it: Requisiti, sede, turni, stipendio, domande e soglia.
           en: Requirements, site, shifts, salary, questions and threshold.
+          ro: Cerințe, locație, ture, salariu, întrebări și prag.
+          es: Requisitos, sede, turnos, salario, preguntas y umbral.
         badge: 📝
       - title:
           it: Il candidato chatta
-          en: Candidate chats
+          en: Candidates chat
+          ro: Candidatul discută
+          es: El candidato chatea
         text:
-          it: Screening, disponibilità e CV in conversazione.
-          en: Screening, availability and CV in conversation.
+          it: Screening, disponibilità e CV come foto o documento.
+          en: Screening, availability and CV as photo or document.
+          ro: Screening, disponibilitate și CV ca fotografie sau document.
+          es: Cribado, disponibilidad y CV como foto o documento.
         badge: 💬
       - title:
           it: Pipeline e colloquio
           en: Pipeline and interview
+          ro: Pipeline și interviu
+          es: Pipeline y entrevista
         text:
-          it: Chi supera la soglia sceglie uno slot libero; gli altri ricevono un messaggio di cortesia.
-          en: Those above the threshold pick a free slot; the others get a courtesy message.
+          it: Punteggio, stato, slot del responsabile e promemoria il giorno prima.
+          en: Score, status, manager slots and a reminder the day before.
+          ro: Scor, stare, intervale libere ale managerului și memento cu o zi înainte.
+          es: Puntuación, estado, huecos del responsable y recordatorio el día antes.
         badge: 📅
     - type: note
       content:
-        it: 'I dati dei candidati sono visibili solo all''azienda titolare. Supporto alla decisione: la scelta finale resta
-          al recruiter.'
-        en: 'Candidate data is visible only to the hiring company. Decision support: the final choice stays with the recruiter.'
+        it: 'I dati dei candidati sono visibili solo all''azienda titolare e cancellati dopo 12 mesi. Il punteggio è un supporto:
+          la decisione resta al recruiter.'
+        en: 'Candidate data is visible only to the hiring company and deleted after 12 months. The score is decision support:
+          the recruiter decides.'
+  - key: chat
+    type: chat
+    source: agent:screener
+    title:
+      it: Candidati
+      en: Apply
+      ro: Aplică
+      es: Candidatura
+    placeholder:
+      it: Scrivi qui…
+      en: Write here…
+      ro: Scrie aici…
+      es: Escribe aquí…
+    examples:
+    - it: Mi interessa il posto aperto
+      en: I'm interested in the open job
+      ro: Mă interesează postul deschis
+      es: Me interesa el puesto abierto
+    roles:
+    - user
+    - admin
+  - key: send_cv
+    type: form
+    collection: cv_files
+    title:
+      it: Invia il CV
+      en: Send your CV
+      ro: Trimite CV-ul
+      es: Envía tu CV
+    submit:
+      label:
+        it: Invia
+        en: Send
+        ro: Trimite
+        es: Enviar
+      message:
+        it: CV ricevuto! Torna alla chat o scegli lo slot del colloquio.
+        en: CV received! Go back to the chat or pick your interview slot.
+        ro: CV primit! Revino în chat sau alege intervalul interviului.
+        es: ¡CV recibido! Vuelve al chat o elige tu hueco de entrevista.
+      redirect: book
+    roles:
+    - user
+    - admin
+  - key: book
+    type: booking
+    collection: interviews
+    resources: collection:managers
+    fields:
+    - notes
+    title:
+      it: Fissa il colloquio
+      en: Book the interview
+      ro: Programează interviul
+      es: Reserva la entrevista
+    slots:
+      days:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      from: 09:00
+      to: '18:00'
+      minutes: 30
+      tz: Europe/Rome
+      aheadDays: 14
+      minNoticeHours: 4
+      capacity: 1
+    roles:
+    - user
+    - admin
+  - key: new_position
+    type: form
+    collection: positions
+    title:
+      it: Nuova posizione
+      en: New position
+      ro: Poziție nouă
+      es: Nueva posición
+    submit:
+      label:
+        it: Pubblica
+        en: Publish
+        ro: Publică
+        es: Publicar
+      message:
+        it: Posizione salvata. Condividi il link della chat o un QR.
+        en: Position saved. Share the chat link or a QR code.
+        ro: Poziție salvată. Distribuie linkul chatului sau un cod QR.
+        es: Posición guardada. Comparte el enlace del chat o un QR.
+      redirect: positions
+    edit: true
+    roles:
+    - user
+    - admin
   - key: positions
     type: table
-    title:
-      it: Posizioni
-      en: Positions
-      ro: Poziții
-      es: Posiciones
     source: collection:positions
-    data:
-      display: table
-      fields:
-      - key: title
-        label: Titolo
-      - key: site
-        label: Sede
-      - key: shifts
-        label: Turni
-      - key: salary
-        label: Stipendio
-      - key: threshold
-        label: Soglia
-        format: number
-      - key: active
-        label: Attiva
-        format: badge
-      limit: 100
+    title:
+      it: Le mie posizioni
+      en: My positions
+      ro: Pozițiile mele
+      es: Mis posiciones
+    columns:
+    - title
+    - location
+    - salary
+    - threshold
+    - status
     roles:
-    - recruiter
+    - user
     - admin
   - key: pipeline
     type: table
+    source: collection:candidates
     title:
       it: Pipeline candidati
       en: Candidate pipeline
       ro: Pipeline candidați
       es: Pipeline de candidatos
-    source: collection:candidates
-    data:
-      display: table
-      fields:
-      - key: name
-        label: Nome
-      - key: position
-        label: Posizione
-      - key: status
-        label: Stato
-        format: badge
-      - key: score
-        label: Punteggio
-        format: number
-      - key: interview_slot
-        label: Colloquio
-        format: date
-      - key: notes
-        label: Note
-      sort:
-        field: score
-        dir: desc
-      limit: 200
-      empty:
-        it: Nessun candidato ancora.
-        en: No candidates yet.
+    columns:
+    - position_title
+    - name
+    - score
+    - status
+    - availability
+    - cv_summary
+    export: true
     roles:
     - recruiter
     - admin
-  - key: slots
+  - key: interviews_list
     type: table
+    source: collection:interviews
     title:
-      it: Slot colloquio
-      en: Interview slots
-      ro: Sloturi interviu
-      es: Franjas de entrevista
-    source: collection:interview_slots
-    data:
-      display: table
-      fields:
-      - key: start
-        label: Inizio
-        format: date
-      - key: position
-        label: Posizione
-      - key: booked_by
-        label: Prenotato da
-      sort:
-        field: start
-        dir: asc
-      limit: 200
-    roles:
-    - recruiter
-    - admin
-  - key: chat
-    type: chat
-    title:
-      it: 'Candidati: chat'
-      en: Candidate chat
-      ro: Chat candidat
-      es: Chat del candidato
-    source: agent:screener
-    examples:
-    - Ciao, mi interessa la posizione
-    - Hi, I'd like to apply
-    - Bună, vreau să aplic
-    - Hola, quiero postularme
-    placeholder:
-      it: Scrivi un messaggio…
-      en: Type a message…
-      ro: Scrie un mesaj…
-      es: Escribe un mensaje…
+      it: Colloqui
+      en: Interviews
+      ro: Interviuri
+      es: Entrevistas
+    columns:
+    - start
+    - resource
+    - status
     roles:
     - recruiter
     - admin
@@ -318,54 +424,137 @@ spec:
     type: account
     title:
       it: Abbonamento
-      en: Plan
+      en: Subscription
       ro: Abonament
       es: Suscripción
     roles:
-    - recruiter
+    - user
+    - admin
   data:
     collections:
     - name: positions
       ownedBy: user
-      description: Open positions of the company
+      description: Open positions created by each hiring company
       fields:
       - name: title
         type: text
         required: true
+        label:
+          it: Posizione
+          en: Position
+      - name: location
+        type: text
+        required: true
+        label:
+          it: Sede
+          en: Site
       - name: requirements
         type: textarea
-      - name: site
-        type: text
+        required: true
+        label:
+          it: Requisiti
+          en: Requirements
       - name: shifts
-        type: text
+        type: textarea
+        label:
+          it: Turni
+          en: Shifts
       - name: salary
         type: text
+        label:
+          it: Stipendio
+          en: Salary
       - name: screening_questions
         type: textarea
+        required: true
+        label:
+          it: Domande di screening
+          en: Screening questions
       - name: threshold
         type: number
-        default: 70
-      - name: manager_email
+        required: true
+        default: 60
+        label:
+          it: Soglia di aderenza (0-100)
+          en: Fit threshold (0-100)
+      - name: recruiter_email
         type: email
+        required: true
+        label:
+          it: Email del recruiter
+          en: Recruiter email
+      - name: status
+        type: select
+        required: true
+        default: open
+        options:
+        - value: open
+          label:
+            it: Aperta
+            en: Open
+        - value: closed
+          label:
+            it: Chiusa
+            en: Closed
+        label:
+          it: Stato
+          en: Status
+      access:
+      - role: user
+        where:
+          status: open
+        can:
+        - read
+    - name: managers
+      ownedBy: shared
+      description: Hiring managers whose free slots are offered to candidates; kept by the app admins on the data page
+      fields:
+      - name: name
+        type: text
+        required: true
+        label:
+          it: Nome
+          en: Name
+      - name: email
+        type: email
+        label:
+          it: Email
+          en: Email
+      - name: recruiter_email
+        type: email
+        label:
+          it: Email del recruiter
+          en: Recruiter email
       - name: active
         type: boolean
         default: true
+        label:
+          it: Attivo
+          en: Active
     - name: candidates
       ownedBy: user
-      description: Candidates of the hiring company only; to be deleted 12 months after creation
+      retentionDays: 365
+      description: Applications with answers and fit score
       fields:
-      - name: candidate_id
+      - name: position_id
         type: text
-      - name: position
-        type: relation
-        relation: positions
+      - name: position_title
+        type: text
+      - name: recruiter_email
+        type: email
       - name: name
         type: text
-      - name: answers
-        type: json
-      - name: availability
+      - name: email
+        type: email
+      - name: phone
         type: text
-      - name: cv
+      - name: language
+        type: text
+      - name: answers
+        type: textarea
+      - name: availability
+        type: textarea
+      - name: cv_summary
         type: textarea
       - name: score
         type: number
@@ -377,22 +566,130 @@ spec:
         - qualified
         - interview
         - rejected
-      - name: interview_slot
-        type: date
+        - hired
+      access:
+      - role: recruiter
+        where:
+          recruiter_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: cv_files
+      ownedBy: user
+      retentionDays: 365
+      description: CV uploads of candidates
+      fields:
+      - name: cv
+        type: file
+        required: true
+        accept:
+        - pdf
+        - docx
+        - jpg
+        - jpeg
+        - png
+        - webp
+        maxMb: 10
+        label:
+          it: CV (foto o documento)
+          en: CV (photo or document)
+    - name: interviews
+      ownedBy: user
+      retentionDays: 365
+      description: Booked interviews
+      fields:
       - name: notes
         type: textarea
-    - name: interview_slots
-      ownedBy: user
-      description: Free interview slots entered by the manager, and their bookings
-      fields:
-      - name: start
-        type: date
-        required: true
-      - name: position
-        type: relation
-        relation: positions
-      - name: booked_by
-        type: text
+        label:
+          it: Note
+          en: Notes
+      access:
+      - role: recruiter
+  triggers:
+  - key: cv_received
+    'on':
+      collection: cv_files
+      op: insert
+    start:
+      agent: cv_reader
+    goal: 'A candidate uploaded a CV. File id(s): {record.cv}. Read it, summarize it and store the summary on the candidate''s
+      latest record.'
+  - key: rejected_courtesy
+    'on':
+      collection: candidates
+      op: update
+      where:
+        status: rejected
+    notify:
+      to:
+      - record.email
+      subject:
+        it: Grazie per la tua candidatura
+        en: Thank you for your application
+        ro: Mulțumim pentru candidatură
+        es: Gracias por tu candidatura
+      body:
+        it: Ciao {record.name}, grazie per l'interesse per {record.position_title}. Per questa posizione abbiamo deciso di
+          proseguire con altri profili. Ti auguriamo il meglio.
+        en: Hi {record.name}, thank you for your interest in {record.position_title}. We have decided to move forward with
+          other profiles for this role. We wish you all the best.
+        ro: Salut {record.name}, mulțumim pentru interesul față de {record.position_title}. Pentru acest post am decis să
+          continuăm cu alte profiluri. Îți urăm succes.
+        es: Hola {record.name}, gracias por tu interés en {record.position_title}. Para este puesto hemos decidido continuar
+          con otros perfiles. Te deseamos lo mejor.
+  - key: qualified_alert
+    'on':
+      collection: candidates
+      op: update
+      where:
+        status: qualified
+    notify:
+      to:
+      - record.recruiter_email
+      subject:
+        it: 'Nuovo candidato idoneo: {record.position_title}'
+        en: 'New qualified candidate: {record.position_title}'
+      body:
+        it: '{record.name} ha superato la soglia (punteggio {record.score}).'
+        en: '{record.name} passed the threshold (score {record.score}).'
+      link: pipeline
+  - key: interview_booked
+    'on':
+      collection: interviews
+      op: insert
+    notify:
+      to:
+      - owner
+      subject:
+        it: Colloquio confermato
+        en: Interview confirmed
+        ro: Interviu confirmat
+        es: Entrevista confirmada
+      body:
+        it: Il tuo colloquio è fissato per {record.start}.
+        en: Your interview is booked for {record.start}.
+        ro: Interviul tău este programat pentru {record.start}.
+        es: Tu entrevista está fijada para {record.start}.
+  - key: interview_reminder
+    'on':
+      date:
+        collection: interviews
+        field: start
+        offsetDays: -1
+        hour: 8
+    notify:
+      to:
+      - owner
+      subject:
+        it: 'Promemoria: colloquio domani'
+        en: 'Reminder: interview tomorrow'
+        ro: 'Memento: interviu mâine'
+        es: 'Recordatorio: entrevista mañana'
+      body:
+        it: 'Ti ricordiamo il colloquio di domani: {record.start}.'
+        en: 'A reminder of your interview tomorrow: {record.start}.'
+        ro: 'Îți amintim interviul de mâine: {record.start}.'
+        es: 'Te recordamos tu entrevista de mañana: {record.start}.'
   billing:
     modes:
     - subscription
@@ -401,39 +698,30 @@ spec:
     - key: start
       price: 49
       interval: month
-      label: Start — 3 posizioni attive
+      label: Start · 5 posizioni attive
       includes:
-      - 3 active positions
-      - unlimited candidate chats
-      roles:
-      - recruiter
+      - 5 active positions
     - key: growth
       price: 149
       interval: month
-      label: Growth — 15 posizioni attive
+      label: Growth · 25 posizioni attive
       includes:
-      - 15 active positions
-      - unlimited candidate chats
-      roles:
-      - recruiter
+      - 25 active positions
+    - key: scale
+      price: 399
+      interval: month
+      label: Scale · illimitate
+      includes:
+      - unlimited active positions
   extensions:
   - key: whatsapp_channel
-    description: WhatsApp is not available yet (needs the company's WhatsApp Business credentials). Candidates chat in the
-      web chat opened from the link/QR code.
-  - key: candidate_access_and_ownership
-    description: Candidates reaching the chat without an account and their records landing in the hiring company's private
-      archive needs runtime support not available yet; for now the chat runs for signed-in users.
-  - key: calendar_connector
-    description: 'Google/Outlook calendar sync needs credentials: the manager enters free slots in the interview_slots collection
-      and the agent books those.'
-  - key: reminders
-    description: Day-before reminders to candidates need notifications (not available yet).
-  - key: cv_upload
-    description: 'CV as photo or document is not supported yet: the agent asks for a link or pasted text.'
-  - key: retention_12_months
-    description: Automatic deletion of candidate records after 12 months is not expressible yet; must be implemented as a
-      platform retention rule.
-  - key: courtesy_message_delivery
-    description: Rejection messages are sent inside the chat only; no email or WhatsApp push.
-  - key: active_position_quota
-    description: Plans limit active positions, but quota enforcement per plan is not expressible in the manifest.
+    description: 'WhatsApp is not available yet: candidates chat on the web (link or QR, magic-link sign-in). WhatsApp conversations,
+      CV by WhatsApp and WhatsApp reminders need that channel; reminders go by email for now.'
+  - key: manager_calendar_sync
+    description: Syncing the manager's Google/Microsoft calendar needs OAuth, not available yet. Interviewers (managers) are
+      entered by the app admins on the data page; free slots come from the in-app booking view.
+  - key: recruiter_takeover
+    description: Recruiters read the candidate's record and CV summary in the pipeline; live takeover inside the conversation
+      is not available yet.
+  - key: per_position_kanban
+    description: The pipeline is a table with a status column, filterable per position; a drag-and-drop board is not available.

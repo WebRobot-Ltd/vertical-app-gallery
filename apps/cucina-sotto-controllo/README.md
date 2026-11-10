@@ -1,20 +1,23 @@
 # Cucina sotto Controllo
 
-_Food cost reale, scorte e ordini ai fornitori sotto controllo, ogni giorno._
+_Food cost, scorte e ordini sotto controllo, ogni giorno, per ogni locale._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (23 checks passed)
 
 ## Description given to the app builder (Italian)
 
 Mi serve Cucina sotto Controllo, un gestionale con agenti per ristoranti. Il titolare inserisce le ricette con ingredienti e grammature, i fornitori con listini, e le giacenze del magazzino. Le vendite giornaliere devono arrivare in automatico dalla cassa o dal POS del locale; in alternativa il personale inserisce a fine servizio i coperti e i piatti venduti. Un agente calcola ogni giorno il food cost reale di ogni piatto, lo confronta con quello teorico, scala le scorte, segnala sprechi e differenze inventariali, e quando un ingrediente scende sotto la soglia prepara l'ordine al fornitore, che il titolare approva prima dell'invio via email. Ogni lunedì un agente produce un report con margine per piatto, piatti da rivedere nel prezzo, previsione dei coperti della settimana e quantità da ordinare. Lo chef vede ricette e scorte, il personale di sala solo l'inserimento vendite, il titolare tutto incluso i margini. Più locali dello stesso gruppo hanno dati separati ma un report consolidato. Abbonamento mensile per locale, in italiano.
 
+## Functional test: what did not pass
+
+- **saved record shown where its collection is read** (view ricette): a record was saved in ricette (by user) but the page does not show it (as chef) _(warning)_
+- **saved record shown where its collection is read** (view giacenze): a record was saved in giacenze (by user) but the page does not show it (as chef) _(warning)_
+
 ## Features not expressible today (spec.extensions)
 
-- **pos_sync**: Le vendite automatiche dalla cassa/POS richiedono credenziali del singolo cliente e non sono ancora disponibili: per ora il personale inserisce coperti e piatti a fine servizio. Il POS potrà alimentare la collezione vendite.
-- **email_ordini**: L'invio email al fornitore non è ancora disponibile: dopo l'approvazione il titolare riceve il testo email pronto e l'ordine risulta in 'Ordini ai fornitori'; l'invio resta manuale.
-- **staff_access**: Chef e sala sono inviati dal titolare e accedono ai dati del titolare tramite condivisione dei record (sharing); la visibilità per ruolo è data dalle viste. Il prezzo per locale va applicato con una quantità di abbonamenti pari ai locali (una sola voce di piano oggi).
+- **pos_connector**: La cassa o il POS invia le vendite al webhook /api/hooks/pos_vendite (locale, date, covers, items, source); un connettore specifico per ogni marca di POS non è incluso. Nel record vanno inseriti anche gli indirizzi email in members per l'accesso di chef e sala.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -25,36 +28,47 @@ Mi serve Cucina sotto Controllo, un gestionale con agenti per ristoranti. Il tit
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### nuove_vendite
-![03-nuove_vendite.png](screenshots/03-nuove_vendite.png)
+### vendite_form
+![03-vendite_form.png](screenshots/03-vendite_form.png)
 
-### ricette_v
-![04-ricette_v.png](screenshots/04-ricette_v.png)
+### vendite_storico
+![04-vendite_storico.png](screenshots/04-vendite_storico.png)
 
-### scorte_v
-![05-scorte_v.png](screenshots/05-scorte_v.png)
+### ricette_form
+![05-ricette_form.png](screenshots/05-ricette_form.png)
 
-### fornitori_v
-![06-fornitori_v.png](screenshots/06-fornitori_v.png)
+### ricette
+![06-ricette.png](screenshots/06-ricette.png)
 
-### locali_v
-![07-locali_v.png](screenshots/07-locali_v.png)
+### fornitori_form
+![07-fornitori_form.png](screenshots/07-fornitori_form.png)
 
-### vendite_v
-![08-vendite_v.png](screenshots/08-vendite_v.png)
+### fornitori
+![08-fornitori.png](screenshots/08-fornitori.png)
+
+### giacenze_form
+![09-giacenze_form.png](screenshots/09-giacenze_form.png)
+
+### giacenze
+![10-giacenze.png](screenshots/10-giacenze.png)
+
+### locali_form
+![11-locali_form.png](screenshots/11-locali_form.png)
+
+### segnalazioni
+![12-segnalazioni.png](screenshots/12-segnalazioni.png)
+
+### approvazioni
+![13-approvazioni.png](screenshots/13-approvazioni.png)
+
+### ordini
+![14-ordini.png](screenshots/14-ordini.png)
 
 ### controlli
-![09-controlli.png](screenshots/09-controlli.png)
+![15-controlli.png](screenshots/15-controlli.png)
 
 ### report
-![10-report.png](screenshots/10-report.png)
-
-### ordini_v
-![11-ordini_v.png](screenshots/11-ordini_v.png)
-
-### ordini_storico
-![12-ordini_storico.png](screenshots/12-ordini_storico.png)
+![16-report.png](screenshots/16-report.png)
 
 ### account
-![13-account.png](screenshots/13-account.png)
-
+![17-account.png](screenshots/17-account.png)

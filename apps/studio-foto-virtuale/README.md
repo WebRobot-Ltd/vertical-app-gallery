@@ -1,8 +1,8 @@
 # Studio Foto Virtuale
 
-_Foto dei capi indossati, senza servizio fotografico._
+_Foto dei capi indossati senza set fotografico._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (14 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,14 +10,10 @@ Mi serve Studio Foto Virtuale, un servizio per brand di moda che vogliono foto d
 
 ## Features not expressible today (spec.extensions)
 
-- **generation_engine**: Sending requests to the external generation engine and receiving results (webhook to /api/hooks/engine_result) needs the engine's API and credentials: not available yet. Until then requests are stored with status 'ready' and results are registered by the engine's webhook.
-- **file_upload**: Uploading garment photos is not available: the brand gives a link to each photo.
-- **pay_per_approved_image**: Credits are charged per agent run (estimate); charging exactly one credit amount per approved image needs a hook on the approval decision.
-- **hires_download_and_catalog_push**: High-resolution download and sending to the catalogue management system need file storage and each brand's catalogue credentials: not available yet.
-- **agency_multi_brand**: An agency manages several brands through the brand field on every record; separate sub-accounts per brand with their own users are not available yet.
-- **monthly_email**: Emailing the monthly report is not available; it is read in the Monthly report view.
+- **catalog_sync**: Sending approved images to the brand's catalogue system (PIM/ERP) needs the system's API details; not designed yet. Use the CSV export of approved images meanwhile.
+- **engine_link**: The external engine reads requests from /api/requests and posts results to /api/hooks/engine_result with the hook secret.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -28,24 +24,26 @@ Mi serve Studio Foto Virtuale, un servizio per brand di moda che vogliono foto d
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### new_request
-![03-new_request.png](screenshots/03-new_request.png)
+### new_garment
+![03-new_garment.png](screenshots/03-new_garment.png)
 
 ### garments_list
 ![04-garments_list.png](screenshots/04-garments_list.png)
 
-### requests_list
-![05-requests_list.png](screenshots/05-requests_list.png)
+### review_list
+![05-review_list.png](screenshots/05-review_list.png)
 
-### reviews
-![06-reviews.png](screenshots/06-reviews.png)
+### review
+![06-review.png](screenshots/06-review.png)
 
-### collections_view
-![07-collections_view.png](screenshots/07-collections_view.png)
+### brands_view
+![07-brands_view.png](screenshots/07-brands_view.png)
 
-### monthly
-![08-monthly.png](screenshots/08-monthly.png)
+### reports
+![08-reports.png](screenshots/08-reports.png)
+
+### reports_list
+![09-reports_list.png](screenshots/09-reports_list.png)
 
 ### account
-![09-account.png](screenshots/09-account.png)
-
+![10-account.png](screenshots/10-account.png)

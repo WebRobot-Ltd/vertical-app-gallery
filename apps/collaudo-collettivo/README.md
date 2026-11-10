@@ -1,8 +1,8 @@
 # Collaudo Collettivo
 
-_Crowdtesting gestito: tester giusti, bug verificati, report pronto._
+_Crowdtesting gestito: campagne, tester giusti, bug già filtrati._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (22 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,10 @@ Vorrei Collaudo Collettivo, la piattaforma software di un servizio di crowdtesti
 
 ## Features not expressible today (spec.extensions)
 
-- **bug_submission_form**: Testers file bugs through a form that writes to bug_reports with the tester's email and status 'submitted'; uploading screenshots or videos is not available yet, so testers paste a link to the file.
-- **jira_export**: Pushing approved bugs to the client's Jira needs each client's own credentials, which are not available yet. For now approved bugs are shown in the dashboard and can be copied into the ticketing system.
-- **tester_invitation_email**: Email notifications are not available: testers see invitations in the app after signing in.
-- **per_tester_scoping**: Showing each tester only their own campaigns and each client only their own bugs needs per-user filtering on app-owned records, which the manifest cannot express yet.
-- **tester_payout**: Per-approved-bug tester payouts are handled outside this app, by the community platform.
+- **tester_payout**: Payment of testers per approved bug is handled outside the app. Approved bugs (status approved/sent) can be exported by the PM as CSV from the bug review view.
+- **jira_per_customer**: The Jira ticket is created with the Jira key of the user the event belongs to; per-customer routing of the ticket to the campaign owner's Jira, and the Jira project key, need a field on the campaign (to be added) and review.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -33,30 +30,26 @@ Vorrei Collaudo Collettivo, la piattaforma software di un servizio di crowdtesti
 ### campaigns
 ![04-campaigns.png](screenshots/04-campaigns.png)
 
-### dashboard
-![05-dashboard.png](screenshots/05-dashboard.png)
-
-### bugs_by_severity
-![06-bugs_by_severity.png](screenshots/06-bugs_by_severity.png)
-
-### device_coverage
-![07-device_coverage.png](screenshots/07-device_coverage.png)
-
-### bug_list
-![08-bug_list.png](screenshots/08-bug_list.png)
-
 ### my_campaigns
-![09-my_campaigns.png](screenshots/09-my_campaigns.png)
+![05-my_campaigns.png](screenshots/05-my_campaigns.png)
 
 ### report_bug
-![10-report_bug.png](screenshots/10-report_bug.png)
+![06-report_bug.png](screenshots/06-report_bug.png)
 
-### reviews
-![11-reviews.png](screenshots/11-reviews.png)
+### my_bugs
+![07-my_bugs.png](screenshots/07-my_bugs.png)
 
-### testers_db
-![12-testers_db.png](screenshots/12-testers_db.png)
+### pm_review
+![08-pm_review.png](screenshots/08-pm_review.png)
+
+### decide_bug
+![09-decide_bug.png](screenshots/09-decide_bug.png)
+
+### severity_chart
+![10-severity_chart.png](screenshots/10-severity_chart.png)
+
+### dashboard
+![11-dashboard.png](screenshots/11-dashboard.png)
 
 ### account
-![13-account.png](screenshots/13-account.png)
-
+![12-account.png](screenshots/12-account.png)

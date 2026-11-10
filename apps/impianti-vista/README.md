@@ -1,8 +1,8 @@
 # ImpiantiVista
 
-_Gli agenti che vegliano sui tuoi impianti fotovoltaici ed eolici._
+_Agenti AI che controllano la resa dei tuoi impianti rinnovabili._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (19 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,11 +10,10 @@ ImpiantiVista mette agenti a lavorare sui dati degli impianti rinnovabili per ch
 
 ## Features not expressible today (spec.extensions)
 
-- **scada_connector**: Authorised access to the SCADA/monitoring system needs per-customer credentials: not available yet. For now production arrives by webhook or is entered in production_readings.
-- **monthly_email**: Monthly report by email is not available yet: the operator generates the report in the app. Email alerts to the technician are also pending: the technician sees tickets and interventions in the app.
-- **plan_limits**: Plan limits on number/power of plants are described in the plans but enforced by the owner for now (maxPerUser on the template is 50).
+- **scada_connectors**: Direct pull from arbitrary SCADA/monitoring hosts and OAuth sign-in to vendor portals is not available yet: data arrives by webhook (POST /api/hooks/readings_hook), manual entry or a SolarEdge API key. Webhook records are not yet bound to a specific user; the hook secret should be issued per operator.
+- **pricing_by_power**: Plans are tiered by number of plants (quota); pricing by installed kW is not expressible yet.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -28,24 +27,29 @@ ImpiantiVista mette agenti a lavorare sui dati degli impianti rinnovabili per ch
 ### portfolio
 ![03-portfolio.png](screenshots/03-portfolio.png)
 
-### plants
-![04-plants.png](screenshots/04-plants.png)
+### plants_new
+![04-plants_new.png](screenshots/04-plants_new.png)
 
-### readings
-![05-readings.png](screenshots/05-readings.png)
+### plants
+![05-plants.png](screenshots/05-plants.png)
+
+### readings_new
+![06-readings_new.png](screenshots/06-readings_new.png)
+
+### watches
+![07-watches.png](screenshots/07-watches.png)
+
+### monthly
+![08-monthly.png](screenshots/08-monthly.png)
 
 ### tickets
-![06-tickets.png](screenshots/06-tickets.png)
+![09-tickets.png](screenshots/09-tickets.png)
 
-### interventions
-![07-interventions.png](screenshots/07-interventions.png)
+### ticket_edit
+![10-ticket_edit.png](screenshots/10-ticket_edit.png)
 
-### new_report
-![08-new_report.png](screenshots/08-new_report.png)
-
-### reports
-![09-reports.png](screenshots/09-reports.png)
+### history
+![11-history.png](screenshots/11-history.png)
 
 ### account
-![10-account.png](screenshots/10-account.png)
-
+![12-account.png](screenshots/12-account.png)

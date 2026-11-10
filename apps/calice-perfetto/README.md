@@ -1,22 +1,24 @@
 # CalicePerfetto
 
-_L'enoteca online con il sommelier AI che trova il vino giusto per ogni occasione._
+_L'enoteca online con il sommelier AI che sceglie il vino giusto per ogni occasione._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (24 checks passed)
 
 ## Description given to the app builder (Italian)
 
 Voglio un'enoteca online con sommelier AI, che chiamerò CalicePerfetto. L'admin dell'enoteca carica il catalogo vini con upload di un file o dal proprio gestionale: etichetta, cantina, regione, vitigni, annata, gradazione, abbinamenti, note di degustazione, prezzo, giacenza e foto. Il cliente naviga il catalogo con filtri oppure apre la chat e descrive l'occasione: "cena di pesce per sei, budget 25 euro a bottiglia, mi piacciono i bianchi minerali". Un agente sommelier cerca nel catalogo con ricerca semantica sulle schede, propone tre o quattro bottiglie spiegando il perché, suggerisce alternative se qualcosa è esaurito e può comporre una cassa mista. Il cliente aggiunge al carrello e paga con carta; l'ordine passa al magazziniere, che conferma la preparazione, e la spedizione viene prenotata col corriere con tracking via email. È richiesta la conferma della maggiore età all'acquisto. Il cliente vede storico ordini e una lista dei vini preferiti; l'agente impara dai suoi acquisti per i consigli successivi. L'admin vede dashboard vendite, bottiglie più consigliate e domande frequenti in chat. Newsletter mensile con selezione personalizzata, inviata solo dopo approvazione dell'enoteca. Lingua italiana e inglese; margine sul prodotto, nessun abbonamento.
 
+## Functional test: what did not pass
+
+- **saved record shown where its collection is read** (view orders_view): a record was saved in orders (by admin) but the page does not show it (as user) _(warning)_
+
 ## Features not expressible today (spec.extensions)
 
-- **file_upload_and_erp_sync**: Catalogue upload from a file and sync from the shop's management system are not available yet: the admin pastes CSV text or a list into the Load catalogue chat. Photos are links.
-- **card_checkout_with_margin**: Card payment of the goods with the shop's margin (no subscription, no credits) needs a product checkout that is not declared here yet; orders are created with status placed and payment must be connected in the studio.
-- **courier_and_tracking_email**: Booking the courier and sending the tracking by email are not available yet (no notifications, no courier connector). The warehouse enters the tracking link on the order.
-- **personalised_newsletter_sending**: Sending emails is not available yet: the newsletter is drafted monthly and approved by the shop, but delivery and per-customer personalisation need the notification feature.
-- **age_gate**: Age confirmation is collected by the sommelier before the order is placed and stored on the order (age_confirmed); a blocking checkbox on the card checkout is still to be added.
+- **card_checkout**: Pagamento con carta del carrello (checkout Stripe sul totale dell'ordine) e passaggio a 'paid': non esprimibile ancora con il manifest, l'ordine nasce 'placed'.
+- **courier_booking**: Prenotazione automatica della spedizione e tracking col corriere via API: per ora il magazziniere inserisce corriere e codice, e il cliente riceve l'email.
+- **erp_sync**: Sincronizzazione del catalogo dal gestionale: ora via upload di file (CSV/Excel/JSON); API del gestionale da collegare.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -33,21 +35,32 @@ Voglio un'enoteca online con sommelier AI, che chiamerò CalicePerfetto. L'admin
 ### sommelier
 ![04-sommelier.png](screenshots/04-sommelier.png)
 
-### favorites
-![05-favorites.png](screenshots/05-favorites.png)
+### cart_view
+![05-cart_view.png](screenshots/05-cart_view.png)
 
-### my_orders
-![06-my_orders.png](screenshots/06-my_orders.png)
+### favorites_view
+![06-favorites_view.png](screenshots/06-favorites_view.png)
 
-### approvals
-![07-approvals.png](screenshots/07-approvals.png)
+### orders_view
+![07-orders_view.png](screenshots/07-orders_view.png)
 
-### import
-![08-import.png](screenshots/08-import.png)
+### newsletters_view
+![08-newsletters_view.png](screenshots/08-newsletters_view.png)
 
-### dashboard
-![09-dashboard.png](screenshots/09-dashboard.png)
+### import_catalog
+![09-import_catalog.png](screenshots/09-import_catalog.png)
 
-### settings
-![10-settings.png](screenshots/10-settings.png)
+### wine_form
+![10-wine_form.png](screenshots/10-wine_form.png)
 
+### warehouse_orders
+![11-warehouse_orders.png](screenshots/11-warehouse_orders.png)
+
+### order_update
+![12-order_update.png](screenshots/12-order_update.png)
+
+### approvals_view
+![13-approvals_view.png](screenshots/13-approvals_view.png)
+
+### admin_dashboard
+![14-admin_dashboard.png](screenshots/14-admin_dashboard.png)

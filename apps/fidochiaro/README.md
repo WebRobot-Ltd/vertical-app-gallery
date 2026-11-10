@@ -1,8 +1,8 @@
 # FidoChiaro
 
-_Richieste di prestito istruite in modo chiaro, con la decisione sempre in mano all'analista._
+_Pratiche di prestito chiare, istruite con metodo, decise da persone._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (19 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,14 +10,11 @@ Descrivo solo lo strato software di FidoChiaro, perché la valutazione del merit
 
 ## Features not expressible today (spec.extensions)
 
-- **open_banking_aisp**: La valutazione basata sull'accesso ai conti richiede un servizio di informazione sui conti (AISP) autorizzato, fuori dall'app: il richiedente incolla il riepilogo entrate/uscite restituito dal fornitore.
-- **email_esito**: Invio email al richiedente con l'esito: le notifiche non sono ancora disponibili; l'esito è visibile nell'area personale.
-- **assegnazione_analisti**: Assegnazione delle pratiche ai singoli analisti e visibilità limitata a quelle assegnate: oggi tutti gli analisti vedono la coda delle approvazioni; serve logica dedicata.
-- **tempi_istruttoria**: Dashboard con tempi medi di istruttoria e volumi per esito: oggi solo conteggi delle esecuzioni.
-- **licenza_annuale**: Licenza annuale per la società finanziaria: contratto gestito fuori dall'app, nessun pagamento per singola pratica.
-- **upload_documenti**: Caricamento di documenti (non disponibile): richiedere link o testo incollato.
+- **open_banking_provider**: La valutazione tramite open banking richiede un fornitore di servizi di informazione sui conti autorizzato (AISP), esterno all'app: deve chiamare il webhook /api/hooks/aisp_summary con codice fiscale e riepilogo (income_avg, expenses_avg, regularity). Il flusso di consenso presso il fornitore non è nell'app.
+- **applicant_internal_fields**: La scheda interna e le note dell'analista sono nella pratica ma nascoste al richiedente solo dalle colonne delle viste; per una separazione rigida servirebbe una collezione dedicata.
+- **license_price**: Il prezzo della licenza annuale è indicativo: va fissato dal fornitore; la fatturazione a una sola società finanziaria può essere gestita fuori dall'app.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -28,18 +25,20 @@ Descrivo solo lo strato software di FidoChiaro, perché la valutazione del merit
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### nuova
-![03-nuova.png](screenshots/03-nuova.png)
+### apply
+![03-apply.png](screenshots/03-apply.png)
 
-### mie_pratiche
-![04-mie_pratiche.png](screenshots/04-mie_pratiche.png)
+### my_applications
+![04-my_applications.png](screenshots/04-my_applications.png)
 
-### stato_pratiche
-![05-stato_pratiche.png](screenshots/05-stato_pratiche.png)
+### queue
+![05-queue.png](screenshots/05-queue.png)
 
-### coda
-![06-coda.png](screenshots/06-coda.png)
+### review
+![06-review.png](screenshots/06-review.png)
+
+### assign
+![07-assign.png](screenshots/07-assign.png)
 
 ### dashboard
-![07-dashboard.png](screenshots/07-dashboard.png)
-
+![08-dashboard.png](screenshots/08-dashboard.png)

@@ -2,7 +2,7 @@
 
 _Il coach AI privato per la crescita di ogni dipendente._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (21 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,11 @@ Vorrei Mentore Interno, un coach AI per i dipendenti di un'azienda. L'HR è admi
 
 ## Features not expressible today (spec.extensions)
 
-- **hr_sync**: Roles, departments and managers coming automatically from the company HR system need a connector with the company's credentials (not available yet). For now HR enters or pastes the roster in the employees collection (no file upload yet).
-- **email_checkin**: The weekly check-in by email needs notifications (not available yet). For now the check-in appears in the app under Weekly check-ins; the email delivery is to be added later.
-- **manager_view**: Manager access to the shared goals of their reports (matched through employees.manager_email) needs cross-user read of shared_goals limited to that manager's reports; the manager role is derived from the roster, but the cross-user view must be implemented by the runtime. Conversations are never exposed.
-- **hr_aggregates**: Anonymous aggregates (participation, frequent themes, competencies) must be computed by a privacy-preserving job over user records, with small groups suppressed (e.g. fewer than 5 people), and written to hr_stats; per-user records are never readable by HR.
-- **per_active_employee_billing**: The subscription is per active employee: the runtime must count active users each month; the plan here is a per-user monthly price.
+- **hr_system_sync**: Roles, departments and managers arrive automatically only if the company HR system can POST to the app webhook /api/hooks/hr_sync (email, name, role, department, manager_email); direct connectors to HR suites via OAuth are not available yet. Until then HR uploads the employee CSV on /admin/data.
+- **manager_autofill**: The manager email in shared goals is typed by the employee; automatic pre-fill from the HR directory is not available yet.
+- **per_seat_company_billing**: Billing per active employee is modelled as one monthly subscription per user; a single company invoice by number of active seats is not available yet.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,39 +25,26 @@ Vorrei Mentore Interno, un coach AI per i dipendenti di un'azienda. L'HR è admi
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### coach_chat
-![03-coach_chat.png](screenshots/03-coach_chat.png)
+### profile
+![03-profile.png](screenshots/03-profile.png)
 
-### profile_plan
-![04-profile_plan.png](screenshots/04-profile_plan.png)
+### coach
+![04-coach.png](screenshots/04-coach.png)
 
-### plans
-![05-plans.png](screenshots/05-plans.png)
+### plan
+![05-plan.png](screenshots/05-plan.png)
 
-### checkins
-![06-checkins.png](screenshots/06-checkins.png)
+### checkin_settings
+![06-checkin_settings.png](screenshots/06-checkin_settings.png)
 
-### my_shared_goals
-![07-my_shared_goals.png](screenshots/07-my_shared_goals.png)
+### share_goal
+![07-share_goal.png](screenshots/07-share_goal.png)
 
-### approvals
-![08-approvals.png](screenshots/08-approvals.png)
+### team_goals
+![08-team_goals.png](screenshots/08-team_goals.png)
 
-### hr_stats_view
-![09-hr_stats_view.png](screenshots/09-hr_stats_view.png)
-
-### hr_employees
-![10-hr_employees.png](screenshots/10-hr_employees.png)
-
-### hr_competencies
-![11-hr_competencies.png](screenshots/11-hr_competencies.png)
-
-### hr_paths
-![12-hr_paths.png](screenshots/12-hr_paths.png)
-
-### hr_training
-![13-hr_training.png](screenshots/13-hr_training.png)
+### hr_stats
+![09-hr_stats.png](screenshots/09-hr_stats.png)
 
 ### account
-![14-account.png](screenshots/14-account.png)
-
+![10-account.png](screenshots/10-account.png)

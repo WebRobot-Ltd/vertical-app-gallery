@@ -1,8 +1,8 @@
 # CampoSano
 
-_Ogni giorno, il rischio di malattie e stress idrico di ogni tuo appezzamento._
+_Ogni appezzamento sotto controllo: vigore, meteo e rischio malattie, ogni giorno._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (12 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,14 +10,12 @@ CampoSano e un sistema di supporto alle decisioni per l'agricoltura di precision
 
 ## Features not expressible today (spec.extensions)
 
-- **map_drawing**: Drawing parcels on a map is not available yet: for now centre coordinates and an optional pasted GeoJSON. Maps in the dashboard also pending.
-- **email_alerts**: Email alerts when a disease risk exceeds the threshold are not available yet (no notifications). For now the risk traffic light and advice appear in the dashboard; the email can be added when notifications are supported.
-- **consultant_access**: Consultant role seeing the fields of the clients they follow (per-client sharing of parcel instances) is not expressible yet; farms see only their own parcels.
-- **hectare_billing**: Subscription is by tiers of hectares; enforcing the hectare cap against the sum of parcels' area_ha needs custom logic.
-- **copernicus_access**: Copernicus Sentinel data normally needs a Data Space account/token; the agent collects public data via the WebRobot MCP and flags missing data. A dedicated connector is a future step.
-- **field_sensors_gis**: Future: field sensor data (soil moisture, leaf wetness) and richer GIS layers as additional collections feeding the analyst.
+- **copernicus_auth**: Copernicus Data Space / Sentinel Hub statistics APIs need OAuth client credentials: not available yet. For now the agent reads public data via the WebRobot MCP; a direct NDVI tool needs OAuth support.
+- **polygon_drawing**: Drawing plot polygons on the map is not available yet: the plot is a point (lat/lon) plus an optional GeoJSON boundary field; a richer GIS layer is a future step.
+- **hectare_pricing**: Per-hectare annual pricing is approximated by plans with hectare tiers; exact per-ha billing and enforcement of total hectares is not available.
+- **field_sensors**: Field sensors: future integration via a webhook trigger writing readings to a collection; not included yet.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -28,12 +26,23 @@ CampoSano e un sistema di supporto alle decisioni per l'agricoltura di precision
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### parcels
-![03-parcels.png](screenshots/03-parcels.png)
-
 ### dashboard
-![04-dashboard.png](screenshots/04-dashboard.png)
+![03-dashboard.png](screenshots/03-dashboard.png)
+
+### plots_map
+![04-plots_map.png](screenshots/04-plots_map.png)
+
+### add_plot
+![05-add_plot.png](screenshots/05-add_plot.png)
+
+### plots
+![06-plots.png](screenshots/06-plots.png)
+
+### watches
+![07-watches.png](screenshots/07-watches.png)
+
+### readings
+![08-readings.png](screenshots/08-readings.png)
 
 ### account
-![05-account.png](screenshots/05-account.png)
-
+![09-account.png](screenshots/09-account.png)

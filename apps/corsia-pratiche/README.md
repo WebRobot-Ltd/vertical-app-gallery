@@ -1,8 +1,8 @@
 # Corsia Pratiche
 
-_Le pratiche amministrative sanitarie, pronte e verificate prima dell'invio._
+_Le pratiche amministrative della struttura sanitaria, istruite da agenti e approvate da te._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (19 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,11 @@ Vorrei Corsia Pratiche, uno strumento di agenti per gli uffici amministrativi de
 
 ## Features not expressible today (spec.extensions)
 
-- **integrazione_his**: Ricezione diretta delle pratiche dai sistemi informativi ospedalieri: non disponibile; per ora il testo si incolla (nessun caricamento file).
-- **invio_portali**: Invio dei moduli ai portali delle assicurazioni e lettura automatica dello stato delle pratiche inviate: richiede connettori con credenziali della struttura, non disponibili. L'operatore aggiorna lo stato a mano.
-- **avvisi_dinieghi**: Avvisi automatici (email) quando un rimborso è respinto: notifiche non disponibili; l'operatore incolla il diniego e ottiene la bozza di risposta.
-- **reparto_struttura**: Visibilità per reparto, multi-struttura e cruscotto del responsabile con carico per operatore: oggi i record sono per utente; serve un ambito per reparto e per struttura.
-- **protezione_dati**: Base giuridica, DPA, registro dei trattamenti e misure di sicurezza dei dati sanitari da definire con ciascuna struttura titolare prima della produzione.
+- **his_connector**: Le pratiche arrivano dal sistema informativo ospedaliero via webhook (his_intake); il connettore lato ospedale (HL7/FHIR o altro) va configurato dal fornitore del sistema.
+- **portal_submission**: Invio automatico dei moduli ai portali delle assicurazioni non disponibile: l'operatore invia la pratica approvata; gli esiti rientrano via webhook (insurer_status). Un'integrazione con i portali richiede API o credenziali per ciascun portale.
+- **department_scoping**: La visibilità per reparto si basa sull'elenco email 'members' di ogni pratica, compilato all'arrivo (dal sistema ospedaliero o dal modulo).
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,21 +25,20 @@ Vorrei Corsia Pratiche, uno strumento di agenti per gli uffici amministrativi de
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### nuova
-![03-nuova.png](screenshots/03-nuova.png)
+### new_case
+![03-new_case.png](screenshots/03-new_case.png)
 
-### storico
-![04-storico.png](screenshots/04-storico.png)
+### cases
+![04-cases.png](screenshots/04-cases.png)
 
-### approvazioni
-![05-approvazioni.png](screenshots/05-approvazioni.png)
+### edit_case
+![05-edit_case.png](screenshots/05-edit_case.png)
 
-### elenco
-![06-elenco.png](screenshots/06-elenco.png)
+### reviews
+![06-reviews.png](screenshots/06-reviews.png)
 
-### cruscotto
-![07-cruscotto.png](screenshots/07-cruscotto.png)
+### dashboard
+![07-dashboard.png](screenshots/07-dashboard.png)
 
 ### account
 ![08-account.png](screenshots/08-account.png)
-

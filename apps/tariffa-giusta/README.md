@@ -1,8 +1,8 @@
 # Tariffa Giusta
 
-_Il prezzo giusto per ogni camera e ogni notte, spiegato._
+_Il prezzo giusto per ogni camera e ogni notte, ogni mattina._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (17 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,14 +10,12 @@ Vorrei Tariffa Giusta, un assistente di revenue management per hotel. Il revenue
 
 ## Features not expressible today (spec.extensions)
 
-- **pms_connector**: Collegamento diretto al PMS (prenotazioni, occupazione, tariffe, cancellazioni) richiede credenziali di ogni hotel: non disponibile. Per ora l'hotel incolla export CSV nella sezione Dati PMS.
-- **price_push**: Invio automatico dei prezzi approvati al PMS e al channel manager non disponibile: richiede connettori con credenziali del cliente. Per ora le tariffe approvate si esportano e si caricano a mano.
-- **alert_notifications**: Gli alert di occupazione compaiono in app; email o notifiche push non sono ancora disponibili.
-- **calendar_heatmap**: Calendario a colori mese per mese e approvazione in blocco con modifica cella per cella: oggi tabella con badge di segnale; il calendario grafico richiede un blocco dedicato.
-- **group_overview**: Vista consolidata per gruppi: oggi un gruppo crea una struttura per hotel nello stesso account; un riepilogo aggregato tra strutture non e' ancora disponibile.
-- **per_room_billing**: Abbonamento mensile per camera: oggi piani a scaglioni; il conteggio per camera richiede un'estensione di fatturazione.
+- **color_calendar**: Calendario a colori delle proposte (camera × notte, colore per livello di variazione) con approvazione in blocco e modifica per cella: non disponibile come vista; per ora tabella delle proposte e approvazione dell'intera proposta.
+- **per_room_pricing**: Abbonamento calcolato per numero di camere: approssimato con tre piani a fasce di camere.
+- **pms_connectors**: Connettori specifici per PMS e channel manager (host e formato API reali di ogni fornitore, eventuale OAuth): da definire per fornitore.
+- **proposal_editing**: Modifica cella per cella dei prezzi proposti prima dell'approvazione e stato 'sent' dopo l'invio.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -28,33 +26,35 @@ Vorrei Tariffa Giusta, un assistente di revenue management per hotel. Il revenue
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### properties
-![03-properties.png](screenshots/03-properties.png)
-
-### calendar
-![04-calendar.png](screenshots/04-calendar.png)
-
-### approvals
-![05-approvals.png](screenshots/05-approvals.png)
-
-### alerts
-![06-alerts.png](screenshots/06-alerts.png)
+### hotel
+![03-hotel.png](screenshots/03-hotel.png)
 
 ### rooms
-![07-rooms.png](screenshots/07-rooms.png)
+![04-rooms.png](screenshots/04-rooms.png)
 
-### rules
-![08-rules.png](screenshots/08-rules.png)
+### room_list
+![05-room_list.png](screenshots/05-room_list.png)
 
-### events
-![09-events.png](screenshots/09-events.png)
+### event_new
+![06-event_new.png](screenshots/06-event_new.png)
 
-### pms
-![10-pms.png](screenshots/10-pms.png)
+### event_list
+![07-event_list.png](screenshots/07-event_list.png)
 
-### history
-![11-history.png](screenshots/11-history.png)
+### watches
+![08-watches.png](screenshots/08-watches.png)
+
+### proposals
+![09-proposals.png](screenshots/09-proposals.png)
+
+### approve
+![10-approve.png](screenshots/10-approve.png)
+
+### alerts
+![11-alerts.png](screenshots/11-alerts.png)
+
+### group_overview
+![12-group_overview.png](screenshots/12-group_overview.png)
 
 ### account
-![12-account.png](screenshots/12-account.png)
-
+![13-account.png](screenshots/13-account.png)

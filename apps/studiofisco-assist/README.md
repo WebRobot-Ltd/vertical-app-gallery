@@ -1,8 +1,8 @@
 # StudioFisco Assist
 
-_L'assistente fiscale che cita sempre la fonte._
+_L'assistente per commercialisti e consulenti del lavoro, con fonti sempre citate._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (11 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,11 +10,10 @@ Voglio creare StudioFisco Assist, un assistente per commercialisti e consulenti 
 
 ## Features not expressible today (spec.extensions)
 
-- **pdf_export**: L'esportazione in PDF usa la stampa del browser sulle viste stampabili (risposte salvate, conversazione); non c'è un generatore PDF dedicato.
-- **admin_usage_only**: L'admin vede solo consumi e collaboratori tramite le viste admin; il contenuto delle conversazioni non è esposto e va verificato nel runtime.
-- **invites**: Gli inviti ai collaboratori sono gestiti dall'admin nella vista Collaboratori; l'email di invito non è disponibile (notifiche non ancora supportate), il link va condiviso a mano.
+- **pdf_export**: L'esportazione in PDF usa la stampa del browser sulla vista 'saved' (printable); un PDF generato lato server con intestazione dello studio non è disponibile.
+- **admin_usage_only**: La vista admin mostra solo statistiche d'uso (utenti, domande, crediti consumati); il contenuto delle conversazioni resta del singolo professionista. Gli admin tecnicamente rientrano tra chi può leggere i record: va verificato in fase di pubblicazione.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -28,24 +27,17 @@ Voglio creare StudioFisco Assist, un assistente per commercialisti e consulenti 
 ### chat
 ![03-chat.png](screenshots/03-chat.png)
 
-### history
-![04-history.png](screenshots/04-history.png)
-
 ### folders
-![05-folders.png](screenshots/05-folders.png)
+![04-folders.png](screenshots/04-folders.png)
+
+### new_folder
+![05-new_folder.png](screenshots/05-new_folder.png)
 
 ### saved
 ![06-saved.png](screenshots/06-saved.png)
 
-### account
-![07-account.png](screenshots/07-account.png)
-
 ### admin
-![08-admin.png](screenshots/08-admin.png)
+![07-admin.png](screenshots/07-admin.png)
 
-### admin_overview
-![09-admin_overview.png](screenshots/09-admin_overview.png)
-
-### admin_users
-![10-admin_users.png](screenshots/10-admin_users.png)
-
+### account
+![08-account.png](screenshots/08-account.png)

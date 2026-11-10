@@ -1,8 +1,8 @@
 # RendicontaVerde
 
-_Il report di sostenibilità VSME per la tua PMI, in bozza e pronto da approvare._
+_Il report di sostenibilità VSME per la tua PMI, pronto per la CSRD._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (24 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,12 +10,10 @@ Voglio creare RendicontaVerde per aiutare le PMI a produrre il report di sosteni
 
 ## Features not expressible today (spec.extensions)
 
-- **bill_upload**: Caricamento delle bollette in PDF con lettura automatica dei consumi: non disponibile (i campi file non sono ancora supportati). Per ora i consumi si inseriscono a mano.
-- **annual_reminder**: Promemoria email annuale per l'aggiornamento dei dati: le notifiche email non sono ancora disponibili.
-- **cds_download**: Download dei dati Copernicus CDS: richiede un token personale per ogni richiesta; per ora l'agente usa solo il catalogo pubblico.
-- **consultant_clients**: Accesso del consulente ai propri clienti: oggi tramite condivisione per singolo report (viewer/editor) da parte dell'azienda; un'anagrafica clienti dedicata richiede logica personalizzata.
+- **consultant_runs**: I report generati (run) restano visibili solo all'azienda che li ha avviati; i consulenti vedono i dati dei clienti ma non i run. Per condividere il report con il consulente serve l'esportazione in PDF.
+- **ispra_factors_load**: I fattori di emissione ISPRA vanno caricati dagli amministratori in /admin/data (CSV) nella collezione emission_factors e aggiornati ogni anno.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -26,21 +24,41 @@ Voglio creare RendicontaVerde per aiutare le PMI a produrre il report di sosteni
 ### home
 ![02-home.png](screenshots/02-home.png)
 
+### overview
+![03-overview.png](screenshots/03-overview.png)
+
+### company_form
+![04-company_form.png](screenshots/04-company_form.png)
+
+### site_form
+![05-site_form.png](screenshots/05-site_form.png)
+
+### sites
+![06-sites.png](screenshots/06-sites.png)
+
+### consumption_form
+![07-consumption_form.png](screenshots/07-consumption_form.png)
+
+### bill_upload
+![08-bill_upload.png](screenshots/08-bill_upload.png)
+
+### consumptions
+![09-consumptions.png](screenshots/09-consumptions.png)
+
 ### new_report
-![03-new_report.png](screenshots/03-new_report.png)
+![10-new_report.png](screenshots/10-new_report.png)
 
 ### reports
-![04-reports.png](screenshots/04-reports.png)
+![11-reports.png](screenshots/11-reports.png)
 
-### approvals_view
-![05-approvals_view.png](screenshots/05-approvals_view.png)
+### signoff
+![12-signoff.png](screenshots/12-signoff.png)
 
-### clients_reports
-![06-clients_reports.png](screenshots/06-clients_reports.png)
+### esrs_chat
+![13-esrs_chat.png](screenshots/13-esrs_chat.png)
 
-### assistant
-![07-assistant.png](screenshots/07-assistant.png)
+### clients
+![14-clients.png](screenshots/14-clients.png)
 
 ### account
-![08-account.png](screenshots/08-account.png)
-
+![15-account.png](screenshots/15-account.png)

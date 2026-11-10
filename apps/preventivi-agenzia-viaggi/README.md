@@ -1,8 +1,8 @@
 # PreventivoLampo
 
-_Dalla richiesta del cliente al preventivo pronto in pochi minuti, solo sui vostri listini._
+_Dalla richiesta del cliente al preventivo pronto da approvare, in pochi minuti._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (16 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,11 +10,10 @@ Gestisco un'agenzia viaggi e voglio PreventivoLampo. Collego la casella email do
 
 ## Features not expressible today (spec.extensions)
 
-- **mailbox_connector**: Reading new emails from the agency mailbox and sending approved replies from it are not available yet (they need the agency's own mailbox credentials and notifications). For now the operator pastes the customer's email and copies the approved draft into their mail client.
-- **file_upload_rate_cards**: Uploading rate card files (PDF/Excel) is not available yet: rate cards are entered as records or pasted as text in the Rate cards view.
-- **multi_agency**: Data is held in the app owner's back office: one deployment per agency. A shared multi-agency version with per-agency staff would need an agency-scoped ownership model.
+- **own_mailbox**: Connecting the agency's own mailbox (IMAP/Google/Microsoft OAuth) to read incoming mail and sending the approved reply from that mailbox is not available yet. Today: forward requests to the app's email channel address (or paste the text), and the approved reply is sent by the platform email.
+- **operator_roles**: Operators are added by the owner as emails in the settings and see the agency's practices and rate lists; a separate owner-only revenue view per role is not enforceable yet, so the revenue page is open to all signed-in agency users.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -28,27 +27,23 @@ Gestisco un'agenzia viaggi e voglio PreventivoLampo. Collego la casella email do
 ### new_request
 ![03-new_request.png](screenshots/03-new_request.png)
 
-### cases_list
-![04-cases_list.png](screenshots/04-cases_list.png)
+### practices
+![04-practices.png](screenshots/04-practices.png)
 
-### runs
-![05-runs.png](screenshots/05-runs.png)
+### practice
+![05-practice.png](screenshots/05-practice.png)
 
-### to_approve
-![06-to_approve.png](screenshots/06-to_approve.png)
+### rates
+![06-rates.png](screenshots/06-rates.png)
+
+### rate_new
+![07-rate_new.png](screenshots/07-rate_new.png)
+
+### settings
+![08-settings.png](screenshots/08-settings.png)
 
 ### revenue
-![07-revenue.png](screenshots/07-revenue.png)
-
-### revenue_data
-![08-revenue_data.png](screenshots/08-revenue_data.png)
-
-### admin_rate_cards
-![09-admin_rate_cards.png](screenshots/09-admin_rate_cards.png)
-
-### admin_settings
-![10-admin_settings.png](screenshots/10-admin_settings.png)
+![09-revenue.png](screenshots/09-revenue.png)
 
 ### account
-![11-account.png](screenshots/11-account.png)
-
+![10-account.png](screenshots/10-account.png)

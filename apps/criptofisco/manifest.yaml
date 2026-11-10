@@ -4,11 +4,11 @@ metadata:
   slug: criptofisco
   displayName: CriptoFisco
   tagline:
-    it: Plusvalenze cripto e dati per quadro RT e RW, pronti per la dichiarazione.
+    it: Plusvalenze cripto e dati per i quadri RT e RW, pronti per la dichiarazione.
   description:
-    it: CriptoFisco importa le tue transazioni cripto da wallet pubblici e CSV, riconcilia i trasferimenti tra conti tuoi,
-      calcola le plusvalenze con il metodo FIFO e prepara i prospetti per i quadri RT e RW. Il commercialista che autorizzi
-      può rivedere e approvare il report.
+    it: 'Collega exchange e wallet, carica i CSV: gli agenti importano le transazioni, riconciliano i trasferimenti, calcolano
+      plusvalenze e minusvalenze e preparano il prospetto per quadro RT e RW. Il commercialista delegato approva il report
+      finale.'
   langs:
   - it
   defaultLang: it
@@ -19,9 +19,9 @@ spec:
     theme: light
     palette:
       primary: '#12304a'
-      accent: '#0f8b6d'
-      background: '#f6f8fa'
-      foreground: '#17212b'
+      accent: '#e0a21b'
+      background: '#f7f8fa'
+      foreground: '#16202b'
     fonts:
       body: Inter
       display: Fraunces
@@ -30,13 +30,12 @@ spec:
       color: primary
     - text: Fisco
       color: accent
-    byline: by WebRobot
   header:
     links:
     - label: Come funziona
       href: '#come-funziona'
-    - label: Prezzi
-      href: '#prezzi'
+    - label: Sicurezza
+      href: '#sicurezza'
     cta:
       label: Inizia
       href: /login
@@ -49,38 +48,53 @@ spec:
     - key: admin
       label: Admin
       assignedBy: admin_emails
-    - key: contribuente
+    - key: taxpayer
       label: Contribuente
       assignedBy: signup
-    - key: commercialista
+    - key: accountant
       label: Commercialista
       assignedBy: derived
       from: collection:delegations.accountant_email
   limits:
-  - action: agent:analyst
+  - action: agent:calculator
     per: user
-    max: 5
+    max: 10
     window: day
-  - action: agent:importer
-    per: user
-    max: 5
-    window: day
+    roles:
+    - taxpayer
+  - action: create:transactions
+    max: 200
+    window: total
+    roles:
+    - taxpayer
+    plans:
+      fascia_2000: 2000
+      fascia_illimitata: -1
   egress:
     hosts:
     - blockstream.info
+    - eth.blockscout.com
     - api.coingecko.com
-    notes: 'blockstream.info: esplora pubblico Bitcoin (indirizzi pubblici). api.coingecko.com: prezzi storici, uso gratuito
-      con attribuzione. Altri explorer che richiedono chiavi non sono inclusi.'
+    - api.binance.com
+    notes: 'Explorer pubblici (Blockstream per BTC, Blockscout per ETH) e CoinGecko per prezzi storici, nei limiti dei termini
+      d''uso con attribuzione. Binance: chiave API in sola lettura dell''utente.'
   agents:
-  - key: importer
-    role: setup
-    description: Importa le transazioni da wallet pubblici e CSV, riconcilia i trasferimenti interni, classifica e prezza
-      in euro.
+  - key: calculator
+    role: main
+    description: Applica il metodo di calcolo, determina valori di inizio/fine anno (RW), plusvalenze/minusvalenze (RT), imposta
+      dovuta e segnala le transazioni dubbie.
+    delegates:
+    - importer
+    awaits:
+    - cpa_review
+    context:
+    - key: accountant_email
+      from: collection:delegations.accountant_email
     profile:
       inline:
-        display_name: CriptoFisco importer
+        display_name: CriptoFisco calcolo
         crews:
-        - id: importer
+        - id: calculator
           engine: agent_sdk
           model: claude-sonnet-5-5
           max_turns: 40
@@ -96,71 +110,105 @@ spec:
           - NotebookEdit
           - WebFetch
           - WebSearch
-          system_prompt: 'Sei un analista che prepara i dati per la fiscalità cripto italiana. Leggi con read_wallets gli
-            indirizzi pubblici del contribuente e con read_csv_uploads i testi CSV incollati. Per gli indirizzi Bitcoin usa
-            btc_address_txs (GET https://blockstream.info/api/address/<indirizzo>/txs, path = /address/<indirizzo>/txs). Interpreta
-            i CSV degli exchange con le colonne che trovi. Per ogni operazione crea un record con append_transactions: {date,
-            asset, type (acquisto|vendita|swap|staking|airdrop|commissione|trasferimento), quantity, counterpart_asset, fee_eur,
-            price_eur, value_eur, source, tx_ref, status (ok|dubbia), note}. Riconcilia: un''uscita e un''entrata dello stesso
-            asset e quantità (meno commissioni) tra conti del contribuente in una finestra breve è un trasferimento interno,
-            NON una vendita. Prezzi storici in euro: coingecko_history (GET https://api.coingecko.com/api/v3/coins/<id>/history,
-            path /coins/<id>/history, query date=DD-MM-YYYY&localization=false), leggi market_data.current_price.eur. Non
-            inventare mai prezzi o quantità: se un dato manca o un trasferimento non si riconcilia, segna status dubbia con
-            la nota. Le chiavi API degli exchange non sono supportate: indica al contribuente di usare i CSV. Chiudi con un
-            titolo ''# Importazione <anno>'' e un riepilogo: operazioni importate, trasferimenti riconciliati, operazioni
-            dubbie.'
-          mcp_servers: []
+          system_prompt: 'Sei un assistente fiscale per cripto-attività per contribuenti residenti in Italia. Procedi così:
+            1) chiedi all''agente importer (ask_importer) di importare e riconciliare tutte le transazioni dell''anno fiscale
+            richiesto e dei precedenti (servono per il costo storico); 2) leggi le transazioni con read_tx; 3) applica il
+            metodo scelto (FIFO, LIFO o costo medio) per lotto, in euro; 4) calcola per il quadro RT: corrispettivi, costi,
+            plusvalenze e minusvalenze, minusvalenze riportabili, imposta sostitutiva dovuta all''aliquota vigente per l''anno
+            fiscale (indica sempre l''aliquota e la norma usate, e la soglia di esenzione se applicabile per l''anno); 5)
+            per il quadro RW: valore a inizio anno, valore a fine anno (prezzi in euro al 1 gennaio e al 31 dicembre), giorni
+            di detenzione, per ciascuna piattaforma o wallet; 6) marca con save_tx needs_review=true e un motivo ogni transazione
+            dubbia (trasferimenti non abbinati, prezzi mancanti, airdrop o staking di classificazione incerta, costo non determinabile)
+            e NON includerla nei totali definitivi: elencala nel report; 7) salva il riepilogo con save_summary. Se l''accountant_email
+            non è vuoto, chiedi con request_cpa_review l''approvazione del commercialista prima di dichiarare il report definitivo;
+            altrimenti indica che il report è una bozza non verificata. Non inventare mai importi o prezzi; non è consulenza
+            fiscale: il contribuente o il commercialista verificano. Il report inizia con un titolo ''# Prospetto cripto-attività
+            — anno <anno>'', poi sezioni ## Riepilogo, ## Quadro RT, ## Quadro RW, ## Transazioni da confermare, ## Ipotesi
+            e metodo. Usa tabelle Markdown per quadro e un blocco ```chart con le plusvalenze per mese. Dopo il report, aggiungi
+            come ultimo elemento un blocco JSON con: tax_year, residence, method, gains, losses, tax_due, rw_start_value,
+            rw_end_value, review_count, accountant_email, status (draft|pending_review).'
+    goalTemplate: 'Anno fiscale: {tax_year}
+
+      Residenza fiscale: {residence_label}
+
+      Metodo di calcolo: {method_label}
+
+      {?notes}Note del contribuente: {notes}{/notes}
+
+      {?csv_files}CSV caricati (file id): {csv_files}
+
+      Testo dei CSV:
+
+      {csv_files_text}{/csv_files}
+
+      Commercialista delegato: {accountant_email}
+
+      Oggi è {date}. Scrivi in italiano.'
     appTools:
-    - name: read_wallets
-      description: Indirizzi pubblici dei wallet del contribuente
+    - name: read_tx
+      description: Legge le transazioni importate dell'utente
       action: read
-      collection: wallets
-      scope: user
-    - name: read_csv_uploads
-      description: CSV incollati dal contribuente
-      action: read
-      collection: csv_uploads
-      scope: user
-    - name: append_transactions
-      description: Registra una transazione classificata
-      action: append
       collection: transactions
       scope: user
-    - name: btc_address_txs
-      description: Transazioni di un indirizzo Bitcoin pubblico (Blockstream)
-      action: http
-      http:
-        method: GET
-        url: https://blockstream.info/api
-        allowPath: true
-        attribution: Blockstream Esplora
-    - name: coingecko_history
-      description: Prezzo storico di un asset in una data (CoinGecko)
-      action: http
-      http:
-        method: GET
-        url: https://api.coingecko.com/api/v3
-        allowPath: true
-        attribution: Dati CoinGecko
-    goalTemplate: 'Anno fiscale: {tax_year}. Importa e classifica tutte le transazioni del contribuente rilevanti per l''anno
-      {tax_year} (e gli acquisti precedenti necessari al FIFO). Scrivi in italiano.'
-    output: markdown
+    - name: save_tx
+      description: Aggiorna o salva una transazione
+      action: write
+      collection: transactions
+      scope: user
+    - name: save_summary
+      description: Salva il riepilogo fiscale dell'anno
+      action: write
+      collection: tax_summary
+      scope: user
+    output: markdown+json
+    resultSchema:
+      type: object
+      properties:
+        tax_year:
+          type: integer
+        residence:
+          type: string
+        method:
+          type: string
+        gains:
+          type: number
+        losses:
+          type: number
+        tax_due:
+          type: number
+        rw_start_value:
+          type: number
+        rw_end_value:
+          type: number
+        review_count:
+          type: integer
+        accountant_email:
+          type: string
+        status:
+          type: string
+    writesTo:
+      collection: tax_reports
+      parse: json_last
+      keyBy: tax_year
     limits:
       maxTurns: 40
       maxBudgetUsd: 1.5
-  - key: analyst
-    role: main
-    description: Applica FIFO, calcola valori a inizio/fine anno e imposta, segnala le operazioni dubbie e scrive il prospetto
-      per quadro.
+  - key: importer
+    role: helper
+    description: Importa transazioni da exchange, explorer on-chain e CSV, riconcilia i trasferimenti interni, classifica
+      e recupera i prezzi in euro.
+    context:
+    - key: wallets
+      from: collection:wallets
     profile:
       inline:
-        display_name: CriptoFisco analyst
+        display_name: CriptoFisco importer
         crews:
-        - id: analyst
+        - id: importer
           engine: agent_sdk
           model: claude-sonnet-5-5
-          max_turns: 30
-          max_budget_usd: 1.2
+          max_turns: 60
+          max_budget_usd: 2
           permission_mode: bypassPermissions
           disallowed_tools:
           - Bash
@@ -172,80 +220,69 @@ spec:
           - NotebookEdit
           - WebFetch
           - WebSearch
-          system_prompt: 'Sei un analista fiscale che prepara dati per la dichiarazione dei redditi italiana su cripto-attività.
-            Leggi le transazioni con read_transactions. Se mancano, invita a eseguire prima l''importazione. Applica il metodo
-            scelto dal contribuente (default FIFO, lotti per asset). Calcola per ogni cessione plusvalenza/minusvalenza in
-            euro (corrispettivo meno costo di acquisto e commissioni documentate), staking e airdrop come redditi diversi
-            al valore di mercato alla data. Determina il valore a inizio anno (1 gennaio) e a fine anno (31 dicembre) delle
-            cripto detenute per il quadro RW e l''imposta di bollo/IVAFE se applicabile, e l''imposta sostitutiva sulle plusvalenze
-            (usa le aliquote e soglie vigenti per l''anno fiscale indicato, citando la norma; se non sei certo dell''aliquota,
-            dillo e indicala come da verificare). Per ogni transazione con status dubbia usa write_review_items (un record
-            per dubbio: tx_ref, motivo, impatto stimato) e chiedi conferma con request_confirm_doubtful. Struttura del report:
-            ''# Prospetto CriptoFisco <anno> — <nome>'' poi ## Riepilogo, ## Quadro RT (tabella cessioni: data, asset, quantità,
-            corrispettivo, costo, risultato), ## Quadro RW (asset, valore iniziale, valore finale, giorni di detenzione),
-            ## Imposta dovuta, ## Operazioni da confermare, ## Ipotesi e limiti. Aggiungi un grafico ```chart``` con plusvalenze
-            per asset (valori reali). Salva il report con write_tax_report {tax_year, summary, net_gain_eur, tax_due_eur,
-            doubtful_count, report}. Se il contribuente ha un commercialista delegato (read_delegations) usa request_accountant_review.
-            Non inventare cifre, non dare consulenza fiscale come fatto certo: è supporto alla compilazione da verificare
-            con un professionista.'
-          mcp_servers: []
+          system_prompt: 'Importi le transazioni cripto di un contribuente. Fonti: gli exchange collegati (se la chiave non
+            è collegata, dillo e passa ai CSV), gli indirizzi pubblici dei wallet (read_wallets: BTC con btc_explorer, EVM/ETH
+            con eth_explorer) e i CSV caricati (read_upload per file/immagini). Per ogni operazione salva con save_tx: date,
+            type (acquisto, vendita, swap, staking, airdrop, commissione, trasferimento), asset, quantity, eur_value, fee_eur,
+            source, tx_hash, price_source, needs_review, review_reason. Riconcilia: un''uscita da un conto proprio e un''entrata
+            di pari quantità (meno commissioni) su un altro conto proprio nel giro di poche ore è un trasferimento, non una
+            vendita; la commissione resta un costo. Prezzi storici in euro con price_history (CoinGecko, /<id>/history?date=DD-MM-YYYY&localization=false);
+            se manca un prezzo, needs_review=true. Evita duplicati usando tx_hash o una chiave source+data+quantità. Non inventare
+            transazioni né prezzi. Rispondi con un riassunto di conteggi per fonte e per tipo e l''elenco dei problemi.'
+    goalTemplate: '{message}'
     appTools:
-    - name: read_transactions
-      description: Transazioni classificate del contribuente
+    - name: read_wallets
+      description: Legge gli indirizzi dei wallet dell'utente
       action: read
+      collection: wallets
+      scope: user
+    - name: save_tx
+      description: Aggiorna o salva una transazione
+      action: write
       collection: transactions
       scope: user
-    - name: read_delegations
-      description: Commercialisti delegati dal contribuente
-      action: read
-      collection: delegations
-      scope: user
-    - name: write_review_items
-      description: Registra una transazione dubbia da confermare
-      action: write
-      collection: review_items
-      scope: user
-    - name: write_tax_report
-      description: Salva il prospetto finale
-      action: write
-      collection: tax_reports
-      scope: user
-    awaits:
-    - confirm_doubtful
-    - accountant_review
-    context:
-    - key: user_name
-      from: user.email
-    goalTemplate: 'Contribuente: {user_name}. Anno fiscale: {tax_year}. Residenza fiscale: {residence_label}. Metodo di calcolo:
-      {method_label}.
-
-      {?notes}Note: {notes}{/notes}
-
-      Calcola plusvalenze e minusvalenze, valori inizio/fine anno e imposta dovuta. Data di oggi: {date}. Scrivi in italiano.'
+    - name: read_upload
+      description: Legge un file caricato dall'utente
+      action: read_file
+    - name: btc_explorer
+      description: 'Transazioni di un indirizzo Bitcoin (path: /<indirizzo>/txs)'
+      action: http
+      http:
+        method: GET
+        url: https://blockstream.info/api/address
+        allowPath: true
+        attribution: Blockstream.info
+    - name: eth_explorer
+      description: 'Transazioni e trasferimenti token di un indirizzo EVM (path: /<indirizzo>/transactions o /token-transfers)'
+      action: http
+      http:
+        method: GET
+        url: https://eth.blockscout.com/api/v2/addresses
+        allowPath: true
+        attribution: Blockscout
+    - name: price_history
+      description: 'Prezzo storico in EUR (path: /<coin_id>/history, query: date=DD-MM-YYYY&localization=false)'
+      action: http
+      http:
+        method: GET
+        url: https://api.coingecko.com/api/v3/coins
+        allowPath: true
+        attribution: CoinGecko
+    - name: binance_trades
+      description: Operazioni dell'account Binance dell'utente (chiave in sola lettura)
+      action: http
+      http:
+        method: GET
+        url: https://api.binance.com/api/v3/myTrades
+        credential:
+          provider: binance
+          header: X-MBX-APIKEY
+          format: '{secret}'
+        attribution: Binance
     output: markdown
     limits:
-      maxTurns: 30
-      maxBudgetUsd: 1.2
-  approvals:
-  - key: confirm_doubtful
-    title: Conferma operazioni dubbie
-    description: Il contribuente conferma o corregge le transazioni segnalate dall'agente
-    decidedBy: requester
-    fields:
-    - tx_ref
-    - motivo
-    - impatto
-    timeoutMinutes: 10080
-  - key: accountant_review
-    title: Approvazione del commercialista
-    description: Il commercialista delegato approva il report finale
-    role: commercialista
-    decidedBy: role
-    fields:
-    - tax_year
-    - net_gain_eur
-    - tax_due_eur
-    timeoutMinutes: 10080
+      maxTurns: 60
+      maxBudgetUsd: 2
   inputForm:
     title: Nuovo calcolo
     fields:
@@ -254,6 +291,7 @@ spec:
       required: true
       label: Anno fiscale
       options:
+      - '2023'
       - '2024'
       - '2025'
       - '2026'
@@ -266,7 +304,7 @@ spec:
       - value: it
         label: Italia
       - value: other
-        label: Estero (da valutare)
+        label: Altro (non residente)
       default: it
     - name: method
       type: select
@@ -280,6 +318,15 @@ spec:
       - value: avg
         label: Costo medio
       default: fifo
+    - name: csv_files
+      type: file
+      label: CSV delle piattaforme non supportate
+      accept:
+      - csv
+      - xlsx
+      - pdf
+      maxMb: 15
+      multiple: true
     - name: notes
       type: textarea
       maxLength: 500
@@ -288,338 +335,402 @@ spec:
     collections:
     - name: wallets
       ownedBy: user
-      description: Indirizzi pubblici dei wallet
+      description: Indirizzi pubblici dei wallet del contribuente
       fields:
       - name: label
         type: text
+        required: true
         label: Nome
       - name: chain
         type: select
+        required: true
         label: Rete
         options:
         - bitcoin
         - ethereum
-        - altra
+        - altro_evm
       - name: address
         type: text
         required: true
         label: Indirizzo pubblico
-    - name: csv_uploads
-      ownedBy: user
-      description: Esportazioni CSV incollate per piattaforme non supportate
-      fields:
-      - name: platform
-        type: text
-        required: true
-        label: Piattaforma
-      - name: content
-        type: textarea
-        required: true
-        label: Contenuto CSV incollato
     - name: transactions
       ownedBy: user
       description: Transazioni importate e classificate
+      retentionDays: 3650
       fields:
       - name: date
         type: date
-      - name: asset
-        type: text
       - name: type
+        type: select
+        options:
+        - acquisto
+        - vendita
+        - swap
+        - staking
+        - airdrop
+        - commissione
+        - trasferimento
+      - name: asset
         type: text
       - name: quantity
         type: number
-      - name: price_eur
-        type: number
-      - name: value_eur
+      - name: eur_value
         type: number
       - name: fee_eur
         type: number
       - name: source
         type: text
-      - name: tx_ref
+      - name: tx_hash
         type: text
-      - name: status
+      - name: price_source
         type: text
-      - name: note
+      - name: needs_review
+        type: boolean
+      - name: review_reason
         type: text
-    - name: review_items
+      - name: confirmed
+        type: boolean
+        label: Confermata dall'utente
+      - name: user_note
+        type: textarea
+        label: Nota
+    - name: tax_summary
       ownedBy: user
-      description: Transazioni dubbie da confermare
+      description: Riepilogo fiscale per anno
       fields:
-      - name: tx_ref
-        type: text
-      - name: motivo
-        type: text
-      - name: impatto
-        type: text
+      - name: tax_year
+        type: number
+      - name: gains
+        type: number
+      - name: losses
+        type: number
+      - name: tax_due
+        type: number
+      - name: rw_start_value
+        type: number
+      - name: rw_end_value
+        type: number
+      - name: review_count
+        type: number
     - name: delegations
       ownedBy: user
-      description: Commercialisti autorizzati dal contribuente
+      description: Commercialista delegato dal contribuente
       fields:
       - name: accountant_email
         type: email
         required: true
         label: Email del commercialista
+      - name: accountant_name
+        type: text
+        label: Nome
     - name: tax_reports
       ownedBy: user
-      sharing:
-      - viewer
-      description: Prospetti finali, condivisibili con il commercialista
+      description: Report finali per anno, visibili al commercialista delegato
+      access:
+      - role: accountant
+        where:
+          accountant_email: '{user.email}'
+        can:
+        - read
+        - write
       fields:
       - name: tax_year
+        type: number
+      - name: residence
         type: text
-      - name: summary
-        type: textarea
-      - name: net_gain_eur
+      - name: method
+        type: text
+      - name: gains
         type: number
-      - name: tax_due_eur
+      - name: losses
         type: number
-      - name: doubtful_count
+      - name: tax_due
         type: number
-      - name: report
-        type: textarea
+      - name: rw_start_value
+        type: number
+      - name: rw_end_value
+        type: number
+      - name: review_count
+        type: number
+      - name: accountant_email
+        type: email
+      - name: status
+        type: text
+    credentials:
+    - provider: binance
+      kind: api_key
+      scope: user
+      label: Binance (sola lettura)
+      help: Crea in Binance una chiave API con la sola autorizzazione di lettura, senza prelievi né trading, e incollala qui.
+        È cifrata e non viene più mostrata.
+  approvals:
+  - key: cpa_review
+    title: Approvazione del commercialista
+    role: accountant
+    decidedBy: role
+    description: Il commercialista verifica e approva il report finale del cliente.
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: report_decided
+    'on':
+      approval: cpa_review
+      decision: any
+    notify:
+      to: owner
+      subject: Il commercialista ha esaminato il tuo report cripto
+      body: Il tuo commercialista ha deciso sul report fiscale. Aprilo per vedere l'esito.
+      link: reports
   views:
   - key: home
     type: page
     nav: false
-    title: CriptoFisco
     sections:
     - type: hero
-      eyebrow: Quadro RT · Quadro RW
-      title: Le tue cripto-plusvalenze, **pronte per la dichiarazione**.
-      text: Importa wallet ed exchange, riconcilia i trasferimenti, calcola FIFO e ottieni il prospetto per quadro, da rivedere
-        con il tuo commercialista.
+      title: Plusvalenze cripto e **quadri RT e RW** senza fogli di calcolo
+      text: 'Collega exchange e wallet, carica i CSV: gli agenti importano, riconciliano e calcolano. Tu confermi i casi dubbi,
+        il commercialista approva.'
       actions:
-      - label: Inizia il calcolo
+      - label: Inizia
         href: /login
         style: primary
-      - label: Come funziona
-        href: '#come-funziona'
-        style: ghost
+      note: Supporto alla compilazione, non consulenza fiscale.
     - type: steps
       id: come-funziona
       title: Come funziona
       items:
-      - title: Collega i dati
-        text: Indirizzi pubblici dei wallet e CSV degli exchange incollati nell'app.
-        badge: 🔗
-      - title: Importa e classifica
-        text: Un agente classifica le operazioni, esclude i trasferimenti tra conti tuoi e recupera i prezzi in euro.
-        badge: 🧾
-      - title: Calcola
-        text: Un secondo agente applica FIFO, calcola valori di inizio/fine anno e imposta, e segnala i dubbi.
-        badge: 🧮
-      - title: Rivedi e approva
-        text: Conferma i dubbi, delega il commercialista e stampa il prospetto.
-        badge: ✅
+      - title: Indica anno e metodo
+        text: Anno fiscale, residenza e FIFO, LIFO o costo medio.
+      - title: Collega le fonti
+        text: Chiavi API in sola lettura, indirizzi pubblici, CSV.
+      - title: Importazione e calcolo
+        text: Trasferimenti tra conti propri riconciliati, prezzi storici in euro, plusvalenze e valori RW.
+      - title: Conferma e approva
+        text: Confermi le transazioni dubbie; il commercialista delegato approva il report PDF.
     - type: cards
-      id: prezzi
-      title: Prezzo annuale per fascia
+      id: sicurezza
+      title: Sicurezza
       items:
-      - title: Fino a 200 transazioni
-        text: 29 €
-      - title: Fino a 2.000 transazioni
-        text: 79 €
-      - title: Oltre 2.000 transazioni
-        text: 199 €
+      - title: Chiavi cifrate
+        text: Cifrate a riposo, mai più visibili, usate dal sistema senza passare dall'agente.
+      - title: Solo ciò che autorizzi
+        text: Il commercialista vede solo i clienti che lo hanno delegato.
     - type: note
-      content: 'Supporto alla compilazione, non consulenza fiscale. Le chiavi API degli exchange non sono ancora supportate:
-        usa i CSV. Verifica sempre i risultati con un professionista.'
+      content: CriptoFisco prepara dati e prospetti; la responsabilità della dichiarazione resta del contribuente e del suo
+        professionista.
   - key: new_run
     type: new_run
     title: Nuovo calcolo
     roles:
-    - contribuente
+    - taxpayer
     - admin
-  - key: wallets_view
-    type: list
-    title: I miei wallet
-    source: collection:wallets
-    roles:
-    - contribuente
-    - admin
-    data:
-      display: table
-      fields:
-      - key: label
-        label: Nome
-      - key: chain
-        label: Rete
-      - key: address
-        label: Indirizzo
-  - key: csv_view
-    type: list
-    title: CSV caricati
-    source: collection:csv_uploads
-    roles:
-    - contribuente
-    - admin
-    data:
-      display: table
-      fields:
-      - key: platform
-        label: Piattaforma
-  - key: transactions_view
-    type: table
-    title: Transazioni
-    source: collection:transactions
-    roles:
-    - contribuente
-    - admin
-    data:
-      display: table
-      fields:
-      - key: date
-        label: Data
-        format: date
-      - key: asset
-        label: Asset
-      - key: type
-        label: Tipo
-      - key: quantity
-        label: Quantità
-        format: number
-      - key: value_eur
-        label: Valore €
-        format: money
-      - key: status
-        label: Stato
-        format: badge
-      sort:
-        field: date
-        dir: desc
-      limit: 200
-  - key: delegations_view
-    type: list
-    title: Il mio commercialista
-    source: collection:delegations
-    roles:
-    - contribuente
-    data:
-      display: table
-      fields:
-      - key: accountant_email
-        label: Email
-  - key: dashboard
-    type: page
-    title: Riepilogo
-    roles:
-    - contribuente
-    - commercialista
-    - admin
-    sections:
-    - type: data
-      title: Prospetti
-      source: collection:tax_reports
-      display: kpi
-      kpis:
-      - label: Plusvalenza netta
-        agg: last
-        field: net_gain_eur
-        format: money
-      - label: Imposta dovuta
-        agg: last
-        field: tax_due_eur
-        format: money
-      - label: Operazioni dubbie
-        agg: last
-        field: doubtful_count
-        format: number
-    - type: data
-      title: Anni elaborati
-      source: collection:tax_reports
-      display: chart
-      chart: bar
-      fields:
-      - key: tax_year
-        label: Anno
-      - key: net_gain_eur
-        label: Plusvalenza netta
-      - key: tax_due_eur
-        label: Imposta
-      empty: Nessun calcolo ancora.
-  - key: approvals_view
-    type: approvals
-    title: Da confermare
-    roles:
-    - contribuente
-    - commercialista
   - key: history
     type: history
     title: I miei calcoli
     source: run
     roles:
-    - contribuente
+    - taxpayer
     - admin
   - key: report
     type: report
     source: run
     printable: true
     nav: false
-  - key: clients
-    type: table
-    title: Clienti autorizzati
-    source: collection:tax_reports
+  - key: dashboard
+    type: page
+    title: Riepilogo
     roles:
-    - commercialista
-    data:
+    - taxpayer
+    - admin
+    sections:
+    - type: data
+      title: Riepilogo per anno
+      source: collection:tax_summary
+      display: kpi
+      kpis:
+      - label: Plusvalenze
+        agg: sum
+        field: gains
+        format: money
+      - label: Minusvalenze
+        agg: sum
+        field: losses
+        format: money
+      - label: Imposta dovuta
+        agg: last
+        field: tax_due
+        format: money
+      - label: Da confermare
+        agg: last
+        field: review_count
+        format: number
+    - type: data
+      title: Anni
+      source: collection:tax_summary
       display: table
       fields:
       - key: tax_year
         label: Anno
-      - key: net_gain_eur
-        label: Plusvalenza
+      - key: gains
+        label: Plusvalenze
         format: money
-      - key: tax_due_eur
+      - key: losses
+        label: Minusvalenze
+        format: money
+      - key: tax_due
         label: Imposta
         format: money
-      - key: doubtful_count
-        label: Dubbi
-        format: number
+      - key: rw_start_value
+        label: RW inizio anno
+        format: money
+      - key: rw_end_value
+        label: RW fine anno
+        format: money
+      sort:
+        field: tax_year
+        dir: desc
+  - key: reports
+    type: table
+    title: Report
+    source: collection:tax_reports
+    columns:
+    - tax_year
+    - method
+    - gains
+    - losses
+    - tax_due
+    - rw_start_value
+    - rw_end_value
+    - review_count
+    - status
+    export: true
+    roles:
+    - taxpayer
+    - admin
+  - key: to_confirm
+    type: table
+    title: Transazioni da confermare
+    source: collection:transactions
+    query: needs_review = true
+    columns:
+    - date
+    - type
+    - asset
+    - quantity
+    - eur_value
+    - source
+    - review_reason
+    - confirmed
+    export: true
+    roles:
+    - taxpayer
+    - admin
+  - key: confirm_tx
+    type: form
+    title: Conferma transazione
+    collection: transactions
+    fields:
+    - type
+    - eur_value
+    - confirmed
+    - user_note
+    edit: true
+    nav: false
+    roles:
+    - taxpayer
+    submit:
+      label: Salva
+      message: Transazione aggiornata.
+      redirect: to_confirm
+  - key: add_wallet
+    type: form
+    title: Aggiungi wallet
+    collection: wallets
+    roles:
+    - taxpayer
+    submit:
+      label: Aggiungi
+      message: Wallet salvato.
+  - key: my_wallets
+    type: table
+    title: I miei wallet
+    source: collection:wallets
+    columns:
+    - label
+    - chain
+    - address
+    roles:
+    - taxpayer
+  - key: delegate
+    type: form
+    title: Delega commercialista
+    collection: delegations
+    roles:
+    - taxpayer
+    submit:
+      label: Autorizza
+      message: Commercialista autorizzato.
+  - key: clients
+    type: table
+    title: Clienti
+    source: collection:tax_reports
+    columns:
+    - tax_year
+    - gains
+    - losses
+    - tax_due
+    - review_count
+    - status
+    - accountant_email
+    export: true
+    roles:
+    - accountant
+  - key: approvals
+    type: approvals
+    title: Report da approvare
+    approvals:
+    - cpa_review
+    roles:
+    - accountant
   - key: account
     type: account
-    title: Crediti
+    title: Piano e collegamenti
     roles:
-    - contribuente
+    - taxpayer
   billing:
     modes:
-    - credits
+    - subscription
     currency: eur
-    signupCredits: 0
-    metering:
-      creditEur: 0.01
-      markupPct: 50
-      drivers:
-      - llm_tokens
-      - compute
-    costs:
-      agent:importer:
-        estimate: 100
-        metered: true
-      agent:analyst:
-        estimate: 100
-        metered: true
-    packs:
-    - key: fascia_s
-      credits: 2900
-      price: 29
-      label: Fino a 200 transazioni
-    - key: fascia_m
-      credits: 7900
-      price: 79
-      label: Fino a 2.000 transazioni
-    - key: fascia_l
-      credits: 19900
+    plans:
+    - key: fascia_200
+      price: 49
+      interval: year
+      label: Fino a 200 transazioni/anno
+      includes:
+      - 200 transazioni
+      - quadri RT e RW
+      - report PDF ed Excel
+    - key: fascia_2000
+      price: 99
+      interval: year
+      label: Fino a 2.000 transazioni/anno
+      includes:
+      - 2.000 transazioni
+      - delega al commercialista
+    - key: fascia_illimitata
       price: 199
+      interval: year
       label: Oltre 2.000 transazioni
+      includes:
+      - transazioni illimitate
+      - delega al commercialista
+  notifications:
+    emailOnRunDone: true
   extensions:
-  - key: exchange_api_keys
-    description: 'Collegamento degli exchange con chiavi API in sola lettura cifrate: non ancora disponibile (richiede credenziali
-      del cliente). Per ora CSV incollati come testo.'
-  - key: file_upload
-    description: 'Caricamento di file CSV non disponibile: il contribuente incolla il contenuto.'
-  - key: pdf_excel_export
-    description: 'Export PDF ed Excel: oggi il report è stampabile (salva come PDF); l''Excel non è ancora generabile.'
-  - key: evm_explorers
-    description: 'Explorer on-chain che richiedono chiave (es. Etherscan) non inclusi: solo Bitcoin via Blockstream; altre
-      reti tramite CSV.'
+  - key: exchange_signed_api
+    description: 'Molti exchange (Binance, Kraken, Coinbase) richiedono richieste firmate (HMAC) con la chiave: il runtime
+      non può firmarle. Oggi l''importazione da exchange funziona solo per endpoint con la sola chiave in header; per gli
+      altri si usano i CSV di esportazione.'
+  - key: excel_export
+    description: 'L''esportazione Excel nativa non è disponibile: il prospetto è stampabile in PDF e le tabelle si scaricano
+      in CSV (apribile in Excel).'

@@ -1,8 +1,8 @@
 # PraticaFacile
 
-_Apri la tua impresa senza andare in studio._
+_Apri o modifica la tua impresa senza andare in studio._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (11 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,12 +10,11 @@ Voglio un'app chiamata PraticaFacile per chi deve aprire o gestire una piccola i
 
 ## Features not expressible today (spec.extensions)
 
-- **email_documenti**: Email al cliente con documenti e prossimi passi (notaio, firma digitale, versamento del capitale) dopo l'approvazione dell'avvocato: le notifiche email non sono ancora disponibili; il cliente trova lo stato e i documenti nella pratica.
-- **promemoria_pratica_incompleta**: Promemoria email se la pratica resta a metà per più di tre giorni: non disponibile, richiede notifiche email.
-- **assegnazione_avvocato**: Assegnazione di ogni pratica a un avvocato specifico: oggi la coda è condivisa tra gli avvocati; l'assegnazione richiede logica personalizzata.
-- **pagamento_all_invio**: Il prezzo per tipo di pratica è un costo fisso in crediti (1 credito = 1 EUR) acquistati con carta prima dell'invio.
+- **prezzi_per_tipo**: 1 credito = 1 €. I prezzi (SRL 290, ditta 120, modifica statutaria 190) sono fissati nei trigger carica_*; se l'admin cambia il listino va aggiornato anche il trigger. Il pagamento con carta avviene acquistando i crediti nella pagina Crediti prima dell'invio.
+- **assegnazione_avvocato**: L'assegnazione dell'avvocato (campo lawyer_email) la fa l'admin dalla pagina dati /admin/data; non c'è assegnazione automatica.
+- **data_creazione_automatica**: Il campo creata_il usa come default la data odierna ({date}); se il runtime non lo compila da solo va impostato al salvataggio, perché il promemoria dopo 3 giorni parte da questa data.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -26,24 +25,20 @@ Voglio un'app chiamata PraticaFacile per chi deve aprire o gestire una piccola i
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### new
-![03-new.png](screenshots/03-new.png)
+### nuova
+![03-nuova.png](screenshots/03-nuova.png)
 
 ### pratiche
 ![04-pratiche.png](screenshots/04-pratiche.png)
 
+### documenti
+![05-documenti.png](screenshots/05-documenti.png)
+
 ### coda
-![05-coda.png](screenshots/05-coda.png)
+![06-coda.png](screenshots/06-coda.png)
 
-### tutte
-![06-tutte.png](screenshots/06-tutte.png)
-
-### listino
-![07-listino.png](screenshots/07-listino.png)
-
-### admin
-![08-admin.png](screenshots/08-admin.png)
+### revisione
+![07-revisione.png](screenshots/07-revisione.png)
 
 ### account
-![09-account.png](screenshots/09-account.png)
-
+![08-account.png](screenshots/08-account.png)

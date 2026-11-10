@@ -1,8 +1,8 @@
 # Ricerca Forense
 
-_Ricerca giuridica con citazioni puntuali, per avvocati e uffici legali._
+_L'assistente di ricerca giuridica per avvocati e uffici legali._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (18 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,12 +10,12 @@ Voglio realizzare Ricerca Forense, un assistente di ricerca giuridica per avvoca
 
 ## Features not expressible today (spec.extensions)
 
-- **file_upload**: Caricamento di PDF e Word non ancora disponibile: l'avvocato incolla il testo o un link nella pratica tramite la chat. Servirà l'upload con estrazione del testo e indicizzazione.
-- **licensed_case_law**: Giurisprudenza da banche dati a licenza (DeJure, Pluris, ecc.) richiede credenziali dell'abbonamento dello studio: connettore non ancora disponibile. Per ora solo fonti pubbliche istituzionali.
-- **word_export**: Esportazione delle risposte in Word (.docx) non disponibile: per ora la risposta è stampabile e copiabile.
-- **firm_scope**: Condivisione delle pratiche per singolo avvocato tramite inviti per record; i posti dello studio sono gestiti dall'admin con ruolo su invito, nessuna registrazione libera.
+- **giurisprudenza_licenziata**: Collegamento alle banche dati di giurisprudenza a licenza (legittimità e merito) con l'abbonamento dello studio: serve scegliere il fornitore e il suo host API per aggiungere lo strumento http con la credenziale 'banca_dati_giurisprudenza'. Finora l'agente cita solo giurisprudenza letta su fonti istituzionali aperte.
+- **export_word**: Esportazione delle risposte della chat in Word (.docx) come base di un parere: non ancora disponibile; per ora il testo si copia dalla chat.
+- **indicizzazione_documenti**: I documenti sono letti dall'agente al bisogno tramite read_file nello spazio privato dell'utente; un indice di ricerca semantico dedicato per pratica non è ancora disponibile. Il file di un collega con cui la pratica è condivisa potrebbe non essere apribile dall'agente.
+- **posti_per_utente**: Il canone mensile per utente è modellato come piano di abbonamento; la fatturazione automatica per numero di posti dello studio (un solo pagamento cumulativo) non è prevista.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -26,18 +26,23 @@ Voglio realizzare Ricerca Forense, un assistente di ricerca giuridica per avvoca
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### assistente
-![03-assistente.png](screenshots/03-assistente.png)
+### assistant
+![03-assistant.png](screenshots/03-assistant.png)
 
-### pratiche
-![04-pratiche.png](screenshots/04-pratiche.png)
+### new_matter
+![04-new_matter.png](screenshots/04-new_matter.png)
 
-### documenti
-![05-documenti.png](screenshots/05-documenti.png)
+### matters
+![05-matters.png](screenshots/05-matters.png)
+
+### upload_document
+![06-upload_document.png](screenshots/06-upload_document.png)
+
+### documents
+![07-documents.png](screenshots/07-documents.png)
 
 ### account
-![06-account.png](screenshots/06-account.png)
+![08-account.png](screenshots/08-account.png)
 
 ### admin
-![07-admin.png](screenshots/07-admin.png)
-
+![09-admin.png](screenshots/09-admin.png)

@@ -2,21 +2,22 @@
 
 _Viaggi su misura, rifiniti da un esperto locale._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (20 checks passed)
 
 ## Description given to the app builder (Italian)
 
 ViaggioSartoriale propone viaggi su misura costruiti con un esperto locale. Il viaggiatore, anche senza account, compila un modulo con destinazione o regione, date, numero di persone, budget, interessi (enogastronomia, arte, natura, sport) e ritmo preferito. Una squadra di agenti prepara tre proposte di itinerario diverse usando open data degli enti turistici, OpenStreetMap e Wikidata per luoghi, distanze ed eventi; non uso dati delle agenzie di viaggio online. Le proposte vengono assegnate a un esperto locale registrato sulla piattaforma per quella zona, che le rivede, aggiunge consigli personali e strutture di fiducia, e le approva. Entro 24 ore il viaggiatore riceve un'email con le tre proposte e un link per sceglierne una e chiedere modifiche in chat con l'esperto. Quando conferma, paga un acconto con carta e l'esperto riceve la sua parte. Il viaggiatore vede solo le proprie richieste, l'esperto solo quelle della sua zona, l'admin tutto. Monetizzazione: commissione sul viaggio venduto. Interfaccia in italiano e inglese.
 
+## Functional test: what did not pass
+
+- **saved record shown where its collection is read** (view my_requests): a record was saved in requests (by admin-data, admin-data, user) but the page does not show it (as user) _(warning)_
+
 ## Features not expressible today (spec.extensions)
 
-- **anonymous_request**: Anonymous travelers cannot submit a request yet (an agent run needs an owner): the traveler signs in with a one-click email link before sending the form.
-- **email_delivery**: Email with the three proposals within 24 hours is not available (no notifications yet): the traveler sees the proposals in the app once the expert approves.
-- **expert_area_assignment**: Assigning each request to the expert registered for its area, and showing the expert only requests of that area, needs custom logic: for now every expert sees the review queue and the admin should assign it.
-- **expert_chat**: Live chat between traveler and expert is not available: the assistant collects change requests and the expert validates them.
-- **deposit_payout**: Per-trip deposit checkout and the split to the expert's Stripe Connect account (platform commission 15%) must be wired to the confirmed proposal; experts connect their Stripe account first.
+- **expert_chat**: A live chat between traveler and human expert is not available yet: change requests and replies go through the change_request and expert_reply fields of the proposal, with email notifications.
+- **deposit_checkout**: The card deposit on confirmation and the payout to the expert (via Stripe Connect on the experts' accounts) must be wired in the studio; the expert must connect their payout account.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,24 +28,23 @@ ViaggioSartoriale propone viaggi su misura costruiti con un esperto locale. Il v
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### new
-![03-new.png](screenshots/03-new.png)
+### request
+![03-request.png](screenshots/03-request.png)
+
+### my_requests
+![04-my_requests.png](screenshots/04-my_requests.png)
 
 ### trips
-![04-trips.png](screenshots/04-trips.png)
+![05-trips.png](screenshots/05-trips.png)
 
-### reviews
-![05-reviews.png](screenshots/05-reviews.png)
+### review
+![06-review.png](screenshots/06-review.png)
 
-### proposals
-![06-proposals.png](screenshots/06-proposals.png)
+### expert_admin
+![07-expert_admin.png](screenshots/07-expert_admin.png)
 
-### refine
-![07-refine.png](screenshots/07-refine.png)
+### experts_list
+![08-experts_list.png](screenshots/08-experts_list.png)
 
-### experts_admin
-![08-experts_admin.png](screenshots/08-experts_admin.png)
-
-### account
-![09-account.png](screenshots/09-account.png)
-
+### all_requests
+![09-all_requests.png](screenshots/09-all_requests.png)

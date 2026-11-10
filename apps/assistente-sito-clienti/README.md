@@ -1,8 +1,8 @@
 # SportelloVivo
 
-_Lo sportello del tuo sito, aperto 24 ore su 24._
+_Lo sportello clienti sempre aperto sul tuo sito._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (18 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,12 @@ Vorrei creare SportelloVivo, un assistente conversazionale che le aziende metton
 
 ## Features not expressible today (spec.extensions)
 
-- **ticket_email**: Ticket arrive by email to customer service: notifications are not available yet. For now tickets are stored in the tickets collection; the admin sees only tickets from their own session until an email/forward step exists.
-- **embed_widget**: Embeddable public chat snippet (script/iframe) for the customer's site: the runtime offers the floating chat view; an embed code is not yet part of the manifest.
-- **browser_voice**: Voice in the browser (speech in/out) is not declared in the manifest yet; the phone channel is declared, number set by Activate phone.
-- **crm_calendar**: Reading/writing contacts in Salesforce/HubSpot and booking appointments in the customer's calendar need the company's own credentials (OAuth): not available yet.
-- **multi_company**: Each company runs its own instance of the app (own admin, knowledge, billing). Metrics such as resolution rate and per-conversation credits on anonymous visitors' chats need the runtime to attribute visitor conversations to the company; the dashboard shows runs and tickets for now.
+- **salesforce_crm**: Salesforce needs OAuth sign-in, not available yet; only HubSpot (API key) is connected, and only to create contacts from tickets. Reading CRM contacts during anonymous chats is not allowed.
+- **calendar_booking**: Booking appointments in the customer's own calendar (Google/Microsoft 365) needs OAuth, not available yet.
+- **resolution_rate**: The anonymous agent cannot write conversation logs, so resolution rate and a list of unanswered questions are approximated by runs and tickets; a precise rate needs a code extension.
+- **embed_widget**: Embedding: the public chat at /v/chat is embedded with an iframe on the company site; the phone number is activated by the owner in the studio.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -30,15 +29,17 @@ Vorrei creare SportelloVivo, un assistente conversazionale che le aziende metton
 ### chat
 ![03-chat.png](screenshots/03-chat.png)
 
-### setup
-![04-setup.png](screenshots/04-setup.png)
+### ticket
+![04-ticket.png](screenshots/04-ticket.png)
+
+### settings
+![05-settings.png](screenshots/05-settings.png)
 
 ### dashboard
-![05-dashboard.png](screenshots/05-dashboard.png)
+![06-dashboard.png](screenshots/06-dashboard.png)
 
 ### history
-![06-history.png](screenshots/06-history.png)
+![07-history.png](screenshots/07-history.png)
 
 ### account
-![07-account.png](screenshots/07-account.png)
-
+![08-account.png](screenshots/08-account.png)

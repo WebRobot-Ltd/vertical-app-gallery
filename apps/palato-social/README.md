@@ -1,8 +1,8 @@
 # PalatoSocial
 
-_La presenza social del tuo locale, con un piano editoriale ogni mese._
+_Il piano editoriale social del tuo locale, pronto ogni mese._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (15 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,14 +10,12 @@ PalatoSocial aiuta ristoranti e locali a gestire la propria presenza social con 
 
 ## Features not expressible today (spec.extensions)
 
-- **video_upload_edit**: Non disponibili: caricamento video dall'app mobile e montaggio automatico con sottotitoli e musica (nessun campo file). Per ora il piano indica cosa riprendere; i video si gestiscono fuori dall'app.
-- **social_publishing**: Non disponibile: pubblicazione automatica su Instagram, TikTok e Facebook, che richiede il collegamento degli account di ogni cliente. Per ora i contenuti approvati si pubblicano a mano.
-- **monthly_metrics_report**: Non disponibile: report di fine mese con copertura e interazioni, che richiede le statistiche degli account social collegati; anche la notifica del report via email manca.
-- **agency_multi_client**: Il ruolo agenzia partner (su invito) esiste, ma vedere i contenuti di tutti i propri clienti non è esprimibile con le collezioni attuali senza esporre dati tra clienti: serve una funzione dedicata.
-- **places_api_key**: Google Places richiede una chiave API, che non può stare nel manifest. Va configurata dal proprietario come credenziale lato piattaforma prima della pubblicazione.
-- **edit_plan_items**: L'approvazione è sull'intero piano; la modifica del singolo contenuto non è ancora disponibile (si chiede una nuova versione all'agente).
+- **video_editing**: Montaggio automatico dei video caricati dall'app mobile con sottotitoli e musica: non disponibile (caricamento video e editing non supportati).
+- **social_publishing**: Pubblicazione automatica su Instagram, TikTok e Facebook collegando gli account: non disponibile (richiede OAuth con i servizi Meta e TikTok).
+- **monthly_metrics_report**: Report di fine mese con copertura e interazioni: richiede le API social collegate via OAuth, non ancora disponibili.
+- **mobile_upload**: App mobile per caricare i video girati in sala o in cucina: non disponibile finché non è supportato il caricamento video.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -28,21 +26,26 @@ PalatoSocial aiuta ristoranti e locali a gestire la propria presenza social con 
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### new_analysis
-![03-new_analysis.png](screenshots/03-new_analysis.png)
+### venue
+![03-venue.png](screenshots/03-venue.png)
 
-### analyses
-![04-analyses.png](screenshots/04-analyses.png)
+### new_plan
+![04-new_plan.png](screenshots/04-new_plan.png)
 
 ### plans
 ![05-plans.png](screenshots/05-plans.png)
 
-### plan_archive
-![06-plan_archive.png](screenshots/06-plan_archive.png)
+### posts_list
+![06-posts_list.png](screenshots/06-posts_list.png)
 
-### to_approve
-![07-to_approve.png](screenshots/07-to_approve.png)
+### post_edit
+![07-post_edit.png](screenshots/07-post_edit.png)
+
+### approvals_view
+![08-approvals_view.png](screenshots/08-approvals_view.png)
+
+### clients
+![09-clients.png](screenshots/09-clients.png)
 
 ### account
-![08-account.png](screenshots/08-account.png)
-
+![10-account.png](screenshots/10-account.png)

@@ -1,8 +1,8 @@
 # Bilancio Carbonio
 
-_Calcola le emissioni della tua PMI e prepara il report di sostenibilità._
+_Il bilancio delle emissioni della tua PMI, pronto da firmare._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (15 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,12 +10,11 @@ Ci serve Bilancio Carbonio, un'app per PMI che devono calcolare le proprie emiss
 
 ## Features not expressible today (spec.extensions)
 
-- **january_email_reminder**: Email reminder to enter new data each January is not available yet: the app creates the January comparison/reminder as a record in the user's watch, visible in the app.
-- **offset_purchase**: Buying offsets inside the app is not available: the agent proposes verified registry projects and links to the provider; payment happens with the provider.
-- **file_upload**: Uploading bills or spreadsheets is not available yet: users enter figures in the form or paste text in notes.
-- **consultant_invite_scope**: Inviting a consultant to a single company's report: the consultant role is assigned by invite and validates via the approvals view; per-company sharing of the report needs per-record invitations to be wired in the studio.
+- **offset_checkout**: L'acquisto diretto dei crediti di compensazione con pagamento in app non è disponibile: l'app propone i progetti e il team contatta l'azienda.
+- **consultant_report_access**: Il consulente decide sull'approvazione con il riepilogo del report; la lettura integrale del report del cliente è limitata al profilo azienda.
+- **january_comparison**: A gennaio l'app invia il promemoria; il confronto con l'anno precedente viene generato dal report quando l'azienda inserisce i nuovi dati (nessun agente globale legge i dati di tutti i clienti).
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -26,24 +25,26 @@ Ci serve Bilancio Carbonio, un'app per PMI che devono calcolare le proprie emiss
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### new_inventory
-![03-new_inventory.png](screenshots/03-new_inventory.png)
+### company
+![03-company.png](screenshots/03-company.png)
 
-### inventories_history
-![04-inventories_history.png](screenshots/04-inventories_history.png)
+### new_report
+![04-new_report.png](screenshots/04-new_report.png)
+
+### reports
+![05-reports.png](screenshots/05-reports.png)
 
 ### trend
-![05-trend.png](screenshots/05-trend.png)
+![06-trend.png](screenshots/06-trend.png)
 
-### watches
-![06-watches.png](screenshots/06-watches.png)
+### validation
+![07-validation.png](screenshots/07-validation.png)
 
-### offset_chat
-![07-offset_chat.png](screenshots/07-offset_chat.png)
+### offset_request
+![08-offset_request.png](screenshots/08-offset_request.png)
 
-### validations
-![08-validations.png](screenshots/08-validations.png)
+### offset_list
+![09-offset_list.png](screenshots/09-offset_list.png)
 
 ### account
-![09-account.png](screenshots/09-account.png)
-
+![10-account.png](screenshots/10-account.png)

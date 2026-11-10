@@ -1,8 +1,8 @@
 # Auto Garantite
 
-_Auto usate garantite: scegli con un consulente AI, prenota e acquista online._
+_Auto usate garantite: scegli con l'assistente, prenota o avvia l'acquisto online._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (22 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,12 +10,10 @@ Descrivo solo lo strato software di un servizio di auto usate garantite: il port
 
 ## Features not expressible today (spec.extensions)
 
-- **acconto_carta**: Versamento dell'acconto online con carta (Stripe Connect verso l'azienda) legato a una singola pratica e al suo importo: il manifest non esprime pagamenti per transazione su una collezione. Da collegare dopo la presa in carico.
-- **email_aggiornamenti**: Email al cliente a ogni passaggio della pratica (presa in carico, acconto, chiusura): le notifiche non sono ancora disponibili.
-- **upload_documenti**: Caricamento di foto veicolo e documenti del cliente: i file non sono ancora disponibili; si usano link o testo incollato.
-- **visibilita_operatore**: L'operatore dovrebbe vedere solo le pratiche assegnate e l'admin tutte: le pratiche sono dei clienti (ownedBy user), serve un filtro per assegnatario e un accesso admin trasversale non esprimibili oggi.
+- **deposit_amount**: L'acconto è modellato come pagamento Stripe a importo fisso (pack 'acconto', 500 €). Un importo variabile per veicolo e l'imputazione automatica alla pratica non sono ancora disponibili: l'operatore porta la pratica a 'Acconto versato'.
+- **vehicle_detail_filters**: Il catalogo mostra le schede in ordine di prezzo; filtri interattivi dell'utente (marca, prezzo, km) e pagina di dettaglio con galleria foto non sono ancora disponibili: l'assistente in chat copre la ricerca per esigenze.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -26,27 +24,35 @@ Descrivo solo lo strato software di un servizio di auto usate garantite: il port
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### catalogo
-![03-catalogo.png](screenshots/03-catalogo.png)
+### catalog
+![03-catalog.png](screenshots/03-catalog.png)
 
-### consulente
-![04-consulente.png](screenshots/04-consulente.png)
+### assistant
+![04-assistant.png](screenshots/04-assistant.png)
 
-### salvati
-![05-salvati.png](screenshots/05-salvati.png)
+### saved
+![05-saved.png](screenshots/05-saved.png)
 
-### appuntamenti
-![06-appuntamenti.png](screenshots/06-appuntamenti.png)
+### save_form
+![06-save_form.png](screenshots/06-save_form.png)
 
-### pratiche
-![07-pratiche.png](screenshots/07-pratiche.png)
+### book
+![07-book.png](screenshots/07-book.png)
 
-### coda_operatore
-![08-coda_operatore.png](screenshots/08-coda_operatore.png)
+### start_deal
+![08-start_deal.png](screenshots/08-start_deal.png)
 
-### admin_catalogo
-![09-admin_catalogo.png](screenshots/09-admin_catalogo.png)
+### deals
+![09-deals.png](screenshots/09-deals.png)
 
-### admin_trattative
-![10-admin_trattative.png](screenshots/10-admin_trattative.png)
+### deal_edit
+![10-deal_edit.png](screenshots/10-deal_edit.png)
 
+### vehicle_form
+![11-vehicle_form.png](screenshots/11-vehicle_form.png)
+
+### appointments_admin
+![12-appointments_admin.png](screenshots/12-appointments_admin.png)
+
+### account
+![13-account.png](screenshots/13-account.png)

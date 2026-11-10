@@ -1,8 +1,8 @@
-# Energy Grid Cockpit
+# GridWise Energy
 
-_Produzione, consumo e batterie della tua rete locale, con un agente che ti consiglia._
+_Cruscotto e agenti per la tua rete energetica locale._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (12 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,12 +10,9 @@ Descrivo solo lo strato software di un sistema di gestione dell'energia rinnovab
 
 ## Features not expressible today (spec.extensions)
 
-- **email_report**: Sending the periodic report by email is not available yet: the report is generated on schedule and shown in the app.
-- **power_limit_enforcement**: Plan limits by managed kW (sum of assets power_kw) are not enforced automatically; the owner checks them for now.
-- **technician_cross_user_alarms**: Technicians see alarms through the derived role on alarms.technician_email; visibility of alarms owned by another user's records needs runtime support or manual check.
-- **webhook_user_mapping**: Each operator's metering system posts to /api/hooks/measurement_hook with the hook secret; mapping the secret to the operator account must be configured at publish.
+- **webhook_owner**: The metering webhook must identify the operator (per-operator hook secret) so readings are saved in that operator's records; device hardware control is out of scope.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -26,30 +23,26 @@ Descrivo solo lo strato software di un sistema di gestione dell'energia rinnovab
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### overview
-![03-overview.png](screenshots/03-overview.png)
+### dashboard
+![03-dashboard.png](screenshots/03-dashboard.png)
 
-### power_chart
-![04-power_chart.png](screenshots/04-power_chart.png)
+### add_asset
+![04-add_asset.png](screenshots/04-add_asset.png)
 
-### battery_cards
-![05-battery_cards.png](screenshots/05-battery_cards.png)
+### assets
+![05-assets.png](screenshots/05-assets.png)
 
-### open_alarms
-![06-open_alarms.png](screenshots/06-open_alarms.png)
+### watches
+![06-watches.png](screenshots/06-watches.png)
 
-### assets_view
-![07-assets_view.png](screenshots/07-assets_view.png)
+### reports_setup
+![07-reports_setup.png](screenshots/07-reports_setup.png)
 
-### suggestions_view
-![08-suggestions_view.png](screenshots/08-suggestions_view.png)
+### advice_list
+![08-advice_list.png](screenshots/08-advice_list.png)
 
-### alarms_view
-![09-alarms_view.png](screenshots/09-alarms_view.png)
-
-### reports_view
-![10-reports_view.png](screenshots/10-reports_view.png)
+### tickets
+![09-tickets.png](screenshots/09-tickets.png)
 
 ### account
-![11-account.png](screenshots/11-account.png)
-
+![10-account.png](screenshots/10-account.png)

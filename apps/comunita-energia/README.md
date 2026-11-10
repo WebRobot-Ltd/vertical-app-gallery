@@ -1,8 +1,8 @@
-# ComunitàEnergia
+# ComunitaEnergia
 
-_Gestisci la tua comunità energetica rinnovabile: ripartizione, incentivi e rendiconti mensili._
+_Gestisci la tua comunità energetica rinnovabile: ripartizione, incentivi e rendiconti._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (17 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,11 +10,9 @@ ComunitaEnergia e una piattaforma per gestire le comunita energetiche rinnovabil
 
 ## Features not expressible today (spec.extensions)
 
-- **email_reports**: Invio via email dei rendiconti e degli avvisi sugli andamenti anomali: le notifiche non sono ancora disponibili. Gli avvisi compaiono nella vista 'Andamenti anomali' e il rendiconto nell'area dei membri.
-- **file_upload**: Caricamento di file di misure (CSV, export del distributore) non ancora disponibile: i dati si incollano come testo o si registrano nella vista 'Dati di misura'. Il collegamento automatico ai portali dei distributori (credenziali per comunità) non è disponibile.
-- **member_visibility**: I membri vedono solo le proprie righe grazie alla condivisione per record (viewer): l'amministratore deve invitarli dalla scheda del membro.
+- **data_link**: Collegamento automatico ai dati di misura (portale distributore/GSE) non disponibile: i dati si caricano come file.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -28,33 +26,29 @@ ComunitaEnergia e una piattaforma per gestire le comunita energetiche rinnovabil
 ### new_run
 ![03-new_run.png](screenshots/03-new_run.png)
 
-### history
-![04-history.png](screenshots/04-history.png)
-
-### members_list
-![05-members_list.png](screenshots/05-members_list.png)
-
-### readings_list
-![06-readings_list.png](screenshots/06-readings_list.png)
-
-### rules_list
-![07-rules_list.png](screenshots/07-rules_list.png)
+### runs
+![04-runs.png](screenshots/04-runs.png)
 
 ### approvals
-![08-approvals.png](screenshots/08-approvals.png)
+![05-approvals.png](screenshots/05-approvals.png)
 
-### alerts_list
-![09-alerts_list.png](screenshots/09-alerts_list.png)
+### community_form
+![06-community_form.png](screenshots/06-community_form.png)
 
-### community_shares
-![10-community_shares.png](screenshots/10-community_shares.png)
+### member_form
+![07-member_form.png](screenshots/07-member_form.png)
 
-### my_area
-![11-my_area.png](screenshots/11-my_area.png)
+### members_list
+![08-members_list.png](screenshots/08-members_list.png)
 
-### watches
-![12-watches.png](screenshots/12-watches.png)
+### rules_form
+![09-rules_form.png](screenshots/09-rules_form.png)
+
+### overview
+![10-overview.png](screenshots/10-overview.png)
+
+### my_share
+![11-my_share.png](screenshots/11-my_share.png)
 
 ### account
-![13-account.png](screenshots/13-account.png)
-
+![12-account.png](screenshots/12-account.png)

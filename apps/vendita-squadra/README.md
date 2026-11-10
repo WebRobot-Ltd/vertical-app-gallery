@@ -2,11 +2,15 @@
 
 _Sei agenti AI per trovare, qualificare e contattare i clienti giusti._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (11 checks passed)
 
 ## Description given to the app builder (Italian)
 
 VenditaSquadra è un team di sei agenti per vendite e marketing diretto rivolto a PMI B2B. Il responsabile commerciale descrive il cliente ideale (settore, dimensione, area geografica, ruolo del decisore) e l'offerta da proporre. Il primo agente cerca aziende in target su fonti pubbliche come registri imprese aperti, siti istituzionali e notizie; il secondo arricchisce ogni azienda con informazioni utili; il terzo valuta e ordina i lead; il quarto scrive email personalizzate di primo contatto; il quinto gestisce i follow-up programmati dopo tre e sette giorni; il sesto legge le risposte, le classifica (interessato, non ora, non interessato) e propone il passo successivo. Prima dell'invio delle prime email di ogni campagna il responsabile approva testi e lista. Tutti i lead e le interazioni devono essere sincronizzati in automatico con il CRM aziendale, come HubSpot o Salesforce, tramite collegamento autorizzato. Ogni lunedì arriva un report con tassi di apertura, risposte e appuntamenti fissati. Ogni azienda vede solo le proprie campagne. Abbonamento mensile più crediti per contatto. In italiano e inglese.
+
+## Design checks (who fills each collection)
+
+- collection replies: trigger on_reply reads it, but nothing writes it — add a form view on it (the users fill their own records), an agent tool that writes or appends to it, or a trigger write; or, for a list the admins keep, make it ownedBy shared (admins fill it on the data page)
 
 ## Features not expressible today (spec.extensions)
 
@@ -14,3 +18,37 @@ VenditaSquadra è un team di sei agenti per vendite e marketing diretto rivolto 
 - **email_sending**: Sending emails and tracking opens/replies is not available yet (no notifications or mailbox connectors). Approved drafts are shown in the app for the manager to send from their own mail; opens are reported as 'not tracked'; replies are pasted into the replies collection to be classified.
 - **replies_collection**: The trigger on_reply starts when a 'replies' record is inserted by the user (pasted text, company, campaign); a dedicated input view for it still has to be added in the studio.
 
+## Screenshots (interpretive runtime, no data)
+
+### home-anon
+![00-home-anon.png](screenshots/00-home-anon.png)
+
+### home-mobile
+![01-home-mobile.png](screenshots/01-home-mobile.png)
+
+### home
+![02-home.png](screenshots/02-home.png)
+
+### new_campaign
+![03-new_campaign.png](screenshots/03-new_campaign.png)
+
+### campaigns
+![04-campaigns.png](screenshots/04-campaigns.png)
+
+### lead_list
+![05-lead_list.png](screenshots/05-lead_list.png)
+
+### interaction_list
+![06-interaction_list.png](screenshots/06-interaction_list.png)
+
+### approval_inbox
+![07-approval_inbox.png](screenshots/07-approval_inbox.png)
+
+### followups
+![08-followups.png](screenshots/08-followups.png)
+
+### reports
+![09-reports.png](screenshots/09-reports.png)
+
+### account
+![10-account.png](screenshots/10-account.png)

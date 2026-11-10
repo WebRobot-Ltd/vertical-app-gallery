@@ -1,8 +1,8 @@
-# MatchLab
+# Match Analytics
 
-_Dalle partite già raccolte a schede, metriche e risposte in chat._
+_Dai dati di gara alla scheda partita, con metriche confrontabili._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (12 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,11 +10,10 @@ Descrivo solo lo strato software di analisi delle partite: il portale che elabor
 
 ## Features not expressible today (spec.extensions)
 
-- **email_report**: Sending the post-match report by email to the staff is not available yet; the report is in the run history and printable.
-- **file_upload**: Uploading files is not available yet; data is linked by URL or pasted as text.
-- **pitch_maps**: Graphical pitch maps/heatmaps are not available as a block; the agent describes zones in tables and charts.
+- **pitch_map**: Heat/play maps on a pitch diagram are not available (the map view is geographic only): zones are shown as a 3x3 table and charts for now.
+- **data_link**: Direct connection to provider feeds is not available yet: data comes from file uploads (CSV, JSON, Excel).
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -28,24 +27,29 @@ Descrivo solo lo strato software di analisi delle partite: il portale che elabor
 ### new_match
 ![03-new_match.png](screenshots/03-new_match.png)
 
-### matches
-![04-matches.png](screenshots/04-matches.png)
+### history
+![04-history.png](screenshots/04-history.png)
 
 ### dashboard
 ![05-dashboard.png](screenshots/05-dashboard.png)
 
-### possession_chart
-![06-possession_chart.png](screenshots/06-possession_chart.png)
+### possession_trend
+![06-possession_trend.png](screenshots/06-possession_trend.png)
 
-### metrics_chart
-![07-metrics_chart.png](screenshots/07-metrics_chart.png)
+### metrics_table
+![07-metrics_table.png](screenshots/07-metrics_table.png)
 
-### cards_table
-![08-cards_table.png](screenshots/08-cards_table.png)
+### zones_table
+![08-zones_table.png](screenshots/08-zones_table.png)
 
-### chat
-![09-chat.png](screenshots/09-chat.png)
+### patterns_table
+![09-patterns_table.png](screenshots/09-patterns_table.png)
+
+### assistant
+![10-assistant.png](screenshots/10-assistant.png)
+
+### settings
+![11-settings.png](screenshots/11-settings.png)
 
 ### account
-![10-account.png](screenshots/10-account.png)
-
+![12-account.png](screenshots/12-account.png)

@@ -1,20 +1,14 @@
 # FlottaEfficiente
 
-_Il costo reale per chilometro di ogni veicolo aziendale, e una flotta più snella._
+_Meno costi per chilometro, una flotta su misura._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (15 checks passed)
 
 ## Description given to the app builder (Italian)
 
 Vorrei FlottaEfficiente, uno strumento per aziende con flotte di veicoli aziendali. Il fleet manager carica l'elenco dei veicoli (modello, alimentazione, chilometraggio, costo mensile, assegnatario) e importa ogni mese un CSV con chilometri percorsi, rifornimenti o ricariche e manutenzioni. Un agente calcola il costo totale per chilometro di ogni veicolo, individua quelli sottoutilizzati o troppo costosi e propone una flotta ottimizzata: quali mezzi eliminare, quali sostituire con elettrici o condividere tra dipendenti, con il risparmio stimato annuo. Il fleet manager approva o scarta ogni proposta. Ogni mese riceve un report via email con indicatori e anomalie. Ogni azienda vede solo la propria flotta. Abbonamento per numero di veicoli.
 
-## Features not expressible today (spec.extensions)
-
-- **monthly_email**: Monthly report by email with indicators and anomalies: email notifications are not available yet. The report is produced in the app (Monthly reports) after each import.
-- **file_upload**: CSV file upload is not available yet: the vehicle list and the monthly CSV are pasted as text.
-- **vehicle_cap**: Enforcing the vehicle limit of each subscription plan (10/30/100) needs custom logic; for now it is a plan description.
-
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -25,21 +19,29 @@ Vorrei FlottaEfficiente, uno strumento per aziende con flotte di veicoli azienda
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### new
-![03-new.png](screenshots/03-new.png)
+### new_analysis
+![03-new_analysis.png](screenshots/03-new_analysis.png)
+
+### analyses
+![04-analyses.png](screenshots/04-analyses.png)
 
 ### fleet
-![04-fleet.png](screenshots/04-fleet.png)
+![05-fleet.png](screenshots/05-fleet.png)
 
-### proposals_list
-![05-proposals_list.png](screenshots/05-proposals_list.png)
+### add_vehicle
+![06-add_vehicle.png](screenshots/06-add_vehicle.png)
 
-### approve
-![06-approve.png](screenshots/06-approve.png)
+### records
+![07-records.png](screenshots/07-records.png)
 
-### reports
-![07-reports.png](screenshots/07-reports.png)
+### proposals_view
+![08-proposals_view.png](screenshots/08-proposals_view.png)
+
+### decisions
+![09-decisions.png](screenshots/09-decisions.png)
+
+### monthly
+![10-monthly.png](screenshots/10-monthly.png)
 
 ### account
-![08-account.png](screenshots/08-account.png)
-
+![11-account.png](screenshots/11-account.png)

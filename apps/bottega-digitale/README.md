@@ -1,8 +1,8 @@
 # Bottega Digitale
 
-_Il marketing della tua piccola impresa, gestito da un team di agenti AI._
+_Marketing e operazioni quotidiane per la tua piccola impresa, con un team di agenti AI._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (16 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,9 @@ Ci serve Bottega Digitale, un assistente che gestisce il marketing e le operazio
 
 ## Features not expressible today (spec.extensions)
 
-- **oauth_publishing**: Collegamento OAuth degli account Instagram/Facebook e Google Ads del cliente e pubblicazione reale di post e campagne dopo l'approvazione: non ancora disponibile. Per ora gli agenti producono contenuti e proposte approvate, da pubblicare a mano.
-- **email_report**: Invio email del report del lunedì: le notifiche non sono ancora disponibili. Il report è consultabile nella vista 'Report del lunedì'.
-- **consultant_multi_business**: Un consulente della rete che segue più imprese, con accesso in sola lettura ai dati di ciascuna impresa invitante e nessun accesso incrociato, richiede condivisione per record tra utenti: da progettare. Il ruolo consultant (su invito) è già previsto.
-- **ad_spend_separate**: La spesa pubblicitaria è pagata dal cliente direttamente a Google e ai social; l'app fattura solo l'abbonamento e i crediti.
-- **reviews_import**: Le recensioni vanno incollate dal titolare (nessuna connessione automatica a Google Business Profile per ora).
+- **oauth_publishing**: OAuth connection of Instagram, Facebook and Google Ads accounts is not available yet: approved posts and budget changes are recorded and ready, but real publishing on the platforms needs that integration.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -33,24 +29,26 @@ Ci serve Bottega Digitale, un assistente che gestisce il marketing e le operazio
 ### new_plan
 ![04-new_plan.png](screenshots/04-new_plan.png)
 
-### plans
-![05-plans.png](screenshots/05-plans.png)
+### plans_history
+![05-plans_history.png](screenshots/05-plans_history.png)
 
-### to_approve
-![06-to_approve.png](screenshots/06-to_approve.png)
+### approve
+![06-approve.png](screenshots/06-approve.png)
 
-### calendar
-![07-calendar.png](screenshots/07-calendar.png)
+### posts_list
+![07-posts_list.png](screenshots/07-posts_list.png)
 
-### reviews_list
-![08-reviews_list.png](screenshots/08-reviews_list.png)
+### add_review
+![08-add_review.png](screenshots/08-add_review.png)
 
-### watches
-![09-watches.png](screenshots/09-watches.png)
+### watch
+![09-watch.png](screenshots/09-watch.png)
 
-### ask
-![10-ask.png](screenshots/10-ask.png)
+### assistant
+![10-assistant.png](screenshots/10-assistant.png)
+
+### clients
+![11-clients.png](screenshots/11-clients.png)
 
 ### account
-![11-account.png](screenshots/11-account.png)
-
+![12-account.png](screenshots/12-account.png)

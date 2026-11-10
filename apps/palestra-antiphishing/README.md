@@ -2,7 +2,7 @@
 
 _Allena i dipendenti a riconoscere il phishing, un mese alla volta._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (14 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,13 @@ Mi serve Palestra Antiphishing, una piattaforma di formazione alla sicurezza per
 
 ## Features not expressible today (spec.extensions)
 
-- **employee_upload**: File upload is not available yet: the IT admin pastes the consenting employees (email, department, language) as text or adds them one by one; a CSV file import is missing.
-- **email_delivery**: Sending emails (monthly lessons, simulated phishing at random times) is not available yet. Missing: outbound email channel from a dedicated domain with SPF, DKIM, DMARC set up and warmed up, so mail reaches the inbox.
-- **tracking_and_report_button**: Per-employee tracking links with a webhook (POST /api/hooks/phish_event) and the Report button add-in for the mail client need to be wired by the owner; the webhook then redirects the clicker to the learn page.
-- **per_seat_billing**: The yearly plan is priced per employee; quantity-based seats are not yet expressible in the plan.
-- **video_pills**: Video pills are delivered as scripts and links; hosting and generating video is not available.
+- **dedicated_sending_domain**: Sending simulated phishing from a dedicated domain with SPF, DKIM and DMARC configured so mail reaches the inbox (and allowlisting by the customer's IT) is not available: the platform sends plain-text emails from its own sender.
+- **click_redirect_and_report_button**: The webhook records the event but cannot redirect the employee to the 'trained' page, nor generate per-message tracking links ({LINK}) or receive the mail-client Report button; this needs a small external redirector/add-in that POSTs {employee_email, department, campaign, type} to /api/hooks/phish_event. The webhook payload must also identify the company (record owner).
+- **random_send_time**: Sends are random per day inside the window; random time of day is not available (fixed hour).
+- **employee_quiz**: Employees do not sign in, so the quiz is included in the lesson email text; collecting their answers needs identity without an account (not available).
+- **per_employee_pricing**: Annual subscription is tiered by employee count (plans + create:employees quota), not billed per single seat.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,24 +27,26 @@ Mi serve Palestra Antiphishing, una piattaforma di formazione alla sicurezza per
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### learn
-![03-learn.png](screenshots/03-learn.png)
+### trained
+![03-trained.png](screenshots/03-trained.png)
 
-### new_campaign
-![04-new_campaign.png](screenshots/04-new_campaign.png)
+### new
+![04-new.png](screenshots/04-new.png)
 
-### campaigns
-![05-campaigns.png](screenshots/05-campaigns.png)
+### activities
+![05-activities.png](screenshots/05-activities.png)
 
-### employees_list
-![06-employees_list.png](screenshots/06-employees_list.png)
+### add_employee
+![06-add_employee.png](screenshots/06-add_employee.png)
 
-### program
-![07-program.png](screenshots/07-program.png)
+### employees
+![07-employees.png](screenshots/07-employees.png)
 
 ### dashboard
 ![08-dashboard.png](screenshots/08-dashboard.png)
 
-### account
-![09-account.png](screenshots/09-account.png)
+### program
+![09-program.png](screenshots/09-program.png)
 
+### account
+![10-account.png](screenshots/10-account.png)

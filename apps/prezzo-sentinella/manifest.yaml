@@ -4,22 +4,20 @@ metadata:
   slug: prezzosentinella
   displayName: PrezzoSentinella
   tagline:
-    it: Sai ogni giorno come prezzano i tuoi concorrenti, nel rispetto delle regole dei loro shop.
-    en: Know every day how your competitors price, while respecting their shops' rules.
+    it: Sai sempre come prezzano i tuoi concorrenti, nel rispetto dei loro termini.
+    en: Always know how your competitors price, within their terms of use.
   description:
-    it: 'Inserisci i tuoi prodotti e gli shop concorrenti da seguire: un agente verifica robots.txt e termini d''uso, legge
-      ogni giorno solo le pagine consentite degli shop diretti (mai comparatori) e storicizza prezzo, disponibilità e promozioni.
-      Un secondo agente abbina i prodotti e ti chiede conferma quando il match è incerto.'
-    en: 'Enter your products and the competitor shops to follow: an agent checks robots.txt and terms of use, reads only the
-      allowed pages of direct shops (never comparison sites) every day and stores price, availability and promotions. A second
-      agent matches products and asks you to confirm when a match is uncertain.'
+    it: 'Carica il tuo catalogo, indica gli shop concorrenti: un agente controlla ogni giorno prezzi, disponibilità e promozioni
+      solo sugli shop diretti che lo consentono, e ti avvisa via email.'
+    en: 'Upload your catalogue and pick competitor shops: an agent checks prices, availability and promotions every day, only
+      on direct shops that allow it, and alerts you by email.'
   langs:
   - it
   - en
   defaultLang: it
   timezone: Europe/Rome
 spec:
-  pattern: pipeline
+  pattern: dashboard
   branding:
     theme: light
     palette:
@@ -40,11 +38,11 @@ spec:
     - label:
         it: Come funziona
         en: How it works
-      href: '#come-funziona'
+      href: '#how'
     - label:
         it: Regole
         en: Rules
-      href: '#regole'
+      href: '#rules'
     cta:
       label:
         it: Accedi
@@ -57,33 +55,35 @@ spec:
       - home
     roles:
     - key: admin
-      label: Admin
       assignedBy: admin_emails
     - key: user
-      label:
-        it: Cliente
-        en: Customer
       assignedBy: signup
   limits:
-  - action: agent:loader
+  - action: create:products
+    max: 50
+    window: total
+    plans:
+      growth: 250
+      scale: 1000
+  - action: agent:importer
     per: user
-    max: 20
+    max: 10
     window: day
     roles:
     - user
   agents:
-  - key: loader
+  - key: importer
     role: main
-    description: Saves the user's products and competitor shops, and checks robots.txt and terms of use of every shop.
+    description: Reads the uploaded or pasted catalogue and saves the products.
     profile:
       inline:
-        display_name: PrezzoSentinella loader
+        display_name: PrezzoSentinella importer
         crews:
-        - id: loader
+        - id: importer
           engine: agent_sdk
           model: claude-sonnet-5-5
           max_turns: 30
-          max_budget_usd: 1.0
+          max_budget_usd: 0.5
           permission_mode: bypassPermissions
           disallowed_tools:
           - Bash
@@ -95,65 +95,46 @@ spec:
           - NotebookEdit
           - WebFetch
           - WebSearch
-          mcp_servers:
-          - name: webrobot
-            type: http
-            url: https://mcp-full.webrobot.eu/mcp
-            allow: all
-          system_prompt: 'You prepare a price-monitoring catalogue for one customer. Steps: (1) parse the pasted product list
-            (one per line: SKU; EAN; name; own price) and save every product with the tool write_products (fields sku, ean,
-            name, own_price, catalog). Flag lines you cannot parse, never invent values. (2) For each competitor shop domain
-            given, save it with write_shops (domain, catalog, status, reason, checked_at). Before marking a shop ''allowed'',
-            use the webrobot MCP to fetch https://<domain>/robots.txt and look for the terms of use / conditions page; mark
-            it ''blocked'' with a short reason if robots.txt disallows product pages for automated agents or the terms forbid
-            scraping/automated access; mark ''pending'' with a reason if you cannot verify. Comparison sites and marketplaces
-            aggregators are NOT accepted: only direct shops; mark them ''blocked'' with reason ''comparator''. Output Markdown
-            starting with a level-1 title ''# Catalogo <catalog name> — verifica shop''. Then ## Prodotti salvati (count and
-            any rejected lines), ## Shop (table: domain, status, reason), ## Prossimi passi (create a monitor in ''Monitor''
-            to start the daily 06:00 reading). Never give legal advice as fact: say the check is an automated reading of robots.txt
-            and terms and the customer remains responsible.'
+          system_prompt: 'You import a product catalogue for a price-monitoring app. The input is CSV/Excel/plain text with
+            columns like SKU, EAN, name, own price. For every row call write_product once with sku, ean (digits only, keep
+            it empty if absent), name, own_price (number), currency. Skip rows without SKU or name and list them. Never invent
+            EANs or prices. Finish with a report that starts with the level-1 title "# Import catalogo" and lists: rows saved,
+            rows skipped and why.'
+    goalTemplate: 'Currency by default: {currency_label}.
+
+      {?catalog_file_text}Catalogue file content:
+
+      {catalog_file_text}{/catalog_file_text}
+
+      {?pasted}Pasted catalogue:
+
+      {pasted}{/pasted}
+
+      Save every product with write_product. Write the report in the language with ISO code {lang}.'
     appTools:
-    - name: write_products
-      description: Create or update the customer's products
+    - name: write_product
+      description: Save or update one product of the user's catalogue (keyed by sku)
       action: write
       collection: products
       scope: user
-    - name: write_shops
-      description: Create or update the customer's competitor shops with their compliance status
-      action: write
-      collection: shops
-      scope: user
-    goalTemplate: 'Catalogo: {catalog}
-
-      Prodotti (SKU; EAN; nome; prezzo proprio):
-
-      {products_text}
-
-      Shop concorrenti (domini):
-
-      {shops_text}
-
-      Data: {date}. Scrivi il report nella lingua con codice ISO {lang}.'
     output: markdown
     limits:
       maxTurns: 30
-      maxBudgetUsd: 1.0
-  - key: monitor
+      maxBudgetUsd: 0.5
+  - key: collector
     role: scheduled
-    description: Every day at 06:00 reads the allowed product pages and stores price, availability and promotions; computes
-      the market table and alerts.
-    memory: instance
-    delegates:
-    - matcher
+    description: 'Daily: checks robots.txt and terms of each competitor shop, reads the allowed product pages, stores price,
+      stock and promotions, raises alerts, updates the market summary.'
+    memory: user
     profile:
       inline:
-        display_name: PrezzoSentinella monitor
+        display_name: PrezzoSentinella collector
         crews:
-        - id: monitor
+        - id: collector
           engine: agent_sdk
           model: claude-sonnet-5-5
           max_turns: 60
-          max_budget_usd: 2.0
+          max_budget_usd: 1.5
           permission_mode: bypassPermissions
           disallowed_tools:
           - Bash
@@ -170,69 +151,98 @@ spec:
             type: http
             url: https://mcp-full.webrobot.eu/mcp
             allow: all
-          system_prompt: 'You monitor competitor prices for one customer catalogue. Procedure: (1) read_products and read_shops
-            for the catalogue; consider ONLY shops with status ''allowed''; never touch ''blocked'' or ''pending'' shops and
-            never use comparison sites. (2) Re-check robots.txt of each allowed shop with the webrobot MCP; if it now forbids
-            the pages, update the shop to ''blocked'' with write_shops_status and skip it. (3) read_pairs: for confirmed pairs
-            (sku, shop, url) read the product page with the webrobot MCP (polite, one request per page, no login, no evasion)
-            and extract price (number, currency), availability (in_stock | out_of_stock | unknown) and promotions (text).
-            Record each reading with append_history (date, sku, shop, price, currency, availability, promo). (4) For SKUs
-            without a pair for an allowed shop, call ask_matcher with the SKUs and shops so it proposes matches; do not read
-            pages of uncertain or unconfirmed pairs. (5) For each SKU upsert the market row with write_market: sku, name,
-            own_price, min_price, avg_price (average of the latest price of each shop in stock), position (rank of own price
-            among all, 1 = cheapest, as ''n of m''), date. (6) Alerts: with append_alerts (date, sku, shop, kind ''below_threshold''
-            or ''out_of_stock'', price, threshold) when a competitor price is below own price by more than the threshold percentage
-            given in the goal, or an in-stock product went out of stock compared with your memory. Your memory holds yesterday''s
-            availability per sku/shop; at the end call remember once with the updated state. Never invent figures: if a page
-            cannot be read, record nothing and list it as unreadable. Output Markdown starting with ''# Monitor <catalogue>
-            — <date>'' with ## Letture, ## Alert, ## Non leggibili, ## Match da confermare.'
+          system_prompt: 'You monitor competitor prices for one customer.
+
+            STEPS
+
+            1. read_shops and read_products. For each active shop whose robots_status is unknown or whose checked_at is older
+            than 7 days: fetch https://<domain>/robots.txt and read the terms of use page with the WebRobot MCP. If robots.txt
+            disallows the product paths for generic crawlers, or the terms forbid automated access/scraping, call write_shop
+            with robots_status=blocked and a short robots_note quoting the rule; otherwise robots_status=allowed. Set checked_at
+            to today. NEVER read pages of a blocked shop.
+
+            2. Only DIRECT shops. Never use price-comparison sites or aggregators (Google Shopping, Idealo, Trovaprezzi, etc.);
+            if a shop looks like one, mark it blocked with note ''comparator''.
+
+            3. read_listings: for each listing of an allowed shop whose match_status is not rejected, open the product page
+            politely (low rate, one request at a time) and extract price (number, tax included as displayed), currency, availability
+            (in_stock|out_of_stock|unknown) and promotion text. If a shop has no listing for a SKU yet, search the shop by
+            EAN and then by name, and save write_listing with match_status new (the matcher will confirm). Append the observation
+            with write_history (sku, shop, date=today, price, currency, availability, promo, url). Never invent values: if
+            a page cannot be read, skip it.
+
+            4. Alerts: compare with the product fields alert_below (price threshold) and alert_stock. If a CONFIRMED competitor
+            price is below alert_below, or a competitor that was in stock (see read_history) is now out_of_stock and alert_stock
+            is true, call write_alert with sku, shop, kind (price_below|out_of_stock), price and a one-line message. One alert
+            per sku/shop/day.
+
+            5. For each SKU upsert write_market: sku, name, own_price, min_price, avg_price (over confirmed listings with
+            price today), shops_count, position (cheapest|below_avg|above_avg|most_expensive), updated=today.
+
+            End with a report starting with the level-1 title "# Controllo prezzi <date>" listing shops blocked, pages read,
+            alerts raised. Use memory to note shops that failed repeatedly.'
+    goalTemplate: Run the daily price check for the catalogue "{instance}". Today is {date}. Write the report in the language
+      with ISO code {lang}.
     appTools:
     - name: read_products
-      description: The customer's products
+      description: Read the user's products
       action: read
       collection: products
       scope: user
     - name: read_shops
-      description: The customer's competitor shops and status
+      description: Read the competitor shops of the user
       action: read
       collection: shops
       scope: user
-    - name: write_shops_status
-      description: Update a shop's compliance status
+    - name: write_shop
+      description: Update a competitor shop (robots status, note, check date)
       action: write
       collection: shops
       scope: user
-    - name: read_pairs
-      description: Product-shop pairs with page URL and match status
+    - name: read_listings
+      description: Read the product pages tracked per shop
       action: read
-      collection: pairs
+      collection: listings
       scope: user
-    - name: append_history
-      description: Append one price reading to the history
+    - name: write_listing
+      description: Save a competitor product page found for a SKU
+      action: write
+      collection: listings
+      scope: user
+    - name: read_history
+      description: Read the price history
+      action: read
+      collection: price_history
+      scope: user
+    - name: write_history
+      description: Append one price observation
       action: append
       collection: price_history
       scope: user
-    - name: write_market
-      description: Upsert the market summary row of a SKU
-      action: write
-      collection: market
-      scope: user
-    - name: append_alerts
-      description: Append an alert
+    - name: write_alert
+      description: Append an alert (triggers an email)
       action: append
       collection: alerts
       scope: user
-    goalTemplate: 'Catalogo: {catalog}. Soglia alert: quella indicata nell''obiettivo dell''istanza. Data: {date}. Lingua
-      report: {lang}.'
+    - name: write_market
+      description: Upsert the market summary of one SKU
+      action: write
+      collection: market
+      scope: user
+    mcpServers:
+    - name: webrobot
+      url: https://mcp-full.webrobot.eu/mcp
+      allow: all
     output: markdown
     limits:
       maxTurns: 60
-      maxBudgetUsd: 2.0
+      maxBudgetUsd: 1.5
+      timeoutSeconds: 1800
   - key: matcher
     role: helper
-    description: Matches products across shops by EAN and name similarity; asks the customer to confirm uncertain matches.
+    description: Matches competitor listings to the user's products by EAN and name similarity; asks the user when unsure.
     awaits:
-    - confirm_match
+    - match_confirm
     profile:
       inline:
         display_name: PrezzoSentinella matcher
@@ -240,8 +250,8 @@ spec:
         - id: matcher
           engine: agent_sdk
           model: claude-sonnet-5-5
-          max_turns: 40
-          max_budget_usd: 1.0
+          max_turns: 20
+          max_budget_usd: 0.4
           permission_mode: bypassPermissions
           disallowed_tools:
           - Bash
@@ -253,118 +263,345 @@ spec:
           - NotebookEdit
           - WebFetch
           - WebSearch
-          mcp_servers:
-          - name: webrobot
-            type: http
-            url: https://mcp-full.webrobot.eu/mcp
-            allow: all
-          system_prompt: 'You match the customer''s products with the product pages of ALLOWED direct shops (never comparison
-            sites, never blocked shops). For each sku/shop requested: find the product page on the shop (its own search or
-            listing, via the webrobot MCP), compare EAN when the page shows it, else name similarity (brand, model, size,
-            pack count, colour). EAN equal = confirmed (similarity 1). Strong name match with same brand, model and size but
-            no EAN = ''uncertain'' unless identical. Save each result with write_pairs (sku, shop, url, ean_match, similarity
-            0-1, status confirmed|uncertain|rejected). For every uncertain pair call request_confirm_match with the sku, product
-            name, shop, page title, URL and similarity, and wait for the customer''s decision; on approval set status confirmed,
-            on rejection rejected. Never invent URLs. Reply briefly with a list of what you matched.'
+          system_prompt: 'You match a competitor listing to the user''s product. Compare with read_products: identical EAN
+            = confirmed (match_score 1). Otherwise compare names, brand, size/pack/model/colour; score 0-1. Score >= 0.9 with
+            the same brand and size: confirmed. Score < 0.4: rejected. Anything between: uncertain, and call request_match_confirm
+            with sku, shop, both names, the score and why; then wait. Always update the listing with write_listing (match_status
+            confirmed|uncertain|rejected, match_score). When a decision arrives, set the listing to confirmed (approved) or
+            rejected. Never guess size or pack differences away. Reply with one short line summary.'
+    goalTemplate: '{event}
+
+      Match or apply the decision for this listing. Today is {date}. Language: {lang}.'
     appTools:
     - name: read_products
-      description: The customer's products
+      description: Read the user's products
       action: read
       collection: products
       scope: user
-    - name: read_pairs
-      description: Existing pairs
+    - name: read_listings
+      description: Read the product pages tracked per shop
       action: read
-      collection: pairs
+      collection: listings
       scope: user
-    - name: write_pairs
-      description: Create or update a product-shop pair
+    - name: write_listing
+      description: Save a competitor product page found for a SKU
       action: write
-      collection: pairs
+      collection: listings
       scope: user
-    goalTemplate: 'Abbina questi prodotti e shop: {message}'
     output: markdown
     limits:
-      maxTurns: 40
-      maxBudgetUsd: 1.0
+      maxTurns: 20
+      maxBudgetUsd: 0.4
   inputForm:
     title:
-      it: Nuovo catalogo
-      en: New catalogue
+      it: Importa catalogo
+      en: Import catalogue
     fields:
-    - name: catalog
-      type: text
-      required: true
-      maxLength: 60
+    - name: catalog_file
+      type: file
+      accept:
+      - csv
+      - xlsx
+      - txt
+      maxMb: 10
       label:
-        it: Nome catalogo
-        en: Catalogue name
-    - name: products_text
+        it: File catalogo (SKU, EAN, nome, prezzo)
+        en: Catalogue file (SKU, EAN, name, price)
+    - name: pasted
       type: textarea
-      required: true
-      maxLength: 20000
+      maxLength: 6000
       label:
-        it: Prodotti (SKU; EAN; nome; prezzo)
-        en: Products (SKU; EAN; name; price)
-      help:
-        it: Una riga per prodotto, incolla da Excel/CSV. Il caricamento file non è ancora disponibile.
-        en: One line per product, paste from Excel/CSV. File upload is not available yet.
-    - name: shops_text
-      type: textarea
+        it: Oppure incolla le righe
+        en: Or paste the rows
+    - name: currency
+      type: select
       required: true
-      maxLength: 2000
+      default: EUR
       label:
-        it: Shop concorrenti (domini)
-        en: Competitor shops (domains)
-      help:
-        it: Un dominio per riga, solo shop diretti, mai comparatori.
-        en: One domain per line, direct shops only, never comparison sites.
+        it: Valuta
+        en: Currency
+      options:
+      - value: EUR
+        label: EUR
+      - value: GBP
+        label: GBP
+      - value: USD
+        label: USD
+      - value: CHF
+        label: CHF
+  data:
+    collections:
+    - name: products
+      ownedBy: user
+      description: The customer's catalogue
+      fields:
+      - name: sku
+        type: text
+        required: true
+        label: SKU
+      - name: ean
+        type: text
+        maxLength: 14
+        label: EAN
+      - name: name
+        type: text
+        required: true
+        label:
+          it: Nome
+          en: Name
+      - name: own_price
+        type: number
+        required: true
+        label:
+          it: Prezzo proprio
+          en: Own price
+      - name: currency
+        type: text
+        default: EUR
+        label:
+          it: Valuta
+          en: Currency
+      - name: alert_below
+        type: number
+        label:
+          it: Avvisami se un concorrente scende sotto
+          en: Alert me if a competitor drops below
+      - name: alert_stock
+        type: boolean
+        default: true
+        label:
+          it: Avvisami se va fuori stock
+          en: Alert me when out of stock
+    - name: shops
+      ownedBy: user
+      description: Competitor direct shops
+      fields:
+      - name: name
+        type: text
+        required: true
+        label:
+          it: Nome shop
+          en: Shop name
+      - name: domain
+        type: text
+        required: true
+        label:
+          it: Dominio (es. shop.it)
+          en: Domain (e.g. shop.it)
+      - name: active
+        type: boolean
+        default: true
+        label:
+          it: Attivo
+          en: Active
+      - name: robots_status
+        type: select
+        default: unknown
+        label:
+          it: Esito robots.txt / termini
+          en: robots.txt / terms result
+        options:
+        - value: unknown
+          label:
+            it: Da verificare
+            en: To check
+        - value: allowed
+          label:
+            it: Consentito
+            en: Allowed
+        - value: blocked
+          label:
+            it: Vietato (escluso)
+            en: Forbidden (excluded)
+      - name: robots_note
+        type: textarea
+        label:
+          it: Nota
+          en: Note
+      - name: checked_at
+        type: date
+        label:
+          it: Verificato il
+          en: Checked on
+    - name: listings
+      ownedBy: user
+      description: Product page of a competitor shop matched to a SKU
+      fields:
+      - name: sku
+        type: text
+        required: true
+      - name: shop
+        type: text
+        required: true
+      - name: url
+        type: url
+      - name: listing_name
+        type: text
+      - name: ean
+        type: text
+      - name: match_status
+        type: select
+        default: new
+        options:
+        - new
+        - confirmed
+        - uncertain
+        - rejected
+      - name: match_score
+        type: number
+    - name: price_history
+      ownedBy: user
+      retentionDays: 730
+      description: Daily observations
+      fields:
+      - name: sku
+        type: text
+        required: true
+      - name: shop
+        type: text
+        required: true
+      - name: date
+        type: date
+        required: true
+      - name: price
+        type: number
+      - name: currency
+        type: text
+      - name: availability
+        type: select
+        options:
+        - in_stock
+        - out_of_stock
+        - unknown
+      - name: promo
+        type: text
+      - name: url
+        type: url
+    - name: alerts
+      ownedBy: user
+      retentionDays: 365
+      fields:
+      - name: sku
+        type: text
+      - name: shop
+        type: text
+      - name: kind
+        type: select
+        options:
+        - price_below
+        - out_of_stock
+      - name: price
+        type: number
+      - name: message
+        type: text
+    - name: market
+      ownedBy: user
+      description: Per-SKU market summary
+      fields:
+      - name: sku
+        type: text
+        required: true
+      - name: name
+        type: text
+      - name: own_price
+        type: number
+      - name: min_price
+        type: number
+      - name: avg_price
+        type: number
+      - name: shops_count
+        type: number
+      - name: position
+        type: select
+        options:
+        - cheapest
+        - below_avg
+        - above_avg
+        - most_expensive
+      - name: updated
+        type: date
   templates:
-  - key: daily_monitor
+  - key: daily_watch
     title:
-      it: Monitor prezzi
-      en: Price monitor
+      it: Monitoraggio giornaliero
+      en: Daily watch
     description:
-      it: Ogni giorno alle 6 legge le pagine consentite, aggiorna storico, tabella di mercato e alert.
-      en: Every day at 6 reads the allowed pages, updates history, market table and alerts.
-    agent: monitor
+      it: Ogni giorno alle 6 controlla i tuoi shop concorrenti.
+      en: Every day at 6 it checks your competitor shops.
+    agent: collector
     params:
     - name: catalog
       type: text
       required: true
       label:
-        it: Nome catalogo
+        it: Nome del catalogo
         en: Catalogue name
-    - name: threshold_pct
-      type: number
-      required: true
-      default: 5
-      label:
-        it: Soglia alert (% sotto il mio prezzo)
-        en: Alert threshold (% below my price)
-    goal: 'Catalogo: {catalog}. Soglia alert: un concorrente scende sotto il mio prezzo di oltre {threshold_pct}%. Istanza:
-      {instance}. Data: {date}. Lingua report: {lang}.'
+    goal: Run the daily price check for the catalogue "{instance}" ({catalog}). Today is {date}. Write the report in the language
+      with ISO code {lang}.
     schedule:
-      cron: 0 6 * * *
+      cron: 0 5 * * *
       userCanChange: false
-    maxPerUser: 5
+    maxPerUser: 3
   approvals:
-  - key: confirm_match
+  - key: match_confirm
     title:
-      it: Conferma abbinamento
-      en: Confirm match
-    description: The customer confirms an uncertain product match
+      it: Conferma abbinamento prodotto
+      en: Confirm product match
+    description: The match between a competitor listing and one of your SKUs is uncertain
     decidedBy: requester
     fields:
     - sku
-    - product_name
     - shop
-    - page_title
-    - url
-    - similarity
+    - own_name
+    - listing_name
+    - score
+    - reason
     timeoutMinutes: 10080
     onTimeout: reject
-  schedules: []
+  triggers:
+  - key: price_alert
+    'on':
+      collection: alerts
+      op: insert
+    notify:
+      to: owner
+      subject:
+        it: 'PrezzoSentinella: {record.kind} su {record.sku}'
+        en: 'PrezzoSentinella: {record.kind} on {record.sku}'
+      body:
+        it: '{record.message}
+
+          SKU: {record.sku}
+
+          Shop: {record.shop}
+
+          Prezzo: {record.price}'
+        en: '{record.message}
+
+          SKU: {record.sku}
+
+          Shop: {record.shop}
+
+          Price: {record.price}'
+      link: market
+  - key: new_listing
+    'on':
+      collection: listings
+      op: insert
+      where:
+        match_status: new
+    start:
+      agent: matcher
+    goal: 'Match this listing: SKU {record.sku}, shop {record.shop}, name {record.listing_name}, EAN {record.ean}.'
+    asUser: true
+  - key: match_decided
+    'on':
+      approval: match_confirm
+      decision: any
+    start:
+      agent: matcher
+    goal: 'Apply the user''s decision on the uncertain match: {event}'
+    asUser: true
   views:
   - key: home
     type: page
@@ -372,77 +609,68 @@ spec:
     title: PrezzoSentinella
     sections:
     - type: hero
-      layout: stack
-      band: true
-      eyebrow:
-        it: Per brand e retailer
-        en: For brands and retailers
       title:
-        it: Come prezzano i concorrenti? **Lo sai ogni mattina.**
-        en: How do competitors price? **You know every morning.**
+        it: Sai **come prezzano** i tuoi concorrenti, ogni giorno.
+        en: Know **how competitors price**, every day.
       text:
-        it: Monitoraggio giornaliero dei prezzi sugli shop diretti dei concorrenti, solo dove robots.txt e termini d'uso lo
-          permettono. Tabella di mercato, storico per SKU e alert.
-        en: Daily price monitoring on competitors' direct shops, only where robots.txt and terms of use allow it. Market table,
-          history per SKU and alerts.
+        it: 'Carica il catalogo, scegli gli shop da seguire: prezzo, disponibilità e promozioni finiscono nello storico e
+          ricevi un alert email quando conta.'
+        en: 'Upload your catalogue, pick the shops to follow: price, stock and promotions go to your history and you get an
+          email alert when it matters.'
       actions:
       - label:
           it: Inizia
-          en: Get started
+          en: Start
         href: /login
         style: primary
     - type: steps
-      id: come-funziona
+      id: how
       title:
         it: Come funziona
         en: How it works
       items:
       - title:
-          it: Carichi catalogo e shop
-          en: Add catalogue and shops
+          it: Catalogo e shop
+          en: Catalogue and shops
         text:
-          it: SKU, EAN, nome, prezzo proprio e i domini dei concorrenti da seguire.
-          en: SKU, EAN, name, own price and the competitor domains to follow.
-        badge: 📦
+          it: Importi SKU, EAN, nome e prezzo; aggiungi gli shop concorrenti.
+          en: Import SKU, EAN, name and price; add competitor shops.
       - title:
-          it: Verifica robots.txt e termini
-          en: robots.txt and terms check
+          it: Controllo alle 6
+          en: Check at 6
         text:
-          it: Gli shop che vietano la lettura vengono segnalati ed esclusi.
-          en: Shops that forbid reading are flagged and excluded.
-        badge: 🛡️
+          it: Un agente legge solo le pagine consentite e salva lo storico.
+          en: An agent reads only allowed pages and stores the history.
       - title:
-          it: Lettura alle 6
-          en: Daily 6:00 reading
+          it: Abbinamento
+          en: Matching
         text:
-          it: Prezzo, disponibilità e promozioni finiscono nello storico.
-          en: Price, availability and promotions go into the history.
-        badge: ⏰
+          it: EAN e somiglianza del nome; se il match è incerto decidi tu.
+          en: EAN and name similarity; you decide when a match is uncertain.
       - title:
-          it: Abbinamento e conferma
-          en: Matching and confirmation
+          it: Tabella e alert
+          en: Table and alerts
         text:
-          it: EAN e somiglianza del nome; ti chiediamo conferma se il match è incerto.
-          en: EAN and name similarity; we ask you to confirm uncertain matches.
-        badge: 🔗
+          it: Tuo prezzo, minimo, media e posizione, più grafico storico.
+          en: Your price, minimum, average and position, plus history chart.
     - type: cards
-      id: regole
+      id: rules
       title:
-        it: Le nostre regole
-        en: Our rules
+        it: Regole di correttezza
+        en: Fair-use rules
       items:
+      - title:
+          it: robots.txt e termini
+          en: robots.txt and terms
+        text:
+          it: Se uno shop vieta la lettura automatica viene segnalato ed escluso.
+          en: If a shop forbids automated reading, it is flagged and excluded.
       - title:
           it: Solo shop diretti
           en: Direct shops only
         text:
           it: Mai siti comparatori.
           en: Never comparison sites.
-      - title:
-          it: Rispetto dei divieti
-          en: Prohibitions respected
-        text:
-          it: robots.txt e termini d'uso verificati prima e ricontrollati ogni giorno.
-          en: robots.txt and terms checked first and re-checked every day.
       - title:
           it: I tuoi dati sono tuoi
           en: Your data is yours
@@ -451,55 +679,15 @@ spec:
           en: Each customer sees only their own catalogues.
     - type: note
       content:
-        it: Supporto alle decisioni, non consulenza legale. La verifica di robots.txt e termini è automatica; la responsabilità
-          dell'uso resta del cliente.
-        en: Decision support, not legal advice. The robots.txt and terms check is automated; responsibility for use remains
-          with the customer.
-  - key: import
-    type: new_run
-    title:
-      it: Nuovo catalogo
-      en: New catalogue
-    roles:
-    - user
-    - admin
-  - key: catalogs
-    type: history
-    title:
-      it: Cataloghi caricati
-      en: Loaded catalogues
-    source: run
-    roles:
-    - user
-    - admin
-  - key: catalog_report
-    type: report
-    source: run
-    printable: true
-    nav: false
-  - key: monitors
-    type: instances
-    template: daily_monitor
-    title:
-      it: Monitor
-      en: Monitors
-    roles:
-    - user
-    - admin
+        it: Supporto alle decisioni commerciali. I prezzi sono quelli mostrati dagli shop al momento della lettura.
+        en: Commercial decision support. Prices are those displayed by shops at read time.
   - key: market
     type: table
     title:
-      it: Mercato
-      en: Market
+      it: Mercato per SKU
+      en: Market by SKU
     source: collection:market
-    columns:
-    - sku
-    - name
-    - own_price
-    - min_price
-    - avg_price
-    - position
-    - date
+    export: true
     data:
       display: table
       fields:
@@ -517,36 +705,40 @@ spec:
       - key: min_price
         label:
           it: Minimo
-          en: Minimum
+          en: Min
         format: money
       - key: avg_price
         label:
           it: Media mercato
-          en: Market average
+          en: Market avg
         format: money
       - key: position
         label:
           it: Posizione
           en: Position
         format: badge
-      - key: date
-        label: Data
+      - key: shops_count
+        label:
+          it: Shop
+          en: Shops
+        format: number
+      - key: updated
+        label:
+          it: Aggiornato
+          en: Updated
         format: date
       sort:
-        field: date
+        field: updated
         dir: desc
       limit: 200
-      empty:
-        it: 'Nessun dato ancora: carica un catalogo e crea un monitor.'
-        en: 'No data yet: load a catalogue and create a monitor.'
     roles:
     - user
     - admin
-  - key: sku_history
+  - key: history
     type: chart
     title:
-      it: Storico per SKU
-      en: History per SKU
+      it: Storico prezzi per SKU
+      en: Price history by SKU
     source: collection:price_history
     param: sku
     data:
@@ -554,78 +746,102 @@ spec:
       chart: line
       fields:
       - key: date
-        label: Data
+        label: Date
         format: date
       - key: price
         label:
           it: Prezzo
           en: Price
         format: money
-      - key: shop
-        label: Shop
       sort:
         field: date
         dir: asc
       limit: 200
-      empty:
-        it: Nessuno storico per questo SKU.
-        en: No history for this SKU.
     roles:
     - user
     - admin
-  - key: alerts
+  - key: import
+    type: new_run
+    title:
+      it: Importa catalogo
+      en: Import catalogue
+    roles:
+    - user
+    - admin
+  - key: products
     type: table
     title:
-      it: Alert
-      en: Alerts
-    source: collection:alerts
+      it: Prodotti
+      en: Products
+    source: collection:products
+    export: true
     data:
       display: table
       fields:
-      - key: date
-        label: Data
-        format: date
       - key: sku
         label: SKU
-      - key: shop
-        label: Shop
-      - key: kind
+      - key: ean
+        label: EAN
+      - key: name
         label:
-          it: Tipo
-          en: Type
-        format: badge
-      - key: price
+          it: Nome
+          en: Name
+      - key: own_price
         label:
           it: Prezzo
           en: Price
         format: money
-      sort:
-        field: date
-        dir: desc
-      limit: 100
+      - key: alert_below
+        label:
+          it: Soglia alert
+          en: Alert threshold
+        format: money
+      limit: 200
+    roles:
+    - user
+    - admin
+  - key: add_product
+    type: form
+    title:
+      it: Aggiungi / modifica prodotto
+      en: Add / edit product
+    collection: products
+    submit:
+      label:
+        it: Salva
+        en: Save
+      message:
+        it: Prodotto salvato
+        en: Product saved
+      redirect: products
+    edit: true
     roles:
     - user
     - admin
   - key: shops
     type: table
     title:
-      it: Shop e conformità
-      en: Shops and compliance
+      it: Shop concorrenti
+      en: Competitor shops
     source: collection:shops
     data:
       display: table
       fields:
-      - key: domain
+      - key: name
         label: Shop
-      - key: status
+      - key: domain
         label:
-          it: Stato
-          en: Status
+          it: Dominio
+          en: Domain
+      - key: robots_status
+        label:
+          it: robots.txt / termini
+          en: robots.txt / terms
         format: badge
-      - key: reason
+      - key: robots_note
         label:
-          it: Motivo
-          en: Reason
+          it: Nota
+          en: Note
       - key: checked_at
         label:
           it: Verificato
@@ -635,13 +851,44 @@ spec:
     roles:
     - user
     - admin
-  - key: approvals
+  - key: add_shop
+    type: form
+    title:
+      it: Aggiungi shop
+      en: Add shop
+    collection: shops
+    fields:
+    - name
+    - domain
+    - active
+    submit:
+      label:
+        it: Aggiungi
+        en: Add
+      message:
+        it: 'Shop aggiunto: sarà verificato al prossimo controllo'
+        en: 'Shop added: it will be checked on the next run'
+      redirect: shops
+    edit: true
+    roles:
+    - user
+    - admin
+  - key: matches
     type: approvals
     title:
       it: Match da confermare
       en: Matches to confirm
     approvals:
-    - confirm_match
+    - match_confirm
+    roles:
+    - user
+    - admin
+  - key: watches
+    type: instances
+    template: daily_watch
+    title:
+      it: Monitoraggio
+      en: Monitoring
     roles:
     - user
     - admin
@@ -652,168 +899,44 @@ spec:
       en: Subscription
     roles:
     - user
-  data:
-    collections:
-    - name: products
-      ownedBy: user
-      description: The customer's own products
-      fields:
-      - name: catalog
-        type: text
-      - name: sku
-        type: text
-        required: true
-      - name: ean
-        type: text
-      - name: name
-        type: text
-      - name: own_price
-        type: number
-    - name: shops
-      ownedBy: user
-      description: Competitor shops with robots.txt and terms check
-      fields:
-      - name: catalog
-        type: text
-      - name: domain
-        type: text
-        required: true
-      - name: status
-        type: select
-        options:
-        - allowed
-        - blocked
-        - pending
-      - name: reason
-        type: text
-      - name: checked_at
-        type: date
-    - name: pairs
-      ownedBy: user
-      description: Product-shop matches with page URL
-      fields:
-      - name: sku
-        type: text
-      - name: shop
-        type: text
-      - name: url
-        type: url
-      - name: ean_match
-        type: boolean
-      - name: similarity
-        type: number
-      - name: status
-        type: select
-        options:
-        - confirmed
-        - uncertain
-        - rejected
-    - name: price_history
-      ownedBy: user
-      description: 'Daily readings: price, availability, promotions'
-      fields:
-      - name: date
-        type: date
-      - name: sku
-        type: text
-      - name: shop
-        type: text
-      - name: price
-        type: number
-      - name: currency
-        type: text
-      - name: availability
-        type: select
-        options:
-        - in_stock
-        - out_of_stock
-        - unknown
-      - name: promo
-        type: text
-    - name: market
-      ownedBy: user
-      description: 'Per-SKU summary: own price, minimum, market average, position'
-      fields:
-      - name: sku
-        type: text
-      - name: name
-        type: text
-      - name: own_price
-        type: number
-      - name: min_price
-        type: number
-      - name: avg_price
-        type: number
-      - name: position
-        type: text
-      - name: date
-        type: date
-    - name: alerts
-      ownedBy: user
-      description: Price-below-threshold and out-of-stock alerts
-      fields:
-      - name: date
-        type: date
-      - name: sku
-        type: text
-      - name: shop
-        type: text
-      - name: kind
-        type: select
-        options:
-        - below_threshold
-        - out_of_stock
-      - name: price
-        type: number
-      - name: threshold
-        type: number
   billing:
     modes:
     - subscription
     currency: eur
     plans:
-    - key: sku_50
-      price: 19
+    - key: starter
+      price: 29
       interval: month
       label:
-        it: Fino a 50 SKU
-        en: Up to 50 SKUs
+        it: Starter — fino a 50 SKU
+        en: Starter — up to 50 SKUs
       includes:
-      - 50 monitored SKUs
-      - daily 06:00 reading
-      - history and alerts
+      - 50 SKU
       roles:
       - user
-    - key: sku_250
-      price: 49
+    - key: growth
+      price: 79
       interval: month
       label:
-        it: Fino a 250 SKU
-        en: Up to 250 SKUs
+        it: Growth — fino a 250 SKU
+        en: Growth — up to 250 SKUs
       includes:
-      - 250 monitored SKUs
-      - daily 06:00 reading
-      - history and alerts
+      - 250 SKU
       roles:
       - user
-    - key: sku_1000
-      price: 129
+    - key: scale
+      price: 199
       interval: month
       label:
-        it: Fino a 1000 SKU
-        en: Up to 1000 SKUs
+        it: Scale — fino a 1000 SKU
+        en: Scale — up to 1000 SKUs
       includes:
-      - 1000 monitored SKUs
-      - daily 06:00 reading
-      - history and alerts
+      - 1000 SKU
       roles:
       - user
   extensions:
-  - key: email_alerts
-    description: 'Email alerts when a competitor drops below the threshold or goes out of stock are not available yet: alerts
-      are shown in the Alert view. Needs the notifications feature.'
-  - key: file_upload
-    description: 'Uploading a product file (CSV/Excel) is not available yet: products are pasted as text.'
-  - key: sku_tier_enforcement
-    description: The monthly plan tiers by number of monitored SKUs are declared, but the runtime cannot yet cap the SKU count
-      per plan; the limit must be enforced manually or by a custom extension.
+  - key: plan_sku_cap
+    description: The SKU cap per plan is enforced for products created through the importer; manual form entries are not counted
+      by spec.limits yet.
+  - key: cron_utc
+    description: The daily run is scheduled at 05:00 UTC (06:00 CET in winter, 07:00 CEST in summer).

@@ -4,13 +4,14 @@ metadata:
   slug: prestazione-in-campo
   displayName: Prestazione in Campo
   tagline:
-    it: Carico, rischio e performance degli atleti, dopo ogni sessione.
-    en: Load, risk and performance of your athletes, after every session.
+    it: Carico, rischio sovraccarico e piano settimanale per ogni atleta.
+    en: Load, overload risk and weekly plan for every athlete.
   description:
-    it: 'Strato di analisi e reportistica per dati da dispositivi indossabili e telecamere: carico acuto/cronico, confronto
-      con la media personale, rischio sovraccarico e proposta di carico per la settimana successiva.'
-    en: 'Analysis and reporting layer for wearable and camera data: acute/chronic load, comparison with each athlete''s own
-      baseline, overload risk and a proposed load for next week.'
+    it: 'Carica gli export dei dispositivi indossabili dopo ogni sessione: un agente calcola carico acuto/cronico, confronta
+      ogni atleta con la sua media, segnala i rischi e propone come modulare la settimana successiva. Ognuno vede solo ciò
+      che gli compete.'
+    en: 'Upload wearable-device exports after each session: an agent computes acute/chronic load, compares each athlete with
+      their own average, flags overload risk and proposes how to adjust next week. Everyone sees only what concerns them.'
   langs:
   - it
   - en
@@ -22,9 +23,9 @@ spec:
     theme: light
     palette:
       primary: '#0b3d2e'
-      accent: '#e4572e'
-      background: '#f6f8f7'
-      foreground: '#13201b'
+      accent: '#e8731a'
+      background: '#f6f8f5'
+      foreground: '#14211b'
     fonts:
       body: Inter
       display: Barlow Condensed
@@ -33,6 +34,7 @@ spec:
       color: primary
     - text: in Campo
       color: accent
+    width: wide
   header:
     links:
     - label:
@@ -40,9 +42,9 @@ spec:
         en: How it works
       href: '#come-funziona'
     - label:
-        it: Ruoli e privacy
-        en: Roles and privacy
-      href: '#ruoli'
+        it: Chi vede cosa
+        en: Who sees what
+      href: '#privacy'
     cta:
       label:
         it: Accedi
@@ -59,22 +61,22 @@ spec:
         it: Preparatore atletico
         en: Strength & conditioning coach
       assignedBy: admin_emails
-    - key: medico
-      label:
-        it: Medico
-        en: Team doctor
-      assignedBy: invite
-    - key: allenatore
+    - key: coach
       label:
         it: Allenatore / staff tecnico
         en: Coach / technical staff
       assignedBy: invite
-    - key: atleta
+    - key: doctor
+      label:
+        it: Medico
+        en: Team doctor
+      assignedBy: invite
+    - key: athlete
       label:
         it: Atleta
         en: Athlete
       assignedBy: derived
-      from: collection:athletes_profile.email
+      from: collection:athletes.email
   limits:
   - action: agent:analyst
     per: user
@@ -87,16 +89,17 @@ spec:
   agents:
   - key: analyst
     role: main
-    description: 'Analizza una sessione: carico acuto/cronico, confronto con la media personale, rischio e proposta di carico.'
+    description: Reads the device exports of a session, saves the metrics, computes acute/chronic load per athlete, flags
+      risk and proposes next week's load.
     profile:
       inline:
-        display_name: Analista del carico
+        display_name: Prestazione in Campo analyst
         crews:
         - id: analyst
           engine: agent_sdk
           model: claude-sonnet-5-5
-          max_turns: 14
-          max_budget_usd: 0.8
+          max_turns: 40
+          max_budget_usd: 1.5
           permission_mode: bypassPermissions
           disallowed_tools:
           - Bash
@@ -108,76 +111,177 @@ spec:
           - NotebookEdit
           - WebFetch
           - WebSearch
-          system_prompt: 'Sei un analista della performance sportiva al servizio dello staff di una squadra. Ricevi i dati
-            esportati dai dispositivi di una sessione (distanza, velocità, accelerazioni, frequenza cardiaca, carico) incollati
-            come testo o con un link. Usa i tool: athletes_read per la rosa (nome, ruolo, età), load_read per lo storico,
-            health_read per peso e storico infortuni (SOLO per tarare il rischio), load_write per salvare una riga per atleta
-            con gli indicatori calcolati, risk_write per salvare gli avvisi di rischio. Calcola per ogni atleta: carico della
-            sessione, carico acuto (ultimi 7 giorni), cronico (media settimanale delle ultime 4 settimane), rapporto ACWR,
-            scostamento % rispetto alla sua media personale. Soglie indicative: ACWR >1.5 rischio alto, 1.3-1.5 attenzione,
-            0.8-1.3 zona ottimale, <0.8 sottocarico. Se lo storico è insufficiente dillo e non stimare. Non inventare mai
-            valori. REGOLA DI PRIVACY: il report è letto dallo staff tecnico, quindi NON riportare dati sanitari (peso, infortuni
-            passati, note mediche): scrivi solo il livello di rischio e, se serve, ''valutazione medica consigliata''. I dettagli
-            clinici vanno solo in risk_write (visibile al medico). Non fare diagnosi: sei un supporto alla decisione. Struttura
-            del report: titolo ''# Sessione <tipo> — <data>''; ## Sintesi; ## Indicatori per atleta (tabella); ## Atleti a
-            rischio sovraccarico; ## Confronto con la media personale; ## Proposta di modulazione del carico per la prossima
-            settimana (per atleta o gruppo, con % rispetto al carico attuale); ## Limiti dei dati. Aggiungi un blocco ```chart
-            (bar) con ACWR per atleta usando solo valori reali. Scrivi nella lingua richiesta.'
+          system_prompt: 'You are a sports-science analyst supporting the strength & conditioning coach of a team. You receive
+            the exported data of one session (training or match) from wearable devices: distance, speed, accelerations, heart
+            rate, load.
+
+
+            WORKFLOW
+
+            1. Read the export text in the goal (for images or scans use read_upload). Match each row to an athlete in the
+            roster (read_athletes) by email or name; list rows you cannot match and skip them.
+
+            2. Save one record per athlete with save_metrics (performance only: athlete_email, athlete_name, date, session_type,
+            distance_m, top_speed_kmh, accelerations, decelerations, load). Save heart rate with save_session_health (athlete_email,
+            athlete_name, date, hr_avg, hr_max, medical_note). The HR and medical data go ONLY there.
+
+            3. Read each athlete''s history (read_history) for the last 28 days plus today. Compute: acute load = sum of load
+            over the last 7 days; chronic load = average weekly load over the last 28 days (sum of 28 days / 4); ACWR = acute
+            / chronic (if fewer than 14 days of history, say the chronic value is not yet reliable and set risk to the lowest
+            reliable level). Compute also the deviation (%) of today''s load and of today''s top speed from the athlete''s
+            own average. Risk: high if ACWR > 1.5 or load > +40% over own average; moderate if ACWR 1.3-1.5 or below 0.8,
+            or load +25-40%; else low. Consult read_health_profiles for injury history: for athletes with a past injury, be
+            one step more cautious and write the clinical consideration ONLY in medical_note of save_session_health.
+
+            4. Save one record per athlete with save_loads (athlete_email, athlete_name, date, acute, chronic, acwr, vs_own_avg_pct,
+            risk, suggestion). The suggestion is about training load only (e.g. -20% volume, no high-speed work for 48h).
+
+            5. Write the final report.
+
+
+            REPORT (read by the technical staff, who must NOT see health data): start with a level-1 title "# Report sessione
+            — <date> — <type>". Sections ## Sintesi (3 lines), ## Indicatori per atleta (table: athlete, distance, top speed,
+            load, ACWR, vs own average, risk), ## Atleti a rischio (who and why in terms of load; for medical aspects write
+            only "valutazione medica consigliata"), ## Come modulare la prossima settimana (day-by-day load guidance per group
+            and for each at-risk athlete, as % of usual load), ## Dati non abbinati. Never include heart rate values, weight,
+            injuries or diagnoses in the report. Add a chart block for load vs own average:
+
+            ```chart
+
+            {"type":"bar","title":"Carico vs media personale","labels":["A"],"series":[{"name":"%","values":[0]}],"unit":"%"}
+
+            ```
+
+            with real figures only. Never invent data; if a value is missing say so. You give training-load guidance, not
+            medical diagnoses. Write in the language with the ISO code given in the goal.'
           mcp_servers: []
     appTools:
-    - name: athletes_read
-      description: 'Rosa: nome, ruolo, età'
+    - name: read_athletes
+      description: Read the team roster
       action: read
-      collection: athletes_profile
+      collection: athletes
       scope: all
-    - name: health_read
-      description: Dati sanitari degli atleti
+    - name: read_health_profiles
+      description: Read weight and injury history of the athletes
       action: read
-      collection: athlete_health
+      collection: health_profiles
       scope: all
-    - name: load_read
-      description: Storico indicatori di carico
+    - name: read_history
+      description: Read the performance metrics of past sessions
       action: read
-      collection: load_metrics
+      collection: session_metrics
       scope: all
-    - name: load_write
-      description: Salva gli indicatori di una sessione per atleta
+    - name: read_loads
+      description: Read the computed load indicators
+      action: read
+      collection: load_indicators
+      scope: all
+    - name: save_metrics
+      description: Save the performance metrics of an athlete for a session
       action: write
-      collection: load_metrics
+      collection: session_metrics
       scope: all
-    - name: risk_write
-      description: Salva un avviso di rischio per il medico
+    - name: save_session_health
+      description: Save heart rate and medical notes of an athlete for a session
       action: write
-      collection: risk_alerts
+      collection: session_health
       scope: all
-    goalTemplate: 'Sessione: {session_type_label} del {session_date}.
+    - name: save_loads
+      description: Save the load indicators and risk of an athlete
+      action: write
+      collection: load_indicators
+      scope: all
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
+    goalTemplate: 'Session date: {session_date}. Type: {session_type_label}.
 
-      {?session_name}Nome/avversario: {session_name}{/session_name}
+      {?label}Session: {label}{/label}
 
-      {?data_url}Link ai dati esportati: {data_url}{/data_url}
+      {?notes}Staff notes: {notes}{/notes}
 
-      {?data_text}Dati esportati:
+      Device export (file names and ids): {exports}
 
-      {data_text}{/data_text}
+      {?exports_text}Content of the exports:
 
-      {?notes}Note dello staff: {notes}{/notes}
+      {exports_text}{/exports_text}
 
-      Scrivi il report nella lingua con codice ISO {lang}. Oggi è {date}.'
+      Analyse the session, save the data and write the report in the language with ISO code {lang}.'
     output: markdown
+    writesTo:
+      collection: session_reports
+      parse: whole
+      keyBy: session_date
     limits:
-      maxTurns: 14
-      maxBudgetUsd: 0.8
+      maxTurns: 40
+      maxBudgetUsd: 1.5
   - key: weekly
     role: scheduled
-    description: Riepilogo settimanale per lo staff tecnico (solo indicatori di prestazione).
+    description: Every Monday summarises the past week from performance data and load indicators and proposes the plan for
+      the new week.
     profile:
       inline:
-        display_name: Riepilogo settimanale
+        display_name: Prestazione in Campo weekly summary
         crews:
         - id: weekly
           engine: agent_sdk
           model: claude-sonnet-5-5
-          max_turns: 8
+          max_turns: 20
+          max_budget_usd: 1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the weekly summary for the technical staff of a team. Use read_history and read_loads
+            for the last 7 days (and the previous 3 weeks for comparison) and read_athletes for the roster. Start with "#
+            Riepilogo settimanale — settimana del <date>". Sections: ## Sintesi, ## Carico di squadra (total and average load
+            vs the previous 3 weeks, with a chart block of type bar or line using real figures), ## Atleti da monitorare (those
+            with moderate/high risk or ACWR out of 0.8-1.3, in terms of load only), ## Migliori e peggiori variazioni rispetto
+            alla media personale, ## Piano di carico per la settimana (daily % of usual load per group, individual adjustments).
+            You have no access to heart rate, weight or injury data and must never mention them; for medical matters write
+            only "valutazione medica consigliata". Never invent figures; say when data is missing. Write in the language with
+            the ISO code given in the goal.'
+    appTools:
+    - name: read_athletes
+      description: Read the team roster
+      action: read
+      collection: athletes
+      scope: all
+    - name: read_history
+      description: Read the performance metrics of past sessions
+      action: read
+      collection: session_metrics
+      scope: all
+    - name: read_loads
+      description: Read the computed load indicators
+      action: read
+      collection: load_indicators
+      scope: all
+    goalTemplate: Today is {date}. Write the weekly summary in the language with ISO code {lang}.
+    output: markdown
+    writesTo:
+      collection: weekly_reports
+      parse: whole
+      keyBy: date
+  - key: assistant
+    role: helper
+    description: Chat for comparisons between athletes or sessions, within what the user is allowed to see.
+    profile:
+      inline:
+        display_name: Prestazione in Campo assistant
+        chat_mode: true
+        crews:
+        - id: assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
           max_budget_usd: 0.5
           permission_mode: bypassPermissions
           disallowed_tools:
@@ -190,80 +294,60 @@ spec:
           - NotebookEdit
           - WebFetch
           - WebSearch
-          system_prompt: 'Scrivi il riepilogo settimanale per lo staff tecnico leggendo con load_read e athletes_read le sessioni
-            degli ultimi 7 giorni. Inizia con ''# Riepilogo settimana <data>''. Sezioni: ## Carico di squadra, ## Atleti da
-            monitorare (solo livello di rischio, nessun dato sanitario), ## Migliori e peggiori scostamenti dalla media personale,
-            ## Piano di carico suggerito per la prossima settimana. Mai inventare valori; se mancano dati dillo. Italiano,
-            poi un breve paragrafo in inglese.'
+          system_prompt: 'You answer questions about athletes'' performance and load: comparisons between players, between
+            sessions or matches, trends, who is above or below their own average. Use the tools to read data; they return
+            only what the current user may see, so never guess or infer data you cannot read, and if something is not available
+            say it is not visible to this user. Athletes can only ask about themselves. Be concise, give figures with dates,
+            use a small table when comparing, and add a chart block (bar or line, real figures) when it helps:
+
+            ```chart
+
+            {"type":"bar","title":"…","labels":["A"],"series":[{"name":"…","values":[1]}]}
+
+            ```
+
+            You give training-load guidance, never medical diagnoses. Answer in the user''s language.'
     appTools:
-    - name: athletes_read
-      description: 'Rosa: nome, ruolo, età'
+    - name: read_athletes
+      description: Read the team roster
       action: read
-      collection: athletes_profile
+      collection: athletes
       scope: all
-    - name: load_read
-      description: Storico indicatori di carico
+    - name: read_history
+      description: Read the performance metrics of past sessions
       action: read
-      collection: load_metrics
+      collection: session_metrics
       scope: all
-    goalTemplate: Settimana che termina il {date}. Scrivi il riepilogo.
-    writesTo:
-      collection: weekly_reports
-      parse: whole
-      keyBy: week
-    output: markdown
-  - key: assistant
-    role: helper
-    description: Chat per confronti tra giocatori o tra partite.
-    profile:
-      inline:
-        display_name: Assistente performance
-        crews:
-        - id: assistant
-          engine: agent_sdk
-          model: claude-sonnet-5-5
-          max_turns: 8
-          max_budget_usd: 0.4
-          permission_mode: bypassPermissions
-          disallowed_tools:
-          - Bash
-          - Read
-          - Write
-          - Edit
-          - Glob
-          - Grep
-          - NotebookEdit
-          - WebFetch
-          - WebSearch
-          system_prompt: 'Rispondi alle domande dello staff tecnico confrontando atleti o partite con load_read e athletes_read.
-            Rispondi in modo breve, con tabelle quando confronti numeri e, se utile, un blocco ```chart. Non hai accesso ai
-            dati sanitari: se te li chiedono, indica di rivolgersi al medico. Non inventare valori; se il dato manca dillo.
-            Rispondi nella lingua dell''utente.'
-    appTools:
-    - name: athletes_read
-      description: 'Rosa: nome, ruolo, età'
+    - name: read_loads
+      description: Read the computed load indicators
       action: read
-      collection: athletes_profile
+      collection: load_indicators
       scope: all
-    - name: load_read
-      description: Storico indicatori di carico
+    - name: read_session_health
+      description: Read heart rate and medical notes of sessions
       action: read
-      collection: load_metrics
+      collection: session_health
       scope: all
-    goalTemplate: 'Conversazione finora:
+    goalTemplate: 'Conversation so far:
 
       {history}
 
 
-      Nuovo messaggio: {message}
+      User ({role}, {user}) writes: {message}
 
-      Lingua: {lang}'
+      Today is {date}. Reply in the language with ISO code {lang}.'
     output: markdown
   inputForm:
     title:
       it: Nuova sessione
       en: New session
     fields:
+    - name: session_date
+      type: date
+      required: true
+      label:
+        it: Data sessione
+        en: Session date
     - name: session_type
       type: select
       required: true
@@ -279,74 +363,110 @@ spec:
         label:
           it: Partita
           en: Match
-    - name: session_date
-      type: date
-      required: true
-      label:
-        it: Data
-        en: Date
-    - name: session_name
+    - name: label
       type: text
+      maxLength: 120
       label:
-        it: Nome / avversario
-        en: Name / opponent
-    - name: data_text
-      type: textarea
-      maxLength: 20000
+        it: Titolo (es. avversario, tema)
+        en: Title (e.g. opponent, focus)
+    - name: exports
+      type: file
+      required: true
+      accept:
+      - csv
+      - xlsx
+      - json
+      - txt
+      - pdf
+      maxMb: 15
+      multiple: true
       label:
-        it: Dati esportati (CSV incollato)
-        en: Exported data (pasted CSV)
+        it: Export dei dispositivi
+        en: Device exports
       help:
-        it: 'Il caricamento di file non è ancora disponibile: incolla il CSV o usa un link.'
-        en: 'File upload is not available yet: paste the CSV or use a link.'
-    - name: data_url
-      type: url
-      label:
-        it: Link ai dati (alternativa)
-        en: Data link (alternative)
+        it: File con distanza, velocità, accelerazioni, frequenza cardiaca e carico per atleta.
+        en: Files with distance, speed, accelerations, heart rate and load per athlete.
     - name: notes
       type: textarea
       maxLength: 500
       label:
-        it: Note (facoltative)
-        en: Notes (optional)
+        it: Note dello staff (facoltative)
+        en: Staff notes (optional)
   data:
     collections:
-    - name: athletes_profile
-      ownedBy: app
-      description: 'Rosa: dati non sanitari'
+    - name: athletes
+      description: Team roster
+      ownedBy: org
       fields:
       - name: name
         type: text
         required: true
-      - name: position
-        type: text
-      - name: age
-        type: number
+        label:
+          it: Nome
+          en: Name
       - name: email
         type: email
-    - name: athlete_health
-      ownedBy: app
-      description: 'Dati sanitari: solo medico e preparatore'
+        required: true
+        label: Email
+      - name: position
+        type: text
+        label:
+          it: Ruolo
+          en: Position
+      - name: age
+        type: number
+        label:
+          it: Età
+          en: Age
+      access:
+      - role: coach
+      - role: doctor
+      - role: athlete
+        where:
+          email: '{user.email}'
+    - name: health_profiles
+      description: Weight and injury history (health data)
+      ownedBy: org
       fields:
-      - name: athlete
+      - name: athlete_email
+        type: email
+        required: true
+        label: Email
+      - name: athlete_name
         type: text
         required: true
+        label:
+          it: Atleta
+          en: Athlete
       - name: weight_kg
         type: number
+        label:
+          it: Peso (kg)
+          en: Weight (kg)
       - name: injury_history
         type: textarea
-      - name: medical_notes
-        type: textarea
-    - name: load_metrics
-      ownedBy: app
-      description: Indicatori di prestazione per atleta e sessione
+        label:
+          it: Storico infortuni
+          en: Injury history
+      access:
+      - role: doctor
+        can:
+        - read
+        - write
+      - role: athlete
+        where:
+          athlete_email: '{user.email}'
+    - name: session_metrics
+      description: Performance metrics per athlete and session
+      ownedBy: org
       fields:
-      - name: athlete
+      - name: athlete_email
+        type: email
+      - name: athlete_name
         type: text
       - name: date
         type: date
-      - name: session
+      - name: session_type
         type: text
       - name: distance_m
         type: number
@@ -354,63 +474,126 @@ spec:
         type: number
       - name: accelerations
         type: number
-      - name: avg_hr
+      - name: decelerations
         type: number
-      - name: session_load
+      - name: load
         type: number
-      - name: acute_load
-        type: number
-      - name: chronic_load
-        type: number
-      - name: acwr
-        type: number
-      - name: vs_baseline_pct
-        type: number
-      - name: risk_level
-        type: text
-    - name: risk_alerts
-      ownedBy: app
-      description: 'Avvisi di rischio con dettagli clinici: solo medico'
+      access:
+      - role: coach
+      - role: doctor
+      - role: athlete
+        where:
+          athlete_email: '{user.email}'
+    - name: session_health
+      description: Heart rate and medical notes per athlete and session
+      ownedBy: org
       fields:
-      - name: athlete
+      - name: athlete_email
+        type: email
+      - name: athlete_name
         type: text
       - name: date
         type: date
-      - name: risk_level
-        type: text
-      - name: detail
+      - name: hr_avg
+        type: number
+      - name: hr_max
+        type: number
+      - name: medical_note
         type: textarea
-    - name: weekly_reports
-      ownedBy: app
-      description: Riepiloghi settimanali
+      access:
+      - role: doctor
+      - role: athlete
+        where:
+          athlete_email: '{user.email}'
+    - name: load_indicators
+      description: Acute/chronic load, ACWR and risk per athlete and day
+      ownedBy: org
       fields:
-      - name: week
+      - name: athlete_email
+        type: email
+      - name: athlete_name
         type: text
+      - name: date
+        type: date
+      - name: acute
+        type: number
+      - name: chronic
+        type: number
+      - name: acwr
+        type: number
+      - name: vs_own_avg_pct
+        type: number
+      - name: risk
+        type: select
+        options:
+        - low
+        - moderate
+        - high
+      - name: suggestion
+        type: textarea
+      access:
+      - role: coach
+      - role: doctor
+      - role: athlete
+        where:
+          athlete_email: '{user.email}'
+    - name: session_reports
+      description: Report of each session (performance only)
+      ownedBy: org
+      fields:
       - name: title
         type: text
+      - name: session_date
+        type: date
       - name: body
         type: textarea
+      access:
+      - role: coach
+      - role: doctor
+    - name: weekly_reports
+      description: Weekly summaries (performance only)
+      ownedBy: org
+      fields:
+      - name: title
+        type: text
+      - name: date
+        type: date
+      - name: body
+        type: textarea
+      access:
+      - role: coach
+      - role: doctor
   views:
   - key: home
     type: page
-    nav: false
     title: Prestazione in Campo
+    nav: false
     sections:
     - type: hero
+      layout: stack
+      band: true
+      eyebrow:
+        it: Analisi e reportistica per lo staff
+        en: Analysis and reporting for the staff
       title:
-        it: Sai chi è a **rischio** prima che si faccia male.
-        en: Know who is at **risk** before they get hurt.
+        it: Sai chi rischia il **sovraccarico** prima che succeda.
+        en: Know who is at risk of **overload** before it happens.
       text:
-        it: 'Carica i dati di allenamento e partita: un agente calcola carico acuto e cronico, confronta ogni atleta con la
-          sua media e propone come modulare la settimana.'
-        en: 'Upload training and match data: an agent computes acute and chronic load, compares each athlete with their own
-          baseline and proposes how to adjust the week.'
+        it: 'Carichi i dati dei dispositivi dopo ogni sessione: l''agente calcola carico acuto e cronico, confronta ogni atleta
+          con la sua media e propone come modulare la settimana.'
+        en: 'Upload the device data after each session: the agent computes acute and chronic load, compares every athlete
+          with their own average and proposes how to adjust the week.'
       actions:
+      - label:
+          it: Carica una sessione
+          en: Upload a session
+        href: /v/new_session
+        style: primary
       - label:
           it: Accedi
           en: Sign in
         href: /login
-        style: primary
+        style: ghost
     - type: steps
       id: come-funziona
       title:
@@ -421,41 +604,48 @@ spec:
           it: Rosa
           en: Roster
         text:
-          it: Il preparatore crea la rosa con ruolo, età, peso e storico infortuni.
-          en: The coach creates the roster with role, age, weight and injury history.
-        badge: '1'
+          it: Il preparatore inserisce atleti, ruolo, età, peso e storico infortuni.
+          en: The coach enters athletes, position, age, weight and injury history.
+        badge: 👥
       - title:
-          it: Dati sessione
-          en: Session data
+          it: Sessione
+          en: Session
         text:
-          it: Dopo ogni sessione si incollano i dati esportati dai dispositivi (per ora manualmente).
-          en: After each session the device export is pasted in (manual for now).
-        badge: '2'
+          it: Dopo allenamento o partita si caricano gli export dei dispositivi.
+          en: After training or a match, the device exports are uploaded.
+        badge: 📤
+      - title:
+          it: Analisi
+          en: Analysis
+        text:
+          it: ACWR, confronto con la media personale, atleti a rischio e piano di carico.
+          en: ACWR, comparison with personal average, at-risk athletes and load plan.
+        badge: 📈
       - title:
           it: Report
-          en: Report
+          en: Reports
         text:
-          it: Report di sessione, riepilogo settimanale e chat per i confronti.
-          en: Session report, weekly summary and chat for comparisons.
-        badge: '3'
+          it: Report dopo ogni sessione, riepilogo settimanale e chat per i confronti.
+          en: A report after every session, a weekly summary and a chat for comparisons.
+        badge: 💬
     - type: cards
-      id: ruoli
+      id: privacy
       title:
-        it: Ruoli e privacy
-        en: Roles and privacy
+        it: Chi vede cosa
+        en: Who sees what
       items:
       - title:
           it: Medico
-          en: Doctor
+          en: Team doctor
         text:
-          it: Vede i dati sanitari e gli avvisi di rischio.
-          en: Sees health data and risk alerts.
+          it: 'Dati sanitari: frequenza cardiaca, peso, infortuni, note mediche.'
+          en: 'Health data: heart rate, weight, injuries, medical notes.'
       - title:
-          it: Allenatore
-          en: Coach
+          it: Allenatore e staff tecnico
+          en: Coach and technical staff
         text:
-          it: Solo indicatori di prestazione, mai dati sanitari.
-          en: Performance indicators only, never health data.
+          it: Solo indicatori di prestazione e di carico, mai dati sanitari.
+          en: Only performance and load indicators, never health data.
       - title:
           it: Atleta
           en: Athlete
@@ -464,8 +654,9 @@ spec:
           en: Only their own data.
     - type: note
       content:
-        it: Supporto alla decisione, non diagnosi medica. Sensori, telecamere ed elaborazione video sono forniti a parte.
-        en: Decision support, not a medical diagnosis. Sensors, cameras and video processing are supplied separately.
+        it: Supporto alle decisioni dello staff, non diagnosi medica. Sensori, telecamere ed elaborazione video sono forniti
+          a parte.
+        en: Decision support for the staff, not a medical diagnosis. Sensors, cameras and video processing are provided separately.
   - key: new_session
     type: new_run
     title:
@@ -473,113 +664,331 @@ spec:
       en: New session
     roles:
     - admin
-    - allenatore
   - key: sessions
     type: history
     title:
-      it: Sessioni
-      en: Sessions
+      it: Sessioni caricate
+      en: Uploaded sessions
     source: run
     roles:
     - admin
-    - allenatore
-    - medico
   - key: report
     type: report
     source: run
     printable: true
     nav: false
-  - key: weekly_view
-    type: table
+  - key: session_reports_list
+    type: cards
     title:
-      it: Riepilogo settimanale
-      en: Weekly summary
-    source: collection:weekly_reports
-    columns:
-    - week
-    - title
-    - body
+      it: Report sessioni
+      en: Session reports
+    source: collection:session_reports
     roles:
     - admin
-    - allenatore
-    - medico
+    - coach
+    - doctor
+    data:
+      display: cards
+      fields:
+      - key: title
+        label:
+          it: Titolo
+          en: Title
+      - key: session_date
+        label: Data
+        format: date
+      - key: body
+        label: Report
+      sort:
+        field: session_date
+        dir: desc
+      limit: 50
+    printable: true
+  - key: weekly_list
+    type: cards
+    title:
+      it: Riepiloghi settimanali
+      en: Weekly summaries
+    source: collection:weekly_reports
+    roles:
+    - admin
+    - coach
+    - doctor
+    data:
+      display: cards
+      fields:
+      - key: title
+        label:
+          it: Titolo
+          en: Title
+      - key: date
+        label: Data
+        format: date
+      - key: body
+        label: Report
+      sort:
+        field: date
+        dir: desc
+      limit: 30
+    printable: true
+  - key: loads
+    type: table
+    title:
+      it: Carico e rischio
+      en: Load and risk
+    source: collection:load_indicators
+    roles:
+    - admin
+    - coach
+    - doctor
+    - athlete
+    export: true
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Data
+        format: date
+      - key: athlete_name
+        label:
+          it: Atleta
+          en: Athlete
+      - key: acute
+        label:
+          it: Carico acuto
+          en: Acute load
+        format: number
+      - key: chronic
+        label:
+          it: Carico cronico
+          en: Chronic load
+        format: number
+      - key: acwr
+        label: ACWR
+        format: number
+      - key: vs_own_avg_pct
+        label:
+          it: vs media personale %
+          en: vs own average %
+        format: number
+      - key: risk
+        label:
+          it: Rischio
+          en: Risk
+        format: badge
+      - key: suggestion
+        label:
+          it: Indicazione
+          en: Suggestion
+      sort:
+        field: date
+        dir: desc
+      limit: 200
+  - key: metrics
+    type: table
+    title:
+      it: Metriche di sessione
+      en: Session metrics
+    source: collection:session_metrics
+    roles:
+    - admin
+    - coach
+    - doctor
+    - athlete
+    export: true
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Data
+        format: date
+      - key: athlete_name
+        label:
+          it: Atleta
+          en: Athlete
+      - key: distance_m
+        label:
+          it: Distanza (m)
+          en: Distance (m)
+        format: number
+      - key: top_speed_kmh
+        label:
+          it: Vel. max (km/h)
+          en: Top speed (km/h)
+        format: number
+      - key: accelerations
+        label:
+          it: Accelerazioni
+          en: Accelerations
+        format: number
+      - key: load
+        label:
+          it: Carico
+          en: Load
+        format: number
+      sort:
+        field: date
+        dir: desc
+      limit: 200
+  - key: health_data
+    type: table
+    title:
+      it: Dati sanitari
+      en: Health data
+    source: collection:session_health
+    roles:
+    - admin
+    - doctor
+    - athlete
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Data
+        format: date
+      - key: athlete_name
+        label:
+          it: Atleta
+          en: Athlete
+      - key: hr_avg
+        label:
+          it: FC media
+          en: Avg HR
+        format: number
+      - key: hr_max
+        label:
+          it: FC max
+          en: Max HR
+        format: number
+      - key: medical_note
+        label:
+          it: Nota medica
+          en: Medical note
+      sort:
+        field: date
+        dir: desc
+      limit: 200
+  - key: roster
+    type: table
+    title:
+      it: Rosa
+      en: Roster
+    source: collection:athletes
+    roles:
+    - admin
+    - coach
+    - doctor
+    data:
+      display: table
+      fields:
+      - key: name
+        label:
+          it: Nome
+          en: Name
+      - key: position
+        label:
+          it: Ruolo
+          en: Position
+      - key: age
+        label:
+          it: Età
+          en: Age
+        format: number
+      - key: email
+        label: Email
+      limit: 100
+  - key: athlete_form
+    type: form
+    title:
+      it: Aggiungi atleta
+      en: Add athlete
+    collection: athletes
+    fields:
+    - name
+    - email
+    - position
+    - age
+    submit:
+      label:
+        it: Salva atleta
+        en: Save athlete
+      message:
+        it: Atleta salvato.
+        en: Athlete saved.
+      redirect: roster
+    edit: true
+    roles:
+    - admin
+  - key: health_form
+    type: form
+    title:
+      it: Scheda sanitaria
+      en: Health profile
+    collection: health_profiles
+    fields:
+    - athlete_email
+    - athlete_name
+    - weight_kg
+    - injury_history
+    submit:
+      label:
+        it: Salva scheda
+        en: Save profile
+      message:
+        it: Scheda salvata.
+        en: Profile saved.
+    edit: true
+    roles:
+    - admin
+    - doctor
+  - key: health_profiles_list
+    type: table
+    title:
+      it: Schede sanitarie
+      en: Health profiles
+    source: collection:health_profiles
+    roles:
+    - admin
+    - doctor
+    - athlete
+    data:
+      display: table
+      fields:
+      - key: athlete_name
+        label:
+          it: Atleta
+          en: Athlete
+      - key: weight_kg
+        label:
+          it: Peso (kg)
+          en: Weight (kg)
+        format: number
+      - key: injury_history
+        label:
+          it: Storico infortuni
+          en: Injury history
+      limit: 100
   - key: assistant_chat
     type: chat
     title:
       it: Chiedi ai dati
       en: Ask the data
     source: agent:assistant
+    roles:
+    - admin
+    - coach
+    - doctor
+    - athlete
     examples:
-    - Confronta Rossi e Bianchi nelle ultime 3 partite
-    - Chi ha l'ACWR più alto questa settimana?
+    - it: Confronta il carico di Rossi e Bianchi nelle ultime 4 settimane
+      en: Compare Rossi's and Bianchi's load over the last 4 weeks
+    - it: Chi è sopra la propria media di carico questa settimana?
+      en: Who is above their own load average this week?
+    - it: Confronta le ultime due partite
+      en: Compare the last two matches
     placeholder:
-      it: Confronta giocatori o partite…
-      en: Compare players or matches…
-    roles:
-    - admin
-    - allenatore
-  - key: roster
-    type: table
-    title:
-      it: Rosa
-      en: Roster
-    source: collection:athletes_profile
-    columns:
-    - name
-    - position
-    - age
-    - email
-    roles:
-    - admin
-    - allenatore
-    - medico
-  - key: metrics
-    type: table
-    title:
-      it: Indicatori di prestazione
-      en: Performance indicators
-    source: collection:load_metrics
-    columns:
-    - date
-    - athlete
-    - session
-    - session_load
-    - acwr
-    - vs_baseline_pct
-    - risk_level
-    roles:
-    - admin
-    - allenatore
-    - medico
-    - atleta
-  - key: health
-    type: table
-    title:
-      it: Dati sanitari
-      en: Health data
-    source: collection:athlete_health
-    columns:
-    - athlete
-    - weight_kg
-    - injury_history
-    - medical_notes
-    roles:
-    - admin
-    - medico
-  - key: risks
-    type: table
-    title:
-      it: Avvisi di rischio
-      en: Risk alerts
-    source: collection:risk_alerts
-    columns:
-    - date
-    - athlete
-    - risk_level
-    - detail
-    roles:
-    - admin
-    - medico
+      it: Scrivi una domanda…
+      en: Ask a question…
   - key: account
     type: account
     title:
@@ -590,54 +999,74 @@ spec:
   schedules:
   - agent: weekly
     action: run
-    cron: 0 6 * * 1
+    cron: 0 5 * * 1
     owner: app
+    goal: Write the weekly summary for the week that just ended.
+    deliver:
+      to:
+      - role:coach
+      - admins
+      subject:
+        it: Riepilogo settimanale
+        en: Weekly summary
+      onlyIfNew: true
+  triggers:
+  - key: new_session_report
+    description: Notify the staff when a session report is ready
+    'on':
+      collection: session_reports
+      op: insert
+    notify:
+      to:
+      - role:coach
+      - admins
+      subject:
+        it: 'Nuovo report di sessione: {record.title}'
+        en: 'New session report: {record.title}'
+      body:
+        it: È disponibile il report della sessione del {record.session_date}.
+        en: The report for the session of {record.session_date} is available.
+      link: session_reports_list
+  - key: high_risk_alert
+    description: Alert when an athlete is at high overload risk
+    'on':
+      collection: load_indicators
+      op: insert
+      where:
+        risk: high
+    notify:
+      to:
+      - role:coach
+      - role:doctor
+      - admins
+      subject:
+        it: 'Rischio sovraccarico alto: {record.athlete_name}'
+        en: 'High overload risk: {record.athlete_name}'
+      body:
+        it: '{record.athlete_name} risulta a rischio alto il {record.date} (ACWR {record.acwr}). Indicazione: {record.suggestion}'
+        en: '{record.athlete_name} is at high risk on {record.date} (ACWR {record.acwr}). Suggestion: {record.suggestion}'
+      link: loads
   billing:
     modes:
     - subscription
-    - credits
     currency: eur
-    signupCredits: 20
-    metering:
-      creditEur: 0.01
-      markupPct: 50
-      drivers:
-      - llm_tokens
-      - compute
-    costs:
-      agent:analyst:
-        estimate: 10
-        metered: true
-    packs:
-    - key: extra
-      credits: 1000
-      price: 10
-      label: Extra
     plans:
     - key: season
-      price: 1490
+      price: 990
       interval: year
       label:
         it: Stagione — per squadra
         en: Season — per team
-      credits: 20000
-      creditsReset: monthly
+      includes:
+      - unlimited athletes
+      - session reports
+      - weekly summary
+      - staff chat
       roles:
       - admin
   extensions:
-  - key: file_upload
-    description: 'I dati dei dispositivi si incollano o si linkano: il caricamento di file non è ancora disponibile.'
-  - key: auto_ingest
-    description: L'arrivo automatico dei dati da dispositivi/telecamere richiede connettori non ancora disponibili; per ora
-      inserimento manuale.
-  - key: athlete_own_data
-    description: 'La vista ''metrics'' per il ruolo atleta deve essere filtrata ai soli record dell''atleta (match email/nome)
-      e il ruolo medico non deve vedere la modifica della rosa: richiede filtro per utente a livello di runtime.'
-  - key: record_editing
-    description: 'Creazione e modifica di rosa e dati sanitari da parte del preparatore e del medico (form sulle collezioni):
-      da completare nello studio.'
-  - key: per_team_tenancy
-    description: Una installazione per squadra; più squadre nello stesso deployment richiedono un campo team su tutte le collezioni.
-  - key: notifications
-    description: 'Invio automatico via email del report dopo ogni sessione e del riepilogo settimanale: notifiche non ancora
-      disponibili, i report sono consultabili nell''app.'
+  - key: device_auto_ingest
+    description: 'Automatic arrival of device data (webhook/API from the sensor vendor) and automatic analysis on arrival:
+      for now sessions are uploaded as exported files.'
+  - key: video_metrics
+    description: Camera and video-processing indicators are provided separately and not part of this software layer.

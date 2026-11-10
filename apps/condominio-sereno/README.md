@@ -1,22 +1,31 @@
 # Condominio Sereno
 
-_Il condominio, in digitale e senza pensieri._
+_Il condominio gestito in digitale: segnalazioni, spese, verbali e un assistente sempre disponibile._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (52 checks passed)
 
 ## Description given to the app builder (Italian)
 
 Ci serve Condominio Sereno, un'app per gestire i condomini in modo digitale. Ci sono quattro ruoli: l'amministratore, i condomini, i fornitori e il consiglio di condominio. L'amministratore crea lo stabile con unità, millesimi e proprietari, e invita tutti. I condomini aprono segnalazioni con foto (guasto ascensore, infiltrazione), vedono le spese, i verbali e le comunicazioni, e possono chiedere informazioni a un assistente in chat che risponde su regolamento, bilancio e scadenze. Le email e PEC in arrivo all'indirizzo del condominio vengono lette da un agente che le classifica e collega a una pratica. Per una segnalazione l'agente chiede preventivi ai fornitori via email e li confronta; ogni spesa sopra una soglia deve essere approvata dall'amministratore e, se straordinaria, dal consiglio. A ogni evento, come un guasto o una scadenza, partono notifiche ai condomini interessati. Vogliamo che i condomini paghino le rate direttamente dall'app e che i documenti si carichino in archivio. Il condomino vede solo il suo stabile e la sua posizione. Abbonamento per unità immobiliare pagato dallo studio.
 
+## Functional test: what did not pass
+
+- **form saves a record** (form send_quote): only role fornitore may fill it, and the test cannot hold that role _(warning)_
+- **trigger has its effect** (trigger rfq_notify_suppliers): email to role:fornitore: no such recipient in the test (role nobody holds or empty field) _(warning)_
+- **trigger has its effect** (trigger comm_notify): email to role:condomino: no such recipient in the test (role nobody holds or empty field) _(warning)_
+- **saved record shown where its collection is read** (view my_tickets): a record was saved in tickets (by admin) but the page does not show it (as condomino) _(warning)_
+- **saved record shown where its collection is read** (view expenses_view): a record was saved in expenses (by admin-data, admin-data, admin) but the page does not show it (as condomino) _(warning)_
+- **saved record shown where its collection is read** (view documents_view): a record was saved in documents (by admin-data, admin-data, admin) but the page does not show it (as condomino) _(warning)_
+- **saved record shown where its collection is read** (view comms_view): a record was saved in communications (by admin-data, admin-data, admin) but the page does not show it (as condomino) _(warning)_
+
 ## Features not expressible today (spec.extensions)
 
-- **file_upload**: Foto delle segnalazioni e documenti d'archivio: il caricamento file non è ancora disponibile; per ora si incolla un link o il testo.
-- **notifiche**: Notifiche automatiche (email/push) ai condomini a ogni guasto o scadenza non disponibili: per ora l'agente pubblica una comunicazione visibile nell'app.
-- **pagamento_rate**: Pagamento delle rate dei condomini direttamente dall'app (verso il conto del condominio) non disponibile: i pagamenti Stripe vanno al titolare dell'app. Per ora le rate si registrano come 'pagata' dall'amministratore.
-- **preventivi_via_email**: L'invio di email ai fornitori non è disponibile: la richiesta di preventivo è pubblicata nell'app e i fornitori rispondono dal loro accesso. La lettura di email/PEC dipende dal canale email.
-- **isolamento_stabile**: Il condomino vede solo il suo stabile e la sua posizione tramite condivisione per record (sharing viewer) dell'amministratore; l'abbonamento per unità richiede il conteggio delle unità dello studio.
+- **rate_payments**: Pagamento delle rate direttamente dall'app da parte dei condomini verso lo studio: oggi i pagamenti Stripe Connect coprono solo i crediti/abbonamenti dell'app; la rata resta registrata e il pagamento va collegato in seguito.
+- **per_unit_pricing**: L'abbonamento è a scaglioni di unità immobiliari (quota limitata da limits create:units), non un prezzo esatto per unità.
+- **email_inbound**: L'indirizzo email/PEC del condominio deve inoltrare i messaggi al webhook /api/hooks/inbound_mail; la connessione di una casella PEC non è disponibile.
+- **member_emails_fill**: Le spese, i documenti e le comunicazioni portano l'elenco email dei condomini dello stabile per limitare la visibilità; compilazione automatica dallo stabile non ancora disponibile.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,36 +36,65 @@ Ci serve Condominio Sereno, un'app per gestire i condomini in modo digitale. Ci 
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### assistente
-![03-assistente.png](screenshots/03-assistente.png)
+### new_ticket
+![03-new_ticket.png](screenshots/03-new_ticket.png)
 
-### nuova_segnalazione
-![04-nuova_segnalazione.png](screenshots/04-nuova_segnalazione.png)
+### my_tickets
+![04-my_tickets.png](screenshots/04-my_tickets.png)
 
-### pratiche
-![05-pratiche.png](screenshots/05-pratiche.png)
+### expenses_view
+![05-expenses_view.png](screenshots/05-expenses_view.png)
 
-### stabili
-![06-stabili.png](screenshots/06-stabili.png)
+### installments_view
+![06-installments_view.png](screenshots/06-installments_view.png)
 
-### preventivi
-![07-preventivi.png](screenshots/07-preventivi.png)
+### documents_view
+![07-documents_view.png](screenshots/07-documents_view.png)
 
-### spese
-![08-spese.png](screenshots/08-spese.png)
+### comms_view
+![08-comms_view.png](screenshots/08-comms_view.png)
 
-### archivio
-![09-archivio.png](screenshots/09-archivio.png)
+### assistant_chat
+![09-assistant_chat.png](screenshots/09-assistant_chat.png)
 
-### comunicazioni
-![10-comunicazioni.png](screenshots/10-comunicazioni.png)
+### rfqs_view
+![10-rfqs_view.png](screenshots/10-rfqs_view.png)
 
-### posta_view
-![11-posta_view.png](screenshots/11-posta_view.png)
+### send_quote
+![11-send_quote.png](screenshots/11-send_quote.png)
 
-### approvazioni
-![12-approvazioni.png](screenshots/12-approvazioni.png)
+### quotes_view
+![12-quotes_view.png](screenshots/12-quotes_view.png)
+
+### decisions
+![13-decisions.png](screenshots/13-decisions.png)
+
+### practices_view
+![14-practices_view.png](screenshots/14-practices_view.png)
+
+### admin_building
+![15-admin_building.png](screenshots/15-admin_building.png)
+
+### admin_unit
+![16-admin_unit.png](screenshots/16-admin_unit.png)
+
+### admin_supplier
+![17-admin_supplier.png](screenshots/17-admin_supplier.png)
+
+### admin_board
+![18-admin_board.png](screenshots/18-admin_board.png)
+
+### admin_document
+![19-admin_document.png](screenshots/19-admin_document.png)
+
+### admin_comm
+![20-admin_comm.png](screenshots/20-admin_comm.png)
+
+### admin_installment
+![21-admin_installment.png](screenshots/21-admin_installment.png)
+
+### admin_expense
+![22-admin_expense.png](screenshots/22-admin_expense.png)
 
 ### account
-![13-account.png](screenshots/13-account.png)
-
+![23-account.png](screenshots/23-account.png)

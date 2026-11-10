@@ -1,22 +1,24 @@
 # Sportello Sempre Aperto
 
-_Il servizio clienti della tua azienda, aperto 24 ore su 24._
+_Il servizio clienti che risponde sempre, su ogni canale._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (21 checks passed)
 
 ## Description given to the app builder (Italian)
 
 Ci serve Sportello Sempre Aperto, un servizio clienti fatto di agenti per aziende di servizi, per esempio utility locali o centri medici. L'admin dell'azienda carica la base di conoscenza: FAQ, listini, procedure, orari, condizioni contrattuali. Il cliente finale può contattare l'azienda in quattro modi: chiamata telefonica al numero aziendale, messaggio WhatsApp, email alla casella di assistenza, oppure voce e chat dal sito. In tutti i canali risponde lo stesso agente, che riconosce la richiesta, risponde usando la base di conoscenza, raccoglie dati come numero cliente e motivo del contatto, apre un ticket e, se la questione è complessa o il cliente è arrabbiato, passa a un operatore umano con un riassunto. Le email in arrivo vengono lette e ricevono una risposta in bozza che l'operatore può approvare con un clic. Gli operatori vedono una coda unica dei ticket con trascrizioni; il responsabile vede una dashboard con volumi, tempi e soddisfazione. Ogni azienda vede solo i propri clienti. Pagamento a consumo per minuti di voce e conversazioni, con canone base mensile.
 
+## Functional test: what did not pass
+
+- **saved record shown where its collection is read** (view my_tickets): a record was saved in tickets (by admin) but the page does not show it (as user) _(warning)_
+
 ## Features not expressible today (spec.extensions)
 
-- **whatsapp_channel**: WhatsApp is not available yet: it needs each company's own WhatsApp Business credentials. Use phone, email and web for now.
-- **file_upload**: File upload is not available: the knowledge base is entered as pasted text or links.
-- **public_web_widget**: A public website widget for the company's end customers (anonymous, tied to one company's data) is not available yet; the chat view here is for testing and internal use.
-- **operator_roles**: Separate operator and manager roles seeing the company's tickets are not expressible yet: operators use the company account. Approvals are decided by the company user.
-- **voice_minute_billing**: Billing per voice minute is approximated by metered credits (tokens and compute); an explicit per-minute rate is not available. Notifications to the operator on escalation are not available.
+- **whatsapp_channel**: Canale WhatsApp per i messaggi dei clienti: non ancora disponibile (SMS/WhatsApp/push). Per ora telefono, email e chat dal sito.
+- **voice_minutes_metering**: Fatturazione a minuti di voce: oggi il consumo è misurato in crediti (token e calcolo); il conteggio dei minuti di chiamata va registrato nel campo voice_minutes del ticket.
+- **multi_company**: Ogni azienda corrisponde a una propria istanza dell'app, così vede solo i propri clienti e ticket.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,27 +29,29 @@ Ci serve Sportello Sempre Aperto, un servizio clienti fatto di agenti per aziend
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### knowledge_base
-![03-knowledge_base.png](screenshots/03-knowledge_base.png)
+### assistant
+![03-assistant.png](screenshots/03-assistant.png)
 
-### queue
-![04-queue.png](screenshots/04-queue.png)
+### my_tickets
+![04-my_tickets.png](screenshots/04-my_tickets.png)
 
-### drafts
-![05-drafts.png](screenshots/05-drafts.png)
+### knowledge_new
+![05-knowledge_new.png](screenshots/05-knowledge_new.png)
 
-### kpis
-![06-kpis.png](screenshots/06-kpis.png)
+### knowledge
+![06-knowledge.png](screenshots/06-knowledge.png)
 
-### by_channel
-![07-by_channel.png](screenshots/07-by_channel.png)
+### tickets
+![07-tickets.png](screenshots/07-tickets.png)
+
+### ticket_edit
+![08-ticket_edit.png](screenshots/08-ticket_edit.png)
+
+### approvals
+![09-approvals.png](screenshots/09-approvals.png)
 
 ### dashboard
-![08-dashboard.png](screenshots/08-dashboard.png)
-
-### test_chat
-![09-test_chat.png](screenshots/09-test_chat.png)
+![10-dashboard.png](screenshots/10-dashboard.png)
 
 ### account
-![10-account.png](screenshots/10-account.png)
-
+![11-account.png](screenshots/11-account.png)

@@ -4,13 +4,13 @@ metadata:
   slug: vetrinaai
   displayName: VetrinaAI
   tagline:
-    it: Scopri come gli assistenti AI raccontano il tuo hotel.
-    en: See how AI assistants describe your hotel.
+    it: Scopri come gli assistenti AI parlano del tuo hotel.
+    en: See how AI assistants talk about your hotel.
   description:
-    it: VetrinaAI interroga ogni settimana gli assistenti AI con le domande dei tuoi ospiti, misura quanto il tuo hotel viene
-      citato e ti dice cosa migliorare.
-    en: VetrinaAI asks AI assistants your guests' questions every week, measures how often your hotel is mentioned and tells
-      you what to improve.
+    it: Ogni settimana VetrinaAI interroga i principali modelli di intelligenza artificiale con le domande dei tuoi ospiti,
+      misura se il tuo hotel viene citato e ti dà raccomandazioni concrete per migliorare la visibilità.
+    en: Every week VetrinaAI asks the main AI models the questions your guests ask, measures whether your hotel is mentioned
+      and gives you concrete recommendations to improve visibility.
   langs:
   - it
   - en
@@ -21,13 +21,13 @@ spec:
   branding:
     theme: light
     palette:
-      primary: '#1d3557'
-      accent: '#e07a5f'
-      background: '#fbf8f3'
-      foreground: '#1b1f24'
+      primary: '#12304a'
+      accent: '#d9822b'
+      background: '#f8f6f1'
+      foreground: '#1c2229'
     fonts:
       body: Inter
-      display: Playfair Display
+      display: Fraunces
     wordmark:
     - text: Vetrina
       color: primary
@@ -58,63 +58,36 @@ spec:
       assignedBy: admin_emails
     - key: user
       label:
-        it: Albergatore
-        en: Hotelier
+        it: Albergatore / catena
+        en: Hotelier / chain
       assignedBy: signup
+    - key: director
+      label:
+        it: Direttore di struttura
+        en: Property manager
+      assignedBy: derived
+      from: collection:hotels.director_email
   limits:
-  - action: agent:prober
-    per: user
-    max: 40
-    window: day
+  - action: create:hotels
+    max: 1
+    window: total
     roles:
     - user
+    plans:
+      group: 5
+      chain: -1
+  egress:
+    hosts:
+    - api.openai.com
+    - api.anthropic.com
+    - generativelanguage.googleapis.com
+    notes: Official APIs of the language models being measured, called with the app owner's own API keys (org credentials).
+      Used only to ask public-style travel questions.
   agents:
   - key: prober
     role: scheduled
-    description: Asks a battery of realistic guest questions as an AI assistant would be asked, records mentions, then hands
-      over to the analyst.
-    memory: instance
-    delegates:
-    - analyst
-    output: markdown+json
-    resultSchema:
-      type: object
-      properties:
-        week:
-          type: string
-        hotel:
-          type: string
-        visibility_index:
-          type: number
-        mention_rate:
-          type: number
-        avg_position:
-          type: number
-        delta_index:
-          type: number
-        top_competitor:
-          type: string
-        summary:
-          type: string
-        answers:
-          type: array
-          items:
-            type: object
-            properties:
-              question:
-                type: string
-              mentioned:
-                type: boolean
-              position:
-                type: number
-              adjectives:
-                type: string
-              competitors:
-                type: string
-    writesTo:
-      collection: weekly_reports
-      parse: json_last
-      keyBy: week
+    description: Asks the main language models the guests' questions and records how the hotel is mentioned.
+    memory: none
     profile:
       inline:
         display_name: VetrinaAI prober
@@ -122,7 +95,115 @@ spec:
         - id: prober
           engine: agent_sdk
           model: claude-sonnet-5-5
-          max_turns: 12
+          max_turns: 80
+          max_budget_usd: 2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You measure how AI assistants describe a hotel. Steps:
+
+            1. Call read_hotel to get the hotel record (name, city, category, strengths, competitors, guest_questions, director_email).
+
+            2. Build a battery of 8 to 10 realistic guest questions in Italian (and 2 in English if the city is touristic
+            for foreigners): use the guest_questions of the record and add typical ones for the city and category (e.g. "miglior
+            hotel per famiglie a Rimini", "hotel con spa vicino al centro di Firenze"). NEVER put the hotel''s own name in
+            a question: the point is whether the models mention it spontaneously.
+
+            3. For each question call the three tools ask_openai, ask_anthropic, ask_gemini. Requests:
+
+            - ask_openai: POST body {"model":"gpt-5-mini","messages":[{"role":"user","content":"<question>"}]}; the answer
+            is in choices[0].message.content.
+
+            - ask_anthropic: POST body {"model":"claude-sonnet-5-5","max_tokens":800,"messages":[{"role":"user","content":"<question>"}]};
+            the answer is in content[0].text.
+
+            - ask_gemini: POST body {"contents":[{"parts":[{"text":"<question>"}]}]}; the answer is in candidates[0].content.parts[0].text.
+
+            If a model''s key is not connected or the call fails, skip that model and say so in the report; never invent an
+            answer.
+
+            4. For each answer call append_answer with: hotel (name), director_email, week_date (today, YYYY-MM-DD), model,
+            question, mentioned (true/false), position (1-based order of the hotel in the list, 0 if absent), adjectives (the
+            adjectives/phrases used about the hotel), competitors (other hotels cited in the same answer, comma separated),
+            excerpt (max 300 chars about the hotel or about the top-cited hotels if absent).
+
+            5. At the end call append_scan once with hotel, director_email, week_date, questions_count.
+
+            6. Write a short run report: first line "# Scansione VetrinaAI — <hotel> — <date>" (in English if the language
+            is en), then totals per model: answers, mentions, average position, and the most frequent competitors. Only real
+            data; never invent figures.'
+          mcp_servers: []
+    appTools:
+    - name: read_hotel
+      description: Read the registered hotels of the user
+      action: read
+      collection: hotels
+      scope: user
+    - name: ask_openai
+      description: Ask an OpenAI model a question (official API)
+      action: http
+      http:
+        method: POST
+        url: https://api.openai.com/v1/chat/completions
+        attribution: OpenAI API
+        credential:
+          provider: openai
+        timeoutMs: 30000
+    - name: ask_anthropic
+      description: Ask a Claude model a question (official API)
+      action: http
+      http:
+        method: POST
+        url: https://api.anthropic.com/v1/messages
+        headers:
+          anthropic-version: '2023-06-01'
+        attribution: Anthropic API
+        credential:
+          provider: anthropic
+          header: x-api-key
+          format: '{secret}'
+        timeoutMs: 30000
+    - name: ask_gemini
+      description: Ask a Gemini model a question (official API)
+      action: http
+      http:
+        method: POST
+        url: https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent
+        attribution: Google Gemini API
+        credential:
+          provider: gemini
+          query: key
+        timeoutMs: 30000
+    - name: append_answer
+      description: Record one model answer analysis
+      action: append
+      collection: answers
+      scope: user
+    - name: append_scan
+      description: Record that a weekly scan is complete
+      action: append
+      collection: scans
+      scope: user
+    output: markdown
+  - key: analyst
+    role: analyst
+    description: Compares this week with the previous one, computes the visibility index and writes recommendations.
+    profile:
+      inline:
+        display_name: VetrinaAI analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
           max_budget_usd: 0.8
           permission_mode: bypassPermissions
           disallowed_tools:
@@ -135,143 +216,133 @@ spec:
           - NotebookEdit
           - WebFetch
           - WebSearch
-          system_prompt: 'You monitor how AI assistants talk about one hotel. You receive the hotel''s name, city, category,
-            strengths, direct competitors and typical guest questions. Build a battery of 12 realistic questions a traveller
-            would ask an AI assistant (mix the hotel''s own guest questions with generic ones such as ''best family hotel
-            in <city>''). Answer each one yourself as a neutral assistant would, WITHOUT favouring the hotel, listing up to
-            5 hotels, and record: whether the hotel is mentioned, its position in the list (1-5, 0 if absent), the adjectives
-            used and the other hotels named. Be honest: you are one assistant model; state in the report that results come
-            from this model only and are not a census of all assistants. Never invent reviews, prices or ratings. Your memory
-            holds last week''s index and key points: use it for the delta. Compute mention_rate (0-100) and visibility_index
-            (0-100: 60% mention rate + 40% position score). Then call ask_analyst with your results and last week''s memory,
-            and include its recommendations in the report. Report format: start with ''# <Hotel> — visibility week of <date>'',
-            sections ## Index, ## Answers (a table), ## Compared with last week, ## Recommendations. End with a fenced json
-            block matching the result schema (week as YYYY-Www). Finally call remember once with the index and 5 key points.
-            Write in the language with ISO code {lang}.'
-  - key: analyst
-    role: helper
-    description: Compares with the previous week and writes concrete recommendations.
-    profile:
-      inline:
-        display_name: VetrinaAI analyst
-        crews:
-        - id: analyst
-          engine: agent_sdk
-          model: claude-sonnet-5-5
-          max_turns: 4
-          max_budget_usd: 0.3
-          permission_mode: bypassPermissions
-          disallowed_tools:
-          - Bash
-          - Read
-          - Write
-          - Edit
-          - Glob
-          - Grep
-          - NotebookEdit
-          - WebFetch
-          - WebSearch
-          system_prompt: 'You are a hospitality marketing analyst focused on visibility in AI assistants. From this week''s
-            recorded answers and last week''s summary, state what improved or worsened and why, then give 5 concrete, prioritised
-            recommendations: website texts to rewrite (quote the topic), missing information (amenities, distances, policies,
-            structured data), reviews to encourage and on which themes, and competitors to watch. Only use the data provided;
-            never invent figures or guarantee results. Under 300 words.'
+          system_prompt: 'You are a hotel visibility analyst for AI assistants. You are started when a weekly scan of one
+            hotel is complete.
+
+            1. read_hotel for the hotel profile; read_answers for the answers of the hotel (this week and the previous ones);
+            read_index for earlier weekly indexes.
+
+            2. Compute for this week: mention_rate (% of answers that cite the hotel), avg_position (over mentions only),
+            and the visibility index 0-100 = 70% mention_rate + 30% position score (position 1 = 100, 2 = 80, 3 = 60, 4 =
+            40, 5+ = 20, computed on mentions). Compute delta against the previous week''s index (0 if none). Use only the
+            recorded data; never invent figures.
+
+            3. Call append_index once with: hotel, director_email, week_date, index, mention_rate, avg_position, delta, summary
+            (3 lines), recommendations (markdown list).
+
+            4. Reply with the report. First line "# VetrinaAI — <hotel> — settimana del <date>" (English if lang is en). Sections
+            ## Visibilità e andamento (with a chart block), ## Come ti descrivono (adjectives, strengths vs. the declared
+            ones), ## Concorrenti citati, ## Raccomandazioni (concrete: website texts to improve, missing information such
+            as amenities, family services, distances, FAQ, reviews to stimulate on which topics, structured data). Add a chart
+            as a fenced block:
+
+            ```chart
+
+            {"type":"bar","title":"Citazioni per modello","labels":["A","B"],"series":[{"name":"Citazioni","values":[1,2]}],"unit":"%"}
+
+            ```
+
+            with real figures. Do not promise results and do not state that a text change will make a model cite the hotel;
+            say it is likely to help.'
+          mcp_servers: []
+    appTools:
+    - name: read_hotel
+      description: Read the registered hotels of the user
+      action: read
+      collection: hotels
+      scope: user
+    - name: read_answers
+      description: Read the recorded model answers
+      action: read
+      collection: answers
+      scope: user
+    - name: read_index
+      description: Read the weekly visibility indexes
+      action: read
+      collection: weekly_index
+      scope: user
+    - name: append_index
+      description: Record the weekly visibility index and recommendations
+      action: append
+      collection: weekly_index
+      scope: user
+    output: markdown
   templates:
   - key: hotel_watch
     title:
-      it: Struttura monitorata
-      en: Monitored property
+      it: Monitoraggio struttura
+      en: Property monitoring
     description:
-      it: Una struttura, un controllo settimanale della sua visibilità nelle risposte AI.
-      en: One property, a weekly check of its visibility in AI answers.
+      it: Ogni settimana interroga le AI sulla struttura scelta e produce il report.
+      en: Every week asks the AIs about the chosen property and produces the report.
     agent: prober
     params:
     - name: hotel
-      type: text
-      required: true
-      label:
-        it: Nome struttura
-        en: Property name
-    - name: city
-      type: text
-      required: true
-      label:
-        it: Città
-        en: City
-    - name: category
       type: select
       required: true
+      optionsFrom: collection:hotels
       label:
-        it: Categoria
-        en: Category
-      options:
-      - value: '2'
-        label: 2★
-      - value: '3'
-        label: 3★
-      - value: '4'
-        label: 4★
-      - value: '5'
-        label: 5★
-      - value: boutique
-        label: Boutique
-      - value: b&b
-        label: B&B
-    - name: strengths
-      type: textarea
-      maxLength: 600
-      label:
-        it: Punti di forza
-        en: Strengths
-    - name: competitors
-      type: textarea
-      maxLength: 600
-      label:
-        it: Concorrenti diretti (uno per riga)
-        en: Direct competitors (one per line)
-    - name: guest_questions
-      type: textarea
-      maxLength: 900
-      label:
-        it: Domande tipiche degli ospiti
-        en: Typical guest questions
-    goal: 'Property "{instance}": hotel {hotel} in {city}, category {category}.
-
-      Strengths: {strengths}
-
-      Direct competitors: {competitors}
-
-      Typical guest questions: {guest_questions}
-
-      Today is {date}. Write the report in the language with ISO code {lang}.'
+        it: Struttura
+        en: Property
+    goal: Run the weekly AI-visibility scan for the hotel record "{hotel}". Today is {date}. Write the report in the language
+      with ISO code {lang}.
     schedule:
-      cron: 0 6 * * 1
+      cron: 0 5 * * 1
       userCanChange: false
     maxPerUser: 30
-  data:
-    collections:
-    - name: weekly_reports
-      ownedBy: instance
-      description: 'One record per property per week: index, mentions, answers'
-      fields:
-      - name: week
-        type: text
-      - name: hotel
-        type: text
-      - name: visibility_index
-        type: number
-      - name: mention_rate
-        type: number
-      - name: avg_position
-        type: number
-      - name: delta_index
-        type: number
-      - name: top_competitor
-        type: text
-      - name: summary
-        type: textarea
-      - name: answers
-        type: json
+    roles:
+    - user
+    - admin
+  triggers:
+  - key: scan_done
+    description: When a scan is complete, the analyst computes the index and recommendations
+    'on':
+      collection: scans
+      op: insert
+    start:
+      agent: analyst
+    goal: 'Analyse the weekly scan of the hotel {record.hotel} for the week {record.week_date}. Hotel director email: {record.director_email}.
+      Write the report in the language with ISO code {lang}.'
+  - key: report_ready
+    description: Weekly report by email to the owner and to the property director
+    'on':
+      collection: weekly_index
+      op: insert
+    notify:
+      to:
+      - owner
+      - record.director_email
+      subject:
+        it: 'VetrinaAI: indice di visibilità di {record.hotel} — {record.index}/100'
+        en: 'VetrinaAI: visibility index of {record.hotel} — {record.index}/100'
+      body:
+        it: 'Settimana del {record.week_date}
+
+          Indice: {record.index}/100 (variazione {record.delta})
+
+          Citazioni: {record.mention_rate}%
+
+
+          {record.summary}
+
+
+          Raccomandazioni:
+
+          {record.recommendations}'
+        en: 'Week of {record.week_date}
+
+          Index: {record.index}/100 (change {record.delta})
+
+          Mentions: {record.mention_rate}%
+
+
+          {record.summary}
+
+
+          Recommendations:
+
+          {record.recommendations}'
+      link: dashboard
   views:
   - key: home
     type: page
@@ -279,20 +350,24 @@ spec:
     title: VetrinaAI
     sections:
     - type: hero
+      layout: split
+      band: true
       title:
-        it: Cosa dicono di te gli **assistenti AI**?
-        en: What do **AI assistants** say about you?
+        it: Come ti racconta l'**intelligenza artificiale**?
+        en: How does **artificial intelligence** describe you?
       text:
-        it: Ogni settimana mettiamo alla prova gli assistenti AI con le domande reali dei tuoi ospiti e ti diciamo se, dove
-          e come il tuo hotel viene citato, con azioni concrete per migliorare.
-        en: Every week we test AI assistants with your guests' real questions and tell you if, where and how your hotel is
-          mentioned, with concrete actions to improve.
+        it: I tuoi ospiti chiedono consigli a ChatGPT, Claude e Gemini. VetrinaAI misura ogni settimana se il tuo hotel viene
+          citato, in che posizione e accanto a chi, e ti dice cosa fare per migliorare.
+        en: Your guests ask ChatGPT, Claude and Gemini for advice. VetrinaAI measures every week whether your hotel is mentioned,
+          in which position and next to whom, and tells you what to do to improve.
       actions:
       - label:
-          it: Inizia
+          it: Inizia ora
           en: Get started
         href: /login
         style: primary
+      aside: <div style="padding:16px;border-radius:12px;background:#fff"><b>Indice di visibilità</b><br><span style="font-size:40px">62/100</span><br>+8
+        rispetto alla settimana scorsa<br><small>Citato in 14 risposte su 24</small></div>
     - type: steps
       id: come-funziona
       title:
@@ -301,24 +376,25 @@ spec:
       items:
       - title:
           it: Registra la struttura
-          en: Add your property
+          en: Register your property
         text:
-          it: Nome, città, categoria, punti di forza, concorrenti e domande degli ospiti.
-          en: Name, city, category, strengths, competitors and guest questions.
+          it: Nome, città, categoria, punti di forza, concorrenti e domande tipiche degli ospiti.
+          en: Name, city, category, strengths, competitors and typical guest questions.
         badge: 🏨
       - title:
-          it: Controllo settimanale
-          en: Weekly check
+          it: Interroghiamo le AI
+          en: We query the AIs
         text:
-          it: 'Una batteria di domande realistiche: citazione, posizione, aggettivi, concorrenti.'
-          en: 'A battery of realistic questions: mention, position, adjectives, competitors.'
-        badge: 🔍
+          it: Ogni settimana una batteria di domande realistiche ai principali modelli, tramite le API ufficiali.
+          en: Every week a battery of realistic questions to the main models, through their official APIs.
+        badge: 🤖
       - title:
-          it: Indice e consigli
-          en: Index and advice
+          it: Indice e raccomandazioni
+          en: Index and recommendations
         text:
-          it: Confronto con la settimana prima, indice di visibilità e raccomandazioni.
-          en: Week-on-week comparison, visibility index and recommendations.
+          it: Confronto con la settimana precedente, testi da migliorare, informazioni mancanti, recensioni da stimolare.
+            Report anche via email.
+          en: Comparison with last week, texts to improve, missing information, reviews to encourage. Report also by email.
         badge: 📈
     - type: cards
       id: prezzi
@@ -327,112 +403,223 @@ spec:
         en: Pricing
       items:
       - title:
-          it: Struttura
-          en: Property
+          it: Struttura singola · 49 €/mese
+          en: Single property · €49/month
         text:
-          it: Abbonamento mensile per struttura.
-          en: Monthly subscription per property.
+          it: Una struttura, report settimanale.
+          en: One property, weekly report.
       - title:
-          it: Gruppo
-          en: Group
+          it: Gruppo · 199 €/mese
+          en: Group · €199/month
         text:
-          it: 'Sconto per catene e gruppi: tutte le strutture in un unico account, ogni direttore vede solo la propria.'
-          en: 'Discount for chains and groups: all properties in one account, each manager sees only their own.'
+          it: Fino a 5 strutture, con sconto, direttori con accesso alla propria.
+          en: Up to 5 properties, discounted, managers see their own.
+      - title:
+          it: Catena · 399 €/mese
+          en: Chain · €399/month
+        text:
+          it: Strutture illimitate, vista d'insieme.
+          en: Unlimited properties, overview.
     - type: note
       content:
-        it: I risultati riflettono le risposte del modello usato nel controllo e non garantiscono il posizionamento in altri
-          assistenti.
-        en: Results reflect the answers of the model used for the check and do not guarantee placement in other assistants.
+        it: 'Le risposte delle AI variano nel tempo: l''indice è un indicatore, non una garanzia di posizionamento.'
+        en: 'AI answers vary over time: the index is an indicator, not a guarantee of ranking.'
+  - key: hotel_new
+    type: form
+    title:
+      it: Registra struttura
+      en: Register property
+    collection: hotels
+    submit:
+      label:
+        it: Salva struttura
+        en: Save property
+      message:
+        it: Struttura salvata. Ora attiva il monitoraggio.
+        en: Property saved. Now start the monitoring.
+      redirect: watches
+    edit: true
+    roles:
+    - user
+    - admin
+  - key: hotels
+    type: table
+    title:
+      it: Le mie strutture
+      en: My properties
+    source: collection:hotels
+    columns:
+    - name
+    - city
+    - category
+    - director_email
+    export: true
+    roles:
+    - user
+    - admin
+    - director
   - key: watches
     type: instances
     template: hotel_watch
     title:
-      it: Le mie strutture
-      en: My properties
+      it: Monitoraggi
+      en: Monitoring
     roles:
     - user
     - admin
-  - key: trend
-    type: chart
-    title:
-      it: Andamento visibilità
-      en: Visibility trend
-    source: collection:weekly_reports
-    roles:
-    - user
-    - admin
-    data:
-      display: chart
-      chart: line
-      fields:
-      - key: week
-        label:
-          it: Settimana
-          en: Week
-      - key: visibility_index
-        label:
-          it: Indice
-          en: Index
-      - key: mention_rate
-        label:
-          it: Citazioni %
-          en: Mentions %
-      sort:
-        field: week
-        dir: asc
-      limit: 52
-  - key: answers
-    type: table
-    title:
-      it: Report settimanali
-      en: Weekly reports
-    source: collection:weekly_reports
-    roles:
-    - user
-    - admin
-    data:
-      display: table
-      fields:
-      - key: week
-        label:
-          it: Settimana
-          en: Week
-      - key: hotel
-        label: Hotel
-      - key: visibility_index
-        label:
-          it: Indice
-          en: Index
-        format: number
-      - key: delta_index
-        label: Δ
-        format: number
-      - key: avg_position
-        label:
-          it: Posizione media
-          en: Avg position
-        format: number
-      - key: top_competitor
-        label:
-          it: Concorrente top
-          en: Top competitor
-      - key: summary
-        label:
-          it: Sintesi
-          en: Summary
-      sort:
-        field: week
-        dir: desc
-      limit: 100
   - key: dashboard
     type: dashboard
     title:
       it: Dashboard
       en: Dashboard
     children:
-    - watches
     - trend
-    - answers
+    - latest
+    - answers_table
+    roles:
+    - user
+    - admin
+    - director
+  - key: trend
+    type: chart
+    title:
+      it: Andamento indice di visibilità
+      en: Visibility index trend
+    source: collection:weekly_index
+    data:
+      display: chart
+      chart: line
+      fields:
+      - key: week_date
+        label:
+          it: Settimana
+          en: Week
+        format: date
+      - key: index
+        label:
+          it: Indice
+          en: Index
+        format: number
+      groupBy:
+        field: week_date
+        bucket: week
+        aggs:
+        - key: index
+          agg: avg
+          field: index
+    nav: false
+  - key: latest
+    type: table
+    title:
+      it: Report settimanali
+      en: Weekly reports
+    source: collection:weekly_index
+    data:
+      display: table
+      fields:
+      - key: week_date
+        label:
+          it: Settimana
+          en: Week
+        format: date
+      - key: hotel
+        label:
+          it: Struttura
+          en: Property
+      - key: index
+        label:
+          it: Indice
+          en: Index
+        format: number
+      - key: delta
+        label:
+          it: Variazione
+          en: Change
+        format: number
+      - key: mention_rate
+        label:
+          it: '% citazioni'
+          en: '% mentions'
+        format: number
+      - key: summary
+        label:
+          it: Sintesi
+          en: Summary
+      - key: recommendations
+        label:
+          it: Raccomandazioni
+          en: Recommendations
+      sort:
+        field: week_date
+        dir: desc
+      limit: 50
+    export: true
+    nav: false
+  - key: answers_table
+    type: table
+    title:
+      it: Risposte delle AI
+      en: AI answers
+    source: collection:answers
+    data:
+      display: table
+      fields:
+      - key: week_date
+        label:
+          it: Settimana
+          en: Week
+        format: date
+      - key: hotel
+        label:
+          it: Struttura
+          en: Property
+      - key: model
+        label:
+          it: Modello
+          en: Model
+        format: badge
+      - key: question
+        label:
+          it: Domanda
+          en: Question
+      - key: mentioned
+        label:
+          it: Citato
+          en: Mentioned
+        format: badge
+      - key: position
+        label:
+          it: Posizione
+          en: Position
+        format: number
+      - key: adjectives
+        label:
+          it: Aggettivi
+          en: Adjectives
+      - key: competitors
+        label:
+          it: Concorrenti citati
+          en: Competitors cited
+      sort:
+        field: week_date
+        dir: desc
+      limit: 200
+    export: true
+    nav: false
+  - key: report
+    type: report
+    title:
+      it: Report
+      en: Report
+    source: run
+    printable: true
+    nav: false
+  - key: history
+    type: history
+    title:
+      it: Scansioni
+      en: Scans
+    source: run
     roles:
     - user
     - admin
@@ -443,40 +630,199 @@ spec:
       en: Subscription
     roles:
     - user
+  data:
+    collections:
+    - name: hotels
+      ownedBy: user
+      description: Properties registered by the hotelier or chain
+      fields:
+      - name: name
+        type: text
+        required: true
+        label:
+          it: Nome struttura
+          en: Property name
+      - name: city
+        type: text
+        required: true
+        label:
+          it: Città
+          en: City
+      - name: category
+        type: select
+        required: true
+        label:
+          it: Categoria
+          en: Category
+        options:
+        - value: '2'
+          label: 2★
+        - value: '3'
+          label: 3★
+        - value: '4'
+          label: 4★
+        - value: '5'
+          label: 5★
+        - value: boutique
+          label: Boutique
+        - value: resort
+          label: Resort
+      - name: website
+        type: url
+        label:
+          it: Sito web
+          en: Website
+      - name: strengths
+        type: textarea
+        required: true
+        maxLength: 800
+        label:
+          it: Punti di forza
+          en: Strengths
+      - name: competitors
+        type: textarea
+        maxLength: 600
+        label:
+          it: Concorrenti diretti
+          en: Direct competitors
+      - name: guest_questions
+        type: textarea
+        maxLength: 1000
+        label:
+          it: Domande tipiche degli ospiti
+          en: Typical guest questions
+        help:
+          it: Una per riga, es. miglior hotel per famiglie a Rimini
+          en: One per line, e.g. best family hotel in Rimini
+      - name: director_email
+        type: email
+        label:
+          it: Email del direttore (facoltativa)
+          en: Property manager email (optional)
+      access:
+      - role: director
+        where:
+          director_email: '{user.email}'
+        can:
+        - read
+    - name: answers
+      ownedBy: user
+      description: One analysed answer of an AI model to a question
+      retentionDays: 400
+      fields:
+      - name: hotel
+        type: text
+      - name: director_email
+        type: email
+      - name: week_date
+        type: date
+      - name: model
+        type: text
+      - name: question
+        type: textarea
+      - name: mentioned
+        type: boolean
+      - name: position
+        type: number
+      - name: adjectives
+        type: text
+      - name: competitors
+        type: text
+      - name: excerpt
+        type: textarea
+      access:
+      - role: director
+        where:
+          director_email: '{user.email}'
+        can:
+        - read
+    - name: scans
+      ownedBy: user
+      description: Marker of a completed weekly scan, starts the analyst
+      retentionDays: 400
+      fields:
+      - name: hotel
+        type: text
+      - name: director_email
+        type: email
+      - name: week_date
+        type: date
+      - name: questions_count
+        type: number
+    - name: weekly_index
+      ownedBy: user
+      description: Weekly visibility index and recommendations per property
+      fields:
+      - name: hotel
+        type: text
+      - name: director_email
+        type: email
+      - name: week_date
+        type: date
+      - name: index
+        type: number
+      - name: mention_rate
+        type: number
+      - name: avg_position
+        type: number
+      - name: delta
+        type: number
+      - name: summary
+        type: textarea
+      - name: recommendations
+        type: textarea
+      access:
+      - role: director
+        where:
+          director_email: '{user.email}'
+        can:
+        - read
+    credentials:
+    - provider: openai
+      kind: api_key
+      scope: org
+      label: OpenAI API key
+      help: API key of the app owner for the OpenAI official API
+    - provider: anthropic
+      kind: api_key
+      scope: org
+      label: Anthropic API key
+      help: API key of the app owner for the Anthropic official API
+    - provider: gemini
+      kind: api_key
+      scope: org
+      label: Google Gemini API key
+      help: API key of the app owner for the Gemini official API
   billing:
     modes:
     - subscription
     currency: eur
     plans:
-    - key: property
-      price: 39
+    - key: single
+      price: 49
       interval: month
       label:
-        it: Per struttura
-        en: Per property
-      includes:
-      - 1 property
-      - weekly report
+        it: Struttura singola
+        en: Single property
       roles:
       - user
     - key: group
-      price: 149
+      price: 199
       interval: month
       label:
-        it: Gruppo (fino a 5 strutture, sconto)
-        en: Group (up to 5 properties, discounted)
-      includes:
-      - 5 properties
-      - weekly report
+        it: Gruppo (fino a 5 strutture)
+        en: Group (up to 5 properties)
+      roles:
+      - user
+    - key: chain
+      price: 399
+      interval: month
+      label:
+        it: Catena (illimitate)
+        en: Chain (unlimited)
       roles:
       - user
   extensions:
-  - key: official_llm_apis
-    description: Querying several third-party LLMs through their official APIs needs a provider API key, which the manifest
-      cannot hold. For now the check uses a single model and says so in the report; multi-model probing needs platform-side
-      credentials.
-  - key: weekly_email
-    description: 'Emailing the weekly report is not available yet: reports are read in the dashboard.'
-  - key: group_managers
-    description: 'Chains and per-property managers: the chain owner creates all properties and per-record sharing (viewer)
-      invites each manager to their own; a dedicated invite role is not modelled yet.'
+  - key: group_discount_per_property
+    description: Per-property monthly price with automatic volume discount is approximated by the group and chain plans; exact
+      per-seat metering is not available yet.

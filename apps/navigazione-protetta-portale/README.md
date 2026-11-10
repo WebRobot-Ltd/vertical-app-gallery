@@ -1,8 +1,8 @@
 # SafeBrowse Console
 
-_La console per l'IT manager: minacce web bloccate, andamenti e azioni consigliate._
+_Console di gestione e report per la protezione della navigazione web._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (15 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,12 +10,10 @@ Descrivo solo lo strato software di gestione e reportistica di un servizio di pr
 
 ## Features not expressible today (spec.extensions)
 
-- **email_alerts**: Email alert on anomalous spikes and periodic summary email are not available yet; anomalies are shown on the dashboard and in the daily checks list. Add email notifications when supported.
-- **per_seat_pricing**: Subscription is per number of protected seats; per-seat quantity billing is not expressible, so seat tiers are offered as plans. Seat count enforcement against protected_users is not automatic.
-- **webhook_tenant_routing**: The webhook must identify the company of each event (e.g. per-company token) and write it into that company's threat_events; per-tenant hook secrets are not expressible in the manifest and need runtime support.
-- **exact_aggregations**: Charts over raw events use the daily_checks aggregates written by the daily agent; server-side group-by over threat_events is not available.
+- **webhook_tenant**: The webhook /api/hooks/threat_event writes events into one company's records: attributing each device's events to the right company (per-company hook secret or device registry lookup) needs custom handling not expressible in the manifest.
+- **seat_billing**: Plans are seat tiers; billing per exact number of protected seats (metered) is not available, and the seat limit is enforced on registered users only.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -29,21 +27,26 @@ Descrivo solo lo strato software di gestione e reportistica di un servizio di pr
 ### dashboard
 ![03-dashboard.png](screenshots/03-dashboard.png)
 
-### watches
-![04-watches.png](screenshots/04-watches.png)
-
-### new
-![05-new.png](screenshots/05-new.png)
+### alerts_list
+![04-alerts_list.png](screenshots/04-alerts_list.png)
 
 ### reports
-![06-reports.png](screenshots/06-reports.png)
+![05-reports.png](screenshots/05-reports.png)
 
-### policies_view
-![07-policies_view.png](screenshots/07-policies_view.png)
+### spike_watch
+![06-spike_watch.png](screenshots/06-spike_watch.png)
 
-### users_view
-![08-users_view.png](screenshots/08-users_view.png)
+### add_user
+![07-add_user.png](screenshots/07-add_user.png)
+
+### users_list
+![08-users_list.png](screenshots/08-users_list.png)
+
+### add_policy
+![09-add_policy.png](screenshots/09-add_policy.png)
+
+### policies_list
+![10-policies_list.png](screenshots/10-policies_list.png)
 
 ### account
-![09-account.png](screenshots/09-account.png)
-
+![11-account.png](screenshots/11-account.png)

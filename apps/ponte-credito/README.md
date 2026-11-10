@@ -1,8 +1,8 @@
 # Ponte Credito
 
-_Scopri a quale credito puoi accedere e preparati._
+_Scopri a quale credito puoi accedere e preparati a chiederlo._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (15 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,12 @@ Voglio Ponte Credito, un'app che aiuta le piccole imprese a capire a quale credi
 
 ## Features not expressible today (spec.extensions)
 
-- **open_banking**: Reading bank movements by linking accounts through open banking (PSD2 AISP) is not available yet: it needs each customer's bank consent and a licensed provider. For now the form takes declared figures.
-- **broker_forwarding**: Mandate signing, forwarding the practice to lenders through the OAM-registered broker, and the broker's review workflow are not available yet. Today the broker sees the practices shared with them (viewer sharing) and status is updated manually; the broker role is assigned by invitation.
-- **success_fee**: The broker's fee only on funded loans is agreed and invoiced outside the app: the platform cannot yet collect a commission upon a funding event.
-- **notifications**: Emails to the entrepreneur or the broker when a report is ready or a practice changes status are not available yet.
-- **file_upload**: Uploading balance sheets or documents is not available yet: figures are typed in the form.
+- **open_banking**: Lettura dei movimenti bancari tramite open banking (PSD2): non disponibile ancora, richiede OAuth/consenso con un provider AISP. Per ora l'imprenditore inserisce i dati nel modulo.
+- **mediator_commission**: La commissione del mediatore a finanziamento ottenuto si concorda e si incassa fuori dall'app; l'app registra lo stato 'funded' e avvisa l'imprenditore. Un addebito automatico via Stripe Connect non è ancora configurato.
+- **oam_check**: Verifica dell'iscrizione OAM del mediatore: gli admin assegnano e controllano manualmente le email dei mediatori.
+- **lender_forwarding**: L'inoltro ai finanziatori è svolto dal mediatore fuori dall'app; l'app tiene mandato e stato della pratica.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,18 +26,23 @@ Voglio Ponte Credito, un'app che aiuta le piccole imprese a capire a quale credi
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### new
-![03-new.png](screenshots/03-new.png)
+### new_run
+![03-new_run.png](screenshots/03-new_run.png)
 
-### analyses
-![04-analyses.png](screenshots/04-analyses.png)
+### history
+![04-history.png](screenshots/04-history.png)
 
-### my_practices
-![05-my_practices.png](screenshots/05-my_practices.png)
+### mandate
+![05-mandate.png](screenshots/05-mandate.png)
 
-### broker_desk
-![06-broker_desk.png](screenshots/06-broker_desk.png)
+### practices
+![06-practices.png](screenshots/06-practices.png)
+
+### desk
+![07-desk.png](screenshots/07-desk.png)
+
+### practice_update
+![08-practice_update.png](screenshots/08-practice_update.png)
 
 ### account
-![07-account.png](screenshots/07-account.png)
-
+![09-account.png](screenshots/09-account.png)

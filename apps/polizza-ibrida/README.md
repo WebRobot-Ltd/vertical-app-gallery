@@ -1,8 +1,8 @@
 # Portale Polizze
 
-_Preventivo, polizze e sinistri in un unico portale, con un consulente autorizzato accanto a te._
+_Preventivo in pochi minuti, polizze e sinistri in un'unica area personale._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (18 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,12 +10,10 @@ Descrivo solo lo strato software di un operatore assicurativo, cioe il portale d
 
 ## Features not expressible today (spec.extensions)
 
-- **caricamento_file**: Il caricamento di documenti e foto non è ancora disponibile: il cliente fornisce link o testo incollato.
-- **promemoria_email**: Promemoria email per scadenze e rinnovi non disponibili ancora (le notifiche non sono supportate): la scadenza è visibile nell'area personale.
-- **clienti_seguiti**: La vista del consulente sui clienti che segue (oltre alle approvazioni) richiede un back office dedicato; ora il consulente decide le pratiche nella vista Da verificare.
-- **emissione_polizza**: L'emissione e il caricamento della polizza e dei documenti nell'area del cliente avvengono a cura dell'intermediario autorizzato.
+- **consulente_assegnato**: Assegnazione di ciascun cliente a un consulente specifico: ora i consulenti invitati vedono tutte le pratiche; l'assegnazione per cliente richiede che un amministratore registri l'email del consulente sulla pratica.
+- **caricamento_polizza_emessa**: L'emissione resta un atto del consulente autorizzato: il consulente aggiorna la pratica (numero, compagnia, premio, scadenza, PDF). Nessuna integrazione con i sistemi delle compagnie.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -26,24 +24,26 @@ Descrivo solo lo strato software di un operatore assicurativo, cioe il portale d
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### nuovo_preventivo
-![03-nuovo_preventivo.png](screenshots/03-nuovo_preventivo.png)
+### new_quote
+![03-new_quote.png](screenshots/03-new_quote.png)
 
-### preventivi
-![04-preventivi.png](screenshots/04-preventivi.png)
+### quotes
+![04-quotes.png](screenshots/04-quotes.png)
 
-### assistente_chat
-![05-assistente_chat.png](screenshots/05-assistente_chat.png)
+### new_practice
+![05-new_practice.png](screenshots/05-new_practice.png)
 
-### mie_polizze
-![06-mie_polizze.png](screenshots/06-mie_polizze.png)
+### my_policies
+![06-my_policies.png](screenshots/06-my_policies.png)
 
-### mie_pratiche
-![07-mie_pratiche.png](screenshots/07-mie_pratiche.png)
+### assistant_chat
+![07-assistant_chat.png](screenshots/07-assistant_chat.png)
 
-### miei_sinistri
-![08-miei_sinistri.png](screenshots/08-miei_sinistri.png)
+### new_claim
+![08-new_claim.png](screenshots/08-new_claim.png)
 
-### verifiche
-![09-verifiche.png](screenshots/09-verifiche.png)
+### advisor_practices
+![09-advisor_practices.png](screenshots/09-advisor_practices.png)
 
+### advisor_claims
+![10-advisor_claims.png](screenshots/10-advisor_claims.png)

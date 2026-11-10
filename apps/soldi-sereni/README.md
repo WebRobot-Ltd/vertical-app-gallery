@@ -1,8 +1,8 @@
 # SoldiSereni
 
-_Capisci i tuoi soldi, con calma. Educazione finanziaria e consulenza a parcella._
+_Educazione finanziaria, spese sotto controllo e consulenza a parcella._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (21 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,7 +10,52 @@ SoldiSereni e un'app di educazione finanziaria con tracciamento delle spese e co
 
 ## Features not expressible today (spec.extensions)
 
-- **open_banking_psd2**: Collegamento dei conti via open banking (PSD2) per importare i movimenti: non ancora disponibile (richiede credenziali per ogni cliente e un provider AISP autorizzato). Per ora i movimenti si registrano a mano in chat.
-- **advisor_booking_calendar**: Prenotazione con calendario e conferma automatica della sessione, e invio email di promemoria: non disponibile. La richiesta è un record in 'Le mie sessioni' che il consulente conferma; il pagamento a sessione passa da Stripe Connect sul conto del consulente.
-- **advisor_selection**: L'utente condivide dossier e prenotazione invitando il consulente scelto (condivisione per record): il consulente vede solo i record per cui è stato invitato. L'iscrizione all'albo va verificata dall'admin prima di assegnare il ruolo 'advisor' per invito.
+- **open_banking**: Collegamento dei conti via open banking PSD2 per importare i movimenti: non disponibile ora (richiede OAuth/provider AISP). Per ora i movimenti si inseriscono a mano.
+- **pagamento_sessione**: Il pagamento a sessione usa il pack 'sessione'; l'accredito al consulente e la visibilità delle prenotazioni al consulente richiedono un'estensione dedicata.
 
+## Screenshots (interpretive runtime, no data)
+
+### home-anon
+![00-home-anon.png](screenshots/00-home-anon.png)
+
+### home-mobile
+![01-home-mobile.png](screenshots/01-home-mobile.png)
+
+### home
+![02-home.png](screenshots/02-home.png)
+
+### learn
+![03-learn.png](screenshots/03-learn.png)
+
+### quiz
+![04-quiz.png](screenshots/04-quiz.png)
+
+### add_tx
+![05-add_tx.png](screenshots/05-add_tx.png)
+
+### movements
+![06-movements.png](screenshots/06-movements.png)
+
+### by_category
+![07-by_category.png](screenshots/07-by_category.png)
+
+### new_analysis
+![08-new_analysis.png](screenshots/08-new_analysis.png)
+
+### analyses
+![09-analyses.png](screenshots/09-analyses.png)
+
+### chat
+![10-chat.png](screenshots/10-chat.png)
+
+### book
+![11-book.png](screenshots/11-book.png)
+
+### share
+![12-share.png](screenshots/12-share.png)
+
+### clients
+![13-clients.png](screenshots/13-clients.png)
+
+### account
+![14-account.png](screenshots/14-account.png)

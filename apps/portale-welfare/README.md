@@ -1,22 +1,27 @@
 # Portale Welfare
 
-_Il welfare aziendale in un unico portale: saldo, rimborsi e assistente._
+_Il welfare aziendale in un unico portale: budget, rimborsi e voucher._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (28 checks passed)
 
 ## Description given to the app builder (Italian)
 
 Ci serve Portale Welfare, la parte software di un servizio di welfare aziendale. Descrivo solo lo strato digitale: la rete di fornitori convenzionati, l'emissione dei voucher e gli aspetti fiscali sono gestiti dal provider. L'HR dell'azienda cliente carica l'elenco dei dipendenti e assegna a ciascuno un budget welfare annuale secondo il regolamento aziendale. Il dipendente accede, vede il saldo e sceglie come usarlo: rimborso di spese scolastiche o mediche caricando la ricevuta, abbonamento ai trasporti, buoni spesa, palestra, versamento alla previdenza. Un agente controlla che la richiesta di rimborso sia ammissibile secondo le regole fiscali e il regolamento, legge la ricevuta e prepara la pratica; l'HR o l'operatore del provider la approva. Un assistente in chat risponde alle domande dei dipendenti sul piano. Ogni mese l'HR riceve un report con utilizzo per categoria, budget residuo e scadenze. Il dipendente vede solo il proprio conto, l'HR i dati dell'azienda, i fornitori solo i voucher emessi presso di loro. L'azienda paga una commissione sul budget gestito.
 
+## Functional test: what did not pass
+
+- **form saves a record** (form voucher_request): only role employee may fill it, and the test cannot hold that role _(warning)_
+- **template instance created and run** (template monthly_report): reserved to hr _(warning)_
+- **page opened by a role allowed to** (view reports): only role hr may open it, the test cannot hold it _(warning)_
+
 ## Features not expressible today (spec.extensions)
 
-- **file_upload**: Receipt and employee-list upload are not available yet: employees paste the receipt text or a link, HR pastes the list as CSV text.
-- **monthly_email**: Notifications are not available yet: the monthly report is stored in the Monthly reports view; no email is sent to HR.
-- **cross_user_visibility**: Employee/HR/supplier isolation relies on per-record sharing (viewer) and derived roles from employees.email and vouchers.supplier_email. HR seeing employees' claims and aggregating them in the report needs those records shared to HR; to be verified in the studio.
-- **commission_on_budget**: The company pays a commission as a percentage of the managed budget: not expressible in the billing model yet. Bill it outside the portal or as a subscription plan.
-- **provider_scope**: Supplier network, voucher issuance and tax handling stay with the provider; vouchers are loaded into the vouchers collection by the provider.
+- **commission_on_budget**: La commissione dell'azienda sul budget gestito (percentuale) è fatturata dal provider fuori dal portale: il manifest non la calcola.
+- **budget_enforcement**: Il saldo residuo è mostrato e verificato dall'agente; non esiste un blocco automatico oltre il budget.
+- **csv_upload_employees**: Il caricamento in blocco dei dipendenti da CSV non è disponibile per le raccolte di utente: l'HR li inserisce dal form.
+- **provider_integration**: Rete fornitori, emissione voucher ed effettivo rimborso sono nei sistemi del provider.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -30,30 +35,35 @@ Ci serve Portale Welfare, la parte software di un servizio di welfare aziendale.
 ### balance
 ![03-balance.png](screenshots/03-balance.png)
 
-### new
-![04-new.png](screenshots/04-new.png)
+### new_claim
+![04-new_claim.png](screenshots/04-new_claim.png)
 
-### requests
-![05-requests.png](screenshots/05-requests.png)
+### my_claims
+![05-my_claims.png](screenshots/05-my_claims.png)
+
+### voucher_request
+![06-voucher_request.png](screenshots/06-voucher_request.png)
 
 ### assistant_chat
-![06-assistant_chat.png](screenshots/06-assistant_chat.png)
+![07-assistant_chat.png](screenshots/07-assistant_chat.png)
 
-### to_approve
-![07-to_approve.png](screenshots/07-to_approve.png)
+### employees_form
+![08-employees_form.png](screenshots/08-employees_form.png)
 
-### hr_accounts
-![08-hr_accounts.png](screenshots/08-hr_accounts.png)
+### employees_table
+![09-employees_table.png](screenshots/09-employees_table.png)
 
-### hr_regulation
-![09-hr_regulation.png](screenshots/09-hr_regulation.png)
+### company_claims
+![10-company_claims.png](screenshots/10-company_claims.png)
 
-### watches
-![10-watches.png](screenshots/10-watches.png)
+### company_usage
+![11-company_usage.png](screenshots/11-company_usage.png)
 
-### vouchers_view
-![11-vouchers_view.png](screenshots/11-vouchers_view.png)
+### reviews
+![12-reviews.png](screenshots/12-reviews.png)
 
-### account
-![12-account.png](screenshots/12-account.png)
+### supplier_vouchers
+![13-supplier_vouchers.png](screenshots/13-supplier_vouchers.png)
 
+### reports
+![14-reports.png](screenshots/14-reports.png)

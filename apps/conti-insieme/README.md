@@ -2,7 +2,7 @@
 
 _La contabilità della tua PMI, insieme al tuo commercialista._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (22 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,11 @@ ContiInsieme è un software di contabilità per PMI che lavora insieme al commer
 
 ## Features not expressible today (spec.extensions)
 
-- **open_banking**: Collegamento del conto corrente via open banking: richiede le credenziali di ogni cliente, non ancora disponibile. Per ora i movimenti si incollano.
-- **cassetto_fiscale_sdi**: Ricezione automatica delle fatture dal Sistema di Interscambio e dal cassetto fiscale: non disponibile. Per ora si incollano i dati delle fatture.
-- **upload_documenti**: Caricamento di foto e PDF di scontrini e ricevute: non disponibile, si usano link o testo.
-- **email_mensile**: Invio via email del cruscotto mensile: le notifiche non sono disponibili. Il cruscotto è consultabile nell'app.
-- **visibilita_studio**: Il commercialista vede tutti i clienti dello studio e i collaboratori solo i clienti assegnati (collection assegnazioni): richiede una regola di accesso dello studio ai record dei clienti, non esprimibile oggi nel manifest.
+- **open_banking**: Il collegamento al conto corrente via open banking richiede un consenso OAuth (PSD2) verso la banca, non ancora disponibile. Per ora l'imprenditore carica l'estratto conto in CSV, Excel o PDF.
+- **cassetto_fiscale_sdi**: Il collegamento automatico al cassetto fiscale e al Sistema di Interscambio non è disponibile (accesso con SPID/Entratel, non con chiave API). Per ora le fatture XML si caricano a mano; un intermediario SDI con chiave API potrà essere aggiunto come credenziale.
+- **studio_payout**: La quota allo studio partner è registrata come ripartizione di ricavo con pagamento manuale; il collegamento di ogni impresa al proprio studio va impostato dall'amministratore.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,24 +25,41 @@ ContiInsieme è un software di contabilità per PMI che lavora insieme al commer
 ### home
 ![02-home.png](screenshots/02-home.png)
 
+### azienda
+![03-azienda.png](screenshots/03-azienda.png)
+
 ### nuova
-![03-nuova.png](screenshots/03-nuova.png)
+![04-nuova.png](screenshots/04-nuova.png)
 
 ### storico
-![04-storico.png](screenshots/04-storico.png)
+![05-storico.png](screenshots/05-storico.png)
+
+### panoramica
+![06-panoramica.png](screenshots/06-panoramica.png)
+
+### scadenze
+![07-scadenze.png](screenshots/07-scadenze.png)
 
 ### registrazioni
-![05-registrazioni.png](screenshots/05-registrazioni.png)
+![08-registrazioni.png](screenshots/08-registrazioni.png)
+
+### movimenti
+![09-movimenti.png](screenshots/09-movimenti.png)
+
+### fatture
+![10-fatture.png](screenshots/10-fatture.png)
 
 ### coda
-![06-coda.png](screenshots/06-coda.png)
+![11-coda.png](screenshots/11-coda.png)
+
+### da_correggere
+![12-da_correggere.png](screenshots/12-da_correggere.png)
+
+### clienti
+![13-clienti.png](screenshots/13-clienti.png)
 
 ### cruscotti
-![07-cruscotti.png](screenshots/07-cruscotti.png)
+![14-cruscotti.png](screenshots/14-cruscotti.png)
 
-### account
-![08-account.png](screenshots/08-account.png)
-
-### admin
-![09-admin.png](screenshots/09-admin.png)
-
+### abbonamento
+![15-abbonamento.png](screenshots/15-abbonamento.png)

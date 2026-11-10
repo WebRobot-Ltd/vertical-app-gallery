@@ -1,8 +1,8 @@
 # MenuGlobale
 
-_Il tuo menu in oltre cento lingue, con allergeni, via QR e WhatsApp._
+_Il menu del tuo locale in oltre cento lingue, con allergeni._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (13 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,11 +10,10 @@ MenuGlobale permette a bar e ristoranti di offrire il menu digitale tradotto in 
 
 ## Features not expressible today (spec.extensions)
 
-- **public_menu_qr**: Public per-venue menu page opened by the table QR code, in the phone language: needs anonymous reads of one venue's records by a public slug, not available yet.
-- **whatsapp_channel**: WhatsApp number per venue answering customers with the assistant: needs per-venue WhatsApp credentials, not available yet. Only web chat (owner test) is included.
-- **menu_photo_upload**: Upload of a photo of the paper menu: file upload is not available yet; the owner pastes the text for now.
+- **public_menu_qr**: Pagina pubblica del menu per locale raggiungibile da QR code (senza login) nella lingua del telefono: oggi i dati dei locali sono privati per utente e i visitatori anonimi non possono leggerli; serve una vista pubblica per-locale.
+- **whatsapp_channel**: Agente su WhatsApp al numero del locale: canale non disponibile ancora (solo web, telefono, Telegram, email). L'assistente è pronto come anteprima in chat.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -25,18 +24,23 @@ MenuGlobale permette a bar e ristoranti di offrire il menu digitale tradotto in 
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### new
-![03-new.png](screenshots/03-new.png)
+### setup
+![03-setup.png](screenshots/03-setup.png)
 
-### dishes_list
-![04-dishes_list.png](screenshots/04-dishes_list.png)
+### import
+![04-import.png](screenshots/04-import.png)
 
-### history
-![05-history.png](screenshots/05-history.png)
+### dishes
+![05-dishes.png](screenshots/05-dishes.png)
 
-### ask
-![06-ask.png](screenshots/06-ask.png)
+### add_dish
+![06-add_dish.png](screenshots/06-add_dish.png)
+
+### translations_view
+![07-translations_view.png](screenshots/07-translations_view.png)
+
+### preview
+![08-preview.png](screenshots/08-preview.png)
 
 ### account
-![07-account.png](screenshots/07-account.png)
-
+![09-account.png](screenshots/09-account.png)

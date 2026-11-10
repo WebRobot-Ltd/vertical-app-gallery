@@ -1,8 +1,8 @@
 # ContrattoChiaro
 
-_Crea e rivedi i tuoi contratti in parole semplici._
+_Crea, revisiona e firma i tuoi contratti, in parole semplici._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (11 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,12 +10,10 @@ ContrattoChiaro aiuta le piccole imprese a creare, revisionare e firmare contrat
 
 ## Features not expressible today (spec.extensions)
 
-- **firma_elettronica_avanzata**: Firma elettronica avanzata (FEA) nell'app e archivio dei documenti firmati: richiede un provider di firma e non è ancora disponibile.
-- **invio_email_controparte**: Invio del contratto via email alla controparte e promemoria via email: le notifiche non sono ancora disponibili. Le scadenze compaiono nella vista Scadenze.
-- **upload_file**: Caricamento di PDF/Word non disponibile: l'utente incolla il testo o un link.
-- **assegnazione_avvocato**: Assegnazione di una pratica a uno specifico avvocato e visibilità limitata alle pratiche assegnate: oggi tutti gli avvocati invitati vedono le richieste di revisione.
+- **advanced_signature**: Firma elettronica avanzata (FEA) direttamente nell'app con identificazione della controparte non ancora disponibile: la controparte riceve il contratto via email, ma la raccolta della firma FEA, la marcatura temporale e la certificazione del documento firmato richiedono un provider esterno. Lo stato 'Firmato' va per ora impostato nell'archivio.
+- **lawyer_assignment**: L'assegnazione dell'avvocato convenzionato (campo lawyer_email) è fatta da un amministratore nell'archivio.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -26,15 +24,20 @@ ContrattoChiaro aiuta le piccole imprese a creare, revisionare e firmare contrat
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### new_doc
-![03-new_doc.png](screenshots/03-new_doc.png)
-
-### my_docs
-![04-my_docs.png](screenshots/04-my_docs.png)
+### new
+![03-new.png](screenshots/03-new.png)
 
 ### history
-![05-history.png](screenshots/05-history.png)
+![04-history.png](screenshots/04-history.png)
+
+### contract_form
+![05-contract_form.png](screenshots/05-contract_form.png)
+
+### contracts
+![06-contracts.png](screenshots/06-contracts.png)
+
+### approvals_queue
+![07-approvals_queue.png](screenshots/07-approvals_queue.png)
 
 ### account
-![06-account.png](screenshots/06-account.png)
-
+![08-account.png](screenshots/08-account.png)

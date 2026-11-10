@@ -1,8 +1,8 @@
 # MisterLega
 
-_L'assistente che ti aiuta a schierare la formazione. Decidi sempre tu._
+_Il tuo assistente per schierare la formazione del fantacalcio._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (19 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,12 +10,12 @@ Voglio un'app di fantacalcio chiamata MisterLega, con un assistente che aiuta a 
 
 ## Features not expressible today (spec.extensions)
 
-- **email_push_alerts**: Alert via email e notifica push sull'app mobile due ore prima della scadenza se la formazione non è confermata: non disponibile ancora (le notifiche non sono supportate). Per ora l'utente trova le formazioni da confermare nella vista Conferma formazione.
-- **licensed_sports_data**: Feed sportivo a licenza acquistato dalla lega: richiede credenziali per lega e un connettore dedicato; per ora solo fonti pubbliche.
-- **league_record_forms**: Inserimento di leghe, rose e formazioni tramite l'assistente in chat; maschere di modifica dedicate e unione con codice invito verificato dal runtime non sono ancora disponibili.
-- **league_matchday_schedule**: Lo scout gira ogni venerdì; le giornate infrasettimanali e le scadenze per lega richiedono una pianificazione dedicata.
+- **join_by_code**: Ingresso in una lega con codice invito: oggi l'amministratore aggiunge le email dei partecipanti alla lega; l'auto-iscrizione tramite codice non è ancora disponibile.
+- **push_mobile**: Notifica push sull'app mobile non disponibile: l'alert è solo via email, inviato il giorno della scadenza alle 8 UTC e non due ore prima.
+- **alert_only_unconfirmed**: Il promemoria di scadenza parte per ogni formazione con data di scadenza, anche se già confermata: i trigger a data non filtrano per stato.
+- **licensed_data**: Integrazione dei dati sportivi a licenza acquistati dalla lega: richiede l'host API del fornitore e una chiave org; da configurare quando il fornitore è scelto.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -26,30 +26,38 @@ Voglio un'app di fantacalcio chiamata MisterLega, con un assistente che aiuta a 
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### assistant_chat
-![03-assistant_chat.png](screenshots/03-assistant_chat.png)
+### new_run
+![03-new_run.png](screenshots/03-new_run.png)
 
-### new_matchday
-![04-new_matchday.png](screenshots/04-new_matchday.png)
+### history
+![04-history.png](screenshots/04-history.png)
 
-### matchdays
-![05-matchdays.png](screenshots/05-matchdays.png)
-
-### confirmations
-![06-confirmations.png](screenshots/06-confirmations.png)
-
-### my_roster
-![07-my_roster.png](screenshots/07-my_roster.png)
+### league_form
+![05-league_form.png](screenshots/05-league_form.png)
 
 ### leagues_list
-![08-leagues_list.png](screenshots/08-leagues_list.png)
+![06-leagues_list.png](screenshots/06-leagues_list.png)
 
-### league_standings
-![09-league_standings.png](screenshots/09-league_standings.png)
+### roster_form
+![07-roster_form.png](screenshots/07-roster_form.png)
 
-### public_stats
-![10-public_stats.png](screenshots/10-public_stats.png)
+### roster_list
+![08-roster_list.png](screenshots/08-roster_list.png)
+
+### lineup_form
+![09-lineup_form.png](screenshots/09-lineup_form.png)
+
+### lineups_list
+![10-lineups_list.png](screenshots/10-lineups_list.png)
+
+### standings_form
+![11-standings_form.png](screenshots/11-standings_form.png)
+
+### standings_list
+![12-standings_list.png](screenshots/12-standings_list.png)
+
+### reviews_list
+![13-reviews_list.png](screenshots/13-reviews_list.png)
 
 ### account
-![11-account.png](screenshots/11-account.png)
-
+![14-account.png](screenshots/14-account.png)

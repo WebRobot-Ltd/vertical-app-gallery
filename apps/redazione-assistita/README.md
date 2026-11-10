@@ -1,8 +1,8 @@
 # BozzaRapida
 
-_Dalle fonti alla bozza, con il caporedattore sempre al comando._
+_Dalle fonti all'articolo da approvare, in redazione._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (17 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,10 @@ Sono caporedattore di una testata locale e vorrei un'app, BozzaRapida, che aiuti
 
 ## Features not expressible today (spec.extensions)
 
-- **email_desk_web**: Invio via email del testo approvato al desk web: le notifiche email non sono ancora disponibili. Per ora il pezzo approvato resta nella bozza stampabile/copiabile.
-- **modifica_caporedattore**: Modifica diretta del testo da parte del caporedattore nell'app: per ora può approvare o rimandare indietro con un commento, e correggere fuori dall'app.
-- **posti_redattori**: Il limite di redattori per piano (3, 8, 20) non è applicato dal runtime: va controllato dal titolare.
-- **agenzia_credenziali**: I lanci d'agenzia sono letti solo se la redazione fornisce un link di feed accessibile; connettori con credenziali non sono ancora disponibili.
-- **fonti_condivise**: Le fonti e gli argomenti sono per utente: una redazione con più redattori condivide il monitoraggio solo se lo crea il caporedattore e gli argomenti vengono riportati manualmente.
+- **seat_limit**: Il numero massimo di redattori per piano (3, 8, 20) non è applicabile automaticamente dal manifest: va verificato dal caporedattore tra gli utenti.
+- **source_edit_by_editors**: Le fonti sono configurate dal caporedattore (dati riservati alla redazione); la configurazione da parte di ogni redattore richiederebbe un modello dati condiviso non ancora disponibile per l'agente orario.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,24 +24,26 @@ Sono caporedattore di una testata locale e vorrei un'app, BozzaRapida, che aiuti
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### watches
-![03-watches.png](screenshots/03-watches.png)
-
 ### topics_list
-![04-topics_list.png](screenshots/04-topics_list.png)
+![03-topics_list.png](screenshots/03-topics_list.png)
 
 ### new_draft
-![05-new_draft.png](screenshots/05-new_draft.png)
+![04-new_draft.png](screenshots/04-new_draft.png)
 
-### my_drafts
-![06-my_drafts.png](screenshots/06-my_drafts.png)
+### drafts
+![05-drafts.png](screenshots/05-drafts.png)
+
+### my_runs
+![06-my_runs.png](screenshots/06-my_runs.png)
 
 ### review
 ![07-review.png](screenshots/07-review.png)
 
-### all_drafts
-![08-all_drafts.png](screenshots/08-all_drafts.png)
+### sources_list
+![08-sources_list.png](screenshots/08-sources_list.png)
+
+### source_add
+![09-source_add.png](screenshots/09-source_add.png)
 
 ### account
-![09-account.png](screenshots/09-account.png)
-
+![10-account.png](screenshots/10-account.png)

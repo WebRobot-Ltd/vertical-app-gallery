@@ -1,8 +1,8 @@
 # Conformità Guidata
 
-_ISO 27001, NIS2 e AI Act: dal questionario al piano di lavoro._
+_Dalla PMI alla certificazione: ISO 27001, NIS2 e AI Act, passo dopo passo._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (20 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,12 +10,10 @@ Vorrei Conformità Guidata, un'app che accompagna le PMI verso certificazioni e 
 
 ## Features not expressible today (spec.extensions)
 
-- **oauth_evidence**: Non ancora disponibile: raccolta automatica delle evidenze via OAuth (suite cloud, provider di identità, repository). Per ora l'azienda incolla estratti o link nella raccolta Evidenze.
-- **file_upload**: Non ancora disponibile: caricamento di file. Il testo ISO licenziato va incollato nella raccolta Testi ISO licenziati.
-- **email_alerts**: Non ancora disponibile: invio email degli scostamenti mensili. Per ora il controllo mensile appare in Controlli mensili.
-- **auditor_scope**: Il ruolo auditor è derivato da audit_assignments (gestita dall'admin). Il filtro per cui l'auditor vede solo i dati dei clienti assegnati e la firma finale per cliente richiedono logica dedicata; oggi l'auditor decide dalle richieste di approvazione ricevute.
+- **oauth_evidence_connectors**: Raccolta automatica delle evidenze collegando via OAuth suite cloud (Google Workspace / Microsoft 365), provider di identità e repository del codice: l'OAuth verso altri servizi non è ancora disponibile. Per ora le evidenze si caricano dal modulo 'Carica evidenza'; appena disponibile si aggiungerà un connettore per servizio con le credenziali dell'utente.
+- **auditor_signature**: La firma dell'auditor è registrata come decisione di approvazione (final_signoff) con data e utente; una firma qualificata (eIDAS) non è disponibile.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -26,30 +24,41 @@ Vorrei Conformità Guidata, un'app che accompagna le PMI verso certificazioni e 
 ### home
 ![02-home.png](screenshots/02-home.png)
 
+### profile
+![03-profile.png](screenshots/03-profile.png)
+
 ### new_assessment
-![03-new_assessment.png](screenshots/03-new_assessment.png)
+![04-new_assessment.png](screenshots/04-new_assessment.png)
 
 ### assessments
-![04-assessments.png](screenshots/04-assessments.png)
+![05-assessments.png](screenshots/05-assessments.png)
 
-### licensed
-![05-licensed.png](screenshots/05-licensed.png)
+### controls_table
+![06-controls_table.png](screenshots/06-controls_table.png)
 
-### evidence
-![06-evidence.png](screenshots/06-evidence.png)
+### evidence_upload
+![07-evidence_upload.png](screenshots/07-evidence_upload.png)
 
-### controls_view
-![07-controls_view.png](screenshots/07-controls_view.png)
+### evidence_table
+![08-evidence_table.png](screenshots/08-evidence_table.png)
 
-### checks
-![08-checks.png](screenshots/08-checks.png)
+### licensed_upload
+![09-licensed_upload.png](screenshots/09-licensed_upload.png)
 
-### signoffs
-![09-signoffs.png](screenshots/09-signoffs.png)
+### policies_table
+![10-policies_table.png](screenshots/10-policies_table.png)
 
-### assignments
-![10-assignments.png](screenshots/10-assignments.png)
+### watches
+![11-watches.png](screenshots/11-watches.png)
+
+### audit_clients
+![12-audit_clients.png](screenshots/12-audit_clients.png)
+
+### audit_evidence
+![13-audit_evidence.png](screenshots/13-audit_evidence.png)
+
+### audit_approvals
+![14-audit_approvals.png](screenshots/14-audit_approvals.png)
 
 ### account
-![11-account.png](screenshots/11-account.png)
-
+![15-account.png](screenshots/15-account.png)

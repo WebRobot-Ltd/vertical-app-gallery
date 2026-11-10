@@ -2,7 +2,7 @@
 
 _Appuntamenti B2B qualificati: paghi solo quelli fissati._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (8 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,11 +10,11 @@ L'app si chiama IncontroCerto e serve alle aziende B2B che vogliono appuntamenti
 
 ## Features not expressible today (spec.extensions)
 
-- **mailbox_sending**: Not available yet: automatic sending from the customer's connected mailbox and reading replies automatically. For now the customer copies the approved emails and pastes prospects' replies into the form.
-- **calendar_crm**: Not available yet: reading the seller's calendar, creating the calendar event and saving to the customer's CRM (connectors needing customer credentials). For now the seller gives availability as text and the appointment plus a CRM note are saved in the app.
-- **auto_charge_per_meeting**: The charge per confirmed appointment is approximated by a fixed credit cost on the booking agent run; a true per-confirmation charge and email notifications are not available yet.
+- **mailbox_send**: Sending the approved sequence from the customer's connected mailbox (Gmail/Microsoft 365 via OAuth) is not available yet. Sequences are approved in the app; sending must be done manually or by an external tool.
+- **mailbox_read**: Reading replies from the connected mailbox is not available yet (OAuth). Replies enter via the webhook /api/hooks/reply_in (e.g. from an inbound email forwarding service); the payload must include status 'new'.
+- **oauth_calendar**: Google/Outlook calendar via OAuth is not available yet: the seller's calendar is read and booked through a Cal.com API key.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -25,17 +25,17 @@ L'app si chiama IncontroCerto e serve alle aziende B2B che vogliono appuntamenti
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### radars
-![03-radars.png](screenshots/03-radars.png)
+### icps
+![03-icps.png](screenshots/03-icps.png)
 
 ### pipeline
 ![04-pipeline.png](screenshots/04-pipeline.png)
 
-### new
-![05-new.png](screenshots/05-new.png)
+### sequences_view
+![05-sequences_view.png](screenshots/05-sequences_view.png)
 
-### approvals
-![06-approvals.png](screenshots/06-approvals.png)
+### approvals_view
+![06-approvals_view.png](screenshots/06-approvals_view.png)
 
 ### conversations
 ![07-conversations.png](screenshots/07-conversations.png)
@@ -43,9 +43,5 @@ L'app si chiama IncontroCerto e serve alle aziende B2B che vogliono appuntamenti
 ### appointments
 ![08-appointments.png](screenshots/08-appointments.png)
 
-### history
-![09-history.png](screenshots/09-history.png)
-
 ### account
-![10-account.png](screenshots/10-account.png)
-
+![09-account.png](screenshots/09-account.png)

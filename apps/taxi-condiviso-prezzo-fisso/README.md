@@ -1,8 +1,8 @@
 # TaxiInsieme
 
-_Taxi con prezzo massimo garantito, e meno se condividi la corsa._
+_Taxi con prezzo massimo garantito, e se condividi paghi meno._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (15 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,8 +10,36 @@ Voglio TaxiInsieme, un servizio di taxi con prezzo massimo garantito e possibili
 
 ## Features not expressible today (spec.extensions)
 
-- **routing_distance**: Distance is estimated by the agent from its own knowledge. A routing/geocoding API with terms allowing commercial reuse is needed for a truly guaranteed price.
-- **municipal_tariffs**: Tariffs in the slot are indicative placeholders; real published tariffs per municipality must be entered and kept updated.
-- **email_confirmation**: Confirmation email to the passenger is not available yet (no notifications); the confirmation is shown in the app (My rides).
-- **card_payment_per_ride**: Card payment of each ride with the platform fee requires the owner to connect Stripe and each cooperative to have a Connect account; checkout at ride acceptance is to be configured.
+- **card_checkout_per_ride**: Card payment of each accepted ride with the per-ride commission is declared via per_transaction billing; a dedicated checkout step per ride and the update of the user's ride status after cooperative acceptance may need custom logic.
 
+## Screenshots (interpretive runtime, no data)
+
+### home-anon
+![00-home-anon.png](screenshots/00-home-anon.png)
+
+### home-mobile
+![01-home-mobile.png](screenshots/01-home-mobile.png)
+
+### home
+![02-home.png](screenshots/02-home.png)
+
+### new_ride
+![03-new_ride.png](screenshots/03-new_ride.png)
+
+### rides
+![04-rides.png](screenshots/04-rides.png)
+
+### history
+![05-history.png](screenshots/05-history.png)
+
+### account
+![06-account.png](screenshots/06-account.png)
+
+### queue
+![07-queue.png](screenshots/07-queue.png)
+
+### accept
+![08-accept.png](screenshots/08-accept.png)
+
+### tariffs_admin
+![09-tariffs_admin.png](screenshots/09-tariffs_admin.png)

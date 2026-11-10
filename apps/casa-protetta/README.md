@@ -1,8 +1,8 @@
 # Casa Protetta
 
-_Capisci quali coperture servono davvero alla tua casa._
+_Scopri quali coperture servono davvero alla tua casa, in parole semplici._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (16 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,11 @@ Vorrei Casa Protetta, il sito informativo di una compagnia che vende polizze cas
 
 ## Features not expressible today (spec.extensions)
 
-- **anonymous_contact**: Un visitatore anonimo non può inoltrare un contatto: la richiesta di richiamo richiede l'accesso con email (link magico), che serve anche come verifica del consenso.
-- **customer_area**: Fase 2, non disponibile: area clienti con la polizza e apertura sinistro con foto (il caricamento file non è ancora disponibile; servono anche i dati polizza dal sistema dell'agenzia).
-- **regulated_activities**: Quotazione, emissione e gestione sinistri restano fuori dall'app, svolte dall'agenzia.
-- **documents_upload**: I documenti precontrattuali si inseriscono come testo o link nella collezione documents; il caricamento di file PDF non è ancora disponibile.
-- **email_notification**: Nessuna email all'agenzia quando arriva un contatto: l'agente la vede nella vista Contatti ricevuti.
+- **documenti_dip**: Caricamento dei documenti informativi precontrattuali (DIP) nella collezione documents da parte dell'agenzia: oggi va fatto dal back office dello studio; un form di caricamento per l'agenzia non è ancora disponibile.
+- **area_clienti**: Fase 2, non ancora inclusa: area clienti con visualizzazione della polizza e apertura sinistro con foto. Richiede l'integrazione con il gestionale dell'agenzia (non disponibile) e un'accesso cliente con ruolo dedicato.
+- **attivita_regolamentate**: Quotazione, emissione polizze e gestione sinistri restano fuori dall'app, come richiesto: sono attività regolamentate dell'agenzia.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,18 +25,17 @@ Vorrei Casa Protetta, il sito informativo di una compagnia che vende polizze cas
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### new
-![03-new.png](screenshots/03-new.png)
+### questionario
+![03-questionario.png](screenshots/03-questionario.png)
 
-### chat
-![04-chat.png](screenshots/04-chat.png)
+### assistente
+![04-assistente.png](screenshots/04-assistente.png)
 
-### history
-![05-history.png](screenshots/05-history.png)
+### richiamo
+![05-richiamo.png](screenshots/05-richiamo.png)
 
-### callbacks
-![06-callbacks.png](screenshots/06-callbacks.png)
+### leads
+![06-leads.png](screenshots/06-leads.png)
 
-### docs
-![07-docs.png](screenshots/07-docs.png)
-
+### account
+![07-account.png](screenshots/07-account.png)

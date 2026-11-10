@@ -4,27 +4,26 @@ metadata:
   slug: spedizionetraccia
   displayName: SpedizioneTraccia
   tagline:
-    it: Tracking spedizioni e notifiche ai clienti, in un unico posto.
-    en: Shipment tracking and customer notifications in one place.
+    it: Tracciamento spedizioni e notifiche ai clienti, in un unico posto.
+    en: Shipment tracking and customer notifications, in one place.
   description:
-    it: Importa le spedizioni del tuo negozio, un agente interroga i corrieri, normalizza gli stati in un percorso unico,
-      prepara le notifiche per i clienti e ti avvisa sui colli bloccati.
-    en: Import your shop's shipments; an agent checks the carriers, normalises statuses into one path, drafts customer notifications
-      and alerts you about stuck parcels.
+    it: Collega i tuoi corrieri, importa gli ordini spediti e lascia che un agente aggiorni gli stati, avvisi i clienti e
+      segnali i colli bloccati.
+    en: Connect your carriers, import shipped orders and let an agent update statuses, notify customers and flag stuck parcels.
   langs:
   - it
   - en
   defaultLang: it
   timezone: Europe/Rome
 spec:
-  pattern: dashboard
+  pattern: report
   branding:
     theme: light
     palette:
       primary: '#12355b'
-      accent: '#f28c28'
-      background: '#f6f8fb'
-      foreground: '#16202b'
+      accent: '#e8702a'
+      background: '#f7f8fa'
+      foreground: '#17212b'
     fonts:
       body: Inter
       display: Manrope
@@ -33,17 +32,17 @@ spec:
       color: primary
     - text: Traccia
       color: accent
-    button: accent
+    buttonShape: rounded
   header:
     links:
     - label:
         it: Come funziona
         en: How it works
-      href: '#come-funziona'
+      href: '#how'
     - label:
-        it: Stati
-        en: Statuses
-      href: '#stati'
+        it: Piani
+        en: Plans
+      href: '#plans'
     cta:
       label:
         it: Accedi
@@ -60,28 +59,40 @@ spec:
     - key: user
       label:
         it: Negozio
-        en: Shop
+        en: Store
       assignedBy: signup
   limits:
-  - action: agent:intake
-    per: user
-    max: 30
-    window: day
-    roles:
-    - user
+  - action: create:shipments
+    max: 100
+    window: month
+    plans:
+      growth: 500
+      scale: 2000
   agents:
-  - key: intake
+  - key: importer
     role: main
-    description: Reads pasted shipments (CSV or text from the shop's order system) and stores them.
+    description: Importa ordini spediti da un CSV/Excel del gestionale e li salva come spedizioni.
+    memory: none
+    appTools:
+    - name: shipments_write
+      description: Create or update shipment records of the store
+      action: write
+      collection: shipments
+      scope: user
+    - name: shipments_read
+      description: Read the store's shipments
+      action: read
+      collection: shipments
+      scope: user
     profile:
       inline:
-        display_name: Shipment intake
+        display_name: SpedizioneTraccia importer
         crews:
-        - id: intake
+        - id: importer
           engine: agent_sdk
           model: claude-sonnet-5-5
-          max_turns: 8
-          max_budget_usd: 0.3
+          max_turns: 15
+          max_budget_usd: 0.5
           permission_mode: bypassPermissions
           disallowed_tools:
           - Bash
@@ -93,46 +104,70 @@ spec:
           - NotebookEdit
           - WebFetch
           - WebSearch
-          system_prompt: 'You import shipments for an e-commerce shop. From the pasted text extract, for each row: order_ref,
-            tracking_number, carrier, customer_name, customer_email, customer_lang (it or en; default from the shop language),
-            shipped_at. Write each shipment with the tool write_shipment, with status ''preso_in_carico''. Skip rows without
-            a tracking number and list them. Never invent tracking numbers or emails. Finish with a report starting with ''#
-            Import spedizioni'' (level-1 title), a table of imported rows and a list of skipped rows with the reason.'
-    goalTemplate: 'Shop: {user}. Today is {date}. Default customer language: {default_lang_label}.
+          system_prompt: 'You import shipped orders for an e-commerce store. You receive the text of a CSV/Excel export. For
+            each row with a tracking number, first check with shipments_read that the tracking number does not already exist,
+            then create a shipment with shipments_write: order_ref, tracking_number, carrier (dhl, gls, brt, ups, sda, poste,
+            other; lowercase), customer_name, customer_email, customer_lang (it or en; guess from country/name, default it),
+            destination, shipped_at (YYYY-MM-DD), status ''created'', is_delivered 0. Skip rows without tracking number or
+            with an invalid email (keep the shipment but leave the email empty). Never invent data. Finish with a report starting
+            with ''# Import completato'' (title in the user''s language) listing: rows read, shipments created, rows skipped
+            and why.'
+    goalTemplate: 'Import the shipped orders from this export. Language of the report: {lang}. Today is {date}.
 
-      Shipments to import:
+      {?orders_text}Export content:
 
-      {rows}
+      {orders_text}{/orders_text}{!orders_text}No readable file was provided: say so.{/orders_text}
 
-      Report language: {lang}.'
+      {?notes}Notes from the store: {notes}{/notes}'
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.5
+  - key: tracker
+    role: scheduled
+    description: Interroga i corrieri per le spedizioni aperte del negozio, normalizza gli stati e aggiorna ogni spedizione.
     appTools:
-    - name: write_shipment
-      description: Create or update a shipment of this shop
+    - name: shipments_write
+      description: Create or update shipment records of the store
       action: write
       collection: shipments
       scope: user
-    - name: read_shipments
-      description: Read this shop's shipments
+    - name: shipments_read
+      description: Read the store's shipments
       action: read
       collection: shipments
       scope: user
-    output: markdown
-    limits:
-      maxTurns: 8
-      maxBudgetUsd: 0.3
-  - key: tracker
-    role: scheduled
-    description: Periodically checks the carriers' public tracking pages for the shop's open shipments, normalises statuses,
-      drafts notifications and alerts.
-    memory: instance
+    - name: dhl_track
+      description: 'Track a DHL shipment (query: trackingNumber=<number>)'
+      action: http
+      http:
+        method: GET
+        url: https://api-eu.dhl.com/track/shipments
+        attribution: DHL Shipment Tracking API
+        credential:
+          provider: dhl
+          header: DHL-API-Key
+          format: '{secret}'
+    - name: aftership_track
+      description: 'Track a shipment of any other carrier through AfterShip (path: /<slug>/<tracking_number>)'
+      action: http
+      http:
+        method: GET
+        url: https://api.aftership.com/v4/trackings
+        allowPath: true
+        attribution: AfterShip API
+        credential:
+          provider: aftership
+          header: as-api-key
+          format: '{secret}'
     profile:
       inline:
-        display_name: Shipment tracker
+        display_name: SpedizioneTraccia tracker
         crews:
         - id: tracker
           engine: agent_sdk
           model: claude-sonnet-5-5
-          max_turns: 30
+          max_turns: 40
           max_budget_usd: 1.0
           permission_mode: bypassPermissions
           disallowed_tools:
@@ -145,195 +180,256 @@ spec:
           - NotebookEdit
           - WebFetch
           - WebSearch
-          mcp_servers:
-          - name: webrobot
-            type: http
-            url: https://mcp-full.webrobot.eu/mcp
-            allow: all
-          system_prompt: 'You track shipments for one e-commerce shop. 1) Read the shop''s shipments with read_shipments and
-            keep those not yet ''consegnato''. 2) For each, look up the carrier''s public tracking page by tracking number
-            through the WebRobot MCP (scrape the page; do not build large pipelines). 3) Map the carrier''s wording to exactly
-            one status: preso_in_carico, in_transito, in_consegna, consegnato, giacenza, eccezione. If the page is unreachable
-            keep the old status and say so; never guess. 4) Update each changed shipment with write_shipment (status, last_event,
-            last_update, eta, delivered_at, stuck=true when in transit over 7 days without an event or in giacenza/eccezione).
-            5) For each status change write a record with queue_notification: shipment tracking_number, customer_email, customer_lang,
-            subject and body (short, friendly, in the CUSTOMER''s language it or en, mention order_ref and new status, no
-            invented dates). 6) For giacenza, eccezione or stuck parcels write a record with raise_alert for the shop, in
-            the shop''s language. 7) Update per-carrier figures with write_carrier_stats (carrier, shipments, delivered, delivery_rate_pct,
-            avg_days, stuck). Use real figures only. Finish with a markdown summary starting with ''# Aggiornamento spedizioni
-            — <date>'': changes, alerts, unreachable carriers. Your memory holds the last run''s key points: use it to spot
-            parcels with no movement; at the end call remember once with them.'
-    goalTemplate: 'Check the open shipments of this shop. Today is {date}. Shop language: {lang}.'
-    appTools:
-    - name: read_shipments
-      description: Read this shop's shipments
-      action: read
-      collection: shipments
-      scope: user
-    - name: write_shipment
-      description: Create or update a shipment of this shop
-      action: write
-      collection: shipments
-      scope: user
-    - name: queue_notification
-      description: Add a customer notification draft to the outbox
-      action: append
-      collection: notifications
-      scope: user
-    - name: raise_alert
-      description: Alert the shop about a critical shipment
-      action: append
-      collection: alerts
-      scope: user
-    - name: write_carrier_stats
-      description: Upsert the figures of one carrier
-      action: write
-      collection: carrier_stats
-      scope: user
+          system_prompt: 'You track parcels for one e-commerce store. Read the store''s shipments whose status is not ''delivered''
+            (use shipments_read; process at most 40 per run, oldest last_event_at first). For each, query the carrier: DHL
+            with dhl_track (query trackingNumber=<number>, read shipments[0].status.statusCode and events); every other carrier
+            with aftership_track (path /<carrier>/<tracking_number>, read data.tracking.tag and checkpoints). If the store
+            has not connected the carrier''s key, skip those shipments and say so in the report. Normalise every carrier status
+            into exactly one of: picked_up (taken in charge), in_transit, out_for_delivery, delivered, held (giacenza: held
+            at a pickup point/depot, waiting for collection), exception (failed delivery, damaged, lost, returned, address
+            problem). Only when the normalised status differs from the stored one, update the record with shipments_write:
+            status, status_detail (short, factual, from the carrier event), last_event_at; when delivered also delivered_at,
+            is_delivered 1 and transit_days (days from shipped_at). Do not touch records whose status did not change. Never
+            guess a status the carrier did not report. End with a report starting with ''# Aggiornamento spedizioni — <date>''
+            (use the language code given): table of shipments checked, changed statuses, and a list of held/exception parcels
+            needing attention.'
+    goalTemplate: 'Update the open shipments of the store ({instance}). Carriers to check: {carriers}. Today is {date}. Report
+      language: {lang}.'
     output: markdown
     limits:
-      maxTurns: 30
+      maxTurns: 40
       maxBudgetUsd: 1.0
+  inputForm:
+    title:
+      it: Importa ordini spediti
+      en: Import shipped orders
+    fields:
+    - name: orders
+      type: file
+      required: true
+      label:
+        it: File ordini (CSV/Excel)
+        en: Orders file (CSV/Excel)
+      accept:
+      - csv
+      - xlsx
+      - txt
+      maxMb: 10
+      help:
+        it: 'Colonne utili: ordine, tracking, corriere, cliente, email, lingua, destinazione, data spedizione.'
+        en: 'Useful columns: order, tracking, carrier, customer, email, language, destination, ship date.'
+    - name: notes
+      type: textarea
+      maxLength: 400
+      label:
+        it: Note (facoltative)
+        en: Notes (optional)
   templates:
-  - key: carrier_watch
+  - key: tracking_watch
     title:
       it: Monitoraggio corrieri
       en: Carrier monitoring
     description:
-      it: Controlla le tue spedizioni aperte presso i corrieri e aggiorna stati, notifiche e avvisi.
-      en: Checks your open shipments with the carriers and updates statuses, notifications and alerts.
+      it: Controlla periodicamente i corrieri e aggiorna le tue spedizioni.
+      en: Periodically checks carriers and updates your shipments.
     agent: tracker
     params:
     - name: carriers
-      type: text
+      type: multiselect
       required: true
       label:
-        it: Corrieri (es. BRT, GLS, SDA)
-        en: Carriers (e.g. BRT, GLS, SDA)
-    goal: 'Check the open shipments of shop "{instance}". Carriers: {carriers}. Today is {date}. Shop language: {lang}.'
+        it: Corrieri da controllare
+        en: Carriers to check
+      options:
+      - value: dhl
+        label: DHL
+      - value: gls
+        label: GLS
+      - value: brt
+        label: BRT
+      - value: ups
+        label: UPS
+      - value: sda
+        label: SDA
+      - value: poste
+        label: Poste Italiane
+    goal: 'Update the open shipments of the store ({instance}). Carriers to check: {carriers}. Today is {date}. Report language:
+      {lang}.'
     schedule:
       cron: 0 */6 * * *
       userCanChange: true
     maxPerUser: 1
-    cost:
-      perRun: 5
-  inputForm:
-    title:
-      it: Importa spedizioni
-      en: Import shipments
-    fields:
-    - name: rows
-      type: textarea
-      required: true
-      maxLength: 6000
-      label:
-        it: 'Spedizioni (una per riga: ordine, tracking, corriere, cliente, email, lingua)'
-        en: 'Shipments (one per line: order, tracking, carrier, customer, email, language)'
-    - name: default_lang
-      type: select
-      required: true
-      default: it
-      label:
-        it: Lingua clienti predefinita
-        en: Default customer language
-      options:
-      - value: it
-        label: Italiano
-      - value: en
-        label: English
+    roles:
+    - user
+    - admin
   data:
     collections:
+    - name: store
+      ownedBy: user
+      description: Branding and contacts of the store, used in customer notifications
+      fields:
+      - name: brand_name
+        type: text
+        required: true
+        label:
+          it: Nome del negozio
+          en: Store name
+      - name: logo_url
+        type: url
+        label: Logo URL
+      - name: brand_color
+        type: text
+        label:
+          it: Colore (#rrggbb)
+          en: Brand colour (#rrggbb)
+      - name: support_email
+        type: email
+        label:
+          it: Email assistenza
+          en: Support email
     - name: shipments
       ownedBy: user
-      searchable: true
-      description: The shop's shipments with normalised status
+      description: Each store's own shipments, with the normalised status
+      retentionDays: 365
       fields:
       - name: order_ref
         type: text
-        label: Ordine
+        required: true
+        label:
+          it: Ordine
+          en: Order
       - name: tracking_number
         type: text
         required: true
         label: Tracking
       - name: carrier
-        type: text
-        label: Corriere
+        type: select
+        required: true
+        label:
+          it: Corriere
+          en: Carrier
+        options:
+        - dhl
+        - gls
+        - brt
+        - ups
+        - sda
+        - poste
+        - other
       - name: customer_name
         type: text
+        label:
+          it: Cliente
+          en: Customer
       - name: customer_email
         type: email
+        label:
+          it: Email cliente
+          en: Customer email
       - name: customer_lang
         type: select
+        label:
+          it: Lingua cliente
+          en: Customer language
+        default: it
         options:
-        - it
-        - en
-      - name: status
-        type: select
-        options:
-        - preso_in_carico
-        - in_transito
-        - in_consegna
-        - consegnato
-        - giacenza
-        - eccezione
-      - name: last_event
+        - value: it
+          label: Italiano
+        - value: en
+          label: English
+      - name: destination
         type: text
-      - name: last_update
-        type: date
+        label:
+          it: Destinazione
+          en: Destination
       - name: shipped_at
         type: date
-      - name: eta
+        label:
+          it: Data spedizione
+          en: Ship date
+      - name: status
+        type: select
+        default: created
+        label:
+          it: Stato
+          en: Status
+        options:
+        - value: created
+          label:
+            it: Creata
+            en: Created
+        - value: picked_up
+          label:
+            it: Preso in carico
+            en: Picked up
+        - value: in_transit
+          label:
+            it: In transito
+            en: In transit
+        - value: out_for_delivery
+          label:
+            it: In consegna
+            en: Out for delivery
+        - value: delivered
+          label:
+            it: Consegnato
+            en: Delivered
+        - value: held
+          label:
+            it: Giacenza
+            en: Held
+        - value: exception
+          label:
+            it: Eccezione
+            en: Exception
+      - name: status_detail
+        type: text
+        label:
+          it: Dettaglio
+          en: Detail
+      - name: last_event_at
         type: date
+        label:
+          it: Ultimo evento
+          en: Last event
       - name: delivered_at
         type: date
-      - name: stuck
-        type: boolean
-    - name: notifications
-      ownedBy: user
-      description: Customer notification outbox (drafts in the customer's language)
-      fields:
-      - name: tracking_number
-        type: text
-      - name: customer_email
-        type: email
-      - name: customer_lang
-        type: text
-      - name: subject
-        type: text
-      - name: body
-        type: textarea
-      - name: status
-        type: text
-    - name: alerts
-      ownedBy: user
-      description: Critical shipments for the shop
-      fields:
-      - name: tracking_number
-        type: text
-      - name: order_ref
-        type: text
-      - name: carrier
-        type: text
-      - name: status
-        type: text
-      - name: message
-        type: textarea
-    - name: carrier_stats
-      ownedBy: user
-      description: Per-carrier figures
-      fields:
-      - name: carrier
-        type: text
-      - name: shipments
+        label:
+          it: Consegnato il
+          en: Delivered on
+      - name: transit_days
         type: number
-      - name: delivered
+        label:
+          it: Giorni in transito
+          en: Transit days
+      - name: is_delivered
         type: number
-      - name: delivery_rate_pct
-        type: number
-      - name: avg_days
-        type: number
-      - name: stuck
-        type: number
+        default: 0
+        label:
+          it: Consegnato (0/1)
+          en: Delivered (0/1)
+    credentials:
+    - provider: dhl
+      kind: api_key
+      scope: user
+      label: DHL
+      help:
+        it: Chiave API del tuo account sviluppatori DHL (Shipment Tracking).
+        en: API key from your DHL developer account (Shipment Tracking).
+    - provider: aftership
+      kind: api_key
+      scope: user
+      label:
+        it: AfterShip (GLS, BRT, UPS, SDA, Poste…)
+        en: AfterShip (GLS, BRT, UPS, SDA, Poste…)
+      help:
+        it: Chiave API AfterShip, da Impostazioni > API Keys. Collega lì i tuoi account corriere.
+        en: AfterShip API key, from Settings > API Keys. Connect your carrier accounts there.
+  egress:
+    hosts:
+    - api-eu.dhl.com
+    - api.aftership.com
+    notes: DHL Shipment Tracking API and AfterShip API, called with the store's own API key under each provider's terms.
   views:
   - key: home
     type: page
@@ -342,70 +438,80 @@ spec:
     sections:
     - type: hero
       title:
-        it: Tutte le tue **spedizioni**, un solo posto.
-        en: All your **shipments**, one place.
+        it: Ogni spedizione, **un solo posto**. Clienti sempre informati.
+        en: Every shipment, **one place**. Customers always informed.
       text:
-        it: Importa gli ordini spediti, un agente interroga i corrieri, unifica gli stati, prepara le notifiche per i tuoi
-          clienti e ti avvisa sui colli bloccati.
-        en: Import shipped orders; an agent checks the carriers, unifies statuses, drafts notifications for your customers
-          and warns you about stuck parcels.
+        it: Collega i tuoi corrieri, importa gli ordini spediti e un agente normalizza gli stati, avvisa i clienti e ti segnala
+          i colli bloccati.
+        en: Connect your carriers, import shipped orders and an agent normalises statuses, notifies customers and flags stuck
+          parcels.
       actions:
       - label:
-          it: Inizia
+          it: Inizia ora
           en: Get started
         href: /login
         style: primary
+      - label:
+          it: Piani
+          en: Plans
+        href: '#plans'
+        style: ghost
     - type: steps
-      id: come-funziona
+      id: how
       title:
         it: Come funziona
         en: How it works
       items:
       - title:
-          it: Importa
-          en: Import
+          it: Collega i corrieri
+          en: Connect carriers
         text:
-          it: Incolla gli ordini spediti con il numero di tracking.
-          en: Paste shipped orders with their tracking number.
+          it: Inserisci le tue chiavi API nella pagina account.
+          en: Paste your API keys on the account page.
+        badge: 🔗
+      - title:
+          it: Importa gli ordini
+          en: Import orders
+        text:
+          it: Carica un file dal gestionale o aggiungi una spedizione.
+          en: Upload a file from your system or add a shipment.
         badge: 📦
       - title:
-          it: Monitora
-          en: Monitor
+          it: L'agente aggiorna
+          en: The agent updates
         text:
-          it: L'agente controlla i corrieri più volte al giorno.
-          en: The agent checks the carriers several times a day.
-        badge: 🔎
+          it: 'Stati unificati: preso in carico, in transito, in consegna, consegnato, giacenza, eccezione.'
+          en: 'Unified statuses: picked up, in transit, out for delivery, delivered, held, exception.'
+        badge: 🚚
       - title:
-          it: Notifica
-          en: Notify
+          it: Notifiche automatiche
+          en: Automatic notifications
         text:
-          it: Messaggi nella lingua del cliente e avvisi per te sui casi critici.
-          en: Messages in the customer's language and alerts for you on critical cases.
+          it: Email al cliente a ogni cambio di stato; avviso al negozio per giacenza ed eccezioni.
+          en: Email to the customer on every status change; alert to the store on held or exception.
         badge: ✉️
     - type: cards
-      id: stati
+      id: plans
       title:
-        it: Un percorso unico
-        en: One unified path
+        it: Piani mensili
+        en: Monthly plans
       items:
-      - title: Preso in carico
-      - title: In transito
-      - title: In consegna
-      - title: Consegnato
-      - title: Giacenza
-      - title: Eccezione
+      - title: Starter
+        text:
+          it: Fino a 100 spedizioni al mese
+          en: Up to 100 shipments a month
+      - title: Growth
+        text:
+          it: Fino a 500 spedizioni al mese
+          en: Up to 500 shipments a month
+      - title: Scale
+        text:
+          it: Fino a 2000 spedizioni al mese
+          en: Up to 2000 shipments a month
     - type: note
       content:
-        it: Ogni negozio vede solo le proprie spedizioni.
-        en: Each shop sees only its own shipments.
-  - key: import
-    type: new_run
-    title:
-      it: Importa
-      en: Import
-    roles:
-    - user
-    - admin
+        it: SpedizioneTraccia · gli stati dipendono dai dati forniti dai corrieri.
+        en: SpedizioneTraccia · statuses depend on data provided by the carriers.
   - key: dashboard
     type: page
     title:
@@ -417,8 +523,8 @@ spec:
     sections:
     - type: data
       title:
-        it: Numeri
-        en: Totals
+        it: Panoramica
+        en: Overview
       source: collection:shipments
       display: kpi
       kpis:
@@ -426,205 +532,385 @@ spec:
           it: Spedizioni
           en: Shipments
         agg: count
+      - label:
+          it: Tasso di consegna
+          en: Delivery rate
+        agg: avg
+        field: is_delivered
+        format: percent
+      - label:
+          it: Giorni medi in transito
+          en: Avg transit days
+        agg: avg
+        field: transit_days
+        format: number
     - type: data
       title:
-        it: Tasso di consegna per corriere (%)
-        en: Delivery rate by carrier (%)
-      source: collection:carrier_stats
-      display: chart
-      chart: bar
+        it: 'Per corriere: consegne e tempi'
+        en: 'By carrier: delivery and speed'
+      source: collection:shipments
+      display: table
+      groupBy:
+        field: carrier
+        aggs:
+        - key: delivery_rate
+          agg: avg
+          field: is_delivered
+        - key: avg_days
+          agg: avg
+          field: transit_days
       fields:
       - key: carrier
-      - key: delivery_rate_pct
+        label:
+          it: Corriere
+          en: Carrier
+      - key: count
+        label:
+          it: Spedizioni
+          en: Shipments
+        format: number
+      - key: delivery_rate
+        label:
+          it: Tasso consegna
+          en: Delivery rate
+        format: percent
+      - key: avg_days
+        label:
+          it: Giorni medi
+          en: Avg days
+        format: number
     - type: data
       title:
-        it: Corrieri più lenti (giorni medi)
-        en: Slowest carriers (avg days)
-      source: collection:carrier_stats
+        it: Corrieri più lenti
+        en: Slowest carriers
+      source: collection:shipments
       display: chart
       chart: bar
+      groupBy:
+        field: carrier
+        aggs:
+        - key: avg_days
+          agg: avg
+          field: transit_days
       fields:
       - key: carrier
       - key: avg_days
-      sort:
-        field: avg_days
-        dir: desc
     - type: data
       title:
-        it: Colli bloccati
-        en: Stuck parcels
+        it: 'Colli bloccati: giacenza'
+        en: 'Stuck parcels: held'
       source: collection:shipments
       display: table
       filters:
-      - field: stuck
+      - field: status
         op: '='
-        value: true
+        value: held
       fields:
       - key: order_ref
-      - key: tracking_number
-      - key: carrier
-      - key: status
-        format: badge
-      - key: last_event
-      - key: last_update
-        format: date
-      empty:
-        it: Nessun collo bloccato.
-        en: No stuck parcels.
-  - key: shipments
-    type: table
-    title:
-      it: Spedizioni
-      en: Shipments
-    source: collection:shipments
-    roles:
-    - user
-    - admin
-    data:
-      display: table
-      fields:
-      - key: order_ref
-        label: Ordine
+        label:
+          it: Ordine
+          en: Order
       - key: tracking_number
         label: Tracking
       - key: carrier
-        label: Corriere
+        label:
+          it: Corriere
+          en: Carrier
       - key: customer_name
-        label: Cliente
-      - key: status
-        label: Stato
-        format: badge
-      - key: last_update
-        label: Aggiornato
+        label:
+          it: Cliente
+          en: Customer
+      - key: status_detail
+        label:
+          it: Dettaglio
+          en: Detail
+      - key: last_event_at
+        label:
+          it: Ultimo evento
+          en: Last event
         format: date
-      - key: eta
-        label: ETA
-        format: date
-      sort:
-        field: last_update
-        dir: desc
-      limit: 200
-  - key: outbox
-    type: table
-    title:
-      it: Notifiche clienti
-      en: Customer notifications
-    source: collection:notifications
-    roles:
-    - user
-    - admin
-    data:
+      empty:
+        it: Nessun collo in giacenza.
+        en: No held parcels.
+    - type: data
+      title:
+        it: 'Colli bloccati: eccezioni'
+        en: 'Stuck parcels: exceptions'
+      source: collection:shipments
       display: table
-      fields:
-      - key: tracking_number
-      - key: customer_email
-      - key: customer_lang
-        format: badge
-      - key: subject
-      - key: body
-      limit: 200
-  - key: alerts
-    type: table
-    title:
-      it: Avvisi
-      en: Alerts
-    source: collection:alerts
-    roles:
-    - user
-    - admin
-    data:
-      display: table
+      filters:
+      - field: status
+        op: '='
+        value: exception
       fields:
       - key: order_ref
+        label:
+          it: Ordine
+          en: Order
       - key: tracking_number
+        label: Tracking
       - key: carrier
-      - key: status
-        format: badge
-      - key: message
-      limit: 200
-  - key: monitor
-    type: instances
-    template: carrier_watch
+        label:
+          it: Corriere
+          en: Carrier
+      - key: customer_name
+        label:
+          it: Cliente
+          en: Customer
+      - key: status_detail
+        label:
+          it: Dettaglio
+          en: Detail
+      - key: last_event_at
+        label:
+          it: Ultimo evento
+          en: Last event
+        format: date
+      empty:
+        it: Nessuna eccezione.
+        en: No exceptions.
+  - key: shipments_table
+    type: table
     title:
-      it: Monitoraggio
-      en: Monitoring
+      it: Tutte le spedizioni
+      en: All shipments
+    source: collection:shipments
+    columns:
+    - order_ref
+    - tracking_number
+    - carrier
+    - customer_name
+    - status
+    - status_detail
+    - last_event_at
+    export: true
     roles:
     - user
     - admin
-  - key: run
+  - key: add_shipment
+    type: form
+    title:
+      it: Aggiungi spedizione
+      en: Add shipment
+    collection: shipments
+    fields:
+    - order_ref
+    - tracking_number
+    - carrier
+    - customer_name
+    - customer_email
+    - customer_lang
+    - destination
+    - shipped_at
+    submit:
+      label:
+        it: Salva
+        en: Save
+      message:
+        it: Spedizione aggiunta.
+        en: Shipment added.
+      redirect: shipments_table
+    edit: false
+    roles:
+    - user
+    - admin
+  - key: import
+    type: new_run
+    title:
+      it: Importa ordini
+      en: Import orders
+    roles:
+    - user
+    - admin
+  - key: imports
+    type: history
+    title:
+      it: Importazioni
+      en: Imports
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
     type: report
     source: run
     printable: true
     nav: false
+  - key: watches
+    type: instances
+    template: tracking_watch
+    title:
+      it: Monitoraggio corrieri
+      en: Carrier monitoring
+    roles:
+    - user
+    - admin
+  - key: store_settings
+    type: form
+    title:
+      it: Il mio negozio
+      en: My store
+    collection: store
+    submit:
+      label:
+        it: Salva
+        en: Save
+      message:
+        it: Salvato.
+        en: Saved.
+    edit: true
+    roles:
+    - user
+    - admin
   - key: account
     type: account
     title:
-      it: Abbonamento
-      en: Plan
+      it: Account e piano
+      en: Account and plan
     roles:
     - user
+    - admin
+  triggers:
+  - key: cust_picked_up
+    'on':
+      collection: shipments
+      op: update
+      where:
+        status: picked_up
+    notify:
+      to: record.customer_email
+      subject: Spedizione presa in carico / Parcel picked up — {record.order_ref}
+      body: 'IT: Il tuo ordine {record.order_ref} è stato preso in carico dal corriere. Tracking: {record.tracking_number}.
+
+        EN: Your order {record.order_ref} has been picked up by the carrier. Tracking: {record.tracking_number}.'
+  - key: cust_in_transit
+    'on':
+      collection: shipments
+      op: update
+      where:
+        status: in_transit
+    notify:
+      to: record.customer_email
+      subject: Ordine in transito / Order in transit — {record.order_ref}
+      body: 'IT: Il tuo ordine {record.order_ref} è in transito. Tracking: {record.tracking_number}.
+
+        EN: Your order {record.order_ref} is in transit. Tracking: {record.tracking_number}.'
+  - key: cust_out_for_delivery
+    'on':
+      collection: shipments
+      op: update
+      where:
+        status: out_for_delivery
+    notify:
+      to: record.customer_email
+      subject: In consegna oggi / Out for delivery — {record.order_ref}
+      body: 'IT: Il tuo ordine {record.order_ref} è in consegna. Tracking: {record.tracking_number}.
+
+        EN: Your order {record.order_ref} is out for delivery. Tracking: {record.tracking_number}.'
+  - key: cust_delivered
+    'on':
+      collection: shipments
+      op: update
+      where:
+        status: delivered
+    notify:
+      to: record.customer_email
+      subject: Ordine consegnato / Order delivered — {record.order_ref}
+      body: 'IT: Il tuo ordine {record.order_ref} è stato consegnato. Grazie!
+
+        EN: Your order {record.order_ref} has been delivered. Thank you!'
+  - key: cust_held
+    'on':
+      collection: shipments
+      op: update
+      where:
+        status: held
+    notify:
+      to: record.customer_email
+      subject: Pacco in giacenza / Parcel on hold — {record.order_ref}
+      body: 'IT: Il tuo ordine {record.order_ref} è in giacenza: {record.status_detail}. Contatta il corriere per il ritiro.
+        Tracking: {record.tracking_number}.
+
+        EN: Your order {record.order_ref} is being held: {record.status_detail}. Please contact the carrier to collect it.
+        Tracking: {record.tracking_number}.'
+  - key: cust_exception
+    'on':
+      collection: shipments
+      op: update
+      where:
+        status: exception
+    notify:
+      to: record.customer_email
+      subject: Problema con la consegna / Delivery issue — {record.order_ref}
+      body: 'IT: C''è stato un problema con la consegna dell''ordine {record.order_ref}: {record.status_detail}. Il negozio
+        è stato avvisato.
+
+        EN: There was a problem delivering your order {record.order_ref}: {record.status_detail}. The store has been notified.'
+  - key: store_held
+    'on':
+      collection: shipments
+      op: update
+      where:
+        status: held
+    notify:
+      to: owner
+      subject:
+        it: 'Giacenza: ordine {record.order_ref}'
+        en: 'Held parcel: order {record.order_ref}'
+      body:
+        it: 'La spedizione {record.tracking_number} ({record.carrier}) per {record.customer_name} è in giacenza: {record.status_detail}.'
+        en: 'Shipment {record.tracking_number} ({record.carrier}) for {record.customer_name} is being held: {record.status_detail}.'
+      link: dashboard
+  - key: store_exception
+    'on':
+      collection: shipments
+      op: update
+      where:
+        status: exception
+    notify:
+      to: owner
+      subject:
+        it: 'Eccezione: ordine {record.order_ref}'
+        en: 'Exception: order {record.order_ref}'
+      body:
+        it: 'La spedizione {record.tracking_number} ({record.carrier}) per {record.customer_name} ha un''eccezione: {record.status_detail}.'
+        en: 'Shipment {record.tracking_number} ({record.carrier}) for {record.customer_name} has an exception: {record.status_detail}.'
+      link: dashboard
+  notifications:
+    emailOnRunDone: true
   billing:
     modes:
     - subscription
-    - credits
     currency: eur
-    signupCredits: 50
-    metering:
-      creditEur: 0.01
-      markupPct: 50
-      drivers:
-      - llm_tokens
-      - compute
-    costs:
-      agent:intake:
-        estimate: 10
-        metered: true
     plans:
-    - key: start
+    - key: starter
       price: 29
       interval: month
-      label:
-        it: Start — fino a 500 spedizioni
-        en: Start — up to 500 shipments
-      credits: 3000
-      creditsReset: monthly
-      roles:
-      - user
+      label: Starter
+      includes:
+      - 100 shipments/month
     - key: growth
       price: 79
       interval: month
-      label:
-        it: Growth — fino a 2.500 spedizioni
-        en: Growth — up to 2,500 shipments
-      credits: 10000
-      creditsReset: monthly
-      roles:
-      - user
+      label: Growth
+      includes:
+      - 500 shipments/month
     - key: scale
       price: 199
       interval: month
-      label:
-        it: Scale — fino a 10.000 spedizioni
-        en: Scale — up to 10,000 shipments
-      credits: 35000
-      creditsReset: monthly
-      roles:
-      - user
-    packs:
-    - key: topup
-      credits: 2000
-      price: 15
-      label: Top-up
+      label: Scale
+      includes:
+      - 2000 shipments/month
   extensions:
-  - key: carrier_authorized_access
-    description: Connecting each shop's carrier accounts with authorized access (OAuth/API keys) is not available yet; the
-      agent reads carriers' public tracking pages by tracking number.
-  - key: email_notifications
-    description: Sending emails to end customers with the shop's branding is not available yet; notifications are drafted
-      in the customer's language in the outbox, and shop alerts appear in the alerts view.
-  - key: branded_tracking_page
-    description: A public branded tracking page for end customers is not available yet (it would need anonymous access to
-      a shop's records).
-  - key: webhook_import
-    description: Importing orders by webhook from the shop's management system is not available per shop yet; use the paste
-      import.
+  - key: carrier_oauth
+    description: 'OAuth authorisation to carriers is not available yet: stores connect carriers with API keys (DHL directly;
+      GLS, BRT, UPS, SDA, Poste through their AfterShip key).'
+  - key: orders_webhook
+    description: 'Per-store webhook import of orders from the store''s management system is not available yet: use the file
+      import or the add-shipment form.'
+  - key: branded_emails
+    description: Customer emails are plain text, bilingual (IT/EN in one message) and not styled with the store's logo/colours;
+      the store branding is saved but not yet applied. Per-customer language selection of the message is not available.
+  - key: public_tracking_page
+    description: A public branded tracking page for end customers (no login) is not available yet, because shipment records
+      are private to each store; emails therefore carry no tracking link.

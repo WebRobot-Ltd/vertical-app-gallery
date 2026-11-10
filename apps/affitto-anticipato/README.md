@@ -2,7 +2,7 @@
 
 _Ricevi in anticipo i canoni futuri del tuo affitto._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (8 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,11 +10,10 @@ Vorrei AffittoSubito, un servizio per proprietari che affittano casa e vogliono 
 
 ## Features not expressible today (spec.extensions)
 
-- **file_upload**: Uploading the contract and receipt files is not available yet: the owner pastes the text or gives a link.
-- **email_outcome**: Email notification of the outcome (approved/rejected) to the landlord is not available yet: the landlord follows the status in 'My cases'.
-- **fee_on_advanced_amount**: The fee (2% of the net advanced amount) is computed in the offer; its collection is settled with the financial partner outside the app, since funding does not pass through the app.
+- **advance_fee**: La commissione in percentuale sull'importo anticipato non è esprimibile oggi (le tariffe sono in crediti fissi o a consumo): va concordata con il partner e applicata fuori dall'app, oppure con un pagamento per transazione.
+- **practice_status_update**: Lo stato della pratica nella tabella resta 'in_review': l'esito (approvato/rifiutato) arriva via email e nella vista approvazioni. L'aggiornamento automatico del record dopo la decisione non è disponibile.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -28,12 +27,14 @@ Vorrei AffittoSubito, un servizio per proprietari che affittano casa e vogliono 
 ### new_practice
 ![03-new_practice.png](screenshots/03-new_practice.png)
 
+### my_runs
+![04-my_runs.png](screenshots/04-my_runs.png)
+
 ### practices
-![04-practices.png](screenshots/04-practices.png)
+![05-practices.png](screenshots/05-practices.png)
 
 ### reviews
-![05-reviews.png](screenshots/05-reviews.png)
+![06-reviews.png](screenshots/06-reviews.png)
 
 ### account
-![06-account.png](screenshots/06-account.png)
-
+![07-account.png](screenshots/07-account.png)

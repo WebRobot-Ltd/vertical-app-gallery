@@ -2,7 +2,7 @@
 
 _Red teaming e governance per i tuoi chatbot LLM, pronti per l'AI Act._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (12 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,10 @@ ProvaModelli è una piattaforma di governance e red teaming per aziende che mett
 
 ## Features not expressible today (spec.extensions)
 
-- **realtime_proxy**: Real-time proxy between end users and the customer's model that blocks non-compliant answers: not available yet (needs a long-running gateway, not an agent run). Needs a platform feature.
-- **endpoint_credentials**: Storing each customer's endpoint credentials/API keys is not available yet: campaigns target an endpoint reachable without secrets (test endpoint). Secure credential vault needed.
-- **model_registry**: A persistent registry of models and policies edited in a form is not available: the policy is entered per campaign and per weekly watch.
-- **company_team**: Several users of the same company sharing reports (shared company workspace) is not available: reports are private to each signed-up user.
-- **email_alerts**: Email alerts on regressions are not available yet; results appear in the weekly tests view.
+- **realtime_proxy**: Real-time proxy between end users and the customer's model that blocks non-compliant answers: not available yet (needs a streaming gateway with per-request policy evaluation, outside agent runs and webhooks).
+- **custom_endpoint_hosts**: Egress allows only listed hosts: the owner must add the domains of customers' endpoints.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,15 +24,23 @@ ProvaModelli è una piattaforma di governance e red teaming per aziende che mett
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### new_campaign
-![03-new_campaign.png](screenshots/03-new_campaign.png)
+### new_run
+![03-new_run.png](screenshots/03-new_run.png)
 
-### campaigns
-![04-campaigns.png](screenshots/04-campaigns.png)
+### models_form
+![04-models_form.png](screenshots/04-models_form.png)
 
-### watches
-![05-watches.png](screenshots/05-watches.png)
+### models
+![05-models.png](screenshots/05-models.png)
+
+### history
+![06-history.png](screenshots/06-history.png)
+
+### trend
+![07-trend.png](screenshots/07-trend.png)
+
+### weekly
+![08-weekly.png](screenshots/08-weekly.png)
 
 ### account
-![06-account.png](screenshots/06-account.png)
-
+![09-account.png](screenshots/09-account.png)

@@ -1,8 +1,8 @@
-# Pappa su Misura
+# PappaSu
 
-_Il piano alimentare del tuo cane, calcolato per lui e in abbonamento._
+_Il piano alimentare su misura per il tuo cane, in abbonamento._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (18 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,10 +10,9 @@ Questo e lo strato software di un servizio di cibo per cani su abbonamento: desc
 
 ## Features not expressible today (spec.extensions)
 
-- **email_reminders**: Promemoria email prima di ogni rinnovo e delle consegne: le notifiche email non sono ancora disponibili; per ora il calendario consegne e visibile nell'app.
-- **food_subscription_charges**: Il pagamento ricorrente con carta e l'abbonamento al servizio (Stripe Connect); l'addebito del prezzo dei prodotti per singola fornitura e la logistica restano fuori dall'app.
+- **card_delivery_note**: Il pagamento ricorrente con carta dell'abbonamento è gestito da Stripe Connect tramite i piani di fatturazione; il costo dei prodotti inviati e la logistica fisica sono fuori dall'app.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,30 +26,29 @@ Questo e lo strato software di un servizio di cibo per cani su abbonamento: desc
 ### new_plan
 ![03-new_plan.png](screenshots/03-new_plan.png)
 
-### plans
-![04-plans.png](screenshots/04-plans.png)
+### plans_history
+![04-plans_history.png](screenshots/04-plans_history.png)
 
-### confirmations
-![05-confirmations.png](screenshots/05-confirmations.png)
+### dog_form
+![05-dog_form.png](screenshots/05-dog_form.png)
 
 ### my_dogs
 ![06-my_dogs.png](screenshots/06-my_dogs.png)
 
-### my_subscriptions
-![07-my_subscriptions.png](screenshots/07-my_subscriptions.png)
+### subscribe
+![07-subscribe.png](screenshots/07-subscribe.png)
 
-### calendar
-![08-calendar.png](screenshots/08-calendar.png)
+### my_subs
+![08-my_subs.png](screenshots/08-my_subs.png)
 
-### assistant
-![09-assistant.png](screenshots/09-assistant.png)
+### my_deliveries
+![09-my_deliveries.png](screenshots/09-my_deliveries.png)
+
+### products_list
+![10-products_list.png](screenshots/10-products_list.png)
+
+### product_admin
+![11-product_admin.png](screenshots/11-product_admin.png)
 
 ### account
-![10-account.png](screenshots/10-account.png)
-
-### admin_products
-![11-admin_products.png](screenshots/11-admin_products.png)
-
-### admin
-![12-admin.png](screenshots/12-admin.png)
-
+![12-account.png](screenshots/12-account.png)

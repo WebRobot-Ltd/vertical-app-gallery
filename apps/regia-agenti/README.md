@@ -1,22 +1,26 @@
 # Regia Agenti
 
-_Agenti AI che portano i processi da un reparto all'altro, con approvazione umana e registro completo._
+_Team di agenti che automatizzano i processi tra reparti, con approvazione umana e registro completo._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (22 checks passed)
 
 ## Description given to the app builder (Italian)
 
 Voglio Regia Agenti, uno strato di agenti per grandi aziende che automatizza processi tra reparti. L'admin IT collega i sistemi aziendali: ERP e CRM via OAuth, API interne via HTTP e server MCP già esistenti, e definisce per ogni agente cosa può leggere e cosa può scrivere. Un responsabile di processo descrive in linguaggio naturale un flusso, per esempio quando arriva un ordine sopra i 50.000 euro verifica il credito del cliente, controlla la disponibilità a magazzino, prepara la conferma e avvisa il commerciale. Il sistema crea un team di agenti con ruoli separati, uno per controllo, uno per esecuzione e uno per comunicazione, che si passano il lavoro. Ogni azione che scrive su un sistema aziendale richiede approvazione umana finché il responsabile non la rende automatica. Ogni esecuzione lascia un registro completo e consultabile di chi ha fatto cosa. I dipendenti vedono solo i processi del loro reparto; il CIO vede tutto. Si parte da eventi (nuovo record, email, webhook) o da pianificazioni. Contratto annuale con consumo di crediti per esecuzione.
 
+## Functional test: what did not pass
+
+- **saved record shown where its collection is read** (view processes): a record was saved in processes (by admin-data, admin-data, admin) but the page does not show it (as user) _(warning)_
+- **saved record shown where its collection is read** (view audit): a record was saved in audit_log (by admin-data, admin-data) but the page does not show it (as user) _(warning)_
+
 ## Features not expressible today (spec.extensions)
 
-- **connector_gateway**: Tools system_read and system_write: calls to the ERP/CRM (OAuth connected by IT), internal HTTP APIs and existing MCP servers, enforcing the per-agent read/write rights in agent_permissions. Connectors needing the company's own credentials and per-company internal hosts are not available yet in the generic runtime.
-- **auto_approval_switch**: A control for the process owner to switch a process from 'approval' to 'auto' (per system and action) after trusting it; for now the owner edits the autonomy field of the process.
-- **department_scoping**: Departments are fixed roles (sales, finance, operations); more departments mean more roles and pages. Approvers are any process_owner, not only the owner of that department.
-- **email_in_out**: Incoming email as a trigger (for now events are posted to the events collection or a webhook) and outgoing notifications (for now the communicator writes to the outbox shown in the app).
-- **per_process_event_routing**: Events carry a process key; each process's own trigger condition is checked by the checker agent, not by the runtime.
+- **oauth_connectors**: OAuth sign-in to ERP and CRM is not available yet: for now systems are reached via API keys (credentials), internal HTTP APIs and existing MCP servers, which must be added with their exact hosts once known.
+- **existing_mcp_servers**: Connecting the company's existing MCP servers and internal APIs needs their URLs: add them as mcp_servers on the agents and http tools with egress hosts.
+- **per_department_roles**: Department visibility uses the members list of each process; a role per department is not modelled.
+- **auto_process_teams**: Automatic creation of a dedicated agent team per process from the specification is not available; all processes share one control-execution-communication team.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -30,33 +34,26 @@ Voglio Regia Agenti, uno strato di agenti per grandi aziende che automatizza pro
 ### new_process
 ![03-new_process.png](screenshots/03-new_process.png)
 
-### my_runs
-![04-my_runs.png](screenshots/04-my_runs.png)
+### designs
+![04-designs.png](screenshots/04-designs.png)
 
-### all_processes
-![05-all_processes.png](screenshots/05-all_processes.png)
+### save_process
+![05-save_process.png](screenshots/05-save_process.png)
 
-### scheduled
-![06-scheduled.png](screenshots/06-scheduled.png)
+### processes
+![06-processes.png](screenshots/06-processes.png)
 
-### approvals
-![07-approvals.png](screenshots/07-approvals.png)
-
-### dept_sales
-![08-dept_sales.png](screenshots/08-dept_sales.png)
-
-### dept_finance
-![09-dept_finance.png](screenshots/09-dept_finance.png)
-
-### dept_operations
-![10-dept_operations.png](screenshots/10-dept_operations.png)
+### approvals_view
+![07-approvals_view.png](screenshots/07-approvals_view.png)
 
 ### audit
-![11-audit.png](screenshots/11-audit.png)
+![08-audit.png](screenshots/08-audit.png)
 
-### permissions
-![12-permissions.png](screenshots/12-permissions.png)
+### connect_system
+![09-connect_system.png](screenshots/09-connect_system.png)
+
+### systems
+![10-systems.png](screenshots/10-systems.png)
 
 ### account
-![13-account.png](screenshots/13-account.png)
-
+![11-account.png](screenshots/11-account.png)

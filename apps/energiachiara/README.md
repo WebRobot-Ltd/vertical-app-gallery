@@ -1,8 +1,8 @@
 # EnergiaChiara
 
-_Meno sprechi, meno bollette: piani d'azione per energy manager._
+_Meno sprechi energetici, più risparmi dimostrabili._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (17 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,10 @@ Voglio EnergiaChiara, piattaforma per energy manager di aziende, condomini e pic
 
 ## Features not expressible today (spec.extensions)
 
-- **file_upload**: Periodic CSV file upload is not available yet: users paste the CSV text or give a link.
-- **meter_connectors**: Connectors to meters/smart meters need each customer's credentials and are not available yet.
-- **email_alerts**: Email alerts within one hour for severe anomalies are not available yet (no notifications); severe anomalies are flagged in the report.
-- **site_assignment_and_aggregate**: Assigning a site to several users and the organisation-wide aggregate dashboard need a shared org scope; for now sites are per user and the management page shows the plans of the signed-in user. Per-point subscription limits are tiered plans, not metered.
-- **pdf_export**: The monthly PDF is the printable report view (print to PDF).
+- **supplier_connectors**: Direct connectors to supplier portals and smart-meter vendors are not available yet; the data arrives via CSV upload or the webhook /api/hooks/meter_hook.
+- **pdf_report**: The monthly report is the printable report view (save as PDF from the browser); automatic PDF attachments in email are not available.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,21 +24,38 @@ Voglio EnergiaChiara, piattaforma per energy manager di aziende, condomini e pic
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### sites
-![03-sites.png](screenshots/03-sites.png)
+### overview
+![03-overview.png](screenshots/03-overview.png)
 
-### new
-![04-new.png](screenshots/04-new.png)
+### new_analysis
+![04-new_analysis.png](screenshots/04-new_analysis.png)
 
-### history
-![05-history.png](screenshots/05-history.png)
+### reports
+![05-reports.png](screenshots/05-reports.png)
+
+### sites_list
+![06-sites_list.png](screenshots/06-sites_list.png)
+
+### site_form
+![07-site_form.png](screenshots/07-site_form.png)
+
+### meters_list
+![08-meters_list.png](screenshots/08-meters_list.png)
+
+### meter_form
+![09-meter_form.png](screenshots/09-meter_form.png)
+
+### anomalies
+![10-anomalies.png](screenshots/10-anomalies.png)
+
+### plans
+![11-plans.png](screenshots/11-plans.png)
 
 ### approvals
-![06-approvals.png](screenshots/06-approvals.png)
+![12-approvals.png](screenshots/12-approvals.png)
 
-### management
-![07-management.png](screenshots/07-management.png)
+### monitors
+![13-monitors.png](screenshots/13-monitors.png)
 
 ### account
-![08-account.png](screenshots/08-account.png)
-
+![14-account.png](screenshots/14-account.png)

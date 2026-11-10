@@ -1,8 +1,8 @@
 # AutenticaMedia
 
-_Verifica difensiva dell'autenticità di immagini, video e audio._
+_Verifica difensiva dell'autenticità di immagini, video e audio, con report firmato da un revisore._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (15 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,14 +10,12 @@ Per AutenticaMedia descrivo solo lo strato software di gestione e reportistica: 
 
 ## Features not expressible today (spec.extensions)
 
-- **detection_service**: Connector to the external detection service (endpoint, API terms and response format to be provided). Until connected, the agent reports scores as unavailable and never invents them.
-- **file_upload**: Direct upload of files is not available yet: analysts supply a public link.
-- **email_alerts**: Email alerts for brand monitoring are not available yet; alerts appear in the Alerts view.
-- **org_isolation**: Multi-user organisations sharing cases within the same organisation (cases are per user today) and per-organisation data separation.
-- **access_audit_log**: Logging of every access to cases and reports.
-- **export_gate**: PDF export and sharing blocked until report_signoff is approved.
+- **video_audio_upload**: Direct upload of video and audio files is not available (file fields accept documents and images only): video and audio are verified through a public link.
+- **access_audit_log**: A dedicated, exportable log of every read access to cases and reports is not expressible in the manifest; the runtime records runs and approvals decisions only.
+- **pdf_export_gate**: Hard blocking of PDF export/sharing until the report is signed is enforced by the approval flow and report status; a runtime-level export lock on unsigned reports is not available.
+- **detection_service_contract**: The external analysis service host, request body and response shape are placeholders to align with the contracted provider.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -28,21 +26,32 @@ Per AutenticaMedia descrivo solo lo strato software di gestione e reportistica: 
 ### home
 ![02-home.png](screenshots/02-home.png)
 
+### org
+![03-org.png](screenshots/03-org.png)
+
 ### new_case
-![03-new_case.png](screenshots/03-new_case.png)
+![04-new_case.png](screenshots/04-new_case.png)
+
+### history
+![05-history.png](screenshots/05-history.png)
 
 ### cases
-![04-cases.png](screenshots/04-cases.png)
+![06-cases.png](screenshots/06-cases.png)
 
-### signoffs
-![05-signoffs.png](screenshots/05-signoffs.png)
+### reports_list
+![07-reports_list.png](screenshots/07-reports_list.png)
+
+### signatures
+![08-signatures.png](screenshots/08-signatures.png)
 
 ### watches
-![06-watches.png](screenshots/06-watches.png)
+![09-watches.png](screenshots/09-watches.png)
 
-### alerts
-![07-alerts.png](screenshots/07-alerts.png)
+### mentions
+![10-mentions.png](screenshots/10-mentions.png)
 
 ### account
-![08-account.png](screenshots/08-account.png)
+![11-account.png](screenshots/11-account.png)
 
+### admin
+![12-admin.png](screenshots/12-admin.png)

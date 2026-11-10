@@ -1,8 +1,8 @@
 # ContrattoChiaro
 
-_Contratti e documenti legali comuni, chiari e pronti all'uso._
+_Documenti legali comuni, chiari e spiegati in parole semplici._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (11 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,12 @@ Vorrei un'app, ContrattoChiaro, per privati e piccole imprese che hanno bisogno 
 
 ## Features not expressible today (spec.extensions)
 
-- **firma_elettronica**: Non ancora disponibile: firma elettronica dentro l'app, invito via email alla controparte e archiviazione del documento firmato. Per ora lo stato (bozza, inviato, firmato) è gestito a mano.
-- **upload_pdf_word**: Non ancora disponibile: caricamento di PDF/Word da analizzare. Per ora l'utente incolla il testo del contratto.
-- **export_word**: Non ancora disponibile: esportazione in formato Word. Il PDF si ottiene dalla stampa del report.
-- **abbonamento_illimitato**: I documenti illimitati per il piano Impresa richiedono la gestione di un'esenzione dal costo per run, non ancora espressa nel manifesto.
-- **notifiche_email**: Non ancora disponibili: email di invito alla controparte e avvisi di firma.
+- **esignature**: Firma elettronica dentro l'app per la controparte (che non ha un account), con valore legale (FEA/FES), non disponibile: la controparte riceve l'invito via email e lo stato si aggiorna a mano; il file firmato si carica nel documento. Serve un provider di firma esterno.
+- **docx_pdf_export**: Generazione di file Word e PDF: oggi il documento è un report stampabile (salvabile in PDF dal browser); l'export Word non è disponibile.
+- **unlimited_plan**: Il piano Imprese è approssimato con un'allocazione mensile ampia di crediti; l'esenzione totale dal costo per documento non è esprimibile.
+- **legal_corpus**: Gli admin devono caricare testi normativi e modelli approvati in /admin/data (legal_texts, doc_models).
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -33,9 +32,11 @@ Vorrei un'app, ContrattoChiaro, per privati e piccole imprese che hanno bisogno 
 ### my_docs
 ![04-my_docs.png](screenshots/04-my_docs.png)
 
+### send_doc
+![05-send_doc.png](screenshots/05-send_doc.png)
+
 ### history
-![05-history.png](screenshots/05-history.png)
+![06-history.png](screenshots/06-history.png)
 
 ### account
-![06-account.png](screenshots/06-account.png)
-
+![07-account.png](screenshots/07-account.png)

@@ -5,7 +5,7 @@ import fs from 'node:fs'; import path from 'node:path';
 import yaml from 'js-yaml/dist/js-yaml.mjs';
 
 const DIR = path.dirname(new URL(import.meta.url).pathname);
-const MAN = path.join(DIR, 'manifests'), OUT = path.join(DIR, 'png'), PORT = 3100;
+const MAN = path.join(DIR, 'rt_manifests'), OUT = path.join(DIR, 'shots'), PORT = 3101;
 const only = (process.argv[2] || '').split(',').filter(Boolean);
 const slugs = fs.readdirSync(MAN).filter((f) => f.endsWith('.vertical.yaml')).map((f) => f.replace('.vertical.yaml', ''))
   .filter((s) => (only.length ? only.includes(s) : !fs.existsSync(path.join(OUT, s, 'report.json'))));

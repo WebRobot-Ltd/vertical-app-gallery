@@ -1,22 +1,25 @@
-# Anticipo Busta
+# AnticipoPaga
 
-_Il tuo stipendio maturato, quando ti serve._
+_Il tuo maturato, quando ti serve._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (15 checks passed)
 
 ## Description given to the app builder (Italian)
 
 Descrivo solo lo strato software di un servizio di anticipo dello stipendio per i dipendenti delle aziende clienti: il portale che calcola e richiede l'anticipo, non l'erogazione del credito, che e un servizio finanziario regolamentato svolto da un partner autorizzato. L'azienda aderisce e carica, tramite un collegamento o un file dal proprio sistema paghe, i dati di maturato dei dipendenti. Il dipendente accede dall'app, vede quanto ha gia maturato nel mese e quanto puo richiedere in anticipo secondo le regole impostate dall'azienda, e invia la richiesta con un modulo. Un agente verifica i limiti (percentuale massima, richieste gia fatte, capienza) e, se tutto e in regola, la approva automaticamente o la manda all'HR per approvazione nei casi fuori soglia; l'erogazione effettiva la esegue il partner finanziario. Alla fine del mese l'importo anticipato viene conguagliato in busta. Il dipendente vede solo le proprie richieste, l'HR quelle dell'azienda. Monetizzazione: abbonamento dell'azienda o piccola commissione per anticipo. In italiano.
 
+## Functional test: what did not pass
+
+- **saved record shown where its collection is read** (view my_accrual): a record was saved in accruals (by admin-data, admin-data) but the page does not show it (as user) _(warning)_
+- **saved record shown where its collection is read** (view company_requests): a record was saved in advance_requests (by user) but the page does not show it (as hr) _(warning)_
+
 ## Features not expressible today (spec.extensions)
 
-- **import_paghe**: Il caricamento automatico dei dati di maturato da collegamento o file del sistema paghe non è disponibile (nessun campo file né connettore con credenziali dell'azienda): per ora il maturato va inserito o incollato come testo.
-- **vista_hr_azienda**: La vista HR sulle richieste di tutti i dipendenti della stessa azienda richiede uno scope per azienda sulle collezioni, oggi non espresso: le collezioni dei dipendenti sono per utente, quindi l'HR vede ora solo ciò che passa dalle approvazioni.
-- **erogazione_partner**: L'erogazione è svolta dal partner finanziario autorizzato fuori dal portale; l'integrazione con il partner e il conguaglio in busta non sono modellati.
-- **commissione_per_anticipo**: La commissione per anticipo (modo per_transaction) va configurata con il partner e le regole di legge applicabili; qui è previsto l'abbonamento aziendale più crediti.
-- **notifiche**: Notifiche email di esito o di richiesta in attesa non sono disponibili.
+- **commissione_per_anticipo**: La commissione per anticipo a carico dell'azienda alternativa all'abbonamento richiede un addebito per azienda: non disponibile, per ora solo abbonamento.
+- **erogazione_partner**: L'invio dell'ordine di pagamento al partner finanziario autorizzato e il conguaglio in busta richiedono un'integrazione con API del partner e del sistema paghe, da collegare via webhook o chiave API; qui lo stato 'paid' è aggiornato dal partner.
+- **oauth_paghe**: Il collegamento diretto con sistemi paghe basati su OAuth non è disponibile: i dati si caricano via file CSV nella pagina Dati o via webhook.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,21 +30,23 @@ Descrivo solo lo strato software di un servizio di anticipo dello stipendio per 
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### maturato
-![03-maturato.png](screenshots/03-maturato.png)
+### my_accrual
+![03-my_accrual.png](screenshots/03-my_accrual.png)
 
-### new_run
-![04-new_run.png](screenshots/04-new_run.png)
+### request
+![04-request.png](screenshots/04-request.png)
 
-### storico
-![05-storico.png](screenshots/05-storico.png)
+### my_requests
+![05-my_requests.png](screenshots/05-my_requests.png)
 
-### richieste
-![06-richieste.png](screenshots/06-richieste.png)
+### company_requests
+![06-company_requests.png](screenshots/06-company_requests.png)
 
-### approvazioni
-![07-approvazioni.png](screenshots/07-approvazioni.png)
+### company_accruals
+![07-company_accruals.png](screenshots/07-company_accruals.png)
+
+### approvals
+![08-approvals.png](screenshots/08-approvals.png)
 
 ### account
-![08-account.png](screenshots/08-account.png)
-
+![09-account.png](screenshots/09-account.png)

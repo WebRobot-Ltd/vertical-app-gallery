@@ -1,8 +1,8 @@
 # CinqueMinuti
 
-_Cinque minuti al giorno per capire i soldi e gli investimenti._
+_Cinque minuti al giorno per capire i soldi._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (21 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,12 +10,11 @@ L'idea è CinqueMinuti, un'app di educazione finanziaria per giovani adulti che 
 
 ## Features not expressible today (spec.extensions)
 
-- **push_notifications**: Notifica push sul telefono quando arriva la lezione del mattino e promemoria per non perdere la serie: non disponibile ancora.
-- **email_lesson**: Invio della lezione per email ogni mattina: le notifiche email non sono ancora disponibili; per ora la lezione si legge nell'app.
-- **free_trial_14_days**: Le prime due settimane gratis sono approssimate con 140 crediti di benvenuto (14 lezioni da 10 crediti); un vero periodo di prova a tempo richiede codice dedicato.
-- **admin_aggregate_stats**: Statistiche aggregate (utenti attivi, tasso di risposte esatte, serie medie) fornite dalla vista admin standard; metriche specifiche dei temi richiedono un'estensione.
+- **push_notifications**: Notifica push su telefono con la lezione del giorno: non ancora disponibile (solo email). La shell mobile installabile è dichiarata in spec.mobile; il push va aggiunto quando la piattaforma lo supporterà.
+- **free_trial_14_days**: Le prime due settimane gratuite prima dell'abbonamento non sono esprimibili nel manifest: da configurare come periodo di prova nel piano Stripe o con crediti di benvenuto.
+- **streak_reminder**: Promemoria per non perdere la serie di giorni: richiede push, per ora solo email giornaliera.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -26,30 +25,32 @@ L'idea è CinqueMinuti, un'app di educazione finanziaria per giovani adulti che 
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### percorso
-![03-percorso.png](screenshots/03-percorso.png)
+### profile
+![03-profile.png](screenshots/03-profile.png)
 
-### verifica
-![04-verifica.png](screenshots/04-verifica.png)
+### setup
+![04-setup.png](screenshots/04-setup.png)
 
-### storico
-![05-storico.png](screenshots/05-storico.png)
+### lessons
+![05-lessons.png](screenshots/05-lessons.png)
 
-### progressi
-![06-progressi.png](screenshots/06-progressi.png)
+### quiz
+![06-quiz.png](screenshots/06-quiz.png)
+
+### progress
+![07-progress.png](screenshots/07-progress.png)
 
 ### chat
-![07-chat.png](screenshots/07-chat.png)
+![08-chat.png](screenshots/08-chat.png)
 
 ### account
-![08-account.png](screenshots/08-account.png)
-
-### admin
-![09-admin.png](screenshots/09-admin.png)
-
-### admin_stats
-![10-admin_stats.png](screenshots/10-admin_stats.png)
+![09-account.png](screenshots/09-account.png)
 
 ### admin_plan
-![11-admin_plan.png](screenshots/11-admin_plan.png)
+![10-admin_plan.png](screenshots/10-admin_plan.png)
 
+### admin_plan_edit
+![11-admin_plan_edit.png](screenshots/11-admin_plan_edit.png)
+
+### admin_stats
+![12-admin_stats.png](screenshots/12-admin_stats.png)

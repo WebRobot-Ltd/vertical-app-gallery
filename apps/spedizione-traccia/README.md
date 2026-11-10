@@ -1,8 +1,8 @@
 # SpedizioneTraccia
 
-_Tracking spedizioni e notifiche ai clienti, in un unico posto._
+_Tracciamento spedizioni e notifiche ai clienti, in un unico posto._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (15 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,8 +10,42 @@ SpedizioneTraccia da agli e-commerce il tracciamento delle spedizioni e le notif
 
 ## Features not expressible today (spec.extensions)
 
-- **carrier_authorized_access**: Connecting each shop's carrier accounts with authorized access (OAuth/API keys) is not available yet; the agent reads carriers' public tracking pages by tracking number.
-- **email_notifications**: Sending emails to end customers with the shop's branding is not available yet; notifications are drafted in the customer's language in the outbox, and shop alerts appear in the alerts view.
-- **branded_tracking_page**: A public branded tracking page for end customers is not available yet (it would need anonymous access to a shop's records).
-- **webhook_import**: Importing orders by webhook from the shop's management system is not available per shop yet; use the paste import.
+- **carrier_oauth**: OAuth authorisation to carriers is not available yet: stores connect carriers with API keys (DHL directly; GLS, BRT, UPS, SDA, Poste through their AfterShip key).
+- **orders_webhook**: Per-store webhook import of orders from the store's management system is not available yet: use the file import or the add-shipment form.
+- **branded_emails**: Customer emails are plain text, bilingual (IT/EN in one message) and not styled with the store's logo/colours; the store branding is saved but not yet applied. Per-customer language selection of the message is not available.
+- **public_tracking_page**: A public branded tracking page for end customers (no login) is not available yet, because shipment records are private to each store; emails therefore carry no tracking link.
 
+## Screenshots (interpretive runtime, no data)
+
+### home-anon
+![00-home-anon.png](screenshots/00-home-anon.png)
+
+### home-mobile
+![01-home-mobile.png](screenshots/01-home-mobile.png)
+
+### home
+![02-home.png](screenshots/02-home.png)
+
+### dashboard
+![03-dashboard.png](screenshots/03-dashboard.png)
+
+### shipments_table
+![04-shipments_table.png](screenshots/04-shipments_table.png)
+
+### add_shipment
+![05-add_shipment.png](screenshots/05-add_shipment.png)
+
+### import
+![06-import.png](screenshots/06-import.png)
+
+### imports
+![07-imports.png](screenshots/07-imports.png)
+
+### watches
+![08-watches.png](screenshots/08-watches.png)
+
+### store_settings
+![09-store_settings.png](screenshots/09-store_settings.png)
+
+### account
+![10-account.png](screenshots/10-account.png)

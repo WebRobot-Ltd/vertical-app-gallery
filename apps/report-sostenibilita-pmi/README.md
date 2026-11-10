@@ -1,23 +1,24 @@
 # BilancioVerde
 
-_Il report di sostenibilità ESRS per PMI, pronto e rivisto dal tuo consulente._
+_Il report di sostenibilità ESRS per PMI, guidato e rivisto dal tuo consulente._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (28 checks passed)
 
 ## Description given to the app builder (Italian)
 
 Mi serve BilancioVerde per aiutare le PMI a redigere il report di sostenibilità secondo gli standard europei ESRS (versione semplificata per PMI). Il referente dell'azienda compila un modulo a sezioni: dati generali, dipendenti, consumi energetici, emissioni, rifiuti, governance, politiche sociali; può caricare documenti esistenti come bollette, bilancio, regolamenti interni e certificazioni in PDF o Excel, da cui un agente estrae i numeri. Un agente consulta gli standard EFRAG indicizzati, esegue l'analisi di doppia materialità guidata, indica quali informazioni mancano e scrive le sezioni del report con tabelle e indicatori. Il consulente che segue l'azienda rivede e approva ogni capitolo. Il risultato è un report completo esportabile in Word e PDF e una dashboard degli indicatori con confronto anno su anno. Ogni azienda vede solo i propri dati, i consulenti quelli dei loro clienti. Pagamento annuale per report, con prezzo superiore per la revisione del consulente. Italiano e inglese.
 
+## Functional test: what did not pass
+
+- **trigger has its effect** (trigger chapter_new): email to record.consultant_email: no such recipient in the test (role nobody holds or empty field) _(warning)_
+
 ## Features not expressible today (spec.extensions)
 
-- **file_upload**: File upload (PDF/Excel) is not available yet: users paste the text of documents or links. Automatic extraction from files will need it.
-- **word_export**: Word (.docx) export is not available yet; the report is printable to PDF. Word export needs a runtime export.
-- **efrag_index**: A dedicated indexed EFRAG standards search is not available; the analyst consults the public EFRAG pages through the WebRobot MCP.
-- **consultant_clients**: Linking consultants to their client companies uses per-record sharing of indicators and the chapter_review approval; a dedicated client-assignment collection is still to be defined.
-- **review_pricing**: The higher price with consultant review is sold as a separate pack; enforcing that review is requested only after buying it needs custom logic.
-- **notifications**: Email notifications to the consultant when a chapter awaits review are not available yet.
+- **word_export**: Word (.docx) export of the full report is not available yet: the report view prints to PDF and chapters export as CSV.
+- **efrag_index**: The EFRAG standards are consulted on the public EFRAG site through the WebRobot MCP; a dedicated search index is not available yet.
+- **review_price**: The higher price for consultant review is sold as a separate pack; enforcing that only reviewed reports are approved is not automated.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -28,18 +29,44 @@ Mi serve BilancioVerde per aiutare le PMI a redigere il report di sostenibilità
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### new_report
-![03-new_report.png](screenshots/03-new_report.png)
+### general
+![03-general.png](screenshots/03-general.png)
+
+### employees
+![04-employees.png](screenshots/04-employees.png)
+
+### energy
+![05-energy.png](screenshots/05-energy.png)
+
+### emissions
+![06-emissions.png](screenshots/06-emissions.png)
+
+### waste
+![07-waste.png](screenshots/07-waste.png)
+
+### governance
+![08-governance.png](screenshots/08-governance.png)
+
+### social
+![09-social.png](screenshots/09-social.png)
+
+### new_run
+![10-new_run.png](screenshots/10-new_run.png)
 
 ### reports
-![04-reports.png](screenshots/04-reports.png)
+![11-reports.png](screenshots/11-reports.png)
 
-### reviews
-![05-reviews.png](screenshots/05-reviews.png)
+### chapters_list
+![12-chapters_list.png](screenshots/12-chapters_list.png)
+
+### review
+![13-review.png](screenshots/13-review.png)
+
+### clients
+![14-clients.png](screenshots/14-clients.png)
 
 ### dashboard
-![06-dashboard.png](screenshots/06-dashboard.png)
+![15-dashboard.png](screenshots/15-dashboard.png)
 
 ### account
-![07-account.png](screenshots/07-account.png)
-
+![16-account.png](screenshots/16-account.png)

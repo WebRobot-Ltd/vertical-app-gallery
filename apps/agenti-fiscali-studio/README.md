@@ -1,8 +1,8 @@
 # CalcoloStudio
 
-_Gli adempimenti ripetitivi dello studio, calcolati passo per passo._
+_Gli adempimenti ripetitivi dello studio, calcolati passo per passo e approvati dal professionista._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (26 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,11 @@ Siamo uno studio di commercialisti e vogliamo un'app interna, CalcoloStudio, con
 
 ## Features not expressible today (spec.extensions)
 
-- **upload_pdf**: Il caricamento di PDF (visure, dichiarazioni, cartelle) non è ancora disponibile: per ora si inserisce un link o si incolla il testo nella scheda Documenti.
-- **cassetto_fiscale**: Il download dal cassetto fiscale con delega richiede credenziali del cliente/studio (connettore non disponibile ancora): per ora i dati si inseriscono a mano o dai documenti.
-- **invio_email_f24**: L'invio via email dell'F24 approvato al cliente non è ancora disponibile: dopo l'approvazione il collaboratore scarica/stampa l'F24 e lo invia.
-- **visibilita_clienti**: Il collaboratore vede i clienti assegnati e il titolare tutti: oggi i clienti sono dati per utente; serve una vista del titolare su tutti i record e l'assegnazione per collaboratore (campo 'collaboratore' già previsto).
-- **caricamento_fonti**: Le collezioni 'aliquote_imu' e 'circolari' vanno popolate (a mano o con un'importazione) con le delibere comunali e le circolari/risoluzioni dell'Agenzia delle Entrate.
+- **cassetto_fiscale**: Il download automatico dal cassetto fiscale con delega richiede accesso con SPID/CIE/Entratel e i servizi dell'Agenzia delle Entrate, non una chiave API: non disponibile. Per ora i documenti si caricano in PDF nel modulo di calcolo.
+- **circolari_indicizzate**: Un archivio indicizzato e ricercabile di circolari e risoluzioni non è ancora disponibile: l'agente le consulta sul sito ufficiale tramite il MCP WebRobot e cita la fonte. Un archivio proprio potrà essere aggiunto come job di indicizzazione.
+- **abbonamento_per_studio**: L'abbonamento è unico per lo studio (il titolare lo gestisce) e la soglia di clienti è applicata a livello di app; le fasce S/M/L sono configurabili.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,33 +25,29 @@ Siamo uno studio di commercialisti e vogliamo un'app interna, CalcoloStudio, con
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### nuovo_calcolo
-![03-nuovo_calcolo.png](screenshots/03-nuovo_calcolo.png)
+### new_calc
+![03-new_calc.png](screenshots/03-new_calc.png)
 
-### calcoli
-![04-calcoli.png](screenshots/04-calcoli.png)
+### calcs
+![04-calcs.png](screenshots/04-calcs.png)
 
-### clienti
-![05-clienti.png](screenshots/05-clienti.png)
+### clients
+![05-clients.png](screenshots/05-clients.png)
 
-### immobili_v
-![06-immobili_v.png](screenshots/06-immobili_v.png)
+### client_new
+![06-client_new.png](screenshots/06-client_new.png)
 
-### documenti_v
-![07-documenti_v.png](screenshots/07-documenti_v.png)
+### properties
+![07-properties.png](screenshots/07-properties.png)
 
-### f24_v
-![08-f24_v.png](screenshots/08-f24_v.png)
+### property_new
+![08-property_new.png](screenshots/08-property_new.png)
 
-### aliquote_v
-![09-aliquote_v.png](screenshots/09-aliquote_v.png)
+### f24s
+![09-f24s.png](screenshots/09-f24s.png)
 
-### circolari_v
-![10-circolari_v.png](screenshots/10-circolari_v.png)
-
-### da_approvare
-![11-da_approvare.png](screenshots/11-da_approvare.png)
+### approvals_view
+![10-approvals_view.png](screenshots/10-approvals_view.png)
 
 ### account
-![12-account.png](screenshots/12-account.png)
-
+![11-account.png](screenshots/11-account.png)

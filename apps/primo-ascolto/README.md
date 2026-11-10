@@ -1,8 +1,8 @@
 # Primo Ascolto
 
-_Trova lo psicologo giusto per un primo colloquio, in modo riservato._
+_Trova lo psicologo giusto e prenota il primo colloquio._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (10 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,13 @@ Voglio Primo Ascolto, la piattaforma di prenotazione per un servizio di psicolog
 
 ## Features not expressible today (spec.extensions)
 
-- **booking_calendar**: Calendario per scegliere e prenotare uno slot e pagare la seduta con carta (Stripe Connect verso lo psicologo, commissione trattenuta): il manifest dichiara collezioni, approvazione e commissione, ma serve un modulo di prenotazione e checkout per singola seduta.
-- **video_sessions**: Videochiamata dentro la piattaforma: non disponibile.
-- **reminders**: Promemoria via email e notifica prima di ogni seduta: notifiche non ancora disponibili.
-- **clinical_notes_isolation**: Note cliniche visibili solo allo psicologo autore, nemmeno all'admin, con cifratura dedicata e gestione dei pazienti per professionista: non esprimibile con i ruoli attuali, quindi nessuna collezione di note è stata creata.
-- **professional_vetting**: Verifica dell'iscrizione all'albo e onboarding Stripe dei professionisti da parte dello staff; i dati sanitari richiedono DPA, informativa GDPR e registro dei trattamenti.
+- **video_sessions**: Video calls inside the platform are not available yet: the session link must be added by other means.
+- **push_notifications**: Push notifications before a session are not available yet; only email reminders are sent.
+- **clinical_notes**: The platform deliberately stores no clinical notes: a notes feature visible only to the author psychologist (not even admins) is not expressible; use the professional's own tool.
+- **checkout_at_booking**: Card payment at booking time with the commission split to the psychologist's Stripe Connect account (per_transaction, seller = psychologists) needs the checkout wiring in the studio; the psychologists' appointments rule assumes the booking resource holds the psychologist's email.
+- **patient_management**: The psychologist sees only the agenda of their bookings; a richer patient list is not covered.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,27 +27,23 @@ Voglio Primo Ascolto, la piattaforma di prenotazione per un servizio di psicolog
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### new_match
-![03-new_match.png](screenshots/03-new_match.png)
+### match
+![03-match.png](screenshots/03-match.png)
 
 ### matches
 ![04-matches.png](screenshots/04-matches.png)
 
-### confirmations
-![05-confirmations.png](screenshots/05-confirmations.png)
+### book
+![05-book.png](screenshots/05-book.png)
 
-### my_bookings
-![06-my_bookings.png](screenshots/06-my_bookings.png)
+### my_sessions
+![06-my_sessions.png](screenshots/06-my_sessions.png)
 
-### my_profile
-![07-my_profile.png](screenshots/07-my_profile.png)
-
-### my_slots
-![08-my_slots.png](screenshots/08-my_slots.png)
+### agenda
+![07-agenda.png](screenshots/07-agenda.png)
 
 ### support
-![09-support.png](screenshots/09-support.png)
+![08-support.png](screenshots/08-support.png)
 
 ### account
-![10-account.png](screenshots/10-account.png)
-
+![09-account.png](screenshots/09-account.png)

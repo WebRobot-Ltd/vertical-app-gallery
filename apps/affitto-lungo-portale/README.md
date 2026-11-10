@@ -1,8 +1,8 @@
 # Affitti Medio-Lungo
 
-_Cerca, candidati e prenota una visita: l'alloggio giusto per mesi o anni._
+_Cerca, candidati e prenota la visita: tutto in un portale._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (27 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,14 +10,10 @@ Descrivo solo lo strato software di un servizio di affitti a medio e lungo termi
 
 ## Features not expressible today (spec.extensions)
 
-- **file_upload**: Document upload for applications and photo upload for listings are not available yet: tenants and managers paste links to documents and photos instead.
-- **email_updates**: Email updates to tenant and manager on application and viewing status are not available yet.
-- **tenant_manager_chat**: Direct chat between tenant and manager (per listing/application) is not expressible yet; communication is via the status fields for now.
-- **viewing_slots**: Slot picking against the manager's real availability needs a manager-defined slot calendar; for now the tenant proposes a date and the manager confirms.
-- **manager_scoped_visibility**: Managers seeing only their own listings and the applications to them (and the tenant only their own) needs per-record ownership across users; the current collections give tenants their own records and shared listings, and the admin sees everything.
-- **contract_commission**: The commission on concluded contracts is settled outside the platform by the agency operator after signing; the platform records the outcome only. Contract negotiation and signing are out of scope.
+- **manager_chat**: Direct human-to-human chat between tenant and manager is not available yet; the assistant chat is provided instead. Per-manager filtering of 'my listings' is also not available: listings are a shared catalogue and each carries manager_email.
+- **contract_signing**: Contract negotiation and signing are done by an agency operator outside the platform; the operator marks the application contract_signed, which triggers the fee.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -31,27 +27,41 @@ Descrivo solo lo strato software di un servizio di affitti a medio e lungo termi
 ### search
 ![03-search.png](screenshots/03-search.png)
 
-### searches
-![04-searches.png](screenshots/04-searches.png)
+### history
+![04-history.png](screenshots/04-history.png)
 
-### favorites_view
-![05-favorites_view.png](screenshots/05-favorites_view.png)
+### browse
+![05-browse.png](screenshots/05-browse.png)
+
+### favorite
+![06-favorite.png](screenshots/06-favorite.png)
+
+### my_favorites
+![07-my_favorites.png](screenshots/07-my_favorites.png)
+
+### apply
+![08-apply.png](screenshots/08-apply.png)
 
 ### my_applications
-![06-my_applications.png](screenshots/06-my_applications.png)
+![09-my_applications.png](screenshots/09-my_applications.png)
 
-### my_viewings
-![07-my_viewings.png](screenshots/07-my_viewings.png)
+### book
+![10-book.png](screenshots/10-book.png)
 
-### my_listings
-![08-my_listings.png](screenshots/08-my_listings.png)
+### publish
+![11-publish.png](screenshots/11-publish.png)
 
-### received_applications
-![09-received_applications.png](screenshots/09-received_applications.png)
+### received
+![12-received.png](screenshots/12-received.png)
 
-### received_viewings
-![10-received_viewings.png](screenshots/10-received_viewings.png)
+### review
+![13-review.png](screenshots/13-review.png)
 
-### admin_all
-![11-admin_all.png](screenshots/11-admin_all.png)
+### bookings
+![14-bookings.png](screenshots/14-bookings.png)
 
+### chat
+![15-chat.png](screenshots/15-chat.png)
+
+### account
+![16-account.png](screenshots/16-account.png)

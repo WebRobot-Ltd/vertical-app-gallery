@@ -2,7 +2,7 @@
 
 _Itinerari su misura nei borghi e nelle campagne di Sicilia._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (17 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,12 +10,10 @@ Vorrei un'app turistica chiamata Sentieri di Borgo, che crea itinerari personali
 
 ## Features not expressible today (spec.extensions)
 
-- **interactive_map**: Interactive map with traced routes is not available yet: the report includes a GeoJSON block and OpenStreetMap directions links per day; a map component rendering it is missing.
-- **report_download**: Download is the printable report (save as PDF from the browser); no server-side PDF file.
-- **anonymous_free_trial**: Credits are tied to accounts: visitors without an account are limited by IP rate limits; the 'first itinerary free' applies via signup credits once they register.
-- **plan_chat_link**: The chat agent has no automatic access to the generated report; the visitor pastes the part to change.
+- **route_lines**: Map shows the stops as markers; drawing the traced route polylines between stops is not available yet (distances and times are in the report).
+- **anonymous_credits**: The free first itinerary for visitors without an account is limited by the per-IP run limit; credit charging applies to signed-in users.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -26,21 +24,26 @@ Vorrei un'app turistica chiamata Sentieri di Borgo, che crea itinerari personali
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### new
-![03-new.png](screenshots/03-new.png)
+### new_trip
+![03-new_trip.png](screenshots/03-new_trip.png)
 
-### history
-![04-history.png](screenshots/04-history.png)
+### my_trips
+![04-my_trips.png](screenshots/04-my_trips.png)
 
-### chat
-![05-chat.png](screenshots/05-chat.png)
+### trip_map
+![05-trip_map.png](screenshots/05-trip_map.png)
 
-### admin_events
-![06-admin_events.png](screenshots/06-admin_events.png)
+### guide_chat
+![06-guide_chat.png](screenshots/06-guide_chat.png)
 
-### admin_cards
-![07-admin_cards.png](screenshots/07-admin_cards.png)
+### event_form
+![07-event_form.png](screenshots/07-event_form.png)
+
+### scheda_form
+![08-scheda_form.png](screenshots/08-scheda_form.png)
+
+### events_list
+![09-events_list.png](screenshots/09-events_list.png)
 
 ### account
-![08-account.png](screenshots/08-account.png)
-
+![10-account.png](screenshots/10-account.png)

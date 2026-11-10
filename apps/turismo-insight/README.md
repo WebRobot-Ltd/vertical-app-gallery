@@ -1,8 +1,8 @@
 # TurismoInsight
 
-_Decision intelligence per destinazioni, consorzi e catene alberghiere._
+_Decision intelligence per destinazioni turistiche, consorzi e catene alberghiere._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (10 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,7 +10,41 @@ Ho bisogno di TurismoInsight, uno strumento di decision intelligence per destina
 
 ## Features not expressible today (spec.extensions)
 
-- **monthly_pdf_email**: Sending the monthly PDF report by email to executives is not available yet (no notifications). Meanwhile each report is printable as PDF from the report view.
-- **map_view**: Interactive maps are not available as a display type yet; the dashboard shows charts, tables and filters by market and period.
-- **per_territory_seat_limit**: The annual price is per territory: the number of territories is capped by maxPerUser; enforcing it from the purchased plan quantity needs custom logic.
+- **per_territory_billing**: Annual price multiplied by the number of territories (quantity-based subscription) is not expressible: the plan is one territory; maxPerUser on the templates limits how many instances exist. A territory-to-plan check must be handled by the owner.
+- **executive_recipients**: The monthly PDF goes to the instance owner; delivery to a list of executives' emails is not available yet (the owner can forward it).
+- **flight_data**: Flight data come from open airport/authority pages through the WebRobot MCP; no dedicated flight API is declared.
 
+## Screenshots (interpretive runtime, no data)
+
+### home-anon
+![00-home-anon.png](screenshots/00-home-anon.png)
+
+### home-mobile
+![01-home-mobile.png](screenshots/01-home-mobile.png)
+
+### home
+![02-home.png](screenshots/02-home.png)
+
+### territories
+![03-territories.png](screenshots/03-territories.png)
+
+### monthly
+![04-monthly.png](screenshots/04-monthly.png)
+
+### dashboard
+![05-dashboard.png](screenshots/05-dashboard.png)
+
+### events_map
+![06-events_map.png](screenshots/06-events_map.png)
+
+### archive
+![07-archive.png](screenshots/07-archive.png)
+
+### reports
+![08-reports.png](screenshots/08-reports.png)
+
+### chat
+![09-chat.png](screenshots/09-chat.png)
+
+### account
+![10-account.png](screenshots/10-account.png)

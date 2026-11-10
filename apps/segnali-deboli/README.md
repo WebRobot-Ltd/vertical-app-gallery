@@ -2,7 +2,7 @@
 
 _Vedi i trend prima che diventino ovvi._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (10 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,11 +10,10 @@ Voglio creare Segnali Deboli, una piattaforma di previsione dei trend per uffici
 
 ## Features not expressible today (spec.extensions)
 
-- **alerts_email**: Notifications are not available yet: alerts on accelerating trends are shown in the dashboard, not sent by email.
-- **instagram_vision**: Instagram images with vision models are left out: they would need an access allowed by the terms of service (official API with the innovators' consent). To add later if a licensed source is available.
-- **plan_limits**: The maximum number of sectors per plan is not enforced by the manifest (maxPerUser is a fixed 10); it needs a check per plan.
+- **sector_quota**: Il numero di settori seguiti dovrebbe seguire il piano (1/3/5): da applicare come quota per piano sulle istanze di sector_watch.
+- **instagram_vision**: Analisi con modelli di visione delle immagini Instagram: non disponibile. Richiede accesso ufficiale consentito dai termini (API con consenso OAuth, non ancora disponibile); non si fa scraping.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -25,14 +24,14 @@ Voglio creare Segnali Deboli, una piattaforma di previsione dei trend per uffici
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### dashboard
-![03-dashboard.png](screenshots/03-dashboard.png)
+### radar
+![03-radar.png](screenshots/03-radar.png)
 
 ### watches
 ![04-watches.png](screenshots/04-watches.png)
 
-### report_plans
-![05-report_plans.png](screenshots/05-report_plans.png)
+### report_watches
+![05-report_watches.png](screenshots/05-report_watches.png)
 
 ### reports
 ![06-reports.png](screenshots/06-reports.png)
@@ -42,4 +41,3 @@ Voglio creare Segnali Deboli, una piattaforma di previsione dei trend per uffici
 
 ### account
 ![08-account.png](screenshots/08-account.png)
-

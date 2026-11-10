@@ -1,8 +1,8 @@
 # ConciergeDesk
 
-_Il receptionist virtuale per hotel indipendenti._
+_Il receptionist virtuale per hotel indipendenti, in 5 lingue._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (16 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,12 @@ Mi serve ConciergeDesk, un receptionist virtuale per hotel indipendenti e piccol
 
 ## Features not expressible today (spec.extensions)
 
-- **channel_manager_sync**: Live availability check and booking sync with the hotel's channel manager need the hotel's own credentials/API: not available yet. For now availability is a collection kept by the manager; bookings must be forwarded manually.
-- **voice_and_whatsapp**: Phone number voice agent and WhatsApp channel are not set up by this manifest (WhatsApp connector unavailable; the phone channel is activated in the studio). Web chat is active.
-- **deposit_card_payment**: Per-booking card deposit via Stripe Connect with the registration of the booking into 'bookings' after payment, and the platform commission on direct bookings, need a payment-to-record flow not expressible here.
-- **email_notifications**: Confirmation email and day-before reminder: notifications are not available yet.
-- **staff_cross_guest_view**: Quotes and bookings are owned by each guest; the staff dashboard listing every guest's records and the conversion rate (accepted/proposed quotes) need a back-office view across users.
+- **channel_manager_sync**: Live availability check and booking sync with the hotel's channel manager need a vendor-specific API (host and credentials). For now availability is read from the availability collection, which the channel manager can fill through the cm_availability webhook or the admins by CSV; pushing confirmed bookings back to the channel manager is not available yet.
+- **whatsapp**: WhatsApp conversations are not available yet. The phone channel (voice) is declared on the FAQ agent; a phone caller who wants a quote is invited to sign in or continue on the website chat.
+- **deposit_checkout**: Card payment of a per-quote deposit amount (dynamic Stripe Connect checkout) is not expressible yet: the quote moves to status 'paid' (which creates the booking) when the payment is confirmed; this status change must be driven by the payment confirmation. The 2.5% direct-booking commission is declared as transactionFeePct.
+- **conversion_rate**: The dashboard shows quotes by status and booking counts; a computed conversion-rate percentage and a 'today's arrivals' filter on the current date are not available as aggregates yet.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,36 +26,29 @@ Mi serve ConciergeDesk, un receptionist virtuale per hotel indipendenti e piccol
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### chat_public
-![03-chat_public.png](screenshots/03-chat_public.png)
+### ask
+![03-ask.png](screenshots/03-ask.png)
 
-### chat
-![04-chat.png](screenshots/04-chat.png)
+### concierge
+![04-concierge.png](screenshots/04-concierge.png)
+
+### bookings
+![05-bookings.png](screenshots/05-bookings.png)
 
 ### my_quotes
-![05-my_quotes.png](screenshots/05-my_quotes.png)
+![06-my_quotes.png](screenshots/06-my_quotes.png)
 
-### my_bookings
-![06-my_bookings.png](screenshots/06-my_bookings.png)
-
-### review_queue
-![07-review_queue.png](screenshots/07-review_queue.png)
+### approvals
+![07-approvals.png](screenshots/07-approvals.png)
 
 ### dashboard
 ![08-dashboard.png](screenshots/08-dashboard.png)
 
-### staff_kpis
-![09-staff_kpis.png](screenshots/09-staff_kpis.png)
+### conversations
+![09-conversations.png](screenshots/09-conversations.png)
 
-### staff_quotes
-![10-staff_quotes.png](screenshots/10-staff_quotes.png)
-
-### staff_bookings
-![11-staff_bookings.png](screenshots/11-staff_bookings.png)
-
-### hotel_setup
-![12-hotel_setup.png](screenshots/12-hotel_setup.png)
+### admin
+![10-admin.png](screenshots/10-admin.png)
 
 ### account
-![13-account.png](screenshots/13-account.png)
-
+![11-account.png](screenshots/11-account.png)

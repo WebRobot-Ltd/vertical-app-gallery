@@ -1,8 +1,8 @@
 # Cassa Previsionale
 
-_La previsione di cassa della tua PMI, sempre aggiornata._
+_Previsione di cassa a 13 settimane e 12 mesi per la tua PMI._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (15 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,12 +10,10 @@ Voglio Cassa Previsionale, uno strumento di tesoreria per PMI. Descrivo solo lo 
 
 ## Features not expressible today (spec.extensions)
 
-- **file_upload**: Upload of CSV/Excel bank statements and invoice lists is not available yet: for now the user pastes the text.
-- **email_digest**: The Monday email is not available yet: the summary is shown in the app (Monday summary view). Email notifications to be added when the platform supports them.
-- **open_banking**: Account connection via an authorised open banking provider (needs per-customer credentials), planned for the future.
-- **tax_drawer_import**: Import of invoices from the Italian cassetto fiscale (needs per-customer credentials), planned for the future.
+- **open_banking**: Collegamento dei conti via open banking tramite un provider autorizzato (AISP): non ancora disponibile, servono OAuth/consenso.
+- **cassetto_fiscale**: Importazione automatica delle fatture dal cassetto fiscale (Agenzia delle Entrate): non ancora disponibile.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -26,24 +24,29 @@ Voglio Cassa Previsionale, uno strumento di tesoreria per PMI. Descrivo solo lo 
 ### home
 ![02-home.png](screenshots/02-home.png)
 
+### company_form
+![03-company_form.png](screenshots/03-company_form.png)
+
 ### new
-![03-new.png](screenshots/03-new.png)
+![04-new.png](screenshots/04-new.png)
 
-### forecasts
-![04-forecasts.png](screenshots/04-forecasts.png)
+### history
+![05-history.png](screenshots/05-history.png)
 
-### transactions_view
-![05-transactions_view.png](screenshots/05-transactions_view.png)
+### movements
+![06-movements.png](screenshots/06-movements.png)
 
 ### invoices_view
-![06-invoices_view.png](screenshots/06-invoices_view.png)
+![07-invoices_view.png](screenshots/07-invoices_view.png)
 
-### approvals_view
-![07-approvals_view.png](screenshots/07-approvals_view.png)
+### drafts
+![08-drafts.png](screenshots/08-drafts.png)
+
+### draft_edit
+![09-draft_edit.png](screenshots/09-draft_edit.png)
 
 ### watches
-![08-watches.png](screenshots/08-watches.png)
+![10-watches.png](screenshots/10-watches.png)
 
 ### account
-![09-account.png](screenshots/09-account.png)
-
+![11-account.png](screenshots/11-account.png)

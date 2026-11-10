@@ -4,13 +4,14 @@ metadata:
   slug: taxiinsieme
   displayName: TaxiInsieme
   tagline:
-    it: Taxi con prezzo massimo garantito, e meno se condividi la corsa.
-    en: Taxi with a guaranteed maximum price, and less if you share the ride.
+    it: Taxi con prezzo massimo garantito, e se condividi paghi meno.
+    en: Taxi with a guaranteed maximum price, and you pay less if you share.
   description:
-    it: 'Inserisci partenza, destinazione e orario: TaxiInsieme calcola il prezzo massimo dalle tariffe comunali e ti propone
-      uno sconto se condividi la corsa. Le richieste compatibili vengono raggruppate e passate alle cooperative taxi partner.'
-    en: 'Enter pickup, destination and time: TaxiInsieme computes the maximum price from municipal tariffs and offers a discount
-      if you share the ride. Compatible requests are grouped and sent to partner taxi cooperatives.'
+    it: 'Inserisci partenza, destinazione e orario: ricevi il prezzo massimo garantito calcolato sulle tariffe comunali e
+      un prezzo ridotto se accetti di condividere la corsa. Le richieste compatibili vengono raggruppate e passate alle cooperative
+      taxi partner.'
+    en: 'Enter pickup, destination and time: get a guaranteed maximum price based on published municipal fares and a reduced
+      price if you agree to share the ride. Compatible requests are grouped and sent to partner taxi cooperatives.'
   langs:
   - it
   - en
@@ -21,10 +22,10 @@ spec:
   branding:
     theme: light
     palette:
-      primary: '#1b2a41'
-      accent: '#f2a900'
-      background: '#fbf9f4'
-      foreground: '#17202b'
+      primary: '#16202e'
+      accent: '#f2b705'
+      background: '#fbfaf6'
+      foreground: '#16202e'
     fonts:
       body: Inter
       display: Poppins
@@ -33,21 +34,17 @@ spec:
       color: primary
     - text: Insieme
       color: accent
-    button: accent
+    buttonShape: rounded
   header:
     links:
     - label:
         it: Come funziona
         en: How it works
       href: '#come-funziona'
-    - label:
-        it: Prezzi
-        en: Prices
-      href: '#prezzi'
     cta:
       label:
-        it: Chiedi un preventivo
-        en: Get a quote
+        it: Prenota
+        en: Book
       href: /v/new_ride
   auth:
     method: magic_link
@@ -58,15 +55,13 @@ spec:
     - key: admin
       assignedBy: admin_emails
     - key: user
-      label:
-        it: Passeggero
-        en: Passenger
       assignedBy: signup
-    - key: cooperative
+    - key: coop
       label:
         it: Cooperativa taxi
         en: Taxi cooperative
-      assignedBy: invite
+      assignedBy: derived
+      from: collection:cooperatives.email
   limits:
   - action: agent:quoter
     per: user
@@ -77,10 +72,8 @@ spec:
   agents:
   - key: quoter
     role: main
-    description: Estimates the distance, applies the municipal tariff and writes the guaranteed maximum price and the shared
-      price; asks the passenger to confirm.
-    awaits:
-    - confirm_ride
+    description: Geocodes the addresses, measures the distance, applies the municipal fare and computes the maximum and the
+      shared price.
     profile:
       inline:
         display_name: TaxiInsieme quoter
@@ -88,8 +81,8 @@ spec:
         - id: quoter
           engine: agent_sdk
           model: claude-sonnet-5-5
-          max_turns: 6
-          max_budget_usd: 0.3
+          max_turns: 14
+          max_budget_usd: 0.4
           permission_mode: bypassPermissions
           disallowed_tools:
           - Bash
@@ -101,79 +94,72 @@ spec:
           - NotebookEdit
           - WebFetch
           - WebSearch
-          system_prompt: 'You are the pricing assistant of TaxiInsieme, a taxi service with a guaranteed maximum price and
-            optional ride sharing. You receive pickup, destination, time, city and the municipal tariff parameters (base fare,
-            price per km, minimum fare, surcharge for the time slot, shared-ride discount). Steps: 1) estimate the road distance
-            in km between pickup and destination from your own knowledge of the city, giving a range and the value you use
-            (round up to the next 0.5 km); 2) compute the maximum price = max(minimum fare, base + km*per_km) + time surcharge,
-            then add the safety margin given in the goal and round up to the next euro; 3) if the passenger accepts sharing,
-            compute the shared price = maximum price reduced by the shared discount, and say clearly it applies only if at
-            least one compatible passenger is matched, otherwise the maximum price still holds. Never invent tariffs: use
-            only the numbers provided, and say they are indicative and to be checked against the published municipal tariff.
-            Never promise a pickup time. Output Markdown starting with a level-1 title "# Preventivo <pickup> → <destination>".
-            Sections with ##: Percorso (distance and assumptions), Prezzo massimo garantito, Prezzo condiviso (only if sharing),
-            Come funziona la condivisione, Note. Include one small table with the computation steps. Write in the language
-            with ISO code given in the goal. At the end, if the passenger asked to book, call the tool request_confirm_ride
-            once with the pickup, destination, time, city, shared yes/no, maximum price and shared price.'
+          system_prompt: 'You are the quoting assistant of TaxiInsieme, a taxi service with a guaranteed maximum price. Steps:
+            1) call geocode_place for the pickup and for the destination (Nominatim: query q=<address>&format=json&limit=1;
+            take lat and lon of the first result; if none, ask the user to refine the address and stop without a JSON block).
+            2) call route_distance with path <lonA>,<latA>;<lonB>,<latB> and query overview=false; distance is in metres in
+            routes[0].distance: convert to km. 3) call read_tariffs and pick the record whose city matches the city of the
+            pickup; if there is no tariff for that city, say clearly that the city is not covered yet and stop without a JSON
+            block. 4) call fare_calc with distance_km, base, per_km, min_fare, night_surcharge, night (true if the ride time
+            is between 22:00 and 06:00), discount_pct (default 25), and the four coordinates; it returns max_price, shared_price
+            and bearing. Never compute prices yourself and never invent figures. Write the report: a level-1 title "# <pickup>
+            → <destination>", then ## Il tuo preventivo (distance, guaranteed maximum price, shared price if the user accepts
+            sharing), ## Come funziona la condivisione (a shared ride may take a few minutes more; the price you pay never
+            exceeds the maximum), ## Fonte tariffe (city and source_url of the tariff). Then end with ONE fenced ```json block
+            with exactly these keys: pickup, destination, ride_date, ride_time, share (boolean), city, distance_km, max_price,
+            shared_price, bearing, pickup_lat, pickup_lon, dest_lat, dest_lon, contact_email, status (the string requested).
+            Respect the Nominatim usage policy (one request at a time).'
           mcp_servers: []
-    goalTemplate: 'City: {city_label}
-
-      Pickup: {pickup}
+    appTools:
+    - name: geocode_place
+      description: Geocode an address with Nominatim (query q, format=json, limit=1)
+      action: http
+      http:
+        method: GET
+        url: https://nominatim.openstreetmap.org/search
+        attribution: © OpenStreetMap contributors, ODbL
+    - name: route_distance
+      description: Driving distance between two points with OSRM; path = lon,lat;lon,lat
+      action: http
+      http:
+        method: GET
+        url: https://router.project-osrm.org/route/v1/driving/
+        allowPath: true
+        attribution: OSRM, data © OpenStreetMap contributors, ODbL
+    - name: read_tariffs
+      description: Read the published municipal taxi tariffs
+      action: read
+      collection: tariffs
+      scope: all
+    - name: fare_calc
+      description: Compute max price, shared price and bearing from distance and tariff
+      action: call
+      slot: fare_calc
+    context:
+    - key: email
+      from: user.email
+    goalTemplate: 'Pickup: {pickup}
 
       Destination: {destination}
 
-      When: {when_date} {when_time}
+      Date: {ride_date}, time: {ride_time}
 
-      Share the ride: {share_label}
+      {?share}The user accepts sharing the ride with other passengers.{/share}{!share}The user does not want to share.{/share}
 
-      Passengers: {seats}
+      User email (for contact_email): {email}
 
-      Tariff (indicative, EUR): base {base}, per km {per_km}, minimum {min_fare}, time-slot surcharge {surcharge}, shared
-      discount {shared_discount_pct}%, safety margin {margin_pct}%.
-
-      Today is {date}. Write the quote in the language with ISO code {lang}. The passenger {?book}wants to book: ask for confirmation{/book}{!book}only
-      wants a quote{/book}.'
-    context:
-    - key: tariff
-      from: slot:tariff
-    - key: base
-      from: slot:tariff
-    - key: per_km
-      from: slot:tariff
-    - key: min_fare
-      from: slot:tariff
-    - key: surcharge
-      from: slot:tariff
-    - key: shared_discount_pct
-      from: slot:tariff
-    - key: margin_pct
-      from: slot:tariff
-    output: markdown
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    output: markdown+json
+    writesTo:
+      collection: rides
+      parse: json_last
     limits:
-      maxTurns: 6
-      maxBudgetUsd: 0.3
+      maxTurns: 14
+      maxBudgetUsd: 0.4
   - key: dispatcher
     role: helper
-    description: After the passenger confirms, groups the ride with compatible requests in the pool and queues it for the
-      partner cooperatives.
-    awaits:
-    - accept_job
-    appTools:
-    - name: search_pool
-      description: Open requests waiting in the dispatch pool
-      action: search
-      collection: dispatch_pool
-      scope: all
-    - name: add_to_pool
-      description: Add or update a request in the dispatch pool
-      action: write
-      collection: dispatch_pool
-      scope: all
-    - name: save_ride
-      description: Save the passenger's own ride
-      action: write
-      collection: rides
-      scope: user
+    description: Groups compatible shared requests into trips for the cooperatives, and propagates acceptance to the passengers'
+      requests.
     profile:
       inline:
         display_name: TaxiInsieme dispatcher
@@ -181,8 +167,8 @@ spec:
         - id: dispatcher
           engine: agent_sdk
           model: claude-sonnet-5-5
-          max_turns: 8
-          max_budget_usd: 0.3
+          max_turns: 25
+          max_budget_usd: 0.6
           permission_mode: bypassPermissions
           disallowed_tools:
           - Bash
@@ -194,221 +180,229 @@ spec:
           - NotebookEdit
           - WebFetch
           - WebSearch
-          system_prompt: 'You dispatch confirmed TaxiInsieme rides. For the confirmed ride in the goal: 1) save it with save_ride
-            (status ''queued''); 2) if the passenger agreed to share, call search_pool for open shared requests in the same
-            city, within 20 minutes of the requested time, with a similar pickup area and the same direction (destination
-            in the same area, or on the way); 3) if a compatible request exists, add the ride to the same group (same group_id),
-            up to 3 rides and 4 seats in total; otherwise create a new group; 4) call add_to_pool with: group_id, ride summary,
-            city, pickup, destination, when, seats, shared, max_price, status ''open''; 5) call request_accept_job once for
-            the group, so that the partner cooperatives can accept it from their queue. Never share the passenger''s name
-            or contact beyond pickup point and seats. Never change the guaranteed maximum price. Answer with a short Markdown
-            note starting with "# Corsa in coda" saying what was grouped.'
-    goalTemplate: 'Dispatch the confirmed ride described in the task. Today is {date}. Language: {lang}.'
+          system_prompt: 'You are the dispatcher of TaxiInsieme. Two jobs. GROUPING: call read_pool and take the requests
+            with status requested. Requests with share=true are compatible when: same city and ride_date, ride_time within
+            15 minutes, pickup points within 1.5 km (use pickup_lat/lon), bearing difference under 30 degrees, at most 3 passengers
+            per group. Create one trip per group (or per single request not shared or without a match) with write_trip: group_id
+            (e.g. <ride_date>-<ride_time>-<n>), city, ride_date, ride_time, pickup, destination, passengers (count), total_price
+            (sum of shared_price for a group, max_price for a single), shared (boolean), status open. Then call update_pool
+            for each request in the group setting status grouped and group_id. Never merge requests that do not meet every
+            rule. ACCEPTANCE: when told a trip was accepted, call read_pool, and for each request with that group_id call
+            update_pool setting status accepted. Report briefly what you did with a level-1 title "# Dispatch <date>".'
+    appTools:
+    - name: read_pool
+      description: Read the ride requests pool
+      action: read
+      collection: ride_requests
+      scope: all
+    - name: update_pool
+      description: Update a ride request in the pool
+      action: write
+      collection: ride_requests
+      scope: all
+    - name: write_trip
+      description: Create a trip in the cooperatives' queue
+      action: write
+      collection: trips
+      scope: all
+    goalTemplate: Run the grouping of the pending requests. Today is {date}.
     output: markdown
     limits:
-      maxTurns: 8
-      maxBudgetUsd: 0.3
+      maxTurns: 25
+      maxBudgetUsd: 0.6
   inputForm:
     title:
-      it: Dove vai?
-      en: Where to?
+      it: Nuova corsa
+      en: New ride
     fields:
-    - name: city
-      type: select
-      required: true
-      label:
-        it: Città
-        en: City
-      options:
-      - value: roma
-        label: Roma
-      - value: milano
-        label: Milano
-      - value: torino
-        label: Torino
-      - value: bologna
-        label: Bologna
-      - value: napoli
-        label: Napoli
     - name: pickup
       type: text
       required: true
-      maxLength: 200
       label:
         it: Partenza
         en: Pickup
+      help:
+        it: Indirizzo completo con città
+        en: Full address with city
     - name: destination
       type: text
       required: true
-      maxLength: 200
       label:
         it: Destinazione
         en: Destination
-    - name: when_date
+    - name: ride_date
       type: date
       required: true
       label:
         it: Data
         en: Date
-    - name: when_time
+    - name: ride_time
       type: text
       required: true
-      maxLength: 5
       label:
         it: Orario (HH:MM)
         en: Time (HH:MM)
-      help:
-        it: es. 18:30
-        en: e.g. 18:30
-    - name: seats
-      type: select
-      required: true
-      default: '1'
-      label:
-        it: Passeggeri
-        en: Passengers
-      options:
-      - '1'
-      - '2'
-      - '3'
-      - '4'
     - name: share
-      type: select
-      required: true
-      default: 'yes'
-      label:
-        it: Condividere la corsa?
-        en: Share the ride?
-      options:
-      - value: 'yes'
-        label:
-          it: Sì, prezzo ridotto
-          en: Yes, reduced price
-      - value: 'no'
-        label:
-          it: No, corsa privata
-          en: No, private ride
-    - name: book
       type: boolean
       default: true
       label:
-        it: Voglio prenotare, non solo il preventivo
-        en: I want to book, not only a quote
-  slots:
-  - key: tariff
-    description: Indicative municipal tariff parameters from the city and the time slot
-    timeoutMs: 2000
-    example:
-      values:
-        city: roma
-        when_time: '23:30'
-      lang: it
-    code: "# Indicative values: to be checked against each municipality's published tariff before launch.\nT = {\n  'roma':\
-      \ (3.0, 1.1, 9.0, 3.5),\n  'milano': (3.4, 1.2, 11.0, 3.5),\n  'torino': (3.5, 1.3, 8.0, 3.0),\n  'bologna': (3.5, 1.2,\
-      \ 9.0, 3.0),\n  'napoli': (3.5, 1.0, 7.0, 3.0),\n}\n\ndef main(input):\n    v = input.get('values') or {}\n    base,\
-      \ per_km, min_fare, night = T.get(v.get('city'), T['roma'])\n    try:\n        h = int(str(v.get('when_time', '12:00')).split(':')[0])\n\
-      \    except Exception:\n        h = 12\n    surcharge = night if (h >= 22 or h < 6) else 0.0\n    return {'base': base,\
-      \ 'per_km': per_km, 'min_fare': min_fare, 'surcharge': surcharge, 'shared_discount_pct': 25, 'margin_pct': 10}\n"
-  approvals:
-  - key: confirm_ride
-    title:
-      it: Conferma la corsa
-      en: Confirm your ride
-    description: The passenger confirms the quote before it is queued
-    decidedBy: requester
-    fields:
-    - pickup
-    - destination
-    - when
-    - shared
-    - max_price
-    - shared_price
-    timeoutMinutes: 60
-    onTimeout: reject
-  - key: accept_job
-    title:
-      it: Accetta corsa
-      en: Accept ride
-    description: A partner cooperative accepts the group from its queue
-    role: cooperative
-    decidedBy: role
-    fields:
-    - city
-    - pickup
-    - destination
-    - when
-    - seats
-    - max_price
-    timeoutMinutes: 30
-    onTimeout: reject
-  triggers:
-  - key: dispatch_on_confirm
-    description: When the passenger confirms, group and queue the ride
-    'on':
-      approval: confirm_ride
-      decision: approved
-    start:
-      agent: dispatcher
-    goal: 'Dispatch this confirmed ride: {event}'
-    asUser: true
+        it: Accetto di condividere la corsa (prezzo ridotto)
+        en: I agree to share the ride (reduced price)
   data:
     collections:
     - name: rides
       ownedBy: user
-      description: The passenger's own rides
+      description: Each user's own rides and quotes
+      retentionDays: 730
       fields:
-      - name: city
-        type: text
       - name: pickup
         type: text
       - name: destination
         type: text
-      - name: when
+      - name: ride_date
+        type: date
+      - name: ride_time
         type: text
-      - name: seats
-        type: number
-      - name: shared
+      - name: share
         type: boolean
+      - name: city
+        type: text
+      - name: distance_km
+        type: number
       - name: max_price
         type: number
       - name: shared_price
         type: number
+      - name: bearing
+        type: number
+      - name: pickup_lat
+        type: number
+      - name: pickup_lon
+        type: number
+      - name: dest_lat
+        type: number
+      - name: dest_lon
+        type: number
+      - name: contact_email
+        type: email
       - name: status
+        type: select
+        options:
+        - requested
+        - grouped
+        - accepted
+        - paid
+        - cancelled
+    - name: tariffs
+      ownedBy: shared
+      description: Published municipal taxi tariffs
+      fields:
+      - name: city
         type: text
+        required: true
+      - name: base
+        type: number
+        required: true
+      - name: per_km
+        type: number
+        required: true
+      - name: min_fare
+        type: number
+        required: true
+      - name: night_surcharge
+        type: number
+      - name: source_url
+        type: url
+    - name: ride_requests
+      ownedBy: org
+      description: Back-office pool of ride requests for grouping
+      retentionDays: 90
+      fields:
+      - name: pickup
+        type: text
+      - name: destination
+        type: text
+      - name: ride_date
+        type: date
+      - name: ride_time
+        type: text
+      - name: share
+        type: boolean
+      - name: city
+        type: text
+      - name: distance_km
+        type: number
+      - name: max_price
+        type: number
+      - name: shared_price
+        type: number
+      - name: bearing
+        type: number
+      - name: pickup_lat
+        type: number
+      - name: pickup_lon
+        type: number
+      - name: dest_lat
+        type: number
+      - name: dest_lon
+        type: number
+      - name: contact_email
+        type: email
+      - name: status
+        type: select
+        options:
+        - requested
+        - grouped
+        - accepted
       - name: group_id
         type: text
-    - name: dispatch_pool
-      ownedBy: app
-      description: Anonymised requests waiting for a cooperative, grouped by direction
+    - name: trips
+      ownedBy: org
+      description: Queue of trips for partner cooperatives
+      retentionDays: 365
+      access:
+      - role: coop
+        can:
+        - read
+        - write
       fields:
       - name: group_id
         type: text
       - name: city
+        type: text
+      - name: ride_date
+        type: date
+      - name: ride_time
         type: text
       - name: pickup
         type: text
       - name: destination
         type: text
-      - name: when
-        type: text
-      - name: seats
+      - name: passengers
+        type: number
+      - name: total_price
         type: number
       - name: shared
         type: boolean
-      - name: max_price
-        type: number
       - name: status
-        type: text
+        type: select
+        options:
+        - open
+        - accepted
+      - name: coop_email
+        type: email
     - name: cooperatives
-      ownedBy: shared
+      ownedBy: org
       description: Partner taxi cooperatives
       fields:
       - name: name
         type: text
-      - name: city
-        type: text
+        required: true
       - name: email
         type: email
+        required: true
+      - name: city
+        type: text
   views:
   - key: home
     type: page
@@ -416,23 +410,18 @@ spec:
     title: TaxiInsieme
     sections:
     - type: hero
-      layout: split
-      band: true
-      eyebrow:
-        it: Taxi · prezzo massimo garantito
-        en: Taxi · guaranteed maximum price
       title:
-        it: Sai prima **quanto pagherai al massimo**. Se condividi, ancora meno.
-        en: Know up front **the most you will pay**. Share the ride, pay even less.
+        it: Taxi con **prezzo massimo garantito**. Condividi e paghi meno.
+        en: Taxi with a **guaranteed maximum price**. Share and pay less.
       text:
-        it: 'Inserisci partenza, destinazione e orario: calcoliamo il prezzo massimo dalle tariffe comunali e raggruppiamo
-          le richieste compatibili per le cooperative taxi partner.'
-        en: 'Enter pickup, destination and time: we compute the maximum price from municipal tariffs and group compatible
-          requests for partner taxi cooperatives.'
+        it: Inserisci partenza, destinazione e orario. Calcoliamo il massimo che pagherai dalle tariffe comunali pubblicate
+          e ti proponiamo un prezzo ridotto se condividi la corsa.
+        en: Enter pickup, destination and time. We compute the most you will pay from published municipal fares and offer
+          a reduced price if you share the ride.
       actions:
       - label:
-          it: Chiedi un preventivo
-          en: Get a quote
+          it: Prenota una corsa
+          en: Book a ride
         href: /v/new_ride
         style: primary
       - label:
@@ -440,8 +429,6 @@ spec:
           en: Sign in
         href: /login
         style: ghost
-      aside: '<div style="padding:16px"><b>Roma · 18:30</b><br>Stazione Termini → Fiumicino<br><br>Prezzo massimo garantito:
-        <b>€ 58</b><br>Se condividi: <b>€ 43</b></div>'
     - type: steps
       id: come-funziona
       title:
@@ -452,53 +439,29 @@ spec:
           it: Preventivo
           en: Quote
         text:
-          it: Distanza e tariffe comunali danno il prezzo massimo garantito.
-          en: Distance and municipal tariffs give the guaranteed maximum price.
-        badge: 🧮
+          it: Distanza e tariffa comunale danno il prezzo massimo garantito.
+          en: Distance and municipal fare give the guaranteed maximum price.
+        badge: 💶
       - title:
-          it: Condividi (facoltativo)
-          en: Share (optional)
+          it: Condivisione
+          en: Sharing
         text:
-          it: Se accetti di condividere con chi va nella stessa direzione, il prezzo scende.
-          en: If you agree to share with people going the same way, the price drops.
-        badge: 🤝
-      - title:
-          it: Una cooperativa accetta
-          en: A cooperative accepts
-        text:
-          it: Le richieste raggruppate arrivano nella coda delle cooperative partner.
-          en: Grouped requests reach the partner cooperatives' queue.
+          it: Le richieste sulla stessa direzione vengono raggruppate.
+          en: Requests heading the same way are grouped.
         badge: 🚕
-    - type: cards
-      id: prezzi
-      title:
-        it: Prezzi
-        en: Prices
-      items:
       - title:
-          it: Prezzo massimo garantito
-          en: Guaranteed maximum
+          it: Cooperative partner
+          en: Partner cooperatives
         text:
-          it: Mai di più del preventivo accettato.
-          en: Never more than the quote you accepted.
-      - title:
-          it: Prezzo condiviso
-          en: Shared price
-        text:
-          it: Sconto se si forma un gruppo; altrimenti vale il massimo.
-          en: Discount when a group forms; otherwise the maximum applies.
-      - title:
-          it: Commissione
-          en: Fee
-        text:
-          it: Una commissione per corsa, inclusa nel prezzo mostrato.
-          en: One fee per ride, included in the price shown.
+          it: Una cooperativa accetta la corsa dalla sua coda e ricevi la conferma via email.
+          en: A cooperative accepts the trip from its queue and you get an email confirmation.
+        badge: ✉️
     - type: note
       content:
-        it: Le tariffe sono indicative e vanno verificate sulle tariffe comunali pubblicate. Il prezzo condiviso vale solo
-          se si forma un gruppo.
-        en: Tariffs are indicative and must be checked against the published municipal tariffs. The shared price applies only
-          if a group forms.
+        it: Il prezzo massimo si basa sulle tariffe comunali pubblicate; il prezzo condiviso non supera mai il massimo. Commissione
+          per corsa inclusa nel prezzo.
+        en: The maximum price is based on published municipal fares; the shared price never exceeds the maximum. A per-ride
+          commission is included in the price.
   - key: new_ride
     type: new_run
     title:
@@ -507,96 +470,196 @@ spec:
     roles:
     - user
     - admin
-  - key: confirm
-    type: approvals
-    title:
-      it: Da confermare
-      en: To confirm
-    approvals:
-    - confirm_ride
-    roles:
-    - user
-  - key: my_rides
+  - key: rides
     type: table
     title:
       it: Le mie corse
       en: My rides
     source: collection:rides
+    columns:
+    - ride_date
+    - ride_time
+    - pickup
+    - destination
+    - max_price
+    - shared_price
+    - status
     roles:
     - user
     - admin
-    data:
-      display: table
-      fields:
-      - key: when
-        label:
-          it: Quando
-          en: When
-      - key: pickup
-        label:
-          it: Partenza
-          en: Pickup
-      - key: destination
-        label:
-          it: Destinazione
-          en: Destination
-      - key: max_price
-        label:
-          it: Prezzo max
-          en: Max price
-        format: money
-      - key: status
-        label:
-          it: Stato
-          en: Status
-        format: badge
-      sort:
-        field: when
-        dir: desc
-      limit: 100
-      empty:
-        it: Nessuna corsa ancora.
-        en: No rides yet.
-  - key: quotes
+  - key: history
     type: history
     title:
-      it: I miei preventivi
-      en: My quotes
+      it: Preventivi
+      en: Quotes
     source: run
     roles:
     - user
     - admin
-  - key: quote
+  - key: ride
     type: report
     source: run
     printable: true
     nav: false
-  - key: coop_queue
-    type: approvals
+  - key: account
+    type: account
+    title:
+      it: Pagamenti
+      en: Payments
+    roles:
+    - user
+  - key: queue
+    type: table
     title:
       it: Coda corse
-      en: Ride queue
-    approvals:
-    - accept_job
+      en: Trip queue
+    source: collection:trips
+    columns:
+    - ride_date
+    - ride_time
+    - city
+    - pickup
+    - destination
+    - passengers
+    - total_price
+    - status
     roles:
-    - cooperative
+    - coop
     - admin
+  - key: accept
+    type: form
+    title:
+      it: Accetta corsa
+      en: Accept trip
+    collection: trips
+    fields:
+    - status
+    - coop_email
+    edit: true
+    submit:
+      label:
+        it: Conferma
+        en: Confirm
+      message:
+        it: Corsa accettata
+        en: Trip accepted
+      redirect: queue
+    roles:
+    - coop
+    - admin
+    nav: false
+  - key: tariffs_admin
+    type: form
+    title:
+      it: Tariffe comunali
+      en: Municipal tariffs
+    collection: tariffs
+    submit:
+      label:
+        it: Salva
+        en: Save
+      message:
+        it: Tariffa salvata
+        en: Tariff saved
+    roles:
+    - admin
+  slots:
+  - key: fare_calc
+    description: Maximum price, shared price and bearing from distance and tariff
+    timeoutMs: 2000
+    code: "import math\n\ndef main(input):\n    a = input.get('args') or input\n    d = float(a.get('distance_km') or 0)\n\
+      \    base = float(a.get('base') or 0)\n    per_km = float(a.get('per_km') or 0)\n    min_fare = float(a.get('min_fare')\
+      \ or 0)\n    night = a.get('night') in (True, 'true', 'True', 1)\n    sur = float(a.get('night_surcharge') or 0) if\
+      \ night else 0.0\n    disc = float(a.get('discount_pct') if a.get('discount_pct') is not None else 25)\n    raw = max(min_fare,\
+      \ base + per_km * d) + sur\n    max_price = math.ceil(raw * 2) / 2\n    shared = math.floor(max_price * (1 - disc /\
+      \ 100) * 2) / 2\n    bearing = None\n    try:\n        la1 = math.radians(float(a['pickup_lat'])); la2 = math.radians(float(a['dest_lat']))\n\
+      \        dl = math.radians(float(a['dest_lon']) - float(a['pickup_lon']))\n        y = math.sin(dl) * math.cos(la2)\n\
+      \        x = math.cos(la1) * math.sin(la2) - math.sin(la1) * math.cos(la2) * math.cos(dl)\n        bearing = round((math.degrees(math.atan2(y,\
+      \ x)) + 360) % 360, 1)\n    except Exception:\n        pass\n    return {'max_price': max_price, 'shared_price': shared,\
+      \ 'bearing': bearing}\n"
+    example:
+      args:
+        distance_km: 8.2
+        base: 3.5
+        per_km: 1.2
+        min_fare: 9
+        night_surcharge: 3
+        night: false
+        pickup_lat: 45.46
+        pickup_lon: 9.19
+        dest_lat: 45.5
+        dest_lon: 9.25
+  schedules:
+  - agent: dispatcher
+    action: run
+    cron: 0 5-21 * * *
+    owner: app
+    goal: Group the pending shared ride requests into trips for the cooperatives.
+  triggers:
+  - key: ride_received
+    'on':
+      collection: rides
+      op: insert
+    notify:
+      to: owner
+      subject:
+        it: 'TaxiInsieme: richiesta ricevuta'
+        en: 'TaxiInsieme: request received'
+      body:
+        it: 'Abbiamo ricevuto la tua richiesta {record.pickup} → {record.destination} per il {record.ride_date} alle {record.ride_time}.
+          Prezzo massimo garantito: {record.max_price} EUR. Ti scriveremo quando una cooperativa la accetta.'
+        en: 'We received your request {record.pickup} → {record.destination} on {record.ride_date} at {record.ride_time}.
+          Guaranteed maximum price: {record.max_price} EUR. We will email you when a cooperative accepts it.'
+      link: rides
+  - key: ride_to_pool
+    'on':
+      collection: rides
+      op: insert
+    write:
+      collection: ride_requests
+  - key: trip_accepted
+    'on':
+      collection: trips
+      op: update
+      where:
+        status: accepted
+    start:
+      agent: dispatcher
+    goal: Trip {record.group_id} was accepted by a cooperative. Set status accepted on every request in the pool with this
+      group_id.
+    asUser: false
+  - key: passenger_confirmed
+    'on':
+      collection: ride_requests
+      op: update
+      where:
+        status: accepted
+    notify:
+      to: record.contact_email
+      subject:
+        it: 'TaxiInsieme: corsa confermata'
+        en: 'TaxiInsieme: ride confirmed'
+      body:
+        it: La tua corsa {record.pickup} → {record.destination} del {record.ride_date} alle {record.ride_time} è stata accettata
+          da una cooperativa taxi. Il prezzo non supererà {record.max_price} EUR. Paga con carta dal tuo account.
+        en: Your ride {record.pickup} → {record.destination} on {record.ride_date} at {record.ride_time} was accepted by a
+          taxi cooperative. The price will not exceed {record.max_price} EUR. Pay by card from your account.
   billing:
     modes:
     - per_transaction
     currency: eur
-    transactionFeePct: 12
+    transactionFeePct: 10
     sellers: collection:cooperatives
+  notifications:
+    emailOnRunDone: false
+  egress:
+    hosts:
+    - nominatim.openstreetmap.org
+    - router.project-osrm.org
+    notes: Nominatim (OSM, ODbL) for geocoding within its usage policy; OSRM public router (OSM data, ODbL) for driving distance.
+      A busy production app should move to its own geocoding/routing provider.
   extensions:
-  - key: routing_distance
-    description: Distance is estimated by the agent from its own knowledge. A routing/geocoding API with terms allowing commercial
-      reuse is needed for a truly guaranteed price.
-  - key: municipal_tariffs
-    description: Tariffs in the slot are indicative placeholders; real published tariffs per municipality must be entered
-      and kept updated.
-  - key: email_confirmation
-    description: Confirmation email to the passenger is not available yet (no notifications); the confirmation is shown in
-      the app (My rides).
-  - key: card_payment_per_ride
-    description: Card payment of each ride with the platform fee requires the owner to connect Stripe and each cooperative
-      to have a Connect account; checkout at ride acceptance is to be configured.
+  - key: card_checkout_per_ride
+    description: Card payment of each accepted ride with the per-ride commission is declared via per_transaction billing;
+      a dedicated checkout step per ride and the update of the user's ride status after cooperative acceptance may need custom
+      logic.

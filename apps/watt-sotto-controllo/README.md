@@ -1,8 +1,8 @@
 # Watt sotto Controllo
 
-_Trova gli sprechi di energia dei tuoi edifici e sai quanto risparmi._
+_Trova gli sprechi energetici dei tuoi edifici prima che li paghi in bolletta._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (21 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,11 @@ Voglio Watt sotto Controllo, la piattaforma di analisi per un servizio che monit
 
 ## Features not expressible today (spec.extensions)
 
-- **realtime_ingestion**: Automatic ingestion of sensor and meter data every 15 minutes (and real-time anomaly detection) is not available yet: for now readings are pasted as CSV and the monitor runs once a day.
-- **email_alerts**: Email alerts on anomalies and the email delivery of the monthly report are not available yet: alerts and reports appear in the app.
-- **maintainer_scope**: The maintainer sees only alerts on his equipment through per-record viewer invitations on alerts (inviting the email in assets.maintainer_email); automatic sharing by that email needs custom logic.
-- **per_site_billing**: The plan is a single per-site subscription; charging one subscription per site actually created (quantity) needs custom billing logic.
-- **csv_file_upload**: File upload of CSV is not available: users paste the text or later use the automatic ingestion.
+- **webhook_device_mapping**: I contatori inviano le letture a POST /api/hooks/meter_feed con il segreto dell'app; l'associazione del dispositivo al cliente (proprietario delle letture) va configurata in fase di attivazione.
+- **realtime_alerts**: Gli alert sono 'quasi in tempo reale': l'agente controlla le letture ogni due ore (costo AI), non a ogni quarto d'ora. Un rilevamento continuo a soglia richiederebbe codice dedicato.
+- **sms_push**: Alert via SMS/WhatsApp/push non disponibili: solo email.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,30 +25,41 @@ Voglio Watt sotto Controllo, la piattaforma di analisi per un servizio che monit
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### sites_list
-![03-sites_list.png](screenshots/03-sites_list.png)
+### sites_form
+![03-sites_form.png](screenshots/03-sites_form.png)
 
-### assets_list
-![04-assets_list.png](screenshots/04-assets_list.png)
+### sites
+![04-sites.png](screenshots/04-sites.png)
 
-### new_analysis
-![05-new_analysis.png](screenshots/05-new_analysis.png)
+### plant_form
+![05-plant_form.png](screenshots/05-plant_form.png)
 
-### analyses
-![06-analyses.png](screenshots/06-analyses.png)
+### plants
+![06-plants.png](screenshots/06-plants.png)
 
-### alerts_table
-![07-alerts_table.png](screenshots/07-alerts_table.png)
+### contract_form
+![07-contract_form.png](screenshots/07-contract_form.png)
+
+### import
+![08-import.png](screenshots/08-import.png)
+
+### imports
+![09-imports.png](screenshots/09-imports.png)
+
+### consumption
+![10-consumption.png](screenshots/10-consumption.png)
+
+### alerts
+![11-alerts.png](screenshots/11-alerts.png)
 
 ### watches
-![08-watches.png](screenshots/08-watches.png)
+![12-watches.png](screenshots/12-watches.png)
 
 ### monthly
-![09-monthly.png](screenshots/09-monthly.png)
+![13-monthly.png](screenshots/13-monthly.png)
 
-### assistant
-![10-assistant.png](screenshots/10-assistant.png)
+### chat
+![14-chat.png](screenshots/14-chat.png)
 
 ### account
-![11-account.png](screenshots/11-account.png)
-
+![15-account.png](screenshots/15-account.png)

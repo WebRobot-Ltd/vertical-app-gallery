@@ -1,8 +1,8 @@
 # SentinellaAPI
 
-_Security testing automatico delle tue API REST, solo con autorizzazione scritta._
+_Security testing automatico delle tue API REST, con autorizzazione scritta prima di ogni scansione._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (12 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,14 +10,10 @@ Voglio realizzare SentinellaAPI, un servizio di security testing automatico dell
 
 ## Features not expressible today (spec.extensions)
 
-- **email_alerts**: Email alerts on critical findings are not available yet: criticals are shown at the top of each report and in the history; the weekly report is read in the app.
-- **file_upload**: Uploading OpenAPI files or call collections is not available yet: the customer gives a link or pastes the spec as text.
-- **digital_signature**: A qualified digital signature is not available: the signatory declares the perimeter in the form and a platform admin verifies it in the approvals view before any scan.
-- **hard_gate_and_host_enforcement**: The authorization gate and the single-host restriction are enforced by the agents' instructions and the authorized_scopes records, not by a runtime-level network filter; per-target egress allow-lists would need a platform feature.
-- **company_sharing**: Sharing targets and reports between users of the same company (owner, developer, auditor) and plan limits on the number of APIs are not expressible yet; records are per user and the API count is a commercial limit to enforce manually.
-- **test_credentials**: Per-target credential storage is not available: customers describe test accounts in notes and must use short-lived staging test tokens, never production secrets.
+- **digital_signature**: La 'firma digitale' del perimetro da parte del responsabile è approssimata come conferma in-app all'invio del form target; una firma qualificata (es. con certificato) non è ancora disponibile nella piattaforma.
+- **runtime_rate_limit_enforcement**: Il rispetto dei limiti di richieste al secondo e delle finestre orarie durante l'esecuzione è imposto dalle istruzioni dell'agente executor, non da un limitatore di rete a livello di piattaforma.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -28,18 +24,23 @@ Voglio realizzare SentinellaAPI, un servizio di security testing automatico dell
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### new_scan
-![03-new_scan.png](screenshots/03-new_scan.png)
+### new_target
+![03-new_target.png](screenshots/03-new_target.png)
 
-### scans
-![04-scans.png](screenshots/04-scans.png)
+### targets_list
+![04-targets_list.png](screenshots/04-targets_list.png)
 
-### targets
-![05-targets.png](screenshots/05-targets.png)
+### approvals_view
+![05-approvals_view.png](screenshots/05-approvals_view.png)
 
-### authorizations
-![06-authorizations.png](screenshots/06-authorizations.png)
+### scan_watch
+![06-scan_watch.png](screenshots/06-scan_watch.png)
+
+### scan_history
+![07-scan_history.png](screenshots/07-scan_history.png)
+
+### results_table
+![08-results_table.png](screenshots/08-results_table.png)
 
 ### account
-![07-account.png](screenshots/07-account.png)
-
+![09-account.png](screenshots/09-account.png)

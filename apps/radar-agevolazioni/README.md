@@ -1,20 +1,18 @@
 # RadarAgevolazioni
 
-_I bandi giusti per la tua impresa, ogni mattina._
+_I bandi giusti per la tua impresa, ogni mattina, con il punteggio di ammissibilità._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** 1 failure(s) (20 checks passed)
 
 ## Description given to the app builder (Italian)
 
 Ci serve RadarAgevolazioni, una piattaforma per PMI e consulenti di finanza agevolata. Il cliente si registra e compila il profilo aziendale: codice ATECO, regione e provincia della sede, numero di dipendenti, fatturato, anno di costituzione, tipo di investimento previsto (macchinari, digitale, assunzioni, energia) e importo. Ogni mattina un agente monitora più di trenta fonti pubbliche, tra cui incentivi.gov.it, i portali delle Regioni, il Registro Nazionale Aiuti e il portale EU Funding & Tenders, indicizza i nuovi bandi e ne estrae requisiti, scadenze, dotazione e percentuale di contributo. Un secondo agente confronta ogni bando con il profilo e calcola un punteggio di ammissibilità, spiegando quali requisiti sono soddisfatti e quali mancano. Il cliente riceve un'email con i bandi compatibili e vede una dashboard con tabella filtrabile e motore di ricerca full-text. Per i bandi scelti l'agente prepara una bozza di domanda e di relazione tecnica, che un consulente dello studio deve rivedere e approvare prima che il cliente la scarichi. Il consulente vede tutti i clienti assegnati, il cliente solo i propri dati. Abbonamento mensile tramite Stripe, più una tariffa a pratica per la bozza di domanda.
 
-## Features not expressible today (spec.extensions)
+## Functional test: what did not pass
 
-- **consultant_assignment**: Il consulente dovrebbe vedere tutti i clienti a lui assegnati (profili, match, pratiche). I dati dei clienti sono per utente e il modello non prevede ancora una vista consulente→clienti assegnati: per ora il consulente vede solo le richieste di revisione nella vista 'Bozze da rivedere'.
-- **email_digest**: Email giornaliera al cliente con i bandi compatibili: le notifiche email non sono ancora disponibili; il cliente consulta la dashboard.
-- **file_upload**: Caricamento di documenti (visure, bilanci) e download file della bozza non disponibili: testo da incollare, stampa/PDF dal report.
+- **run started and report ready** (view new_draft): required match (options from collection:matches) has no option
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -25,27 +23,38 @@ Ci serve RadarAgevolazioni, una piattaforma per PMI e consulenti di finanza agev
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### watches
-![03-watches.png](screenshots/03-watches.png)
+### profile
+![03-profile.png](screenshots/03-profile.png)
 
 ### dashboard
 ![04-dashboard.png](screenshots/04-dashboard.png)
 
-### search
-![05-search.png](screenshots/05-search.png)
+### grants
+![05-grants.png](screenshots/05-grants.png)
+
+### radar
+![06-radar.png](screenshots/06-radar.png)
 
 ### new_draft
-![06-new_draft.png](screenshots/06-new_draft.png)
+![07-new_draft.png](screenshots/07-new_draft.png)
 
-### drafts
-![07-drafts.png](screenshots/07-drafts.png)
+### my_drafts
+![08-my_drafts.png](screenshots/08-my_drafts.png)
 
-### approved
-![08-approved.png](screenshots/08-approved.png)
+### history
+![09-history.png](screenshots/09-history.png)
 
-### reviews
-![09-reviews.png](screenshots/09-reviews.png)
+### clients
+![10-clients.png](screenshots/10-clients.png)
+
+### client_matches
+![11-client_matches.png](screenshots/11-client_matches.png)
+
+### drafts_review
+![12-drafts_review.png](screenshots/12-drafts_review.png)
+
+### approvals
+![13-approvals.png](screenshots/13-approvals.png)
 
 ### account
-![10-account.png](screenshots/10-account.png)
-
+![14-account.png](screenshots/14-account.png)

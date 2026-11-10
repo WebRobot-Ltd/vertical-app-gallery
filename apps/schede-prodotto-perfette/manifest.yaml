@@ -4,15 +4,15 @@ metadata:
   slug: schede-prodotto-perfette
   displayName: Schede Prodotto Perfette
   tagline:
-    it: Cataloghi completi, coerenti e pronti da pubblicare.
-    en: Complete, consistent catalogs ready to publish.
+    it: Cataloghi completi, normalizzati, SEO e validati da un team di agenti.
+    en: Complete, normalised, SEO-ready and validated catalogs by a team of agents.
   description:
-    it: Un team di quattro agenti AI arricchisce il tuo catalogo dai siti dei produttori autorizzati, normalizza gli attributi,
-      scrive titoli e descrizioni SEO in italiano e inglese, valida ogni scheda e assegna un punteggio di qualità. Il responsabile
-      catalogo approva prima della pubblicazione.
-    en: A team of four AI agents enriches your catalog from authorized manufacturer sites, normalizes attributes, writes SEO
-      titles and descriptions in Italian and English, validates every product sheet and scores its quality. The catalog manager
-      approves before publishing.
+    it: 'Carica il catalogo (CSV/Excel) o indica i siti dei produttori autorizzati: gli agenti estraggono le specifiche, normalizzano
+      gli attributi, scrivono titoli e descrizioni SEO in italiano e inglese e validano ogni scheda. Tu approvi, poi esporti
+      in CSV o pubblichi su Shopify.'
+    en: 'Upload your catalog (CSV/Excel) or point to authorised manufacturer sites: agents extract specs, normalise attributes,
+      write SEO titles and descriptions in Italian and English and validate each product sheet. You approve, then export to
+      CSV or publish to Shopify.'
   langs:
   - it
   - en
@@ -26,7 +26,7 @@ spec:
       primary: '#1f3a5f'
       accent: '#e07a1f'
       background: '#f7f8fa'
-      foreground: '#18212b'
+      foreground: '#1a2230'
     fonts:
       body: Inter
       display: Manrope
@@ -35,6 +35,7 @@ spec:
       color: primary
     - text: Perfette
       color: accent
+    width: wide
   header:
     links:
     - label:
@@ -67,13 +68,25 @@ spec:
     window: day
     roles:
     - user
-  egress:
-    hosts: []
-    notes: 'Nessuna API esterna: le pagine dei produttori autorizzati sono lette con il MCP WebRobot.'
   agents:
   - key: catalog_team
     role: main
-    description: 'Team of four agents in sequence: extractor, normalizer, copywriter, validator. Writes one record per product.'
+    description: 'Team of four agents: extractor, normaliser, SEO writer, validator. Saves each product in the user''s catalog
+      and asks for approval.'
+    awaits:
+    - product_review
+    context:
+    - key: settings
+      from: collection:catalog_settings
+    appTools:
+    - name: save_product
+      description: Create or update a product record in the customer's catalog
+      action: write
+      collection: products
+      scope: user
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
     profile:
       inline:
         display_name: Schede Prodotto Perfette team
@@ -82,7 +95,7 @@ spec:
           engine: agent_sdk
           model: claude-sonnet-5-5
           max_turns: 40
-          max_budget_usd: 1.5
+          max_budget_usd: 2
           permission_mode: bypassPermissions
           disallowed_tools:
           - Bash
@@ -99,18 +112,17 @@ spec:
             type: http
             url: https://mcp-full.webrobot.eu/mcp
             allow: all
-          system_prompt: 'You are the Extractor of a product-catalog team. Input: the customer''s partial catalog (codes,
-            names, partial attributes) and/or the manufacturer sites the customer is AUTHORIZED to use. Read ONLY the listed
-            manufacturer domains through the WebRobot MCP (scraping, never marketplaces such as Amazon, eBay, etc.). For each
-            product extract: specifications, dimensions, weight, materials, certifications, image URLs and the source page
-            URL. Never invent values: if a datum is not on the page leave it null and list it under missing. Output a JSON
-            list, one object per product: {code, name, attributes:{...as found, original units}, images:[urls], source_url,
-            missing:[...]}.'
+          system_prompt: 'You are the Extractor. Input: the customer''s catalog rows (codes, names, partial attributes) and/or
+            the manufacturer sites the customer is authorised to use. Read ONLY those manufacturer pages through the WebRobot
+            MCP (scrape pages, do not write pipeline YAML). NEVER use marketplaces (Amazon, eBay, etc.) or any site not listed.
+            For each product extract specifications, dimensions, materials, and image URLs, with the source URL of each datum.
+            Never invent values: leave missing ones empty. Output a JSON list of products {sku, name, brand, category, price,
+            raw_attributes, images, source_url}.'
         - id: normalizer
           engine: agent_sdk
           model: claude-sonnet-5-5
-          max_turns: 8
-          max_budget_usd: 0.6
+          max_turns: 10
+          max_budget_usd: 0.5
           permission_mode: bypassPermissions
           disallowed_tools:
           - Bash
@@ -122,15 +134,13 @@ spec:
           - NotebookEdit
           - WebFetch
           - WebSearch
-          system_prompt: 'You are the Normalizer. Map each product''s attributes to the customer''s taxonomy (attribute names,
-            categories, allowed values) given in the goal. Convert all units to the units the taxonomy requires (mm, kg, W,
-            etc.), unify names and spelling, assign the category. Keep a list of conversions made. If the taxonomy is missing,
-            use clear standard names and say so. Never guess a value that is not present: keep it null. Output the same JSON
-            list with normalized attributes and a field normalization_notes.'
-        - id: copywriter
+          system_prompt: You are the Normaliser. Map each product's raw attributes to the customer's taxonomy (in settings),
+            unify units of measure (SI/metric unless the taxonomy says otherwise) and attribute names. Do not invent values;
+            flag attributes that cannot be mapped. Output the same JSON list with normalised 'attributes'.
+        - id: seo_writer
           engine: agent_sdk
           model: claude-sonnet-5-5
-          max_turns: 8
+          max_turns: 10
           max_budget_usd: 0.6
           permission_mode: bypassPermissions
           disallowed_tools:
@@ -143,15 +153,14 @@ spec:
           - NotebookEdit
           - WebFetch
           - WebSearch
-          system_prompt: 'You are the SEO Copywriter. For each product write, in Italian and in English: a title (max 70 characters,
-            main keyword first), a meta description (max 155 characters) and a description of 80-150 words with a short bullet
-            list of key specs. Use ONLY attributes present in the data: no invented claims, no superlatives that cannot be
-            proven, no competitor names. Add fields title_it, title_en, meta_it, meta_en, description_it, description_en.'
+          system_prompt: 'You are the SEO Writer. For each product write title_it, description_it, title_en, description_en:
+            titles under 70 characters, descriptions 80-160 words, factual, using only the normalised attributes. No invented
+            claims, certifications or figures. Output the list with the new fields.'
         - id: validator
           engine: agent_sdk
           model: claude-sonnet-5-5
-          max_turns: 8
-          max_budget_usd: 0.6
+          max_turns: 15
+          max_budget_usd: 0.8
           permission_mode: bypassPermissions
           disallowed_tools:
           - Bash
@@ -163,15 +172,13 @@ spec:
           - NotebookEdit
           - WebFetch
           - WebSearch
-          system_prompt: 'You are the Validator. Apply the customer''s validation rules given in the goal (required fields,
-            price/category coherence, minimum number of images, others). For each product list anomalies (rule, field, severity
-            error|warning) and assign quality_score 0-100 (start from 100; subtract for each error and warning, and for missing
-            fields). Set status: ''ok'' if score>=80 and no errors, ''review'' if 50-79, ''blocked'' otherwise. Be strict
-            and never fix data silently. Your reply: first a level-1 title "# Catalogo elaborato — <date>", then a Markdown
-            summary (products processed, average score, count per status, top anomalies, a ```chart bar block of products
-            per status), then a final fenced ```json block with the list of final records: {code, name, category, price, attributes,
-            images, source_url, title_it, title_en, meta_it, meta_en, description_it, description_en, anomalies, quality_score,
-            status, approval:''pending''}. Then call the tool request_publish_products with the codes with status ok or review.'
+          system_prompt: 'You are the Validator. Apply the customer''s rules from settings (required fields, price/category
+            coherence, minimum number of images). For each product compute quality_score 0-100 and list anomalies (one per
+            line). Set status ''to_review'' (score >= the threshold in settings, default 70) or ''draft'' otherwise. Save
+            EVERY product with the tool save_product (fields: sku, name, brand, category, price, attributes, images, source_url,
+            title_it, description_it, title_en, description_en, quality_score, anomalies, status). Then call request_product_review
+            once for the whole batch. Finish with a report starting with ''# Catalog batch — <date>'' with counts, average
+            score, and the main anomalies; add a ```chart bar block of the score distribution.'
         orchestration:
           type: dag
           entry: extractor
@@ -180,218 +187,300 @@ spec:
             crew: extractor
           - id: normalizer
             crew: normalizer
-          - id: copywriter
-            crew: copywriter
+          - id: seo_writer
+            crew: seo_writer
           - id: validator
             crew: validator
           edges:
           - from: extractor
             to: normalizer
           - from: normalizer
-            to: copywriter
-          - from: copywriter
+            to: seo_writer
+          - from: seo_writer
             to: validator
-    goalTemplate: 'Mode: {source_mode_label}.
+    goalTemplate: 'Catalog processing, {date}. Language of the report: {lang}.
 
-      {?catalog_text}Customer catalog (CSV pasted as text):
+      Products to process (approx.): {product_count}
 
-      {catalog_text}{/catalog_text}
+      {?catalog}Uploaded catalog files: {catalog}. Content:
 
-      {?catalog_url}Catalog CSV link: {catalog_url}{/catalog_url}
+      {catalog_text}
 
-      {?manufacturer_urls}Authorized manufacturer sites/pages (the customer declares permission to use them): {manufacturer_urls}{/manufacturer_urls}
+      For photos/scans use read_upload.{/catalog}
 
-      Taxonomy and units: {taxonomy}
+      {?manufacturer_urls}Authorised manufacturer sites (the only ones you may read): {manufacturer_urls}{/manufacturer_urls}
 
-      Validation rules: {rules}
+      {?notes}Notes: {notes}{/notes}
 
-      Minimum images: {min_images}.
-
-      Output languages: Italian and English. Today is {date}. Write the summary in the language with ISO code {lang}.'
-    output: markdown+json
-    writesTo:
-      collection: products
-      parse: json_last
-      keyBy: code
-    awaits:
-    - publish_products
+      Customer settings (taxonomy, validation rules): {settings}'
+    output: markdown
+    limits:
+      maxTurns: 120
+      maxBudgetUsd: 6
+      timeoutSeconds: 3600
+  - key: publisher
+    role: helper
+    description: Publishes the approved products to Shopify when the customer connected it.
+    context:
+    - key: settings
+      from: collection:catalog_settings
     appTools:
-    - name: save_products
-      description: Read the customer's already saved products
+    - name: read_products
+      description: Read the customer's products
       action: read
       collection: products
       scope: user
+    - name: update_product
+      description: Update the status of a product
+      action: write
+      collection: products
+      scope: user
+    - name: shopify_create_product
+      description: Create a product in the customer's Shopify store
+      action: http
+      http:
+        method: POST
+        url: https://{host}/admin/api/2025-01/products.json
+        allowPath: false
+        credential:
+          provider: shopify
+          header: X-Shopify-Access-Token
+          format: '{secret}'
+    profile:
+      inline:
+        display_name: Shopify publisher
+        crews:
+        - id: publisher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You publish approved products. Read the products with status 'approved'. If the customer has not
+            connected Shopify, do nothing except say the approved products are ready for CSV export. Otherwise create each
+            one with shopify_create_product (POST body {"product":{title, body_html, vendor, product_type, variants:[{sku,
+            price}], images:[{src}], metafields for attributes}}), using the title/description in the customer's primary language,
+            and then set its status to 'published' with update_product and the Shopify id in shopify_id. Never publish products
+            that are not approved. Finish with '# Publication — <date>' listing published and failed items.
+    goalTemplate: 'Publish to Shopify the approved products of the customer. Event: {event}. Date: {date}.'
+    output: markdown
     limits:
-      maxTurns: 80
-      maxBudgetUsd: 4
-      timeoutSeconds: 1800
-  approvals:
-  - key: publish_products
-    title:
-      it: Approva le schede per la pubblicazione
-      en: Approve product sheets for publishing
-    description: Il responsabile catalogo conferma le schede prima dell'export.
-    decidedBy: requester
-    fields:
-    - code
-    - name
-    - quality_score
-    - anomalies
-    timeoutMinutes: 10080
-    onTimeout: reject
+      maxTurns: 60
+      maxBudgetUsd: 1.5
   inputForm:
     title:
-      it: Nuova elaborazione catalogo
-      en: New catalog run
+      it: Nuovo lotto di prodotti
+      en: New product batch
     fields:
-    - name: source_mode
-      type: select
-      required: true
+    - name: catalog
+      type: file
       label:
-        it: Fonte dei dati
-        en: Data source
-      default: catalog
-      options:
-      - value: catalog
-        label:
-          it: Catalogo CSV da arricchire
-          en: CSV catalog to enrich
-      - value: sites
-        label:
-          it: Siti dei produttori autorizzati
-          en: Authorized manufacturer sites
-      - value: both
-        label:
-          it: Catalogo e siti produttori
-          en: Catalog and manufacturer sites
-    - name: catalog_text
-      type: textarea
-      maxLength: 20000
-      label:
-        it: Catalogo (CSV incollato)
-        en: Catalog (pasted CSV)
+        it: Catalogo (CSV o Excel)
+        en: Catalog (CSV or Excel)
+      accept:
+      - csv
+      - xlsx
+      maxMb: 15
+      multiple: false
       help:
-        it: 'Incolla le righe CSV con intestazione: codice, nome, attributi, prezzo. Il caricamento di file non è ancora disponibile.'
-        en: 'Paste CSV rows with a header: code, name, attributes, price. File upload is not available yet.'
-    - name: catalog_url
-      type: url
-      label:
-        it: Oppure link al CSV
-        en: Or CSV link
+        it: Codici, nomi e attributi anche parziali.
+        en: Codes, names and even partial attributes.
     - name: manufacturer_urls
       type: urls
       label:
-        it: Siti produttori autorizzati
-        en: Authorized manufacturer sites
+        it: Siti dei produttori autorizzati
+        en: Authorised manufacturer sites
       help:
-        it: Solo siti di cui hai il permesso di usare le schede tecniche. Marketplace non ammessi.
-        en: Only sites whose datasheets you are allowed to use. Marketplaces not accepted.
-    - name: taxonomy
-      type: textarea
-      maxLength: 4000
-      required: true
-      label:
-        it: Tassonomia e unità di misura
-        en: Taxonomy and units
-      help:
-        it: Categorie, nomi attributi, unità (es. lunghezza in mm, peso in kg).
-        en: Categories, attribute names, units (e.g. length in mm, weight in kg).
-    - name: rules
-      type: textarea
-      maxLength: 3000
-      required: true
-      label:
-        it: Regole di validazione
-        en: Validation rules
-      default: 'Campi obbligatori: codice, nome, categoria, prezzo, materiale, dimensioni. Il prezzo deve essere coerente
-        con la categoria (segnala outlier).'
-      help:
-        it: Campi obbligatori, coerenza prezzo/categoria, altre regole.
-        en: Required fields, price/category coherence, other rules.
-    - name: min_images
+        it: Solo siti da cui hai il permesso di usare le schede tecniche. Nessun marketplace.
+        en: Only sites whose datasheets you are allowed to use. No marketplaces.
+    - name: product_count
       type: number
-      default: 3
+      required: true
       label:
-        it: Immagini minime
-        en: Minimum images
+        it: Numero di prodotti
+        en: Number of products
+      help:
+        it: Il costo è a crediti per prodotto elaborato.
+        en: Cost is in credits per processed product.
+    - name: notes
+      type: textarea
+      maxLength: 600
+      label:
+        it: Note (facoltative)
+        en: Notes (optional)
   data:
     collections:
     - name: products
       ownedBy: user
-      description: 'Product sheets of each customer: attributes, SEO texts, anomalies, quality score, status and approval'
+      description: 'The customer''s catalog: one record per product sheet with status and anomalies'
       fields:
-      - name: code
+      - name: sku
         type: text
         required: true
-        label: Codice
+        label: SKU
       - name: name
         type: text
-        label: Nome
+        label:
+          it: Nome
+          en: Name
+      - name: brand
+        type: text
+        label: Brand
       - name: category
         type: text
-        label: Categoria
+        label:
+          it: Categoria
+          en: Category
       - name: price
         type: number
-        label: Prezzo
+        label:
+          it: Prezzo
+          en: Price
       - name: attributes
         type: json
+        label:
+          it: Attributi
+          en: Attributes
       - name: images
-        type: json
+        type: urls
+        label:
+          it: Immagini
+          en: Images
       - name: source_url
         type: url
+        label:
+          it: Fonte
+          en: Source
       - name: title_it
-        type: text
-      - name: title_en
-        type: text
-      - name: meta_it
-        type: text
-      - name: meta_en
         type: text
       - name: description_it
         type: textarea
+      - name: title_en
+        type: text
       - name: description_en
         type: textarea
-      - name: anomalies
-        type: json
       - name: quality_score
         type: number
+        label:
+          it: Punteggio
+          en: Score
+      - name: anomalies
+        type: textarea
+        label:
+          it: Anomalie
+          en: Anomalies
       - name: status
+        type: select
+        label:
+          it: Stato
+          en: Status
+        options:
+        - draft
+        - to_review
+        - approved
+        - rejected
+        - published
+        default: draft
+      - name: shopify_id
         type: text
-      - name: approval
+      retentionDays: 730
+    - name: catalog_settings
+      ownedBy: user
+      description: Taxonomy and validation rules of the customer
+      fields:
+      - name: taxonomy
+        type: textarea
+        label:
+          it: Tassonomia (categorie, attributi, unità)
+          en: Taxonomy (categories, attributes, units)
+      - name: required_fields
         type: text
+        label:
+          it: Campi obbligatori (separati da virgola)
+          en: Required fields (comma separated)
+      - name: min_images
+        type: number
+        label:
+          it: Immagini minime
+          en: Minimum images
+        default: 1
+      - name: price_rules
+        type: textarea
+        label:
+          it: Regole prezzo/categoria
+          en: Price/category rules
+        help:
+          it: 'es. Rubinetti: 20–600 €'
+          en: 'e.g. Taps: 20–600 EUR'
+      - name: min_score
+        type: number
+        label:
+          it: Punteggio minimo per la revisione
+          en: Minimum score for review
+        default: 70
+    credentials:
+    - provider: shopify
+      kind: api_key
+      scope: user
+      label: Shopify
+      help:
+        it: 'Shopify Admin > Impostazioni > App > Sviluppa app: crea un token Admin API con permesso write_products.'
+        en: 'Shopify Admin > Settings > Apps > Develop apps: create an Admin API token with write_products.'
+      hostLabel:
+        it: il-tuo-negozio.myshopify.com
+        en: your-store.myshopify.com
+  egress:
+    hosts:
+    - '*.myshopify.com'
+    notes: Shopify Admin API of the customer's own store, with the customer's own key.
+  approvals:
+  - key: product_review
+    title:
+      it: Approva le schede prodotto
+      en: Approve product sheets
+    decidedBy: requester
+    description: The catalog manager reviews the sheets before publication.
+  triggers:
+  - key: publish_approved
+    'on':
+      approval: product_review
+      decision: approved
+    start:
+      agent: publisher
+    goal: 'Publish to Shopify the approved products of the customer. Event: {event}'
   views:
   - key: home
     type: page
     nav: false
-    title: Schede Prodotto Perfette
     sections:
     - type: hero
-      layout: split
-      band: true
       eyebrow:
         it: Per distributori ed e-commerce
         en: For distributors and e-commerce
       title:
-        it: Schede prodotto **complete e coerenti**, pronte da pubblicare.
-        en: '**Complete, consistent** product sheets, ready to publish.'
+        it: Schede prodotto **perfette**, dal catalogo alla pubblicazione.
+        en: '**Perfect** product sheets, from catalog to publication.'
       text:
-        it: 'Carichi il catalogo o indichi i siti dei produttori autorizzati: quattro agenti AI estraggono, normalizzano,
-          scrivono in italiano e inglese e validano ogni scheda. Tu approvi, poi esporti in CSV.'
-        en: 'Provide your catalog or the authorized manufacturer sites: four AI agents extract, normalize, write in Italian
-          and English and validate every sheet. You approve, then export to CSV.'
+        it: Un team di agenti arricchisce, normalizza, scrive in SEO e valida il tuo catalogo. Tu approvi, poi esporti in
+          CSV o pubblichi su Shopify.
+        en: A team of agents enriches, normalises, SEO-writes and validates your catalog. You approve, then export to CSV
+          or publish to Shopify.
       actions:
       - label:
-          it: Elabora un catalogo
-          en: Process a catalog
-        href: /v/new_run
-        style: primary
-      - label:
-          it: Accedi
-          en: Sign in
+          it: Inizia
+          en: Get started
         href: /login
-        style: ghost
-      aside: <div style="padding:16px"><b>Esempio / Example</b><br>COD-4821 · Punteggio 92 · ok<br>COD-4822 · Punteggio 61
-        · 2 anomalie<br>COD-4823 · Punteggio 38 · bloccata</div>
+        style: primary
     - type: steps
       id: come-funziona
       title:
@@ -399,26 +488,29 @@ spec:
         en: How it works
       items:
       - title:
-          it: Fornisci i dati
-          en: Provide data
+          it: Carica
+          en: Upload
         text:
-          it: Catalogo CSV incollato o link, tassonomia, regole e siti produttori autorizzati.
-          en: Pasted CSV or link, taxonomy, rules and authorized manufacturer sites.
-        badge: 📥
+          it: CSV/Excel con codici e nomi, oppure i siti dei produttori autorizzati.
+          en: CSV/Excel with codes and names, or authorised manufacturer sites.
       - title:
-          it: Il team lavora
-          en: The team works
+          it: Elabora
+          en: Process
         text:
-          it: Estrazione, normalizzazione, testi SEO e validazione con punteggio.
-          en: Extraction, normalization, SEO copy and scored validation.
-        badge: 🤖
+          it: Quattro agenti lavorano in sequenza su ogni scheda.
+          en: Four agents work in sequence on every sheet.
       - title:
-          it: Approvi ed esporti
-          en: Approve and export
+          it: Approva
+          en: Approve
         text:
-          it: Il responsabile catalogo approva; poi esporti le schede in CSV.
-          en: The catalog manager approves; then export the sheets to CSV.
-        badge: ✅
+          it: Controlli stato e anomalie e approvi prima della pubblicazione.
+          en: You check status and anomalies and approve before publication.
+      - title:
+          it: Pubblica
+          en: Publish
+        text:
+          it: Esporta in CSV o invia a Shopify.
+          en: Export to CSV or send to Shopify.
     - type: cards
       id: team
       title:
@@ -426,129 +518,130 @@ spec:
         en: The agent team
       items:
       - title:
-          it: 1 · Estrattore
-          en: 1 · Extractor
+          it: Estrattore
+          en: Extractor
         text:
-          it: Legge solo le pagine dei produttori autorizzati. Mai marketplace.
-          en: Reads only authorized manufacturer pages. Never marketplaces.
+          it: 'Legge solo i siti dei produttori autorizzati: specifiche, misure, materiali, immagini. Mai marketplace.'
+          en: 'Reads only authorised manufacturer sites: specs, sizes, materials, images. Never marketplaces.'
       - title:
-          it: 2 · Normalizzatore
-          en: 2 · Normalizer
+          it: Normalizzatore
+          en: Normaliser
         text:
-          it: Allinea attributi, nomi e unità alla tua tassonomia.
-          en: Aligns attributes, names and units to your taxonomy.
+          it: Applica la tua tassonomia e uniforma unità e nomi.
+          en: Applies your taxonomy and unifies units and names.
       - title:
-          it: 3 · Copywriter SEO
-          en: 3 · SEO copywriter
+          it: Redattore SEO
+          en: SEO writer
         text:
-          it: Titoli e descrizioni in italiano e inglese, senza dati inventati.
-          en: Titles and descriptions in Italian and English, no invented data.
+          it: Titoli e descrizioni in italiano e inglese.
+          en: Titles and descriptions in Italian and English.
       - title:
-          it: 4 · Validatore
-          en: 4 · Validator
+          it: Validatore
+          en: Validator
         text:
-          it: Regole configurabili e punteggio di qualità 0-100.
-          en: Configurable rules and a 0-100 quality score.
+          it: Regole configurabili e punteggio di qualità.
+          en: Configurable rules and a quality score.
     - type: note
       content:
-        it: 'Ogni cliente vede solo il proprio catalogo. Il cliente dichiara di avere il permesso di usare i contenuti dei
-          siti indicati. Invio diretto a Shopify non ancora disponibile: export CSV.'
-        en: 'Each customer sees only their own catalog. The customer declares permission to use the content of the listed
-          sites. Direct Shopify push not yet available: CSV export.'
-  - key: new_run
+        it: Usa solo fonti per cui hai il permesso. I contenuti generati vanno verificati prima della pubblicazione.
+        en: Use only sources you have permission for. Review generated content before publishing.
+  - key: new_batch
     type: new_run
     title:
-      it: Nuova elaborazione
-      en: New run
+      it: Nuovo lotto
+      en: New batch
     roles:
     - user
     - admin
-  - key: history
+  - key: batches
     type: history
     title:
-      it: Le mie elaborazioni
-      en: My runs
+      it: I miei lotti
+      en: My batches
     source: run
     roles:
     - user
     - admin
-  - key: run_report
+  - key: batch_report
     type: report
     source: run
     printable: true
     nav: false
-  - key: products_table
+  - key: catalog
     type: table
     title:
-      it: Prodotti
-      en: Products
+      it: Catalogo
+      en: Catalog
     source: collection:products
+    columns:
+    - sku
+    - name
+    - brand
+    - category
+    - price
+    - quality_score
+    - status
+    - anomalies
+    export: true
     roles:
     - user
     - admin
-    data:
-      display: table
-      fields:
-      - key: code
-        label: Codice
-      - key: name
-        label: Nome
-      - key: category
-        label:
-          it: Categoria
-          en: Category
-      - key: quality_score
-        label:
-          it: Punteggio
-          en: Score
-        format: number
-      - key: status
-        label:
-          it: Stato
-          en: Status
-        format: badge
-      - key: anomalies
-        label:
-          it: Anomalie
-          en: Anomalies
-      - key: approval
-        label:
-          it: Approvazione
-          en: Approval
-        format: badge
-      sort:
-        field: quality_score
-        dir: asc
-      limit: 200
-      empty:
-        it: 'Nessun prodotto ancora: avvia un''elaborazione.'
-        en: 'No products yet: start a run.'
-  - key: approvals
+  - key: product_edit
+    type: form
+    title:
+      it: Modifica scheda
+      en: Edit product
+    collection: products
+    edit: true
+    submit:
+      label:
+        it: Salva
+        en: Save
+      message:
+        it: Scheda salvata
+        en: Product saved
+      redirect: catalog
+    nav: false
+    roles:
+    - user
+    - admin
+  - key: settings
+    type: form
+    title:
+      it: Tassonomia e regole
+      en: Taxonomy and rules
+    collection: catalog_settings
+    edit: true
+    submit:
+      label:
+        it: Salva regole
+        en: Save rules
+      message:
+        it: Regole salvate
+        en: Rules saved
+    roles:
+    - user
+    - admin
+  - key: review
     type: approvals
     title:
       it: Approvazioni
       en: Approvals
     approvals:
-    - publish_products
+    - product_review
     roles:
     - user
     - admin
-  - key: account
+  - key: shopify
     type: account
     title:
-      it: Crediti
-      en: Credits
+      it: Crediti e Shopify
+      en: Credits and Shopify
     roles:
     - user
-  exports:
-  - path: /api/export/products
-    source: collection:products
-    format: csv
-    access: user
   billing:
     modes:
     - credits
-    currency: eur
     signupCredits: 50
     metering:
       creditEur: 0.01
@@ -556,26 +649,22 @@ spec:
       drivers:
       - llm_tokens
       - compute
+      - browser
     costs:
       agent:catalog_team:
-        estimate: 10
-        metered: true
+        perUnit:
+          field: product_count
+          credits: 3
+          min: 15
+      agent:publisher: 5
     packs:
-    - key: starter
-      credits: 1000
-      price: 10
-      label: Starter
-    - key: pro
-      credits: 6000
-      price: 50
-      label: Pro
-  extensions:
-  - key: file_upload
-    description: 'Caricamento diretto di file CSV/Excel non ancora disponibile: il cliente incolla il CSV o fornisce un link.'
-  - key: shopify_push
-    description: 'Invio diretto a Shopify non disponibile (richiede le credenziali di ogni cliente): per ora export CSV delle
-      schede approvate.'
-  - key: per_product_credits
-    description: Il costo è misurato sull'uso reale (token e calcolo) invece che con un prezzo fisso per prodotto elaborato.
-  - key: editable_rules
-    description: Le regole di validazione sono un campo testuale del modulo, non ancora un editor di regole strutturato.
+    - key: small
+      credits: 500
+      price: 15
+      label: '500'
+    - key: large
+      credits: 3000
+      price: 79
+      label: '3000'
+  notifications:
+    emailOnRunDone: true

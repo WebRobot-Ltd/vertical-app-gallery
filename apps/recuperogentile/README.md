@@ -2,21 +2,25 @@
 
 _Solleciti di pagamento automatici, ma sempre rispettosi._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (26 checks passed)
 
 ## Description given to the app builder (Italian)
 
 Serve RecuperoGentile, una piattaforma per PMI, studi professionali e utility che vogliono gestire i solleciti di pagamento in modo automatico ma rispettoso. Ruoli: admin dell'azienda creditrice, operatore crediti e debitore. L'azienda importa le fatture scadute dal gestionale contabile tramite connettore o file: debitore, email, telefono, importo, scadenza, giorni di ritardo, storico pagamenti. Un agente segmenta i debitori per rischio e importo e sceglie la sequenza di contatto: email cortese al primo ritardo, promemoria a 15 giorni, proposta di piano di rientro a 30. Un secondo agente legge le risposte dalla casella IMAP dedicata, capisce se il debitore contesta, chiede una rateizzazione o promette un pagamento, e aggiorna la pratica. Le proposte di rateizzazione e ogni caso di contestazione passano dall'operatore umano, che approva prima che parta la risposta. Il debitore riceve un link a una pagina personale dove vede solo il proprio debito, può pagare con carta o scegliere un piano. Prevista anche una fase di chiamate vocali e messaggi WhatsApp, che però per noi resta solo sollecito stragiudiziale dell'azienda creditrice, senza attività di agenzia di recupero. Dashboard con incassato, tasso di risposta e pratiche aperte. Canone mensile più percentuale sul recuperato. Italiano.
 
+## Functional test: what did not pass
+
+- **form saves a record** (form plan_form): only role debtor may fill it, and the test cannot hold that role _(warning)_
+
 ## Features not expressible today (spec.extensions)
 
-- **connettore_gestionale**: Importazione automatica dal gestionale contabile e caricamento file non disponibili: per ora le fatture si incollano come testo.
-- **imap_inbox**: La lettura della casella IMAP dedicata non è disponibile: le risposte vengono registrate nella collezione replies (incolla/inoltro manuale) e l'agente le classifica.
-- **invio_email_whatsapp_voce**: Invio email, WhatsApp e chiamate vocali (e relative notifiche) non disponibili: la bozza approvata va inviata fuori dall'app. Resta solo sollecito stragiudiziale, senza attività di agenzia di recupero.
-- **pagina_debitore_e_pagamenti**: Pagina personale con link, pagamento con carta verso il creditore e scelta del piano richiedono credenziali Stripe del creditore e visibilità per-pratica del debitore: da sviluppare. Le pratiche sono ora per utente, la condivisione tra admin e operatori è da definire.
-- **percentuale_sul_recuperato**: La percentuale sul recuperato non è esprimibile nel manifest: oggi solo canone mensile e crediti; la commissione va fatturata a parte.
+- **imap_inbox**: La lettura diretta di una casella IMAP non è disponibile: le risposte entrano inoltrando le email al webhook /api/hooks/inbound_mail (campi from, subject, text, case_ref) tramite una regola di inoltro del provider email.
+- **voice_whatsapp**: Chiamate vocali e messaggi WhatsApp non sono ancora disponibili. Quando lo saranno resteranno solo sollecito stragiudiziale del creditore, senza attività di agenzia di recupero.
+- **card_payment**: Il pagamento con carta del debito da parte del debitore verso il creditore non è coperto dai pagamenti dell'app (che servono per i pacchetti del proprietario). Serve un link di pagamento del creditore da inserire nelle email.
+- **success_fee**: La percentuale sul recuperato non è ancora addebitabile automaticamente: si fattura a parte partendo dal totale incassato in dashboard (campo paid_amount).
+- **accounting_connector**: Il connettore diretto al gestionale contabile non è incluso: l'import avviene da file CSV/Excel. Un connettore via chiave API può essere aggiunto per il gestionale scelto.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,21 +31,32 @@ Serve RecuperoGentile, una piattaforma per PMI, studi professionali e utility ch
 ### home
 ![02-home.png](screenshots/02-home.png)
 
+### import
+![03-import.png](screenshots/03-import.png)
+
+### imports
+![04-imports.png](screenshots/04-imports.png)
+
 ### dashboard
-![03-dashboard.png](screenshots/03-dashboard.png)
+![05-dashboard.png](screenshots/05-dashboard.png)
 
-### new_run
-![04-new_run.png](screenshots/04-new_run.png)
+### cases_table
+![06-cases_table.png](screenshots/06-cases_table.png)
 
-### history
-![05-history.png](screenshots/05-history.png)
+### reviews
+![07-reviews.png](screenshots/07-reviews.png)
 
-### approvals
-![06-approvals.png](screenshots/06-approvals.png)
+### reply_edit
+![08-reply_edit.png](screenshots/08-reply_edit.png)
+
+### plans
+![09-plans.png](screenshots/09-plans.png)
 
 ### my_debt
-![07-my_debt.png](screenshots/07-my_debt.png)
+![10-my_debt.png](screenshots/10-my_debt.png)
+
+### plan_form
+![11-plan_form.png](screenshots/11-plan_form.png)
 
 ### account
-![08-account.png](screenshots/08-account.png)
-
+![12-account.png](screenshots/12-account.png)

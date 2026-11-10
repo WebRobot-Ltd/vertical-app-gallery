@@ -1,31 +1,33 @@
 apiVersion: webrobot.eu/v1alpha1
 kind: VerticalApp
 metadata:
-  slug: brigatalavoro
+  slug: brigata-lavoro
   displayName: BrigataLavoro
   tagline:
-    it: Il marketplace del lavoro per ristorazione e hotellerie.
-    en: The job marketplace for restaurants and hospitality.
+    it: Il lavoro giusto in cucina e in sala, trovato da un agente.
+    en: The right job in the kitchen and front of house, found by an agent.
   description:
-    it: 'Ristoratori e lavoratori si incontrano: un agente AI abbina offerte e profili e spiega ogni match. Gratis per i lavoratori.'
-    en: 'Restaurateurs and workers meet: an AI agent matches offers and profiles and explains every match. Free for workers.'
+    it: 'Marketplace del lavoro per ristorazione e hotellerie: i ristoratori pubblicano offerte, i lavoratori creano il profilo
+      e un agente propone i match migliori via email.'
+    en: 'Job marketplace for restaurants and hospitality: owners post jobs, workers build a profile and an agent proposes
+      the best matches by email.'
   langs:
   - it
   - en
   defaultLang: it
   timezone: Europe/Rome
 spec:
-  pattern: pipeline
+  pattern: report
   branding:
     theme: light
     palette:
-      primary: '#7a1f2b'
-      accent: '#d98a1f'
-      background: '#fbf7f2'
-      foreground: '#22201e'
+      primary: '#3b1f14'
+      accent: '#d9531e'
+      background: '#fbf6ef'
+      foreground: '#1f1a17'
     fonts:
       body: Inter
-      display: Playfair Display
+      display: Fraunces
     wordmark:
     - text: Brigata
       color: primary
@@ -55,21 +57,64 @@ spec:
     - key: admin
       assignedBy: admin_emails
     - key: user
-      label:
-        it: Ristoratore o lavoratore
-        en: Employer or worker
       assignedBy: signup
   limits:
-  - action: agent:matcher
-    per: user
-    max: 10
-    window: day
-    roles:
-    - user
+  - action: create:jobs
+    max: 3
+    window: total
+    plans:
+      employer_pro: -1
   agents:
   - key: matcher
     role: main
-    description: Matches a new job offer or a new worker profile against the other side and explains each match.
+    description: Matches new job offers, new worker profiles and applications; explains each match.
+    context:
+    - key: my_email
+      from: user.email
+    - key: my_profile
+      from: collection:worker_profiles
+    - key: my_company
+      from: collection:employer_profiles
+    appTools:
+    - name: read_pool
+      description: Read the pool of candidates who agreed to be proposed
+      action: read
+      collection: candidate_pool
+      scope: all
+    - name: read_open_jobs
+      description: Read the published job offers
+      action: read
+      collection: open_jobs
+      scope: all
+    - name: read_insights
+      description: Read lessons learned from past feedback
+      action: read
+      collection: match_insights
+      scope: all
+    - name: add_pool
+      description: Add or update a candidate in the pool
+      action: append
+      collection: candidate_pool
+      scope: all
+    - name: add_open_job
+      description: Publish a job offer
+      action: append
+      collection: open_jobs
+      scope: all
+    - name: add_employer_match
+      description: Propose a candidate to an employer
+      action: append
+      collection: employer_matches
+      scope: user
+    - name: add_worker_match
+      description: Propose a job offer to a worker
+      action: append
+      collection: worker_matches
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 0.6
     profile:
       inline:
         display_name: BrigataLavoro matcher
@@ -77,7 +122,7 @@ spec:
         - id: matcher
           engine: agent_sdk
           model: claude-sonnet-5-5
-          max_turns: 12
+          max_turns: 25
           max_budget_usd: 0.6
           permission_mode: bypassPermissions
           disallowed_tools:
@@ -90,87 +135,193 @@ spec:
           - NotebookEdit
           - WebFetch
           - WebSearch
-          system_prompt: 'You are the matching agent of BrigataLavoro, a job marketplace for restaurants and hotels. You receive
-            an event: a new job offer or a new worker profile. Use the tools to read job_offers, worker_profiles and past
-            feedback. RULES: only consider worker profiles where visible_to_employers is true or that have an application
-            to that offer; never reveal contact data of workers who have not applied or consented; never show a worker any
-            data of other workers. Score on role, city/zone, availability vs schedule, contract type, salary expectation vs
-            offer, requirements vs skills and experience; use past feedback to adjust weights. Never invent facts about people.
-            For a new offer: write up to 5 candidates for the employer. For a new profile: write up to 5 offers for the worker.
-            Save each match with the tool write_match (fields: offer_id, worker_id, audience, score 0-100, explanation, status
-            ''proposed''). Final answer: a report starting with a level-1 title ''# Match — <role> <city>'', then a table
-            (candidate/offer, score, why) and a short ''Next steps'' list (contact in platform, propose a trial). Write in
-            the language of the event. Do not give legal or contract advice as fact.'
-          mcp_servers: []
+          system_prompt: 'You are the matching agent of BrigataLavoro, a job marketplace for restaurants and hotels. You get
+            a task describing one event: a new job offer, a new/updated worker profile, or a worker application.
+
+
+            RULES:
+
+            - New job offer: first publish it with add_open_job (employer_email = the employer''s email given in the task,
+            employer_name from the company profile if present, title, role, city, contract, hours, salary, requirements).
+            Then read the pool with read_pool, score candidates 0-100 on role, city/zone, availability, experience, skills,
+            salary expectations vs offer. Propose at most 5 candidates with score >= 60 via add_employer_match (source ''proposed'',
+            status ''new'', short honest explanation in Italian and English). Also propose the offer to the best workers with
+            add_worker_match (worker_email, job, employer_name, city, salary, score, explanation).
+
+            - New or updated worker profile: ONLY if visible_to_employers is true, add or update the candidate in the pool
+            with add_pool (worker_email, display_name, roles, city, experience_summary, skills, availability, expected_salary).
+            Never add anyone who did not consent. Then read_open_jobs and propose up to 5 offers with score >= 60 via add_worker_match;
+            for the best offers also add_employer_match so the employer sees the candidate (only if the worker consented).
+
+            - Worker application: look up the job in read_open_jobs, and add_employer_match with source ''applied'', status
+            ''new'', using the applicant''s profile from the task (applying is consent to be seen by that employer only).
+
+            - Always call read_insights first and take its lessons into account.
+
+            - Never invent facts about people or jobs; use only the data you read. Do not disclose data of one worker to another
+            worker. Do not duplicate matches already proposed.
+
+            End with a short markdown report starting with ''# Matching <date>'' listing what you did.'
+  - key: learner
+    role: helper
+    description: Turns hire feedback into lessons that improve future matches.
+    context:
+    - key: my_email
+      from: user.email
     appTools:
-    - name: read_offers
-      description: Read job offers
+    - name: read_lessons
+      description: Read existing lessons
       action: read
-      collection: job_offers
+      collection: match_insights
       scope: all
-    - name: read_profiles
-      description: Read worker profiles (only consenting or applicants)
-      action: read
-      collection: worker_profiles
+    - name: add_lesson
+      description: Save an anonymous lesson about what makes a good match
+      action: append
+      collection: match_insights
       scope: all
-    - name: read_feedback
-      description: Read hiring feedback
-      action: read
-      collection: feedback
-      scope: all
-    - name: write_match
-      description: Save a proposed match
-      action: write
-      collection: matches
-      scope: all
-    goalTemplate: Match the new job offer or worker profile described in the task you were given. Today is {date}. Write in
-      the language with ISO code {lang}.
     output: markdown
-    writesTo:
-      collection: matches
-      parse: whole
     limits:
-      maxTurns: 12
-      maxBudgetUsd: 0.6
-      timeoutSeconds: 300
-  triggers:
-  - key: on_new_offer
-    description: Match when a restaurateur publishes an offer
-    'on':
-      collection: job_offers
-      op: insert
-    start:
-      agent: matcher
-    goal: 'New job offer: {record.role} in {record.city}, contract {record.contract}, schedule {record.schedule}, salary {record.salary},
-      requirements {record.requirements}. Offer id {record.id}.'
-    asUser: false
-  - key: on_new_profile
-    description: Match when a worker creates a profile
-    'on':
-      collection: worker_profiles
-      op: insert
-    start:
-      agent: matcher
-    goal: 'New worker profile {record.id}: role {record.role}, zone {record.zone}, availability {record.availability}, expectations
-      {record.salary_expectation}, skills {record.skills}.'
-    asUser: false
+      maxTurns: 8
+      maxBudgetUsd: 0.2
+    profile:
+      inline:
+        display_name: BrigataLavoro learner
+        crews:
+        - id: learner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You read one feedback record left after a hire (rating, comment, role). Read the existing lessons
+            with read_lessons, then save ONE short, anonymous, generalised lesson with add_lesson (fields: role, lesson, weight
+            1-5 from the rating). No names, emails or personal data in the lesson. Do not invent. End with a short markdown
+            note starting with ''# Lesson''.'
   data:
     collections:
     - name: employer_profiles
       ownedBy: user
-      description: The restaurateur's business profile
+      description: Company profile of a restaurant owner
       fields:
-      - name: business_name
+      - name: company
         type: text
         required: true
+        label:
+          it: Locale / azienda
+          en: Venue / company
       - name: city
         type: city
-      - name: description
+        required: true
+        label:
+          it: Città
+          en: City
+      - name: kind
+        type: select
+        options:
+        - value: restaurant
+          label:
+            it: Ristorante
+            en: Restaurant
+        - value: hotel
+          label: Hotel
+        - value: bar
+          label: Bar
+        - value: catering
+          label: Catering
+        label:
+          it: Tipo
+          en: Type
+      - name: about
         type: textarea
-    - name: job_offers
+        label:
+          it: Presentazione
+          en: About
+    - name: worker_profiles
       ownedBy: user
-      description: Offers published by restaurateurs
+      description: Worker profile, private to the worker
       fields:
+      - name: full_name
+        type: text
+        required: true
+        label:
+          it: Nome
+          en: Name
+      - name: roles
+        type: multiselect
+        required: true
+        options:
+        - value: cook
+          label:
+            it: Cuoco
+            en: Cook
+        - value: waiter
+          label:
+            it: Cameriere
+            en: Waiter
+        - value: dishwasher
+          label:
+            it: Lavapiatti
+            en: Dishwasher
+        - value: bartender
+          label:
+            it: Barman
+            en: Bartender
+        label:
+          it: Ruoli
+          en: Roles
+      - name: city
+        type: city
+        required: true
+        label:
+          it: Zona / città
+          en: Area / city
+      - name: experience
+        type: textarea
+        required: true
+        label:
+          it: Esperienze
+          en: Experience
+      - name: skills
+        type: textarea
+        label:
+          it: Competenze
+          en: Skills
+      - name: availability
+        type: text
+        label:
+          it: Disponibilità
+          en: Availability
+      - name: expected_salary
+        type: number
+        label:
+          it: Stipendio atteso (€/mese)
+          en: Expected salary (€/month)
+      - name: visible_to_employers
+        type: boolean
+        default: false
+        label:
+          it: Accetto di essere proposto ai ristoratori
+          en: I agree to be proposed to employers
+    - name: jobs
+      ownedBy: user
+      description: Job offers of the employer
+      fields:
+      - name: title
+        type: text
+        required: true
+        label:
+          it: Titolo
+          en: Title
       - name: role
         type: select
         required: true
@@ -191,136 +342,322 @@ spec:
           label:
             it: Barman
             en: Bartender
+        label:
+          it: Ruolo
+          en: Role
       - name: city
         type: city
         required: true
+        label:
+          it: Città
+          en: City
+      - name: contract
+        type: select
+        required: true
+        options:
+        - value: permanent
+          label:
+            it: Indeterminato
+            en: Permanent
+        - value: fixed
+          label:
+            it: Determinato
+            en: Fixed-term
+        - value: seasonal
+          label:
+            it: Stagionale
+            en: Seasonal
+        - value: parttime
+          label: Part-time
+        - value: extra
+          label: Extra
+        label:
+          it: Contratto
+          en: Contract
+      - name: hours
+        type: text
+        label:
+          it: Orari
+          en: Hours
+      - name: salary
+        type: number
+        label:
+          it: Stipendio (€/mese)
+          en: Salary (€/month)
+      - name: requirements
+        type: textarea
+        label:
+          it: Requisiti
+          en: Requirements
+    - name: applications
+      ownedBy: user
+      description: Applications of a worker to an offer
+      fields:
+      - name: job
+        type: select
+        required: true
+        optionsFrom: collection:open_jobs
+        label:
+          it: Offerta
+          en: Offer
+      - name: note
+        type: textarea
+        label:
+          it: Messaggio
+          en: Message
+    - name: open_jobs
+      ownedBy: app
+      description: Published offers, written by the matcher
+      fields:
+      - name: employer_email
+        type: email
+      - name: employer_name
+        type: text
+      - name: title
+        type: text
+      - name: role
+        type: text
+      - name: city
+        type: text
       - name: contract
         type: text
-      - name: schedule
+      - name: hours
         type: text
       - name: salary
         type: number
       - name: requirements
         type: textarea
-    - name: worker_profiles
-      ownedBy: user
-      description: Worker profiles; visible to employers only with consent or application
+    - name: candidate_pool
+      ownedBy: app
+      description: Workers who agreed to be proposed; read only by the matcher
       fields:
-      - name: role
-        type: select
-        required: true
-        options:
-        - value: cook
-          label:
-            it: Cuoco
-            en: Cook
-        - value: waiter
-          label:
-            it: Cameriere
-            en: Waiter
-        - value: dishwasher
-          label:
-            it: Lavapiatti
-            en: Dishwasher
-        - value: bartender
-          label:
-            it: Barman
-            en: Bartender
-      - name: experience
+      - name: worker_email
+        type: email
+      - name: display_name
+        type: text
+      - name: roles
+        type: text
+      - name: city
+        type: text
+      - name: experience_summary
         type: textarea
       - name: skills
         type: textarea
       - name: availability
         type: text
-      - name: zone
-        type: city
-      - name: salary_expectation
+      - name: expected_salary
         type: number
-      - name: visible_to_employers
-        type: boolean
-        default: false
-    - name: applications
+    - name: employer_matches
       ownedBy: user
-      description: A worker's application to an offer
+      description: Candidates proposed to an employer
       fields:
-      - name: offer_id
+      - name: employer_email
+        type: email
+      - name: job_title
         type: text
-        required: true
-      - name: note
-        type: textarea
-    - name: matches
-      ownedBy: user
-      description: Matches proposed by the agent, with explanation
-      fields:
-      - name: offer_id
-        type: text
-      - name: worker_id
-        type: text
-      - name: audience
+      - name: candidate_email
+        type: email
+      - name: candidate_name
         type: text
       - name: score
         type: number
       - name: explanation
         type: textarea
+      - name: source
+        type: text
       - name: status
         type: text
+      access:
+      - role: user
+        where:
+          employer_email: '{user.email}'
+        can:
+        - read
+    - name: worker_matches
+      ownedBy: user
+      description: Offers proposed to a worker
+      fields:
+      - name: worker_email
+        type: email
+      - name: job_title
+        type: text
+      - name: employer_name
+        type: text
+      - name: city
+        type: text
+      - name: salary
+        type: number
+      - name: score
+        type: number
+      - name: explanation
+        type: textarea
+      access:
+      - role: user
+        where:
+          worker_email: '{user.email}'
+        can:
+        - read
+    - name: match_insights
+      ownedBy: app
+      description: Anonymous lessons from feedback
+      fields:
+      - name: role
+        type: text
+      - name: lesson
+        type: textarea
+      - name: weight
+        type: number
     - name: messages
       ownedBy: user
-      description: In-platform messages from employer to candidate
+      description: In-platform messages
+      retentionDays: 365
       fields:
-      - name: to_worker_id
+      - name: recipient_email
+        type: email
+        required: true
+        label:
+          it: Email destinatario
+          en: Recipient email
+      - name: subject
         type: text
-      - name: offer_id
-        type: text
+        required: true
+        label:
+          it: Oggetto
+          en: Subject
       - name: body
         type: textarea
+        required: true
+        label:
+          it: Messaggio
+          en: Message
+      access:
+      - role: user
+        where:
+          recipient_email: '{user.email}'
+        can:
+        - read
     - name: trials
       ownedBy: user
-      description: Trial shifts proposed by employers
+      description: Trial shifts scheduled by employers
       fields:
-      - name: worker_id
+      - name: worker_email
+        type: email
+        required: true
+        label:
+          it: Email candidato
+          en: Candidate email
+      - name: job_title
         type: text
-      - name: offer_id
-        type: text
-      - name: date
+        required: true
+        label:
+          it: Posizione
+          en: Position
+      - name: trial_date
         type: date
+        required: true
+        label:
+          it: Data della prova
+          en: Trial date
+      - name: place
+        type: text
+        label:
+          it: Luogo e orario
+          en: Place and time
       - name: notes
         type: textarea
+        label:
+          it: Note
+          en: Notes
+      access:
+      - role: user
+        where:
+          worker_email: '{user.email}'
+        can:
+        - read
+    - name: hires
+      ownedBy: user
+      description: Hires reported by employers
+      fields:
+      - name: worker_email
+        type: email
+        required: true
+        label:
+          it: Email lavoratore
+          en: Worker email
+      - name: job_title
+        type: text
+        required: true
+        label:
+          it: Posizione
+          en: Position
+      - name: start_date
+        type: date
+        required: true
+        label:
+          it: Data di inizio
+          en: Start date
+      access:
+      - role: user
+        where:
+          worker_email: '{user.email}'
+        can:
+        - read
     - name: feedback
       ownedBy: user
-      description: Feedback after hiring, from both sides, used for future matches
+      description: Feedback after a hire
       fields:
-      - name: offer_id
+      - name: about
         type: text
-      - name: from_side
-        type: select
-        options:
-        - employer
-        - worker
+        required: true
+        label:
+          it: Su chi / quale locale
+          en: About whom / which venue
+      - name: job_role
+        type: text
+        label:
+          it: Ruolo
+          en: Role
       - name: rating
         type: number
+        required: true
+        label:
+          it: Voto (1-5)
+          en: Rating (1-5)
       - name: comment
         type: textarea
+        label:
+          it: Commento
+          en: Comment
+      retentionDays: 730
   views:
   - key: home
     type: page
     nav: false
+    title: BrigataLavoro
     sections:
     - type: hero
+      eyebrow:
+        it: Ristorazione e hotellerie
+        en: Restaurants & hospitality
       title:
-        it: Trova la **brigata** giusta, o il posto giusto.
-        en: Find the right **crew**, or the right job.
+        it: La **brigata giusta**, senza cercarla.
+        en: The **right crew**, without the search.
       text:
-        it: 'Ristoratori e lavoratori della ristorazione e dell''hotellerie: un agente AI abbina offerte e profili e spiega
-          perché. Gratis per i lavoratori.'
-        en: 'For restaurateurs and hospitality workers: an AI agent matches offers and profiles and explains why. Free for
+        it: 'Pubblica un''offerta o crea il tuo profilo: un agente trova i match, li spiega e te li manda via email. Gratis
+          per i lavoratori.'
+        en: 'Post a job or build your profile: an agent finds the matches, explains them and emails them to you. Free for
           workers.'
       actions:
       - label:
-          it: Inizia
-          en: Get started
+          it: Sono un ristoratore
+          en: I'm an employer
         href: /login
         style: primary
+      - label:
+          it: Cerco lavoro
+          en: I'm looking for work
+        href: /login
+        style: ghost
     - type: steps
       id: come-funziona
       title:
@@ -328,23 +665,30 @@ spec:
         en: How it works
       items:
       - title:
-          it: Pubblica o crea il profilo
-          en: Post or build a profile
+          it: Profilo e offerte
+          en: Profiles and jobs
         text:
-          it: Ruolo, città, orari, stipendio e requisiti; oppure esperienze, competenze e disponibilità.
-          en: Role, city, schedule, pay and requirements; or experience, skills and availability.
+          it: I ristoratori pubblicano ruolo, orari, stipendio e requisiti; i lavoratori descrivono esperienze, competenze
+            e disponibilità.
+          en: Employers post role, hours, pay and requirements; workers describe experience, skills and availability.
       - title:
-          it: L'agente fa il match
-          en: The agent matches
+          it: Match spiegato
+          en: Explained matches
         text:
-          it: A ogni nuova offerta o profilo, con una spiegazione per ogni proposta.
-          en: On every new offer or profile, with an explanation for each proposal.
+          it: A ogni nuova offerta o profilo l'agente propone i candidati o le offerte più adatti, con il perché.
+          en: On every new job or profile the agent proposes the best candidates or offers, with the reasons.
       - title:
-          it: Contatta e prova
+          it: Contatto e prova
           en: Contact and trial
         text:
-          it: Messaggio in piattaforma e prova fissata; dopo l'assunzione, feedback reciproco.
-          en: In-platform message and a trial shift; after hiring, mutual feedback.
+          it: Messaggio in piattaforma e prova fissata in pochi clic.
+          en: In-platform message and a trial shift in a few clicks.
+      - title:
+          it: Feedback
+          en: Feedback
+        text:
+          it: 'Dopo l''assunzione entrambi lasciano un voto: i match futuri migliorano.'
+          en: 'After the hire both leave feedback: future matches get better.'
     - type: cards
       id: prezzi
       title:
@@ -355,160 +699,432 @@ spec:
           it: Lavoratori
           en: Workers
         text:
-          it: Sempre gratis.
-          en: Always free.
-        badge: 🧑‍🍳
+          it: Gratis, sempre. I tuoi dati sono visibili solo ai ristoratori a cui ti candidi o se accetti di essere proposto.
+          en: Free, always. Your data is visible only to employers you apply to or if you agree to be proposed.
+        badge: 0 €
       - title:
-          it: Ristoratori
-          en: Restaurateurs
+          it: Ristoratori — abbonamento
+          en: Employers — subscription
         text:
-          it: Abbonamento mensile oppure fee per assunzione.
-          en: Monthly subscription or fee per hire.
-        badge: 🍽️
+          it: Offerte illimitate con l'abbonamento mensile.
+          en: Unlimited jobs with the monthly subscription.
+        badge: 49 €
+      - title:
+          it: Ristoratori — a assunzione
+          en: Employers — per hire
+        text:
+          it: Fino a 3 offerte, paghi una fee solo quando assumi.
+          en: Up to 3 jobs, pay a fee only when you hire.
+        badge: 50 cr
     - type: note
       content:
-        it: I ristoratori vedono solo i profili di chi si candida o ha acconsentito. I lavoratori non vedono i dati di altri
-          lavoratori.
-        en: Employers only see profiles of people who applied or consented. Workers never see other workers' data.
-  - key: offers
-    type: list
+        it: BrigataLavoro · i match sono un supporto alla decisione, non una garanzia di assunzione.
+        en: BrigataLavoro · matches are decision support, not a guarantee of hiring.
+  - key: company
+    type: form
+    collection: employer_profiles
+    title:
+      it: Profilo locale
+      en: Venue profile
+    edit: true
+    submit:
+      label:
+        it: Salva
+        en: Save
+      message:
+        it: Profilo salvato
+        en: Profile saved
+      redirect: new_job
+    roles:
+    - user
+    - admin
+  - key: new_job
+    type: form
+    collection: jobs
+    title:
+      it: Nuova offerta
+      en: New job
+    submit:
+      label:
+        it: Pubblica
+        en: Publish
+      message:
+        it: 'Offerta pubblicata: l''agente sta cercando candidati.'
+        en: 'Job published: the agent is looking for candidates.'
+      redirect: my_jobs
+    roles:
+    - user
+    - admin
+  - key: my_jobs
+    type: table
+    source: collection:jobs
     title:
       it: Le mie offerte
-      en: My job offers
-    source: collection:job_offers
+      en: My jobs
+    columns:
+    - title
+    - role
+    - city
+    - contract
+    - salary
+    roles:
+    - user
+    - admin
+  - key: candidates
+    type: table
+    source: collection:employer_matches
+    title:
+      it: Candidati proposti
+      en: Proposed candidates
+    columns:
+    - job_title
+    - candidate_name
+    - candidate_email
+    - score
+    - explanation
+    - source
     roles:
     - user
     - admin
   - key: profile
-    type: list
+    type: form
+    collection: worker_profiles
     title:
-      it: Il mio profilo lavoratore
-      en: My worker profile
-    source: collection:worker_profiles
+      it: Il mio profilo
+      en: My profile
+    edit: true
+    submit:
+      label:
+        it: Salva
+        en: Save
+      message:
+        it: 'Profilo salvato: l''agente cerca offerte per te.'
+        en: 'Profile saved: the agent is looking for offers.'
+      redirect: my_offers
     roles:
     - user
     - admin
-  - key: business
-    type: list
-    title:
-      it: Il mio locale
-      en: My business
-    source: collection:employer_profiles
-    roles:
-    - user
-    - admin
-  - key: my_matches
+  - key: my_offers
     type: table
+    source: collection:worker_matches
     title:
-      it: Match proposti
-      en: Proposed matches
-    source: collection:matches
-    data:
-      display: table
-      fields:
-      - key: score
-        label:
-          it: Punteggio
-          en: Score
-        format: number
-      - key: explanation
-        label:
-          it: Perché
-          en: Why
-      - key: status
-        label:
-          it: Stato
-          en: Status
-        format: badge
-      sort:
-        field: score
-        dir: desc
-      limit: 50
+      it: Offerte per me
+      en: Offers for me
+    columns:
+    - job_title
+    - employer_name
+    - city
+    - salary
+    - score
+    - explanation
+    roles:
+    - user
+    - admin
+  - key: jobs_board
+    type: table
+    source: collection:open_jobs
+    title:
+      it: Tutte le offerte
+      en: All jobs
+    columns:
+    - title
+    - employer_name
+    - city
+    - contract
+    - hours
+    - salary
+    roles:
+    - user
+    - admin
+  - key: apply
+    type: form
+    collection: applications
+    title:
+      it: Candidati
+      en: Apply
+    submit:
+      label:
+        it: Invia candidatura
+        en: Send application
+      message:
+        it: Candidatura inviata
+        en: Application sent
+    roles:
+    - user
+    - admin
+  - key: write
+    type: form
+    collection: messages
+    title:
+      it: Scrivi un messaggio
+      en: Send a message
+    submit:
+      label:
+        it: Invia
+        en: Send
+      message:
+        it: Messaggio inviato
+        en: Message sent
     roles:
     - user
     - admin
   - key: inbox
-    type: list
+    type: table
+    source: collection:messages
     title:
       it: Messaggi
       en: Messages
-    source: collection:messages
+    columns:
+    - subject
+    - body
+    - recipient_email
     roles:
     - user
     - admin
-  - key: trial_list
-    type: list
+  - key: trial
+    type: form
+    collection: trials
+    title:
+      it: Fissa una prova
+      en: Schedule a trial
+    submit:
+      label:
+        it: Fissa
+        en: Schedule
+      message:
+        it: Prova fissata, il candidato è avvisato
+        en: Trial scheduled, the candidate is notified
+    roles:
+    - user
+    - admin
+  - key: trials_list
+    type: table
+    source: collection:trials
     title:
       it: Prove
       en: Trials
-    source: collection:trials
+    columns:
+    - job_title
+    - trial_date
+    - place
+    - notes
     roles:
     - user
     - admin
-  - key: feedback_list
-    type: list
+  - key: hire
+    type: form
+    collection: hires
     title:
-      it: Feedback
-      en: Feedback
-    source: collection:feedback
+      it: Segnala assunzione
+      en: Report a hire
+    submit:
+      label:
+        it: Conferma
+        en: Confirm
+      message:
+        it: Assunzione registrata
+        en: Hire recorded
+      redirect: feedback_form
+    roles:
+    - user
+    - admin
+  - key: feedback_form
+    type: form
+    collection: feedback
+    title:
+      it: Lascia un feedback
+      en: Leave feedback
+    submit:
+      label:
+        it: Invia
+        en: Send
+      message:
+        it: Grazie!
+        en: Thank you!
     roles:
     - user
     - admin
   - key: account
     type: account
     title:
-      it: Abbonamento
-      en: Plan
+      it: Abbonamento e crediti
+      en: Plan and credits
     roles:
     - user
+  triggers:
+  - key: job_new
+    'on':
+      collection: jobs
+      op: insert
+    start:
+      agent: matcher
+    goal: 'New job offer. Employer email: {my_email}. Company: {my_company}. Offer: title {record.title}, role {record.role},
+      city {record.city}, contract {record.contract}, hours {record.hours}, salary {record.salary}, requirements {record.requirements}.
+      Publish it and find the best candidates and workers.'
+  - key: profile_new
+    'on':
+      collection: worker_profiles
+      op: any
+    start:
+      agent: matcher
+    goal: 'New or updated worker profile. Worker email: {my_email}. Name {record.full_name}, roles {record.roles}, city {record.city},
+      experience {record.experience}, skills {record.skills}, availability {record.availability}, expected salary {record.expected_salary},
+      visible_to_employers {record.visible_to_employers}. Follow your rules.'
+  - key: application_new
+    'on':
+      collection: applications
+      op: insert
+    start:
+      agent: matcher
+    goal: 'Worker application. Worker email: {my_email}. Worker profile: {my_profile}. Job applied to: {record.job}. Message:
+      {record.note}. Add an ''applied'' match for the employer.'
+  - key: employer_match_mail
+    'on':
+      collection: employer_matches
+      op: insert
+    notify:
+      to:
+      - record.employer_email
+      subject:
+        it: Nuovo candidato per {record.job_title}
+        en: New candidate for {record.job_title}
+      body:
+        it: 'Candidato: {record.candidate_name} (punteggio {record.score}).
+
+          {record.explanation}
+
+          Aprilo per scrivergli o fissare una prova.'
+        en: 'Candidate: {record.candidate_name} (score {record.score}).
+
+          {record.explanation}
+
+          Open it to message them or schedule a trial.'
+      link: candidates
+  - key: worker_match_mail
+    'on':
+      collection: worker_matches
+      op: insert
+    notify:
+      to:
+      - record.worker_email
+      subject:
+        it: 'Offerta per te: {record.job_title}'
+        en: 'A job for you: {record.job_title}'
+      body:
+        it: '{record.employer_name} a {record.city}. Punteggio {record.score}.
+
+          {record.explanation}'
+        en: '{record.employer_name} in {record.city}. Score {record.score}.
+
+          {record.explanation}'
+      link: my_offers
+  - key: message_mail
+    'on':
+      collection: messages
+      op: insert
+    notify:
+      to:
+      - record.recipient_email
+      subject:
+        it: 'Nuovo messaggio: {record.subject}'
+        en: 'New message: {record.subject}'
+      body:
+        it: Hai un nuovo messaggio su BrigataLavoro.
+        en: You have a new message on BrigataLavoro.
+      link: inbox
+  - key: trial_mail
+    'on':
+      collection: trials
+      op: insert
+    notify:
+      to:
+      - record.worker_email
+      subject:
+        it: 'Prova fissata: {record.job_title}'
+        en: 'Trial scheduled: {record.job_title}'
+      body:
+        it: 'Data: {record.trial_date}. {record.place}
+
+          {record.notes}'
+        en: 'Date: {record.trial_date}. {record.place}
+
+          {record.notes}'
+      link: trials_list
+  - key: trial_reminder
+    'on':
+      date:
+        collection: trials
+        field: trial_date
+        offsetDays: -1
+        hour: 8
+    notify:
+      to:
+      - record.worker_email
+      - owner
+      subject:
+        it: 'Promemoria: prova domani'
+        en: 'Reminder: trial tomorrow'
+      body:
+        it: Domani c'è la prova per {record.job_title}. {record.place}
+        en: Tomorrow is the trial for {record.job_title}. {record.place}
+      link: trials_list
+  - key: hire_fee
+    'on':
+      collection: hires
+      op: insert
+    charge:
+      credits: 50
+      reason: Fee per assunzione / hiring fee
+  - key: hire_mail
+    'on':
+      collection: hires
+      op: insert
+    notify:
+      to:
+      - record.worker_email
+      subject:
+        it: Congratulazioni per il nuovo lavoro!
+        en: Congratulations on your new job!
+      body:
+        it: Sei stato assunto come {record.job_title}. Lascia un feedback per migliorare i prossimi match.
+        en: You were hired as {record.job_title}. Leave feedback to improve future matches.
+      link: feedback_form
+  - key: feedback_learn
+    'on':
+      collection: feedback
+      op: insert
+    start:
+      agent: learner
+    goal: 'Feedback received: role {record.job_role}, rating {record.rating}, comment {record.comment}. Save one anonymous
+      lesson.'
   billing:
     modes:
-    - credits
     - subscription
-    - per_transaction
+    - credits
     currency: eur
     signupCredits: 0
-    transactionFeePct: 0
-    metering:
-      creditEur: 0.01
-      markupPct: 50
-      drivers:
-      - llm_tokens
-      - compute
     costs:
-      agent:matcher:
-        estimate: 10
-        metered: true
+      agent:matcher: 0
+      agent:learner: 0
     packs:
-    - key: hire_fee
-      price: 99
-      credits: 9900
+    - key: hire_fees
+      credits: 100
+      price: 90
       label:
-        it: Fee per assunzione
-        en: Fee per hire
+        it: 2 fee per assunzione
+        en: 2 hiring fees
     plans:
-    - key: employer_monthly
-      price: 59
+    - key: employer_pro
+      price: 49
       interval: month
       label:
-        it: Ristoratore — mensile
-        en: Employer — monthly
+        it: Ristoratore Pro
+        en: Employer Pro
       includes:
-      - unlimited offers
-      - candidate matching
-      - in-platform messages
-      credits: 0
+      - unlimited job offers
+  notifications:
+    emailOnRunDone: false
   extensions:
-  - key: email_notifications
-    description: 'Emailing proposed candidates to employers and offers to workers is not available yet: matches appear in
-      the ''Proposed matches'' view instead.'
-  - key: cross_user_visibility
-    description: Employers seeing only applicants or consenting workers (and workers never seeing others) needs per-record
-      cross-user access; the matcher runs as the app with explicit rules in its prompt, and the match records are written
-      to the owners. Needs runtime review.
-  - key: account_types
-    description: 'Employer vs worker are not separate signup roles: a user fills the business profile or the worker profile.
-      Separate roles by account type are a later step.'
-  - key: hire_fee_charging
-    description: Fee per hire is a pack the employer buys when marking a hire; automatic charging on hire confirmation is
-      not expressible yet.
+  - key: fee_waiver_for_subscribers
+    description: The per-hire fee is charged to every employer; waiving it for Pro subscribers is not expressible yet. Admins
+      can refund credits manually.

@@ -2,7 +2,7 @@
 
 _La normativa finanziaria, leggibile e monitorata._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (22 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,11 +10,10 @@ Voglio costruire NormaVigile, un servizio per uffici compliance di banche, SIM e
 
 ## Features not expressible today (spec.extensions)
 
-- **email_notifications**: Not available yet: the Monday digest and the immediate critical-act alert are shown in the app (digests and alerts views) but cannot be sent by email until notifications exist.
-- **company_tenancy**: Not available yet: there is no company/seat concept. Company profile, notes and critical marks are per user and shared with colleagues through per-record invitations (viewer/editor); user seats per plan are tiers, not enforced per-seat billing.
-- **per_customer_critical_alert**: Alerts on critical acts are produced by a daily per-user watch instance (cheap) rather than an instant event, since app-wide data is shared and critical marks are private to each company.
+- **seat_limit**: Enforcing the maximum number of users per plan (5/15/50) on the emails listed in members is not available yet; plans are priced per seat tier.
+- **team_email_delivery**: Weekly reports and critical alerts are emailed to the owner of each watch (the user who created it); delivery to every member of the perimeter is not available yet. Alerts are sent after the nightly update, not in real time.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -25,30 +24,38 @@ Voglio costruire NormaVigile, un servizio per uffici compliance di banche, SIM e
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### assistant_chat
-![03-assistant_chat.png](screenshots/03-assistant_chat.png)
+### assistant
+![03-assistant.png](screenshots/03-assistant.png)
 
-### perimeters
-![04-perimeters.png](screenshots/04-perimeters.png)
+### perimeter_form
+![04-perimeter_form.png](screenshots/04-perimeter_form.png)
 
-### critical
-![05-critical.png](screenshots/05-critical.png)
+### perimeter_list
+![05-perimeter_list.png](screenshots/05-perimeter_list.png)
 
-### digests
-![06-digests.png](screenshots/06-digests.png)
+### note_form
+![06-note_form.png](screenshots/06-note_form.png)
 
-### changes_feed
-![07-changes_feed.png](screenshots/07-changes_feed.png)
+### notes_list
+![07-notes_list.png](screenshots/07-notes_list.png)
 
-### acts_archive
-![08-acts_archive.png](screenshots/08-acts_archive.png)
+### critical_form
+![08-critical_form.png](screenshots/08-critical_form.png)
 
-### company_view
-![09-company_view.png](screenshots/09-company_view.png)
+### critical_list
+![09-critical_list.png](screenshots/09-critical_list.png)
 
-### notes_view
-![10-notes_view.png](screenshots/10-notes_view.png)
+### changes
+![10-changes.png](screenshots/10-changes.png)
+
+### acts
+![11-acts.png](screenshots/11-acts.png)
+
+### watches
+![12-watches.png](screenshots/12-watches.png)
+
+### alerts
+![13-alerts.png](screenshots/13-alerts.png)
 
 ### account
-![11-account.png](screenshots/11-account.png)
-
+![14-account.png](screenshots/14-account.png)

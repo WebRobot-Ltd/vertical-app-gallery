@@ -2,7 +2,7 @@
 
 _Annunci immobiliari delle agenzie, con stima automatica del valore._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (29 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,15 +10,10 @@ Voglio Vetrina Case, un portale di annunci immobiliari pubblicati dalle agenzie,
 
 ## Features not expressible today (spec.extensions)
 
-- **listing_editor**: Form for agencies to create/edit listings with an agency-scoped write to the shared catalogue, so each agency sees and edits only its own listings and leads.
-- **file_upload**: Photo and floorplan upload is not available yet: agencies paste links (photo_urls, floorplan_url).
-- **feed_import**: Import from agency management software via feed (XML/CSV) needs a per-agency connector and a scheduled sync.
-- **map_search**: Interactive map search with drawn areas is not available; search is by zone text and filters.
-- **email_alerts**: Email notifications for saved searches are not available yet; new matches appear in the saved-searches view.
-- **contact_form_and_lead_routing**: Public contact form that writes to the agency's contact_requests, and routing of the owner's contact consent from the valuation to a local agency, need cross-user writes not available yet.
-- **plan_limits**: Enforcement of the active-listings cap per plan.
+- **listing_sync**: Le modifiche e le cancellazioni di un annuncio dal form non si propagano ancora alla copia pubblica; il feed webhook aggiorna per external_id. Geocodifica automatica dell'indirizzo (lat/lon) e precompilazione dell'agenzia nel modulo contatto dal singolo annuncio non sono ancora disponibili.
+- **lead_routing**: I proprietari che chiedono di essere contattati arrivano all'admin, che li inoltra alle agenzie della zona: l'assegnazione automatica per zona non è ancora disponibile. I dati OMI vengono letti dall'agente via WebRobot MCP (nessuna API ufficiale).
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -29,27 +24,38 @@ Voglio Vetrina Case, un portale di annunci immobiliari pubblicati dalle agenzie,
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### search
-![03-search.png](screenshots/03-search.png)
+### map
+![03-map.png](screenshots/03-map.png)
+
+### listings
+![04-listings.png](screenshots/04-listings.png)
+
+### contact
+![05-contact.png](screenshots/05-contact.png)
 
 ### new_valuation
-![04-new_valuation.png](screenshots/04-new_valuation.png)
+![06-new_valuation.png](screenshots/06-new_valuation.png)
 
 ### valuations
-![05-valuations.png](screenshots/05-valuations.png)
-
-### my_listings
-![06-my_listings.png](screenshots/06-my_listings.png)
-
-### my_contacts
-![07-my_contacts.png](screenshots/07-my_contacts.png)
+![07-valuations.png](screenshots/07-valuations.png)
 
 ### searches
 ![08-searches.png](screenshots/08-searches.png)
 
+### new_listing
+![09-new_listing.png](screenshots/09-new_listing.png)
+
+### my_listings
+![10-my_listings.png](screenshots/10-my_listings.png)
+
+### my_contacts
+![11-my_contacts.png](screenshots/11-my_contacts.png)
+
 ### flags
-![09-flags.png](screenshots/09-flags.png)
+![12-flags.png](screenshots/12-flags.png)
+
+### leads
+![13-leads.png](screenshots/13-leads.png)
 
 ### account
-![10-account.png](screenshots/10-account.png)
-
+![14-account.png](screenshots/14-account.png)

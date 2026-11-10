@@ -1,8 +1,8 @@
 # Mappa Mercati Privati
 
-_Intelligence sulle aziende non quotate, a partire dalla tua tesi._
+_Intelligence sulle aziende non quotate, dalla tesi alla short list._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (13 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,12 +10,10 @@ Mi serve Mappa Mercati Privati, una piattaforma di intelligence su aziende non q
 
 ## Features not expressible today (spec.extensions)
 
-- **registry_financials_provider**: Balance-sheet and company-registry data from a paid API provider connected with each customer's own licence: not available yet (connectors needing customer credentials). For now the agents mark these data as 'to verify'.
-- **team_workspaces**: Team-level sharing: today each user sees only their own theses, with per-record invitations (viewer/editor) for colleagues; organisation-wide team workspaces are not available.
-- **search_engine_filters**: The indexed search with facets is served by the searchable companies collection and its table view; advanced facet filters would need a dedicated search index.
-- **email_digest**: Weekly news is shown in the app; email delivery of the digest is not available yet.
+- **search_engine**: Dedicated faceted search index with filters over companies (sector, size, HQ, funding): today companies are searchable and filterable through the table and the chat tool.
+- **provider_host**: The egress host and API path of the chosen registry/financials provider must be replaced with the real one before publishing.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -26,24 +24,29 @@ Mi serve Mappa Mercati Privati, una piattaforma di intelligence su aziende non q
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### new_run
-![03-new_run.png](screenshots/03-new_run.png)
+### theses_form
+![03-theses_form.png](screenshots/03-theses_form.png)
 
-### history
-![04-history.png](screenshots/04-history.png)
+### theses
+![04-theses.png](screenshots/04-theses.png)
+
+### new_research
+![05-new_research.png](screenshots/05-new_research.png)
+
+### research
+![06-research.png](screenshots/06-research.png)
 
 ### companies
-![05-companies.png](screenshots/05-companies.png)
+![07-companies.png](screenshots/07-companies.png)
 
-### ask
-![06-ask.png](screenshots/06-ask.png)
+### chat
+![08-chat.png](screenshots/08-chat.png)
 
 ### watches
-![07-watches.png](screenshots/07-watches.png)
+![09-watches.png](screenshots/09-watches.png)
 
 ### updates
-![08-updates.png](screenshots/08-updates.png)
+![10-updates.png](screenshots/10-updates.png)
 
 ### account
-![09-account.png](screenshots/09-account.png)
-
+![11-account.png](screenshots/11-account.png)

@@ -2,7 +2,7 @@
 
 _L'assistente personale che si ricorda di te._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (10 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,11 +10,11 @@ MemoAmico è un assistente personale con memoria a lungo termine. L'utente si re
 
 ## Features not expressible today (spec.extensions)
 
-- **reminder_delivery**: Delivering reminders at the due time (email now, push on the phone later) is not available yet: notifications are not supported. Reminders are stored and shown in the Reminders page; the agent says so honestly. The weekly recap is likewise shown in the app, not emailed.
-- **memory_delete_ui**: A per-row delete button on the Memory page may need runtime support for deleting records; until then the user asks the assistant or an owner-scoped delete action is needed.
-- **admin_privacy**: No admin role or admin view is declared, so no screen exposes conversations. Platform-level run records exist as built-ins and must be restricted to their owner by the runtime.
+- **push_notifications**: Push notifications on the phone are not available yet: reminders are sent by email on the due day (exact hour not supported).
+- **delete_memory**: Deleting single memories from the Memories page needs a row-delete action not yet available in table views; for now the user edits records and asks the assistant to forget.
+- **admin_privacy**: Admins of the app can technically read user-owned records; strict exclusion of admins from conversations and memories is not expressible in the manifest.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -28,15 +28,17 @@ MemoAmico è un assistente personale con memoria a lungo termine. L'utente si re
 ### chat
 ![03-chat.png](screenshots/03-chat.png)
 
-### memory
-![04-memory.png](screenshots/04-memory.png)
+### memories
+![04-memories.png](screenshots/04-memories.png)
+
+### edit_memory
+![05-edit_memory.png](screenshots/05-edit_memory.png)
 
 ### reminders
-![05-reminders.png](screenshots/05-reminders.png)
+![06-reminders.png](screenshots/06-reminders.png)
 
 ### recap
-![06-recap.png](screenshots/06-recap.png)
+![07-recap.png](screenshots/07-recap.png)
 
 ### account
-![07-account.png](screenshots/07-account.png)
-
+![08-account.png](screenshots/08-account.png)

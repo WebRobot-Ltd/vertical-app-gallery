@@ -1,8 +1,8 @@
 # Perimetro Esposto
 
-_Il rating di sicurezza della superficie internet della tua azienda, da A a F._
+_Un rating di sicurezza da A a F per la superficie internet della tua azienda._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (8 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,10 @@ Voglio realizzare Perimetro Esposto, un servizio che assegna un rating di sicure
 
 ## Features not expressible today (spec.extensions)
 
-- **email_alerts**: Email alerts when the grade worsens or a KEV vulnerability appears are not available yet: the alert is recorded in scan_results (alert, alert_reason) and shown in the 'Storico voti e avvisi' view. The alert_email is collected for when notifications are supported.
-- **shodan_hibp_keys**: Connecting each customer's own Shodan and Have I Been Pwned API keys needs per-customer credentials, not available yet. The agents declare in the report that ports and breached credentials were not assessed and redistribute that 10% weight.
-- **broker_client_hierarchy**: A broker sees all the domains of their clients by creating one monitored-domain entry per client under their own account; a client invited into the same records (separate login with read-only access) needs per-record sharing, not modelled here.
-- **plan_domain_cap**: The domain cap per plan (5 / 25 / 100) is enforced only through maxPerUser on watches and the monthly credit allowance, not as an exact per-domain counter.
-- **authorization_proof**: The authorisation checkbox is required in the form and checked by the agent (it refuses to scan without it); a stored audit log of the declaration is the run's own input.
+- **domain_ownership_check**: Authorization is a declaration (checkbox) enforced by the agent; verification of domain ownership (DNS TXT challenge) is not available yet.
+- **domain_quota**: The per-plan domain count is enforced through a monthly run quota (about 5 runs per domain); a hard cap on instances per plan is not expressible yet.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,18 +24,17 @@ Voglio realizzare Perimetro Esposto, un servizio che assegna un rating di sicure
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### new_scan
-![03-new_scan.png](screenshots/03-new_scan.png)
+### domains
+![03-domains.png](screenshots/03-domains.png)
 
-### scans
-![04-scans.png](screenshots/04-scans.png)
+### my_scans
+![04-my_scans.png](screenshots/04-my_scans.png)
 
-### watches
-![05-watches.png](screenshots/05-watches.png)
+### broker_clients
+![05-broker_clients.png](screenshots/05-broker_clients.png)
 
-### grades
-![06-grades.png](screenshots/06-grades.png)
+### runs
+![06-runs.png](screenshots/06-runs.png)
 
 ### account
 ![07-account.png](screenshots/07-account.png)
-

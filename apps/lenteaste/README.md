@@ -1,8 +1,8 @@
 # LenteAste
 
-_Le aste giudiziarie, lette per te: rischi e costo reale prima di offrire._
+_Aste giudiziarie immobiliari, senza leggere cento pagine di perizia._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (16 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,11 +10,9 @@ Mi serve LenteAste, un'app per investitori e privati che vogliono comprare immob
 
 ## Features not expressible today (spec.extensions)
 
-- **email_alerts**: Le email con scheda e semaforo quando compare un'asta compatibile non sono ancora disponibili: per ora le aste compatibili compaiono nella vista 'Aste compatibili' aggiornata ogni mattina.
-- **pvp_terms**: Prima della pubblicazione verificare le condizioni di riuso del Portale delle Vendite Pubbliche e se esiste un'API ufficiale; il collettore lavora con pochi accessi e si ferma se non consentito.
-- **favorites_button**: Il pulsante 'aggiungi ai preferiti' sulla scheda non è espresso dal manifest: i preferiti si salvano per ora tramite la collezione favorites.
+- **pvp_reuse_terms**: Verificare e documentare le condizioni di riuso dei dati del Portale delle Vendite Pubbliche prima della pubblicazione; il collector è limitato a un passaggio giornaliero con richieste contenute.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -28,24 +26,23 @@ Mi serve LenteAste, un'app per investitori e privati che vogliono comprare immob
 ### searches
 ![03-searches.png](screenshots/03-searches.png)
 
-### matches
-![04-matches.png](screenshots/04-matches.png)
-
 ### auctions_list
-![05-auctions_list.png](screenshots/05-auctions_list.png)
+![04-auctions_list.png](screenshots/04-auctions_list.png)
 
-### favorites_list
-![06-favorites_list.png](screenshots/06-favorites_list.png)
+### fav_add
+![05-fav_add.png](screenshots/05-fav_add.png)
+
+### favorites
+![06-favorites.png](screenshots/06-favorites.png)
+
+### new_deep
+![07-new_deep.png](screenshots/07-new_deep.png)
+
+### reports
+![08-reports.png](screenshots/08-reports.png)
 
 ### chat
-![07-chat.png](screenshots/07-chat.png)
-
-### new
-![08-new.png](screenshots/08-new.png)
-
-### analyses
-![09-analyses.png](screenshots/09-analyses.png)
+![09-chat.png](screenshots/09-chat.png)
 
 ### account
 ![10-account.png](screenshots/10-account.png)
-

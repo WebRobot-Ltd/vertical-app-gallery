@@ -1,8 +1,8 @@
 # Cantiere in Conto
 
-_Preventivi, commesse e margini per la tua impresa edile._
+_Dal preventivo alla commessa, con il margine sempre sotto controllo._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (31 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,11 @@ Vorrei Cantiere in Conto, un sistema operativo per imprese edili piccole e medie
 
 ## Features not expressible today (spec.extensions)
 
-- **accounting_oauth**: OAuth connection of the accounting software and of the company's bank accounts to reconcile payments and receipts: needs per-customer credentials, not available yet. Meanwhile invoices are pasted in the site desk chat.
-- **mailbox_ingest**: Reading supplier invoices from a connected mailbox is not available yet (no email connectors); invoices are pasted as text or link in the desk chat.
-- **photo_upload**: Photo and document upload from the foreman's phone is not available yet (no file fields): the foreman gives a link or writes text.
-- **pdf_and_email**: The quote PDF is the printable report (print / save as PDF); sending it to the client by email is not available yet.
-- **foreman_scope**: The foreman sees only the sites shared with him: the owner invites him as editor on each job and progress record; a company-wide team model is not yet declarative.
+- **oauth_accounting_bank**: Collegamento OAuth al gestionale contabile e ai conti bancari per riconciliare pagamenti e incassi: non disponibile per ora (OAuth verso altri servizi non è supportato). Nel frattempo i costi si aggiornano dalle fatture caricate.
+- **mailbox_intake**: Lettura automatica della casella email collegata per le fatture dei fornitori: non disponibile per ora. Le fatture si caricano dal modulo (o si inoltrano al caricamento) e l'agente le abbina alla commessa.
+- **quote_to_job**: La conversione del preventivo accettato in commessa è un passaggio manuale tramite il modulo Nuova commessa; l'invio del PDF al cliente avviene dal report stampabile.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,30 +25,35 @@ Vorrei Cantiere in Conto, un sistema operativo per imprese edili piccole e medie
 ### home
 ![02-home.png](screenshots/02-home.png)
 
+### profile
+![03-profile.png](screenshots/03-profile.png)
+
 ### new_quote
-![03-new_quote.png](screenshots/03-new_quote.png)
+![04-new_quote.png](screenshots/04-new_quote.png)
 
 ### quotes
-![04-quotes.png](screenshots/04-quotes.png)
+![05-quotes.png](screenshots/05-quotes.png)
 
-### approvals
-![05-approvals.png](screenshots/05-approvals.png)
+### new_job
+![06-new_job.png](screenshots/06-new_job.png)
 
 ### jobs
-![06-jobs.png](screenshots/06-jobs.png)
+![07-jobs.png](screenshots/07-jobs.png)
 
-### progress
-![07-progress.png](screenshots/07-progress.png)
+### site_update
+![08-site_update.png](screenshots/08-site_update.png)
+
+### updates
+![09-updates.png](screenshots/09-updates.png)
+
+### new_invoice
+![10-new_invoice.png](screenshots/10-new_invoice.png)
 
 ### invoices
-![08-invoices.png](screenshots/08-invoices.png)
+![11-invoices.png](screenshots/11-invoices.png)
 
-### desk_chat
-![09-desk_chat.png](screenshots/09-desk_chat.png)
-
-### weekly
-![10-weekly.png](screenshots/10-weekly.png)
+### reports
+![12-reports.png](screenshots/12-reports.png)
 
 ### account
-![11-account.png](screenshots/11-account.png)
-
+![13-account.png](screenshots/13-account.png)

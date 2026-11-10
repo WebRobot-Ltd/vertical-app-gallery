@@ -1,8 +1,8 @@
 # VenditoreChat
 
-_Un agente di vendita per il tuo negozio online, sempre in chat._
+_Un agente di vendita per il tuo shop Shopify, sempre in chat._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (12 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,14 +10,13 @@ Vogliamo VenditoreChat, un agente di vendita per negozi online che parla con i c
 
 ## Features not expressible today (spec.extensions)
 
-- **shopify_connector**: Not available yet: importing catalog, variants, stock and orders from Shopify needs each merchant's credentials. For now the catalog is filled in manually or by pasted data.
-- **whatsapp_channel**: Not available yet: WhatsApp channel. Only the web chat works for now.
-- **notifications**: Not available yet: order shipping updates, new-product campaigns and abandoned-cart messages sent to customers.
-- **abandoned_cart_followup**: Not available yet: the scheduled abandoned-cart follow-up was removed, because carts and conversations are now private records of the user (needed for the public chat) and one app-wide scheduled agent cannot read them. Open carts are listed in the dashboard.
-- **human_takeover**: Operator taking over a live chat is not available yet; conversations flagged 'handoff' are listed in the dashboard.
-- **multi_merchant**: One merchant per app instance. The sales commission is applied through per_transaction billing.
+- **whatsapp_channel**: WhatsApp conversations are not available yet: only the in-app/web chat works. Customer-facing public chat widget on the merchant's site (using the merchant's Shopify key for anonymous visitors) also needs a custom integration.
+- **marketing_campaigns**: New-product campaigns to consented customers (WhatsApp/email lists) are not available yet; consents are recorded for future use.
+- **percentage_commission**: The sales commission is approximated by a fixed credit fee per agent sale; a true percentage of sale value is not expressible yet.
+- **hourly_cart_reminder**: Abandoned-cart reminders fire on a date (09:00 the day set in remind_on), not a few hours after abandonment.
+- **shopify_oauth**: Shopify connects through an Admin API access token pasted by the merchant, not OAuth install.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -28,24 +27,23 @@ Vogliamo VenditoreChat, un agente di vendita per negozi online che parla con i c
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### shop_chat
-![03-shop_chat.png](screenshots/03-shop_chat.png)
-
 ### dashboard
-![04-dashboard.png](screenshots/04-dashboard.png)
+![03-dashboard.png](screenshots/03-dashboard.png)
 
-### kpis
-![05-kpis.png](screenshots/05-kpis.png)
+### assistant
+![04-assistant.png](screenshots/04-assistant.png)
 
-### conversations_list
-![06-conversations_list.png](screenshots/06-conversations_list.png)
+### conversations
+![05-conversations.png](screenshots/05-conversations.png)
 
-### carts_list
-![07-carts_list.png](screenshots/07-carts_list.png)
+### takeover
+![06-takeover.png](screenshots/06-takeover.png)
 
-### refunds
-![08-refunds.png](screenshots/08-refunds.png)
+### consents
+![07-consents.png](screenshots/07-consents.png)
+
+### approvals
+![08-approvals.png](screenshots/08-approvals.png)
 
 ### account
 ![09-account.png](screenshots/09-account.png)
-

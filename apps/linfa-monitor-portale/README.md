@@ -1,8 +1,8 @@
-# Plant Sensor Cockpit
+# AgroSensori
 
-_I dati dei tuoi sensori, interpretati: semaforo per campo e consigli sull'irrigazione._
+_Lo stato delle tue piante, letto dai sensori e anticipato dal meteo._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (15 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,12 +10,9 @@ Descrivo solo lo strato software di un servizio di monitoraggio delle piante bas
 
 ## Features not expressible today (spec.extensions)
 
-- **sensor_webhook**: Ingestion of sensor measurements: a webhook per station (token mapped to the owner user) that writes records into readings without an agent run. Not expressible in the manifest yet.
-- **email_alerts**: Email alert when a parameter exceeds the threshold: notifications are not available yet. For now alerts appear in the dashboard (alert flag).
-- **per_station_pricing**: Annual subscription priced per connected station: modelled as tiers (10 / 50 stations); per-unit quantity billing and the station limit enforcement are not available yet.
-- **consultant_clients**: The consultant sees clients' fields through per-record viewer invitations on fields and stations; automatic aggregation across followed clients is not available yet.
+- **consultant_assessments**: Consultants read fields, stations and readings of followed clients; the per-instance analysis reports remain with the farm owner.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -29,21 +26,23 @@ Descrivo solo lo strato software di un servizio di monitoraggio delle piante bas
 ### dashboard
 ![03-dashboard.png](screenshots/03-dashboard.png)
 
-### fields
-![04-fields.png](screenshots/04-fields.png)
+### new_field
+![04-new_field.png](screenshots/04-new_field.png)
 
-### stations
-![05-stations.png](screenshots/05-stations.png)
+### new_station
+![05-new_station.png](screenshots/05-new_station.png)
+
+### fields_list
+![06-fields_list.png](screenshots/06-fields_list.png)
+
+### stations_list
+![07-stations_list.png](screenshots/07-stations_list.png)
 
 ### watches
-![06-watches.png](screenshots/06-watches.png)
+![08-watches.png](screenshots/08-watches.png)
 
-### weekly
-![07-weekly.png](screenshots/07-weekly.png)
-
-### weekly_list
-![08-weekly_list.png](screenshots/08-weekly_list.png)
+### weekly_watches
+![09-weekly_watches.png](screenshots/09-weekly_watches.png)
 
 ### account
-![09-account.png](screenshots/09-account.png)
-
+![10-account.png](screenshots/10-account.png)

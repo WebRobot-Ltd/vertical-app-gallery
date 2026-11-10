@@ -4,13 +4,13 @@ metadata:
   slug: impiantivista
   displayName: ImpiantiVista
   tagline:
-    it: Gli agenti che vegliano sui tuoi impianti fotovoltaici ed eolici.
-    en: Agents watching over your solar and wind plants.
+    it: Agenti AI che controllano la resa dei tuoi impianti rinnovabili.
+    en: AI agents that watch the yield of your renewable plants.
   description:
-    it: 'Registra i tuoi impianti: gli agenti confrontano la produzione reale con quella attesa (Open-Meteo, PVGIS), individuano
-      i cali di rendimento, ne ipotizzano la causa e aprono una segnalazione al tecnico.'
-    en: 'Register your plants: agents compare real output with the expected one (Open-Meteo, PVGIS), spot yield drops, hypothesise
-      the cause and open a ticket for the technician.'
+    it: Registra i tuoi impianti fotovoltaici ed eolici, collega i dati di produzione e lascia che gli agenti li confrontino
+      con la produzione attesa (Open-Meteo, PVGIS), individuino i cali anomali e aprano una segnalazione al tecnico.
+    en: Register your solar and wind plants, connect production data and let agents compare it with expected output (Open-Meteo,
+      PVGIS), spot abnormal drops and open a ticket for the technician.
   langs:
   - it
   - en
@@ -21,10 +21,10 @@ spec:
   branding:
     theme: light
     palette:
-      primary: '#0b3c5d'
-      accent: '#f2a900'
-      background: '#f6f9fb'
-      foreground: '#14212b'
+      primary: '#0b3d2e'
+      accent: '#e8a317'
+      background: '#f6f8f5'
+      foreground: '#16231d'
     fonts:
       body: Inter
       display: Manrope
@@ -33,7 +33,6 @@ spec:
       color: primary
     - text: Vista
       color: accent
-    width: wide
   header:
     links:
     - label:
@@ -41,8 +40,8 @@ spec:
         en: How it works
       href: '#come-funziona'
     - label:
-        it: Fonti
-        en: Sources
+        it: Fonti dati
+        en: Data sources
       href: '#fonti'
     cta:
       label:
@@ -57,7 +56,7 @@ spec:
     roles:
     - key: admin
       assignedBy: admin_emails
-    - key: manager
+    - key: user
       label:
         it: Gestore
         en: Operator
@@ -67,24 +66,22 @@ spec:
         it: Tecnico
         en: Technician
       assignedBy: derived
-      from: collection:tickets.technician_email
+      from: collection:plants.technician_email
   limits:
-  - action: agent:reporter
-    per: user
-    max: 5
-    window: day
+  - action: create:plants
+    max: 1
+    window: total
     roles:
-    - manager
-  egress:
-    hosts:
-    - archive-api.open-meteo.com
-    - re.jrc.ec.europa.eu
-    notes: 'Open-Meteo: free API, CC BY 4.0 attribution (non-commercial tier; commercial use needs their paid plan). PVGIS
-      (European Commission JRC): free reuse with attribution.'
+    - user
+    plans:
+      starter: 3
+      pro: 20
+      portfolio: -1
   agents:
   - key: analyst
     role: scheduled
-    description: 'Daily check of one plant: expected vs real output, anomaly, cause, ticket.'
+    description: Compares actual and expected production of one plant, finds anomalous drops, hypothesises the cause and opens
+      a ticket.
     memory: instance
     profile:
       inline:
@@ -93,8 +90,8 @@ spec:
         - id: analyst
           engine: agent_sdk
           model: claude-sonnet-5-5
-          max_turns: 14
-          max_budget_usd: 0.6
+          max_turns: 25
+          max_budget_usd: 0.8
           permission_mode: bypassPermissions
           disallowed_tools:
           - Bash
@@ -106,99 +103,110 @@ spec:
           - NotebookEdit
           - WebFetch
           - WebSearch
-          system_prompt: 'You are the performance analyst of one renewable plant (solar PV or wind). Steps: 1) read the plant''s
-            real production for the last 7 days with read_production. 2) Get the weather: openmeteo_archive (GET, query: latitude,
-            longitude, start_date, end_date as YYYY-MM-DD, hourly=shortwave_radiation,cloud_cover,wind_speed_100m,temperature_2m,
-            timezone=auto). 3) For solar also call pvgis_pvcalc (GET, query: lat, lon, peakpower=<kWp>, loss=14, angle=<tilt>,
-            aspect=<azimuth, 0=south>, outputformat=json) for the monthly baseline. Estimate expected daily energy: solar
-            = PVGIS baseline scaled by the actual radiation of the day; wind = rated power x capacity factor from the power
-            curve approximated on 100 m wind speed (cut-in 3 m/s, rated about 12 m/s, cut-out 25 m/s). State assumptions.
-            4) Compute daily performance ratio = real/expected. Flag an anomaly only if the drop is below 85% for at least
-            2 days or below 70% in one day, and weather does not explain it. 5) Ask ask_diagnostician to rank the likely causes
-            (soiling, shading, inverter/string fault, grid curtailment, self-consumption, sensor/data gap), citing the pattern
-            (gradual vs abrupt, time of day, partial vs total). 6) If the anomaly is significant, open a ticket with write_ticket
-            (plant, severity low|medium|high, cause, summary, technician_email from the goal, status open) and call request_intervention.
-            Never invent figures: if production data is missing, say so and do not open a ticket. Use your memory to avoid
-            duplicating an open ticket; end by calling remember with the 5 key points. Output: level-1 title "# <Plant> —
-            <date>", sections ## Result, ## Expected vs real, ## Cause hypotheses, ## Action. Then a final fenced json block:
-            {"date":"YYYY-MM-DD","plant":"","energy_kwh":0,"expected_kwh":0,"performance_ratio":0,"status":"ok|warning|alarm","cause":""}.'
-    delegates:
-    - diagnostician
-    awaits:
-    - intervention
+          system_prompt: 'You are a performance engineer for photovoltaic and wind plants. For ONE plant (given in the goal)
+            do this:
+
+            1. read_plants to get its data (type, lat, lon, kwp / kw, tilt, azimuth, inverters, source). read_readings for
+            the last 14 days of actual production (kWh per day). If the plant has a SolarEdge connection, you may use solaredge_energy;
+            otherwise use only the readings in the app. If there are no readings, say so, write nothing and end.
+
+            2. Expected production. Photovoltaic: open_meteo_archive (https://archive-api.open-meteo.com/v1/archive) with
+            query latitude, longitude, start_date, end_date, daily=shortwave_radiation_sum,temperature_2m_mean,cloud_cover_mean,
+            timezone=auto; estimate daily kWh = kWp x (radiation MJ/m2 / 3.6) x 0.80 (typical performance ratio, say so) and
+            cross-check the long-term monthly baseline with pvgis_pvcalc (https://re.jrc.ec.europa.eu/api/v5_2/PVcalc) with
+            query lat, lon, peakpower, loss=14, angle, aspect, outputformat=json. Wind: open_meteo_archive with daily=wind_speed_10m_mean,wind_gusts_10m_max
+            and wind_speed_unit=ms; scale to hub height with a power law (exponent 0.14, hub height from the plant, default
+            80 m) and apply a power curve typical for the rated power; state your assumptions.
+
+            3. For each day compute performance ratio = actual / expected. Save each day with write_status (plant_id, plant_name,
+            date, actual_kwh, expected_kwh, pr in %, status ok|warning|alarm, cause). Thresholds: ok >= 85%, warning 70-85%,
+            alarm < 70% (relative to the plant''s own historical level when available).
+
+            4. When the drop is significant (3 or more days below 80%, or a day below 60%) hypothesise the cause from the
+            shape of the data: gradual decline on clear days = soiling; drop at fixed hours of the day = shadowing; sudden
+            drop to a fraction (e.g. 1/2, 2/3 of expected on a plant with several inverters) = inverter fault; actual lower
+            on sunny days but constant evening = self-consumption (data may be net of it); zero = communication/grid outage.
+            Give a confidence (low/medium/high) and what to check. First read_tickets: do not open a ticket if one is already
+            open or taken for this plant. Otherwise open_ticket with plant_id, plant_name, date, severity (warning|critical),
+            deviation_pct, hypothesis, details, technician_email (from the plant), status open.
+
+            5. Never invent readings or figures; if a tool fails, say so. Use your memory (remember) to store the baseline
+            PR and open issues for the next run.
+
+            Final answer: a Markdown report starting with a level-1 title "# <Plant> — <date>" and sections ## Summary, ##
+            Expected vs actual (table), ## Anomalies and hypothesis, ## Actions. Write in the language with ISO code given
+            in the goal. Add a ```chart block (bar, labels = days, series actual and expected, unit kWh).'
+          mcp_servers: []
+    goalTemplate: 'Analyse the plant "{plant}" (plant id: {plant}). Today is {date}. Write the report in the language with
+      ISO code {lang}.'
+    output: markdown
     appTools:
-    - name: read_production
-      description: Production readings of the user's plants
+    - name: read_plants
+      description: Read the user's plants
       action: read
-      collection: production_readings
+      collection: plants
       scope: user
-    - name: write_ticket
-      description: Open a ticket on a plant
+    - name: read_readings
+      description: Read production readings sent by the user or by webhook
+      action: read
+      collection: readings
+      scope: user
+    - name: read_status
+      description: Read daily performance records
+      action: read
+      collection: plant_status
+      scope: user
+    - name: write_status
+      description: Save the daily performance of a plant
+      action: write
+      collection: plant_status
+      scope: user
+    - name: read_tickets
+      description: Read the tickets of the user
+      action: read
+      collection: tickets
+      scope: user
+    - name: open_ticket
+      description: Open a ticket for the technician
       action: write
       collection: tickets
       scope: user
-    - name: openmeteo_archive
-      description: Open-Meteo historical weather (radiation, wind) for a place and dates
+    - name: open_meteo_archive
+      description: Historical weather and radiation from Open-Meteo
       action: http
       http:
         method: GET
         url: https://archive-api.open-meteo.com/v1/archive
         attribution: Weather data by Open-Meteo.com, CC BY 4.0
     - name: pvgis_pvcalc
-      description: PVGIS expected monthly PV energy for a location and system
+      description: Expected PV production from PVGIS (JRC, European Commission)
       action: http
       http:
         method: GET
         url: https://re.jrc.ec.europa.eu/api/v5_2/PVcalc
         attribution: PVGIS, European Commission JRC
-    output: markdown+json
-    writesTo:
-      collection: daily_checks
-      parse: json_last
-      keyBy: date
-    limits:
-      maxTurns: 14
-      maxBudgetUsd: 0.6
-  - key: diagnostician
-    role: helper
-    description: Ranks the probable causes of a yield drop.
-    profile:
-      inline:
-        display_name: ImpiantiVista diagnostician
-        crews:
-        - id: diagnostician
-          engine: agent_sdk
-          model: claude-sonnet-5-5
-          max_turns: 3
-          max_budget_usd: 0.2
-          permission_mode: bypassPermissions
-          disallowed_tools:
-          - Bash
-          - Read
-          - Write
-          - Edit
-          - Glob
-          - Grep
-          - NotebookEdit
-          - WebFetch
-          - WebSearch
-          system_prompt: 'You are a senior O&M engineer for PV and wind plants. Given a plant description and a pattern of
-            underperformance, return up to 3 likely causes ranked, each with likelihood (high/medium/low), the evidence that
-            supports it, and the check a technician should do on site. Typical patterns: gradual decline then recovery after
-            rain = soiling; drop at fixed hours = shading; abrupt constant loss of a share of power = inverter or string fault;
-            flat daytime profile with grid data fine = curtailment or self-consumption; wind: lower output at good wind =
-            pitch/yaw/icing/downtime. Never present a hypothesis as a certainty.'
+    - name: solaredge_energy
+      description: 'Daily energy of the user''s SolarEdge site: path /<siteId>/energy, query startDate, endDate, timeUnit=DAY'
+      action: http
+      http:
+        method: GET
+        url: https://monitoringapi.solaredge.com/site
+        allowPath: true
+        attribution: SolarEdge Monitoring API
+        credential:
+          provider: solaredge
+          query: api_key
   - key: reporter
-    role: main
-    description: Monthly portfolio report for the operator.
+    role: scheduled
+    description: Writes the monthly portfolio report.
     profile:
       inline:
-        display_name: ImpiantiVista reporter
+        display_name: ImpiantiVista monthly reporter
         crews:
         - id: reporter
           engine: agent_sdk
           model: claude-sonnet-5-5
-          max_turns: 8
+          max_turns: 10
           max_budget_usd: 0.5
           permission_mode: bypassPermissions
           disallowed_tools:
@@ -211,172 +219,245 @@ spec:
           - NotebookEdit
           - WebFetch
           - WebSearch
-          system_prompt: 'You write the monthly portfolio report for a renewable plant operator. Read the data with search_checks
-            (daily checks) and search_tickets. Start with "# Report mensile / Monthly report — <month>" (in the requested
-            language). Sections ## Summary (total energy, average performance ratio), ## Plant by plant (table: plant, energy
-            kWh, expected kWh, PR %, alarms), ## Anomalies and tickets (status, cause, who is in charge), ## Recommendations.
-            Add one chart as a fenced block ```chart {"type":"bar","title":"Performance ratio per plant","labels":[...],"series":[{"name":"PR","values":[...]}],"unit":"%"}```.
-            Use only figures present in the data; say when data is missing. Do not give financial or legal advice.'
+          system_prompt: 'You write the monthly report of a renewable plant portfolio for its operator. Use report_status
+            to read the daily performance records and report_tickets for the tickets, and report_plants for the plants. Cover
+            the previous calendar month. Start with "# Monthly report — <month year>". Sections: ## Portfolio summary (total
+            actual vs expected kWh, average performance ratio), ## Plant by plant (table: plant, actual, expected, PR, alarms),
+            ## Anomalies and interventions (tickets opened, taken, closed, with the hypothesised causes), ## Recommendations.
+            Add a ```chart block (bar, PR per plant, unit %). Use only real figures from the data; say when data is missing.
+            Plain, concise language.'
+    goalTemplate: 'Write the monthly report of all my plants. Today is {date}. {?note}Operator''s note: {note}{/note} Write
+      in the language with ISO code {lang}.'
+    output: markdown
     appTools:
-    - name: search_checks
-      description: Daily checks of the user's plants
-      action: search
-      collection: daily_checks
+    - name: report_plants
+      description: Read the user's plants
+      action: read
+      collection: plants
       scope: user
-    - name: search_tickets
-      description: Tickets of the user's plants
-      action: search
+    - name: report_status
+      description: Read daily performance records
+      action: read
+      collection: plant_status
+      scope: user
+    - name: report_tickets
+      description: Read the tickets
+      action: read
       collection: tickets
       scope: user
-    goalTemplate: 'Month: {month}. Operator: {user}. Write the report in the language with ISO code {lang}. Today is {date}.'
-    output: markdown
   templates:
   - key: plant_watch
     title:
-      it: Impianto monitorato
-      en: Monitored plant
+      it: Controllo impianto
+      en: Plant watch
     description:
-      it: Un controllo giornaliero di produzione reale contro attesa, con segnalazione al tecnico.
-      en: A daily check of real vs expected output, with a ticket to the technician.
+      it: Ogni giorno l'agente confronta produzione reale e attesa di un impianto e apre segnalazioni.
+      en: Every day the agent compares actual and expected output of a plant and opens tickets.
     agent: analyst
     params:
     - name: plant
-      type: text
-      required: true
-      label:
-        it: Nome impianto
-        en: Plant name
-    - name: kind
       type: select
       required: true
+      optionsFrom: collection:plants
       label:
-        it: Tipo
-        en: Type
-      options:
-      - value: solar
-        label:
-          it: Fotovoltaico
-          en: Solar PV
-      - value: wind
-        label:
-          it: Eolico
-          en: Wind
-    - name: latitude
-      type: number
-      required: true
-      label:
-        it: Latitudine
-        en: Latitude
-    - name: longitude
-      type: number
-      required: true
-      label:
-        it: Longitudine
-        en: Longitude
-    - name: capacity_kw
-      type: number
-      required: true
-      label:
-        it: Potenza installata (kW)
-        en: Installed capacity (kW)
-    - name: tilt
-      type: number
-      label:
-        it: Inclinazione pannelli (°)
-        en: Panel tilt (°)
-    - name: azimuth
-      type: number
-      label:
-        it: Azimut (0 = sud)
-        en: Azimuth (0 = south)
-    - name: hub_height
-      type: number
-      label:
-        it: Altezza mozzo (m, eolico)
-        en: Hub height (m, wind)
-    - name: notes
-      type: textarea
-      maxLength: 500
-      label:
-        it: Caratteristiche (inverter, ombreggiamenti noti…)
-        en: Features (inverters, known shading…)
-    - name: technician_email
-      type: email
-      label:
-        it: Email del tecnico
-        en: Technician email
+        it: Impianto
+        en: Plant
+    goal: 'Analyse the plant "{instance}" (plant id: {plant}). Today is {date}. Write the report in the language with ISO
+      code {lang}.'
     schedule:
       cron: 0 6 * * *
-      userCanChange: false
+      userCanChange: true
     maxPerUser: 50
-    goal: 'Check yesterday and the last 7 days for plant "{plant}" ({kind}), lat {latitude}, lon {longitude}, {capacity_kw}
-      kW, tilt {tilt}, azimuth {azimuth}, hub height {hub_height} m. Features: {notes}. Technician: {technician_email}. Today
-      is {date}. Write in the language with ISO code {lang}.'
-    cost:
-      perRun: 3
-  approvals:
-  - key: intervention
+  - key: monthly_report
     title:
-      it: Presa in carico intervento
-      en: Intervention acceptance
-    description: The technician takes the ticket in charge and confirms the intervention.
-    role: technician
-    fields:
-    - plant
-    - severity
-    - cause
-    - summary
-    timeoutMinutes: 2880
-    onTimeout: reject
-    decidedBy: role
+      it: Report mensile
+      en: Monthly report
+    description:
+      it: Il primo del mese ricevi via email il report del portafoglio.
+      en: On the 1st of each month you get the portfolio report by email.
+    agent: reporter
+    params:
+    - name: note
+      type: text
+      maxLength: 200
+      label:
+        it: Nota (facoltativa)
+        en: Note (optional)
+    goal: Write the monthly report of all my plants. Today is {date}. {note} Write in the language with ISO code {lang}.
+    schedule:
+      cron: 0 7 1 * *
+      userCanChange: false
+    maxPerUser: 1
+    deliver:
+      to: owner
+      onlyIfNew: true
   data:
     collections:
-    - name: production_readings
+    - name: plants
+      description: Renewable plants of each operator
       ownedBy: user
-      description: Real production per plant and day (from webhook or SCADA export)
       fields:
-      - name: plant
+      - name: name
         type: text
         required: true
-      - name: date
-        type: date
+        label:
+          it: Nome impianto
+          en: Plant name
+      - name: kind
+        type: select
         required: true
-      - name: energy_kwh
+        label:
+          it: Tipo
+          en: Type
+        options:
+        - value: pv
+          label:
+            it: Fotovoltaico
+            en: Photovoltaic
+        - value: wind
+          label:
+            it: Eolico
+            en: Wind
+      - name: address
+        type: text
+        label:
+          it: Ubicazione
+          en: Location
+      - name: lat
         type: number
         required: true
-    - name: daily_checks
-      ownedBy: instance
-      description: Daily result of each plant check
+        label: Lat
+      - name: lon
+        type: number
+        required: true
+        label: Lon
+      - name: power_kw
+        type: number
+        required: true
+        label:
+          it: Potenza installata (kW)
+          en: Installed power (kW)
+      - name: tilt
+        type: number
+        label:
+          it: Inclinazione (°)
+          en: Tilt (°)
+      - name: azimuth
+        type: number
+        label:
+          it: Orientamento (°, 0 = sud)
+          en: Azimuth (°, 0 = south)
+      - name: inverters
+        type: number
+        label:
+          it: Numero inverter
+          en: Number of inverters
+      - name: hub_height
+        type: number
+        label:
+          it: Altezza mozzo (m, eolico)
+          en: Hub height (m, wind)
+      - name: source
+        type: select
+        label:
+          it: Fonte dati
+          en: Data source
+        options:
+        - value: webhook
+          label: Webhook
+        - value: manual
+          label:
+            it: Inserimento manuale
+            en: Manual entry
+        - value: solaredge
+          label: SolarEdge
+      - name: solaredge_site
+        type: text
+        label:
+          it: ID sito SolarEdge
+          en: SolarEdge site ID
+      - name: technician_email
+        type: email
+        label:
+          it: Email del tecnico
+          en: Technician email
+      access:
+      - role: technician
+        where:
+          technician_email: '{user.email}'
+        can:
+        - read
+    - name: readings
+      description: Daily production readings (webhook or manual)
+      ownedBy: user
+      retentionDays: 1095
       fields:
+      - name: plant_id
+        type: text
+        required: true
+        label:
+          it: ID impianto
+          en: Plant ID
       - name: date
         type: date
-      - name: plant
+        required: true
+        label: Data
+      - name: kwh
+        type: number
+        required: true
+        label: kWh
+    - name: plant_status
+      description: Daily actual vs expected production and performance ratio
+      ownedBy: user
+      fields:
+      - name: plant_id
         type: text
-      - name: energy_kwh
+      - name: plant_name
+        type: text
+      - name: technician_email
+        type: email
+      - name: date
+        type: date
+      - name: actual_kwh
         type: number
       - name: expected_kwh
         type: number
-      - name: performance_ratio
+      - name: pr
         type: number
       - name: status
-        type: text
+        type: select
+        options:
+        - ok
+        - warning
+        - alarm
       - name: cause
         type: text
+      access:
+      - role: technician
+        where:
+          technician_email: '{user.email}'
+        can:
+        - read
     - name: tickets
+      description: Anomaly tickets sent to technicians
       ownedBy: user
-      description: Tickets opened on anomalies
       fields:
-      - name: plant
+      - name: plant_id
         type: text
+      - name: plant_name
+        type: text
+      - name: date
+        type: date
       - name: severity
         type: select
         options:
-        - low
-        - medium
-        - high
-      - name: cause
-        type: text
-      - name: summary
+        - warning
+        - critical
+      - name: deviation_pct
+        type: number
+      - name: hypothesis
+        type: textarea
+      - name: details
         type: textarea
       - name: technician_email
         type: email
@@ -384,19 +465,86 @@ spec:
         type: select
         options:
         - open
-        - in_progress
+        - taken
         - done
-  inputForm:
-    title:
-      it: Report mensile
-      en: Monthly report
-    fields:
-    - name: month
-      type: text
-      required: true
-      label:
-        it: Mese (es. 2026-10)
-        en: Month (e.g. 2026-10)
+        default: open
+        label:
+          it: Stato
+          en: Status
+      - name: intervention_date
+        type: date
+        label:
+          it: Data intervento
+          en: Intervention date
+      - name: technician_note
+        type: textarea
+        label:
+          it: Nota del tecnico
+          en: Technician note
+      access:
+      - role: technician
+        where:
+          technician_email: '{user.email}'
+        can:
+        - read
+        - write
+    credentials:
+    - provider: solaredge
+      kind: api_key
+      scope: user
+      label: SolarEdge
+      help:
+        it: 'Nel portale SolarEdge: Admin > Accesso API > genera la chiave.'
+        en: 'In the SolarEdge portal: Admin > API access > generate the key.'
+  egress:
+    hosts:
+    - archive-api.open-meteo.com
+    - re.jrc.ec.europa.eu
+    - monitoringapi.solaredge.com
+    notes: 'Open-Meteo: free non-commercial/open data CC BY 4.0 (commercial use needs their API plan). PVGIS: JRC, reuse allowed
+      with attribution. SolarEdge: the user''s own key.'
+  triggers:
+  - key: readings_hook
+    'on':
+      webhook: true
+    write:
+      collection: readings
+      fields:
+        plant_id: plant_id
+        date: date
+        kwh: kwh
+  - key: ticket_new
+    'on':
+      collection: tickets
+      op: insert
+    notify:
+      to:
+      - owner
+      - record.technician_email
+      subject:
+        it: 'Segnalazione {record.plant_name}: calo di resa'
+        en: 'Alert {record.plant_name}: yield drop'
+      body:
+        it: 'Scostamento di {record.deviation_pct}% rispetto all''atteso. Ipotesi: {record.hypothesis}. Apri la segnalazione
+          per prenderla in carico.'
+        en: 'Deviation of {record.deviation_pct}% versus expected. Hypothesis: {record.hypothesis}. Open the ticket to take
+          it on.'
+      link: tickets
+  - key: ticket_done
+    'on':
+      collection: tickets
+      op: update
+      where:
+        status: done
+    notify:
+      to: owner
+      subject:
+        it: 'Intervento concluso: {record.plant_name}'
+        en: 'Intervention done: {record.plant_name}'
+      body:
+        it: 'Il tecnico ha confermato l''intervento. Nota: {record.technician_note}'
+        en: 'The technician confirmed the intervention. Note: {record.technician_note}'
+      link: tickets
   views:
   - key: home
     type: page
@@ -405,16 +553,17 @@ spec:
     sections:
     - type: hero
       title:
-        it: Sai **quanto dovrebbe produrre** il tuo impianto? Lo sanno i nostri agenti.
-        en: Do you know **how much your plant should produce**? Our agents do.
+        it: Sai **quanto dovrebbe produrre** il tuo impianto oggi?
+        en: Do you know **how much your plant should produce** today?
       text:
-        it: Confronto giornaliero tra produzione reale e attesa, cali anomali spiegati, segnalazioni al tecnico e dashboard
-          di portafoglio.
-        en: Daily comparison of real and expected output, explained anomalies, technician tickets and a portfolio dashboard.
+        it: Gli agenti confrontano la produzione reale con quella attesa da irraggiamento e vento, individuano i cali anomali,
+          ne ipotizzano la causa e avvisano il tecnico.
+        en: Agents compare real production with the output expected from irradiance and wind, spot abnormal drops, hypothesise
+          the cause and alert the technician.
       actions:
       - label:
-          it: Registra i tuoi impianti
-          en: Register your plants
+          it: Inizia
+          en: Get started
         href: /login
         style: primary
     - type: steps
@@ -424,43 +573,46 @@ spec:
         en: How it works
       items:
       - title:
-          it: Registra
-          en: Register
+          it: Registra gli impianti
+          en: Register your plants
         text:
-          it: Ubicazione, potenza e caratteristiche; invia i dati di produzione via webhook.
-          en: Location, capacity and features; send production data by webhook.
-        badge: '1'
+          it: Ubicazione, potenza, orientamento e tecnico di riferimento.
+          en: Location, power, orientation and reference technician.
       - title:
-          it: Analisi
-          en: Analysis
+          it: Collega i dati
+          en: Connect the data
         text:
-          it: Gli agenti stimano l'atteso con Open-Meteo e PVGIS e cercano i cali anomali.
-          en: Agents estimate the expected output with Open-Meteo and PVGIS and look for anomalous drops.
-        badge: '2'
+          it: Webhook dal tuo SCADA, chiave API SolarEdge o inserimento manuale.
+          en: Webhook from your SCADA, SolarEdge API key or manual entry.
       - title:
-          it: Intervento
-          en: Intervention
+          it: Gli agenti analizzano
+          en: Agents analyse
         text:
-          it: Segnalazione al tecnico, che la prende in carico e conferma.
-          en: Ticket to the technician, who accepts it and confirms.
-        badge: '3'
+          it: Produzione reale vs attesa, performance ratio, causa probabile.
+          en: Actual vs expected output, performance ratio, probable cause.
+      - title:
+          it: Il tecnico interviene
+          en: The technician acts
+        text:
+          it: Segnalazione via email, presa in carico e conferma dell'intervento.
+          en: Email ticket, take-over and intervention confirmation.
     - type: cards
       id: fonti
       title:
-        it: Fonti
-        en: Sources
+        it: Fonti dati
+        en: Data sources
       items:
       - title: Open-Meteo
         text:
-          it: Irraggiamento e vento storici (CC BY 4.0).
-          en: Historical radiation and wind (CC BY 4.0).
+          it: Irraggiamento, temperatura e vento storici.
+          en: Historical irradiance, temperature and wind.
       - title: PVGIS
         text:
-          it: Stime di produzione fotovoltaica, Commissione Europea JRC.
-          en: PV yield estimates, European Commission JRC.
+          it: Stime di produzione fotovoltaica del JRC europeo.
+          en: PV production estimates from the European JRC.
     - type: note
       content:
-        it: Le cause indicate sono ipotesi da verificare in loco, non diagnosi certe.
+        it: Le cause indicate sono ipotesi da verificare in campo, non diagnosi certe.
         en: Causes listed are hypotheses to verify on site, not certain diagnoses.
   - key: portfolio
     type: page
@@ -468,99 +620,151 @@ spec:
       it: Portafoglio
       en: Portfolio
     roles:
-    - manager
+    - user
     - admin
     sections:
     - type: data
       title:
-        it: Produzione e performance ratio
-        en: Production and performance ratio
-      source: collection:daily_checks
+        it: Indicatori
+        en: KPIs
+      source: collection:plant_status
       display: kpi
       kpis:
       - label:
-          it: Energia (kWh)
-          en: Energy (kWh)
+          it: Produzione reale (kWh)
+          en: Actual (kWh)
         agg: sum
-        field: energy_kwh
+        field: actual_kwh
         format: number
-      - label: PR
-        agg: avg
-        field: performance_ratio
-        format: percent
       - label:
-          it: Allarmi
-          en: Alarms
-        agg: count
-        field: status
+          it: Produzione attesa (kWh)
+          en: Expected (kWh)
+        agg: sum
+        field: expected_kwh
+        format: number
+      - label: Performance ratio %
+        agg: avg
+        field: pr
+        format: number
+      limit: 200
     - type: data
       title:
-        it: Per impianto
-        en: By plant
-      source: collection:daily_checks
+        it: Reale vs atteso
+        en: Actual vs expected
+      source: collection:plant_status
       display: chart
-      chart: bar
-      fields:
-      - key: plant
-      - key: performance_ratio
-        label: PR
-      limit: 60
-    - type: data
-      title:
-        it: Ultimi controlli
-        en: Latest checks
-      source: collection:daily_checks
-      display: table
+      chart: line
       fields:
       - key: date
-        label: Data
-        format: date
-      - key: plant
-        label: Plant
-      - key: energy_kwh
-        format: number
+      - key: actual_kwh
+        label: Real
       - key: expected_kwh
+        label: Expected
+      sort:
+        field: date
+        dir: asc
+      limit: 120
+    - type: data
+      title:
+        it: Allarmi per impianto
+        en: Alarms by plant
+      source: collection:plant_status
+      display: table
+      fields:
+      - key: plant_name
+        label:
+          it: Impianto
+          en: Plant
+      - key: date
+        format: date
+      - key: pr
+        label: PR %
         format: number
-      - key: performance_ratio
-        format: percent
       - key: status
         format: badge
       - key: cause
+        label:
+          it: Causa ipotizzata
+          en: Hypothesised cause
+      filters:
+      - field: status
+        op: '!='
+        value: ok
       sort:
         field: date
         dir: desc
       limit: 50
-    - type: data
-      title:
-        it: Segnalazioni
-        en: Tickets
-      source: collection:tickets
-      display: table
-      fields:
-      - key: plant
-      - key: severity
-        format: badge
-      - key: cause
-      - key: status
-        format: badge
-      limit: 50
+      empty:
+        it: Nessun allarme.
+        en: No alarms.
+  - key: plants_new
+    type: form
+    title:
+      it: Nuovo impianto
+      en: New plant
+    collection: plants
+    roles:
+    - user
+    - admin
+    submit:
+      label:
+        it: Salva impianto
+        en: Save plant
+      message:
+        it: Impianto salvato.
+        en: Plant saved.
+      redirect: plants
+    edit: true
   - key: plants
+    type: table
+    title:
+      it: Impianti
+      en: Plants
+    source: collection:plants
+    columns:
+    - name
+    - kind
+    - power_kw
+    - address
+    - technician_email
+    export: true
+    roles:
+    - user
+    - admin
+    - technician
+  - key: readings_new
+    type: form
+    title:
+      it: Inserisci produzione
+      en: Enter production
+    collection: readings
+    roles:
+    - user
+    - admin
+    submit:
+      label:
+        it: Salva
+        en: Save
+      message:
+        it: Lettura salvata.
+        en: Reading saved.
+  - key: watches
     type: instances
     template: plant_watch
     title:
-      it: I miei impianti
-      en: My plants
+      it: Controlli attivi
+      en: Active watches
     roles:
-    - manager
+    - user
     - admin
-  - key: readings
-    type: table
+  - key: monthly
+    type: instances
+    template: monthly_report
     title:
-      it: Dati di produzione
-      en: Production data
-    source: collection:production_readings
+      it: Report mensile
+      en: Monthly report
     roles:
-    - manager
+    - user
     - admin
   - key: tickets
     type: table
@@ -568,36 +772,50 @@ spec:
       it: Segnalazioni
       en: Tickets
     source: collection:tickets
+    columns:
+    - plant_name
+    - date
+    - severity
+    - deviation_pct
+    - hypothesis
+    - status
+    - intervention_date
     roles:
-    - manager
+    - user
+    - admin
     - technician
-    - admin
-  - key: interventions
-    type: approvals
+  - key: ticket_edit
+    type: form
     title:
-      it: Interventi
-      en: Interventions
-    approvals:
-    - intervention
+      it: Gestisci segnalazione
+      en: Handle ticket
+    collection: tickets
+    fields:
+    - status
+    - intervention_date
+    - technician_note
+    edit: true
+    nav: false
     roles:
+    - user
+    - admin
     - technician
-    - admin
-  - key: new_report
-    type: new_run
-    title:
-      it: Report mensile
-      en: Monthly report
-    roles:
-    - manager
-    - admin
-  - key: reports
+    submit:
+      label:
+        it: Aggiorna
+        en: Update
+      message:
+        it: Segnalazione aggiornata.
+        en: Ticket updated.
+      redirect: tickets
+  - key: history
     type: history
     title:
-      it: I miei report
-      en: My reports
+      it: Report
+      en: Reports
     source: run
     roles:
-    - manager
+    - user
     - admin
   - key: report
     type: report
@@ -607,74 +825,39 @@ spec:
   - key: account
     type: account
     title:
-      it: Abbonamento
-      en: Subscription
+      it: Abbonamento e collegamenti
+      en: Plan and connections
     roles:
-    - manager
+    - user
+  notifications:
+    emailOnRunDone: false
   billing:
     modes:
     - subscription
-    - credits
     currency: eur
-    signupCredits: 50
-    metering:
-      creditEur: 0.01
-      markupPct: 50
-      drivers:
-      - llm_tokens
-      - compute
-    costs:
-      agent:reporter:
-        estimate: 10
-        metered: true
-    packs:
-    - key: extra
-      credits: 1000
-      price: 10
-      label: Extra
     plans:
-    - key: small
+    - key: starter
       price: 29
       interval: month
       label:
-        it: Fino a 5 impianti / 2 MW
-        en: Up to 5 plants / 2 MW
-      includes:
-      - 5 plants
-      - 2 MW total
-      credits: 1500
-      creditsReset: monthly
-      roles:
-      - manager
+        it: Starter — fino a 3 impianti
+        en: Starter — up to 3 plants
     - key: pro
       price: 99
       interval: month
       label:
-        it: Fino a 25 impianti / 20 MW
-        en: Up to 25 plants / 20 MW
-      includes:
-      - 25 plants
-      - 20 MW total
-      credits: 8000
-      creditsReset: monthly
-      roles:
-      - manager
-  triggers:
-  - key: production_hook
-    description: Production data pushed by the operator's monitoring system
-    'on':
-      webhook: true
-    start:
-      agent: analyst
-    goal: 'Production data received: {event}. Store nothing yourself; check the plant it refers to.'
-    asUser: true
+        it: Pro — fino a 20 impianti
+        en: Pro — up to 20 plants
+    - key: portfolio
+      price: 249
+      interval: month
+      label:
+        it: Portfolio — impianti illimitati
+        en: Portfolio — unlimited plants
   extensions:
-  - key: scada_connector
-    description: 'Authorised access to the SCADA/monitoring system needs per-customer credentials: not available yet. For
-      now production arrives by webhook or is entered in production_readings.'
-  - key: monthly_email
-    description: 'Monthly report by email is not available yet: the operator generates the report in the app. Email alerts
-      to the technician are also pending: the technician sees tickets and interventions in the app.'
-  - key: plan_limits
-    description: Plan limits on number/power of plants are described in the plans but enforced by the owner for now (maxPerUser
-      on the template is 50).
+  - key: scada_connectors
+    description: 'Direct pull from arbitrary SCADA/monitoring hosts and OAuth sign-in to vendor portals is not available yet:
+      data arrives by webhook (POST /api/hooks/readings_hook), manual entry or a SolarEdge API key. Webhook records are not
+      yet bound to a specific user; the hook secret should be issued per operator.'
+  - key: pricing_by_power
+    description: Plans are tiered by number of plants (quota); pricing by installed kW is not expressible yet.

@@ -1,8 +1,8 @@
 # Pratiche in Ordine
 
-_Dai tuoi documenti fiscali a una pratica pronta da approvare._
+_I tuoi documenti fiscali diventano una pratica pronta da approvare._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (13 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,14 +10,11 @@ Voglio costruire Pratiche in Ordine, un'app che trasforma i documenti fiscali di
 
 ## Features not expressible today (spec.extensions)
 
-- **cassetto_fiscale**: Recupero automatico dei dati dal cassetto fiscale con delega del contribuente: richiede credenziali/delega di ogni cliente, non ancora disponibile. Per ora i dati si incollano in chat.
-- **file_upload**: Caricamento di file e foto dal telefono non ancora disponibile: il contribuente incolla il testo del documento o un link.
-- **client_assignment**: Assegnazione dei clienti ai professionisti (il professionista vede solo i clienti assegnati) e visibilità dei documenti del cliente al professionista assegnato: oggi il professionista vede le richieste di revisione a lui destinate, non l'archivio; serve un meccanismo di assegnazione.
-- **transmission**: Trasmissione della pratica da parte dello studio dopo la conferma del cliente: avviene fuori dall'app; lo stato 'trasmessa' è aggiornato dallo studio.
-- **notifications**: Email di avviso a cliente e studio (bozza pronta, modifiche richieste, conferma) non ancora disponibili.
-- **confidential_storage**: Cifratura e conservazione riservata dei documenti, retention e consensi privacy (GDPR) da configurare a livello di piattaforma.
+- **cassetto_fiscale**: Recupero automatico dei dati dal cassetto fiscale con delega: richiede accesso con SPID/CIE/Entratel e deleghe, non disponibile (nessun OAuth o accesso senza chiave API). Per ora l'utente carica i documenti.
+- **trasmissione**: La trasmissione all'Agenzia delle Entrate resta a carico dello studio partner, fuori dall'app.
+- **istruzioni_ufficiali**: La collezione 'instructions' va popolata dagli admin con le istruzioni ufficiali (es. Agenzia delle Entrate) per anno; l'elenco 'professionals' con i professionisti dello studio.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -28,21 +25,29 @@ Voglio costruire Pratiche in Ordine, un'app che trasforma i documenti fiscali di
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### new
-![03-new.png](screenshots/03-new.png)
+### profile
+![03-profile.png](screenshots/03-profile.png)
+
+### new_practice
+![04-new_practice.png](screenshots/04-new_practice.png)
+
+### practices_history
+![05-practices_history.png](screenshots/05-practices_history.png)
+
+### my_practices
+![06-my_practices.png](screenshots/06-my_practices.png)
+
+### my_documents
+![07-my_documents.png](screenshots/07-my_documents.png)
+
+### clients
+![08-clients.png](screenshots/08-clients.png)
 
 ### assistant
-![04-assistant.png](screenshots/04-assistant.png)
+![09-assistant.png](screenshots/09-assistant.png)
 
-### documents
-![05-documents.png](screenshots/05-documents.png)
-
-### practices
-![06-practices.png](screenshots/06-practices.png)
-
-### approvals
-![07-approvals.png](screenshots/07-approvals.png)
+### decisions
+![10-decisions.png](screenshots/10-decisions.png)
 
 ### account
-![08-account.png](screenshots/08-account.png)
-
+![11-account.png](screenshots/11-account.png)

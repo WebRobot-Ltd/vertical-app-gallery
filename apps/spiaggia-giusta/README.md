@@ -2,7 +2,7 @@
 
 _La spiaggia migliore di oggi, in base a mare e vento._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (12 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,8 +10,34 @@ SpiaggiaGiusta consiglia ogni giorno la spiaggia migliore in base al mare e al v
 
 ## Features not expressible today (spec.extensions)
 
-- **morning_email**: Email at 7 with the top 3 beaches, and an email when an alert matches: notifications are not available yet. For now results are shown in the app (ranking and triggered alerts).
-- **copernicus_direct**: Copernicus Marine needs per-account credentials and NetCDF/Zarr downloads, which an HTTP tool cannot do. Marine data (waves, sea temperature, currents) comes via the Open-Meteo Marine API instead.
-- **alerts_plan_gate**: Alerts are limited to subscribers of the 'season' plan through the agent cost's requiresPlan; the free tier only has the daily ranking.
-- **open_meteo_licence**: Open-Meteo free API is non-commercial: buy a commercial API key before charging for the season plan.
+- **copernicus_direct**: Direct access to Copernicus Marine (needs a Copernicus account/credentials and its client): not available; marine data come through the Open-Meteo Marine API.
+- **alert_only_when_met**: Alert emails are sent after each daily check (onlyIfNew limits repeats); an email only when the condition is met would need a trigger on a hits collection.
 
+## Screenshots (interpretive runtime, no data)
+
+### home-anon
+![00-home-anon.png](screenshots/00-home-anon.png)
+
+### home-mobile
+![01-home-mobile.png](screenshots/01-home-mobile.png)
+
+### home
+![02-home.png](screenshots/02-home.png)
+
+### picks
+![03-picks.png](screenshots/03-picks.png)
+
+### ranking
+![04-ranking.png](screenshots/04-ranking.png)
+
+### alerts
+![05-alerts.png](screenshots/05-alerts.png)
+
+### beaches_list
+![06-beaches_list.png](screenshots/06-beaches_list.png)
+
+### beaches_admin
+![07-beaches_admin.png](screenshots/07-beaches_admin.png)
+
+### account
+![08-account.png](screenshots/08-account.png)

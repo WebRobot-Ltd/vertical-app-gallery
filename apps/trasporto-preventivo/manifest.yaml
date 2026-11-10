@@ -6,8 +6,8 @@ metadata:
   tagline:
     it: Preventivo immediato per il trasporto sanitario non urgente.
   description:
-    it: TrasportoPreventivo è lo strato software per prenotare trasporti sanitari non urgenti (visite, terapie) con operatori
-      accreditati. Il servizio fisico resta agli operatori.
+    it: 'Il software per prenotare il trasporto sanitario non urgente verso visite e terapie: preventivo subito, pagamento
+      online, richiesta inoltrata all''operatore accreditato della zona. Il servizio fisico resta agli operatori.'
   langs:
   - it
   defaultLang: it
@@ -17,13 +17,13 @@ spec:
   branding:
     theme: light
     palette:
-      primary: '#0b3c5d'
-      accent: '#1f8a70'
-      background: '#f6f9fb'
-      foreground: '#14202b'
+      primary: '#0b4f6c'
+      accent: '#1c9a8a'
+      background: '#f6fafb'
+      foreground: '#14232b'
     fonts:
       body: Inter
-      display: Source Serif 4
+      display: Inter
     wordmark:
     - text: Trasporto
       color: primary
@@ -34,6 +34,9 @@ spec:
     - label:
         it: Come funziona
       href: '#come-funziona'
+    - label:
+        it: Per gli operatori
+      href: '#operatori'
     cta:
       label:
         it: Richiedi un preventivo
@@ -45,23 +48,22 @@ spec:
       - home
     roles:
     - key: admin
-      label: Admin
       assignedBy: admin_emails
-    - key: coordinator
+    - key: user
       label:
-        it: Coordinatore
-      assignedBy: invite
+        it: Utente
+      assignedBy: signup
     - key: operator
       label:
         it: Operatore
       assignedBy: derived
       from: collection:operators.email
-    - key: user
+    - key: coordinator
       label:
-        it: Utente
-      assignedBy: signup
+        it: Coordinatore
+      assignedBy: invite
   limits:
-  - action: agent:quoter
+  - action: run
     per: user
     max: 10
     window: day
@@ -70,8 +72,10 @@ spec:
   agents:
   - key: quoter
     role: main
-    description: Stima distanza e durata, applica i listini degli operatori accreditati della zona e produce il preventivo;
-      segnala i casi particolari al coordinatore.
+    description: Calcola distanza e durata, applica i listini degli operatori, propone il preventivo e inoltra la richiesta.
+    awaits:
+    - confirm_quote
+    - coordinator_check
     profile:
       inline:
         display_name: Preventivatore trasporto sanitario
@@ -79,8 +83,8 @@ spec:
         - id: quoter
           engine: agent_sdk
           model: claude-sonnet-5-5
-          max_turns: 8
-          max_budget_usd: 0.4
+          max_turns: 20
+          max_budget_usd: 0.8
           permission_mode: bypassPermissions
           disallowed_tools:
           - Bash
@@ -92,85 +96,119 @@ spec:
           - NotebookEdit
           - WebFetch
           - WebSearch
-          system_prompt: 'Sei il preventivatore di TrasportoPreventivo, piattaforma software per prenotare trasporto sanitario
-            non urgente. Non gestisci mezzi né servizio: lo svolgono operatori accreditati.
+          system_prompt: 'Sei l''assistente che prepara preventivi per il trasporto sanitario NON urgente (visite, terapie).
+            Non gestisci il servizio fisico: lo svolge l''operatore accreditato. Non dai consigli medici e non gestisci emergenze:
+            se le note descrivono un''urgenza, dillo e invita a chiamare il 112.
 
-            Procedura: 1) stima distanza (km) e durata (minuti) del tragitto dalle località indicate, dichiarando che è una
-            stima stradale; 2) con il tool list_operators leggi gli operatori accreditati e i listini; scegli quelli che coprono
-            la zona di partenza e il tipo di trasporto richiesto; 3) calcola il prezzo con il listino: quota base + km x tariffa
-            al km + supplementi (sedia a rotelle, barella, accompagnatore, attesa), mai inventare tariffe: se nessun operatore
-            copre zona o tipo, dillo e non dare prezzo; 4) indica la disponibilità in base a fascia oraria e giorni dell''operatore
-            (da confermare dall''operatore). Casi particolari (barella con note cliniche delicate, ossigeno, mobilità molto
-            ridotta, tragitto oltre 150 km, orario notturno) richiedono revisione del coordinatore: in tal caso chiama request_special_case
-            prima di proporre la conferma e scrivilo nel report. Non dare consigli medici.
 
-            Struttura del report: un titolo di primo livello "# Preventivo trasporto — <partenza> → <destinazione>"; poi ##
-            Riepilogo richiesta, ## Tragitto (km, durata stimata), ## Preventivo (tabella voci e totale in euro IVA inclusa
-            se indicata nel listino), ## Disponibilità, ## Operatore proposto, ## Prossimi passi (conferma e pagamento online
-            con carta; poi l''operatore accetta; il coordinatore può intervenire sui casi particolari). Concludi con un blocco
-            ```json con i campi: from_address, to_address, when, transport_type, companion, distance_km, duration_min, price_eur,
-            operator_email, operator_name, special_case (true/false), status:"quoted". Scrivi in italiano.'
+            PROCEDURA
+
+            1. Con lo strumento geocode (query: q=<indirizzo>&format=json&limit=1) ottieni lat/lon di partenza e destinazione
+            (una richiesta alla volta, rispetta il limite di 1 al secondo).
+
+            2. Con lo strumento route (path: /<lonA>,<latA>;<lonB>,<latB>, query: overview=false) ottieni distanza (metri)
+            e durata (secondi). Converti in km e minuti.
+
+            3. Con search_tariffs leggi i listini (campi: operator_email, operator_name, zone, transport_type, base_fee, per_km,
+            companion_fee, wait_fee, min_notice_hours). Considera solo gli operatori la cui zona copre la partenza e il tipo
+            di trasporto richiesto. Prezzo = base_fee + per_km*km + (companion_fee se c''è accompagnatore). Se più operatori
+            coprono, scegli il più conveniente e disponibile rispetto al preavviso minimo. Se nessuno copre, dillo chiaramente
+            e chiudi con status cancelled.
+
+            4. Scrivi il report in Markdown, iniziando con un titolo "# Preventivo trasporto — <partenza> → <destinazione>".
+            Sezioni ##: Riepilogo corsa (tabella: data, ora, tipo, accompagnatore), Distanza e durata, Preventivo (voci e
+            totale in euro, IVA/commissione di servizio inclusa nel totale mostrato), Disponibilità (operatore e preavviso),
+            Note. Non inventare cifre: usa solo dati dei listini e del percorso.
+
+            5. Caso particolare = trasporto in barella, oppure note sulle condizioni che indicano ossigeno, patologie complesse,
+            comportamenti a rischio o esigenze speciali. In tal caso dillo nel report.
+
+            6. Chiama request_confirm_quote per chiedere all''utente di confermare il preventivo. Se rifiuta, chiudi con status
+            cancelled.
+
+            7. Se confermato e il caso è particolare, chiama request_coordinator_check e attendi il coordinatore; se rifiuta,
+            status cancelled.
+
+            8. Termina con UN blocco ```json con il record della corsa: origin, destination, ride_date (YYYY-MM-DD), ride_time
+            (HH:MM), transport_type, companion (true/false), conditions, distance_km, duration_min, price (numero, euro),
+            operator_email, operator_name, special_case (true/false), contact_email, status ("requested" se confermata, "cancelled"
+            altrimenti).'
           mcp_servers: []
-    goalTemplate: 'Richiesta di trasporto sanitario non urgente.
+    goalTemplate: 'Partenza: {origin}
 
-      Partenza: {from_address}
+      Destinazione: {destination}
 
-      Destinazione: {to_address}
-
-      Data: {date_of_ride} ore {time_of_ride}
+      Data: {ride_date} alle {ride_time}
 
       Tipo di trasporto: {transport_type_label}
 
-      Accompagnatore: {companion_label}
+      {?companion}Con accompagnatore.{/companion}
 
-      {?notes}Note sulle condizioni: {notes}{/notes}
+      {?conditions}Note sulle condizioni: {conditions}{/conditions}
 
-      Utente: {user}. Data di oggi: {date}. Rispondi in italiano.'
+      Email del richiedente: {email}
+
+      Oggi è {date}. Scrivi in italiano (lingua {lang}).'
+    context:
+    - key: email
+      from: user.email
     appTools:
-    - name: list_operators
-      description: Operatori accreditati con zone, tipi di trasporto, listini e disponibilità
-      action: read
-      collection: operators
+    - name: geocode
+      description: Cerca le coordinate di un indirizzo (Nominatim)
+      action: http
+      http:
+        method: GET
+        url: https://nominatim.openstreetmap.org/search
+        attribution: © OpenStreetMap contributors, ODbL
+    - name: route
+      description: Distanza e durata del percorso in auto tra due punti (OSRM)
+      action: http
+      http:
+        method: GET
+        url: https://router.project-osrm.org/route/v1/driving
+        allowPath: true
+        attribution: OSRM, dati © OpenStreetMap contributors, ODbL
+    - name: search_tariffs
+      description: Legge i listini degli operatori accreditati
+      action: search
+      collection: tariffs
       scope: all
-    awaits:
-    - special_case
     output: markdown+json
     writesTo:
       collection: rides
       parse: json_last
     limits:
-      maxTurns: 8
-      maxBudgetUsd: 0.4
+      maxTurns: 20
+      maxBudgetUsd: 0.8
+      timeoutSeconds: 600
   inputForm:
     title:
       it: Nuova richiesta di trasporto
     fields:
-    - name: from_address
+    - name: origin
       type: text
       required: true
       label:
         it: Luogo di partenza
       help:
-        it: Via, numero e città
-    - name: to_address
+        it: Via, numero civico, città
+    - name: destination
       type: text
       required: true
       label:
         it: Destinazione
       help:
-        it: Ospedale, ambulatorio o centro terapie
-    - name: date_of_ride
+        it: Es. ospedale o ambulatorio, con indirizzo
+    - name: ride_date
       type: date
       required: true
       label:
         it: Data
-    - name: time_of_ride
+    - name: ride_time
       type: text
       required: true
       label:
-        it: Ora
-      help:
-        it: es. 08:30
+        it: Ora (HH:MM)
     - name: transport_type
       type: select
       required: true
@@ -187,91 +225,122 @@ spec:
         label:
           it: In barella
     - name: companion
-      type: select
-      required: true
+      type: boolean
       label:
-        it: Accompagnatore
-      default: 'no'
-      options:
-      - value: 'no'
-        label:
-          it: 'No'
-      - value: si
-        label:
-          it: Sì
-    - name: notes
+        it: Con accompagnatore
+    - name: conditions
       type: textarea
       maxLength: 600
       label:
         it: Note sulle condizioni (facoltative)
-      help:
-        it: Mobilità, ossigeno, scale, esigenze particolari
   data:
     collections:
     - name: operators
       ownedBy: shared
-      description: Operatori accreditati con zone e listini
+      description: Operatori accreditati
       fields:
       - name: name
         type: text
         required: true
         label:
-          it: Nome
+          it: Nome operatore
       - name: email
         type: email
         required: true
         label:
           it: Email
-      - name: zones
+      - name: zone
         type: text
+        required: true
         label:
-          it: Zone coperte
-      - name: transport_types
+          it: Zona coperta
+    - name: tariffs
+      ownedBy: shared
+      description: Listini degli operatori per zona e tipo di trasporto
+      fields:
+      - name: operator_email
+        type: email
+        required: true
+        label:
+          it: Email operatore
+      - name: operator_name
         type: text
+        required: true
         label:
-          it: Tipi di trasporto
+          it: Operatore
+      - name: zone
+        type: text
+        required: true
+        label:
+          it: Zona (comuni/province)
+      - name: transport_type
+        type: select
+        required: true
+        label:
+          it: Tipo
+        options:
+        - autonomia
+        - sedia
+        - barella
       - name: base_fee
         type: number
+        required: true
         label:
           it: Quota base (€)
-      - name: rate_per_km
+      - name: per_km
+        type: number
+        required: true
+        label:
+          it: € al km
+      - name: companion_fee
         type: number
         label:
-          it: Tariffa al km (€)
-      - name: surcharges
-        type: text
+          it: Supplemento accompagnatore (€)
+      - name: wait_fee
+        type: number
         label:
-          it: Supplementi (sedia, barella, accompagnatore, attesa)
-      - name: availability
-        type: text
+          it: Attesa all'ora (€)
+      - name: min_notice_hours
+        type: number
         label:
-          it: Fasce e giorni di disponibilità
+          it: Preavviso minimo (ore)
     - name: rides
       ownedBy: user
-      sharing:
-      - viewer
-      description: Corse richieste, con preventivo, stato e operatore assegnato
+      description: Corse richieste
+      retentionDays: 730
       fields:
-      - name: from_address
+      - name: origin
         type: text
         label:
           it: Partenza
-      - name: to_address
+      - name: destination
         type: text
         label:
           it: Destinazione
-      - name: when
+      - name: ride_date
+        type: date
+        label:
+          it: Data
+      - name: ride_time
         type: text
         label:
-          it: Data e ora
+          it: Ora
       - name: transport_type
-        type: text
+        type: select
         label:
           it: Tipo
+        options:
+        - autonomia
+        - sedia
+        - barella
       - name: companion
         type: boolean
         label:
           it: Accompagnatore
+      - name: conditions
+        type: textarea
+        label:
+          it: Condizioni
       - name: distance_km
         type: number
         label:
@@ -280,56 +349,67 @@ spec:
         type: number
         label:
           it: Minuti
-      - name: price_eur
+      - name: price
         type: number
         label:
           it: Prezzo (€)
-      - name: operator_name
-        type: text
-        label:
-          it: Operatore
       - name: operator_email
         type: email
         label:
           it: Email operatore
+      - name: operator_name
+        type: text
+        label:
+          it: Operatore
       - name: special_case
         type: boolean
         label:
           it: Caso particolare
+      - name: contact_email
+        type: email
+        label:
+          it: Email richiedente
       - name: status
-        type: text
+        type: select
         label:
           it: Stato
-  approvals:
-  - key: special_case
-    title:
-      it: Verifica caso particolare
-    description: Il coordinatore verifica le richieste con esigenze particolari prima della conferma definitiva
-    role: coordinator
-    fields:
-    - from_address
-    - to_address
-    - when
-    - transport_type
-    - notes
-    - price_eur
-    timeoutMinutes: 1440
-    onTimeout: reject
-    decidedBy: role
+        options:
+        - requested
+        - accepted
+        - rejected
+        - completed
+        - cancelled
+      - name: coordinator_notes
+        type: textarea
+        label:
+          it: Note del coordinatore
+      access:
+      - role: operator
+        where:
+          operator_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: coordinator
+        can:
+        - read
+        - write
   views:
   - key: home
     type: page
-    nav: false
     title: TrasportoPreventivo
+    nav: false
     sections:
     - type: hero
+      layout: stack
+      band: true
       eyebrow:
         it: Trasporto sanitario non urgente
       title:
-        it: Prenota il trasporto verso visite e terapie, con **preventivo immediato**.
+        it: Il tuo **preventivo** per andare a visite e terapie, subito.
       text:
-        it: 'Indica partenza, destinazione, data e tipo di trasporto: calcoliamo distanza e durata, applichiamo i listini
-          degli operatori accreditati e ti mostriamo subito prezzo e disponibilità.'
+        it: 'Indica partenza, destinazione, data e tipo di trasporto: calcoliamo distanza e prezzo con i listini degli operatori
+          accreditati della tua zona. Confermi, paghi online con carta e la richiesta va all''operatore.'
       actions:
       - label:
           it: Richiedi un preventivo
@@ -347,28 +427,40 @@ spec:
       - title:
           it: Compili il modulo
         text:
-          it: 'Tu o un tuo familiare: tragitto, data e ora, tipo di trasporto, accompagnatore, note.'
+          it: Partenza, destinazione, data e ora, tipo di trasporto, accompagnatore e note.
         badge: 📝
       - title:
-          it: Ricevi il preventivo
+          it: Preventivo immediato
         text:
-          it: Prezzo e disponibilità calcolati sui listini degli operatori della tua zona.
-        badge: 💶
+          it: Distanza, durata, prezzo e disponibilità in pochi secondi.
+        badge: ⚡
       - title:
-          it: Confermi e paghi con carta
+          it: Confermi e paghi
         text:
-          it: La richiesta passa all'operatore di zona, che la accetta.
+          it: Pagamento online con carta. I casi particolari sono verificati da un coordinatore.
         badge: 💳
       - title:
-          it: Supervisione umana
+          it: Conferma e promemoria
         text:
-          it: Un coordinatore controlla i casi particolari e può intervenire prima della conferma definitiva.
-        badge: 🧑‍⚕️
+          it: L'operatore accetta la corsa e ricevi conferma e promemoria via email.
+        badge: ✉️
+    - type: cards
+      id: operatori
+      title:
+        it: Per gli operatori accreditati
+      items:
+      - title:
+          it: Solo le tue corse
+        text:
+          it: Vedi le corse assegnate alla tua zona e le accetti dal portale.
+      - title:
+          it: Listini tuoi
+        text:
+          it: I prezzi applicati sono quelli del tuo listino. Il servizio fisico resta tuo.
     - type: note
       content:
-        it: 'TrasportoPreventivo è solo lo strato software di prenotazione: il servizio di trasporto è svolto dagli operatori
-          accreditati, che ne sono responsabili. Il prezzo è una stima basata sui listini e sul tragitto calcolato. Non è
-          un servizio di emergenza: in caso di urgenza chiama il 112.'
+        it: 'TrasportoPreventivo è uno strato software di prenotazione: non eroga il trasporto, che resta in capo agli operatori
+          accreditati. Non è un servizio di emergenza: in caso di urgenza chiama il 112.'
   - key: new_quote
     type: new_run
     title:
@@ -376,124 +468,224 @@ spec:
     roles:
     - user
     - admin
-  - key: my_rides
+  - key: quotes
     type: history
     title:
-      it: Le mie richieste
+      it: I miei preventivi
     source: run
     roles:
     - user
     - admin
   - key: quote
     type: report
-    title:
-      it: Preventivo
     source: run
     printable: true
     nav: false
-  - key: approvals_view
+  - key: confirmations
     type: approvals
     title:
-      it: Casi da verificare
+      it: Conferme
+    approvals:
+    - confirm_quote
+    - coordinator_check
     roles:
+    - user
     - coordinator
     - admin
-  - key: operator_rides
-    type: list
+  - key: my_rides
+    type: table
+    title:
+      it: Le mie corse
+    source: collection:rides
+    columns:
+    - ride_date
+    - ride_time
+    - origin
+    - destination
+    - transport_type
+    - price
+    - operator_name
+    - status
+    roles:
+    - user
+  - key: assigned_rides
+    type: table
     title:
       it: Corse assegnate
     source: collection:rides
+    columns:
+    - ride_date
+    - ride_time
+    - origin
+    - destination
+    - transport_type
+    - companion
+    - conditions
+    - price
+    - status
+    - coordinator_notes
+    export: true
     roles:
     - operator
-    data:
-      display: table
-      fields:
-      - key: when
-        label:
-          it: Data e ora
-      - key: from_address
-        label:
-          it: Partenza
-      - key: to_address
-        label:
-          it: Destinazione
-      - key: transport_type
-        label:
-          it: Tipo
-      - key: companion
-        label:
-          it: Accomp.
-      - key: status
-        label:
-          it: Stato
-        format: badge
-      sort:
-        field: when
-        dir: asc
-      limit: 100
-      empty:
-        it: Nessuna corsa assegnata.
-  - key: all_rides
-    type: table
-    title:
-      it: Tutte le corse
-    source: collection:rides
-    roles:
-    - admin
     - coordinator
-    data:
-      display: table
-      fields:
-      - key: when
-        label:
-          it: Data e ora
-      - key: from_address
-        label:
-          it: Partenza
-      - key: to_address
-        label:
-          it: Destinazione
-      - key: operator_name
-        label:
-          it: Operatore
-      - key: price_eur
-        label:
-          it: Prezzo
-        format: money
-      - key: special_case
-        label:
-          it: Caso part.
-      - key: status
-        label:
-          it: Stato
-        format: badge
-      sort:
-        field: when
-        dir: desc
-      limit: 200
-  - key: operators_view
-    type: table
+    - admin
+  - key: ride_update
+    type: form
     title:
-      it: Operatori e listini
-    source: collection:operators
+      it: Aggiorna corsa
+    collection: rides
+    fields:
+    - status
+    - coordinator_notes
+    edit: true
+    submit:
+      label:
+        it: Salva
+      message:
+        it: Corsa aggiornata.
+      redirect: assigned_rides
+    roles:
+    - operator
+    - coordinator
+    - admin
+    nav: false
+  - key: operator_form
+    type: form
+    title:
+      it: Nuovo operatore
+    collection: operators
+    submit:
+      label:
+        it: Salva
+      message:
+        it: Operatore salvato.
     roles:
     - admin
+  - key: tariff_form
+    type: form
+    title:
+      it: Nuovo listino
+    collection: tariffs
+    submit:
+      label:
+        it: Salva
+      message:
+        it: Listino salvato.
+    roles:
+    - admin
+  - key: tariffs_table
+    type: table
+    title:
+      it: Listini
+    source: collection:tariffs
+    roles:
+    - admin
+  approvals:
+  - key: confirm_quote
+    title:
+      it: Conferma il preventivo
+    decidedBy: requester
+    timeoutMinutes: 1440
+    onTimeout: reject
+  - key: coordinator_check
+    title:
+      it: Verifica del coordinatore (caso particolare)
+    role: coordinator
+    decidedBy: role
+    timeoutMinutes: 720
+    onTimeout: reject
+  triggers:
+  - key: ride_requested_user
+    'on':
+      collection: rides
+      op: insert
+      where:
+        status: requested
+    notify:
+      to: owner
+      subject:
+        it: 'Richiesta di trasporto inoltrata: {record.destination}'
+      body:
+        it: La tua richiesta del {record.ride_date} alle {record.ride_time} da {record.origin} a {record.destination} è stata
+          inoltrata all'operatore {record.operator_name}. Riceverai una conferma appena la accetta.
+      link: my_rides
+  - key: ride_requested_operator
+    'on':
+      collection: rides
+      op: insert
+      where:
+        status: requested
+    notify:
+      to: record.operator_email
+      subject:
+        it: Nuova corsa da accettare
+      body:
+        it: 'Nuova richiesta: {record.ride_date} alle {record.ride_time}, da {record.origin} a {record.destination}, tipo
+          {record.transport_type}. Accedi per accettarla.'
+      link: assigned_rides
+  - key: ride_accepted
+    'on':
+      collection: rides
+      op: update
+      where:
+        status: accepted
+    notify:
+      to: owner
+      subject:
+        it: Corsa confermata dall'operatore
+      body:
+        it: L'operatore {record.operator_name} ha accettato la tua corsa del {record.ride_date} alle {record.ride_time} da
+          {record.origin} a {record.destination}.
+      link: my_rides
+  - key: ride_rejected
+    'on':
+      collection: rides
+      op: update
+      where:
+        status: rejected
+    notify:
+      to:
+      - owner
+      - role:coordinator
+      subject:
+        it: Corsa non accettata dall'operatore
+      body:
+        it: La corsa del {record.ride_date} da {record.origin} a {record.destination} non è stata accettata. Il coordinatore
+          troverà un'alternativa.
+      link: my_rides
+  - key: ride_reminder
+    'on':
+      date:
+        collection: rides
+        field: ride_date
+        offsetDays: -1
+        hour: 8
+      where:
+        status: accepted
+    notify:
+      to:
+      - owner
+      - record.operator_email
+      subject:
+        it: 'Promemoria: trasporto di domani'
+      body:
+        it: Ricordiamo la corsa di domani alle {record.ride_time} da {record.origin} a {record.destination}.
+      link: my_rides
+  egress:
+    hosts:
+    - nominatim.openstreetmap.org
+    - router.project-osrm.org
+    notes: Nominatim (OSM, ODbL, max 1 richiesta/s) per i geocoding; OSRM demo (dati OSM, ODbL) per distanza e durata, uso
+      leggero.
   billing:
     modes:
     - per_transaction
     currency: eur
-    transactionFeePct: 12
+    transactionFeePct: 10
     sellers: collection:operators
+  notifications:
+    emailOnRunDone: true
   extensions:
-  - key: email_notifications
-    description: 'Conferma e promemoria via email all''utente non sono ancora disponibili: per ora lo stato è visibile in
-      ''Le mie richieste''.'
-  - key: routing_provider
-    description: 'Distanza e durata sono stimate dall''agente: un servizio di calcolo percorsi con licenza commerciale andrebbe
-      collegato in seguito.'
-  - key: operator_assignment
-    description: L'inoltro all'operatore di zona avviene condividendo la corsa (sharing viewer) con l'email operatore; l'accettazione
-      da parte dell'operatore e il filtro 'solo corse assegnate' richiedono logica dedicata.
-  - key: ride_payment_flow
-    description: 'Pagamento con carta per singola corsa con commissione (12%, da confermare) sui conti Stripe Connect degli
-      operatori: richiede onboarding Connect di ciascun operatore.'
+  - key: pagamento_per_corsa
+    description: Il pagamento con carta della singola corsa prima dell'inoltro all'operatore (checkout per corsa con commissione)
+      va attivato collegando Stripe nello studio; la conferma del preventivo avviene qui tramite approvazione del richiedente.

@@ -2,7 +2,7 @@
 
 _Interroga i tuoi documenti come se parlassero._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (25 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,11 +10,10 @@ Voglio costruire ArchivioParlante, un'app per uffici amministrativi e studi prof
 
 ## Features not expressible today (spec.extensions)
 
-- **file_upload_ocr**: Direct upload of PDF, scans and Office files with OCR is not available yet: for now the operator gives a link or pastes the text.
-- **weekly_email**: The Monday email with the month's deadlines is not available (no notifications yet): the digest is produced every Monday and read in the app under Monday deadlines.
-- **org_sharing**: Records are owned per user; sharing one archive among all users of the same organization (admin, operator, reviewer, viewer) needs an organization-level scope that is not available yet. Role-based read-only enforcement is by view.
+- **org_isolation**: Organizations are separated by the members list (emails) on each document; there is no native per-organization tenant, so operators must list colleagues' emails. Roles are app-wide invites.
+- **page_count**: Pages are declared by the operator in the form; automatic page counting of uploads is not available. Extraction is billed by metered usage (tokens and compute), which follows the pages processed.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -25,24 +24,29 @@ Voglio costruire ArchivioParlante, un'app per uffici amministrativi e studi prof
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### new_doc
-![03-new_doc.png](screenshots/03-new_doc.png)
+### upload
+![03-upload.png](screenshots/03-upload.png)
 
-### runs
-![04-runs.png](screenshots/04-runs.png)
+### documents
+![04-documents.png](screenshots/04-documents.png)
+
+### data
+![05-data.png](screenshots/05-data.png)
+
+### review_list
+![06-review_list.png](screenshots/06-review_list.png)
 
 ### review
-![05-review.png](screenshots/05-review.png)
-
-### data_table
-![06-data_table.png](screenshots/06-data_table.png)
+![07-review.png](screenshots/07-review.png)
 
 ### chat
-![07-chat.png](screenshots/07-chat.png)
+![08-chat.png](screenshots/08-chat.png)
 
-### watches
-![08-watches.png](screenshots/08-watches.png)
+### deadlines
+![09-deadlines.png](screenshots/09-deadlines.png)
 
 ### account
-![09-account.png](screenshots/09-account.png)
+![10-account.png](screenshots/10-account.png)
 
+### admin_data
+![11-admin_data.png](screenshots/11-admin_data.png)

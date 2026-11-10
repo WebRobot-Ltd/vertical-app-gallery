@@ -1,8 +1,8 @@
 # BrigataLavoro
 
-_Il marketplace del lavoro per ristorazione e hotellerie._
+_Il lavoro giusto in cucina e in sala, trovato da un agente._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (31 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,12 +10,9 @@ BrigataLavoro è un marketplace del lavoro per la ristorazione e l'hotellerie. D
 
 ## Features not expressible today (spec.extensions)
 
-- **email_notifications**: Emailing proposed candidates to employers and offers to workers is not available yet: matches appear in the 'Proposed matches' view instead.
-- **cross_user_visibility**: Employers seeing only applicants or consenting workers (and workers never seeing others) needs per-record cross-user access; the matcher runs as the app with explicit rules in its prompt, and the match records are written to the owners. Needs runtime review.
-- **account_types**: Employer vs worker are not separate signup roles: a user fills the business profile or the worker profile. Separate roles by account type are a later step.
-- **hire_fee_charging**: Fee per hire is a pack the employer buys when marking a hire; automatic charging on hire confirmation is not expressible yet.
+- **fee_waiver_for_subscribers**: The per-hire fee is charged to every employer; waiving it for Pro subscribers is not expressible yet. Admins can refund credits manually.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -26,27 +23,47 @@ BrigataLavoro è un marketplace del lavoro per la ristorazione e l'hotellerie. D
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### offers
-![03-offers.png](screenshots/03-offers.png)
+### company
+![03-company.png](screenshots/03-company.png)
+
+### new_job
+![04-new_job.png](screenshots/04-new_job.png)
+
+### my_jobs
+![05-my_jobs.png](screenshots/05-my_jobs.png)
+
+### candidates
+![06-candidates.png](screenshots/06-candidates.png)
 
 ### profile
-![04-profile.png](screenshots/04-profile.png)
+![07-profile.png](screenshots/07-profile.png)
 
-### business
-![05-business.png](screenshots/05-business.png)
+### my_offers
+![08-my_offers.png](screenshots/08-my_offers.png)
 
-### my_matches
-![06-my_matches.png](screenshots/06-my_matches.png)
+### jobs_board
+![09-jobs_board.png](screenshots/09-jobs_board.png)
+
+### apply
+![10-apply.png](screenshots/10-apply.png)
+
+### write
+![11-write.png](screenshots/11-write.png)
 
 ### inbox
-![07-inbox.png](screenshots/07-inbox.png)
+![12-inbox.png](screenshots/12-inbox.png)
 
-### trial_list
-![08-trial_list.png](screenshots/08-trial_list.png)
+### trial
+![13-trial.png](screenshots/13-trial.png)
 
-### feedback_list
-![09-feedback_list.png](screenshots/09-feedback_list.png)
+### trials_list
+![14-trials_list.png](screenshots/14-trials_list.png)
+
+### hire
+![15-hire.png](screenshots/15-hire.png)
+
+### feedback_form
+![16-feedback_form.png](screenshots/16-feedback_form.png)
 
 ### account
-![10-account.png](screenshots/10-account.png)
-
+![17-account.png](screenshots/17-account.png)

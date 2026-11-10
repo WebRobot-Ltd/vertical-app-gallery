@@ -1,20 +1,18 @@
 # ComputoOfferte
 
-_Dal computo metrico all'ordine, con il confronto offerte già fatto._
+_Dal computo metrico all'ordine al fornitore più conveniente._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (22 checks passed)
 
 ## Description given to the app builder (Italian)
 
 Ci serve ComputoOfferte per imprese edili. Il tecnico carica il computo metrico del cantiere in PDF o Excel. Un agente estrae le voci (materiali, quantità, unità di misura), le raggruppa per categoria di fornitore e prepara le richieste d'offerta. Il tecnico rivede e approva le richieste, che partono via email ai fornitori della sua rubrica per quella categoria. Le risposte dei fornitori arrivano in una casella dedicata: l'agente legge le offerte, estrae prezzi, tempi di consegna e condizioni e compila una tabella di confronto per voce, evidenziando il fornitore più conveniente. Il tecnico sceglie e conferma l'ordine. Ogni impresa vede solo i propri cantieri e fornitori. Abbonamento mensile per impresa.
 
-## Features not expressible today (spec.extensions)
+## Functional test: what did not pass
 
-- **file_upload**: Upload of PDF/Excel bills of quantities is not available yet: the technician pastes the text or gives a link.
-- **email_out**: Sending approved RFQs by email to suppliers is not available yet: after approval the RFQ texts are shown and stored with status approvata, to be sent by the technician.
-- **inbound_mailbox**: A dedicated mailbox receiving supplier replies is not available yet: the technician pastes the replies into the comparison form.
+- **saved record shown where its collection is read** (view rfqs_list): a record was saved in rfqs (by user) but the page does not show it (as user) _(warning)_
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -31,21 +29,35 @@ Ci serve ComputoOfferte per imprese edili. Il tecnico carica il computo metrico 
 ### runs
 ![04-runs.png](screenshots/04-runs.png)
 
-### approvals
-![05-approvals.png](screenshots/05-approvals.png)
+### site_new
+![05-site_new.png](screenshots/05-site_new.png)
 
 ### sites_list
 ![06-sites_list.png](screenshots/06-sites_list.png)
 
+### supplier_new
+![07-supplier_new.png](screenshots/07-supplier_new.png)
+
 ### suppliers_list
-![07-suppliers_list.png](screenshots/07-suppliers_list.png)
+![08-suppliers_list.png](screenshots/08-suppliers_list.png)
+
+### items_list
+![09-items_list.png](screenshots/09-items_list.png)
+
+### rfqs_list
+![10-rfqs_list.png](screenshots/10-rfqs_list.png)
+
+### rfq_review
+![11-rfq_review.png](screenshots/11-rfq_review.png)
 
 ### offers_list
-![08-offers_list.png](screenshots/08-offers_list.png)
+![12-offers_list.png](screenshots/12-offers_list.png)
+
+### order_new
+![13-order_new.png](screenshots/13-order_new.png)
 
 ### orders_list
-![09-orders_list.png](screenshots/09-orders_list.png)
+![14-orders_list.png](screenshots/14-orders_list.png)
 
 ### account
-![10-account.png](screenshots/10-account.png)
-
+![15-account.png](screenshots/15-account.png)

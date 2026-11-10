@@ -1,8 +1,8 @@
 # Grafo del Sito
 
-_Il knowledge graph del tuo sito, con JSON-LD pronto per la SEO semantica._
+_Il knowledge graph del tuo sito, con JSON-LD pronto da pubblicare._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (10 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,12 @@ Mi serve un'app chiamata Grafo del Sito per migliorare la SEO semantica di siti 
 
 ## Features not expressible today (spec.extensions)
 
-- **auto_install**: Automatic insertion of the markup into the site (WordPress plugin or one-time JavaScript snippet) is not available yet: for now the JSON-LD is shown ready to copy. The plugin/snippet would need a public export endpoint and a hosted script.
-- **email_digest**: Weekly email with the changes is not available yet: changes are in the weekly report in the app.
-- **interactive_graph**: A visual navigable graph (nodes and edges) is not available yet: entities and pages are shown as tables and charts.
-- **agency_workspace**: Agency workspace where a consultant manages several client sites and each client user sees only their own site (shared sites, per-site invitations) is not available yet: each user sees only the sites they created.
-- **page_limit_by_plan**: The per-plan page limit is stated in the plan and in the agent's goal but not enforced by the runtime.
+- **wordpress_plugin**: Plugin WordPress that fetches the JSON-LD from the signed export and injects it in each page: not available yet.
+- **js_snippet**: One-time JavaScript snippet that loads the page's JSON-LD from the signed export: not available yet.
+- **graph_view**: Interactive navigable graph visualisation: for now the relations table; a node-link view is not available.
+- **client_sharing**: Sharing a site's data with the client's own users while the consultant manages many sites: sites are owned by the consultant's account; per-site client access is not expressed yet.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -33,9 +32,20 @@ Mi serve un'app chiamata Grafo del Sito per migliorare la SEO semantica di siti 
 ### dashboard
 ![04-dashboard.png](screenshots/04-dashboard.png)
 
+### graph
+![05-graph.png](screenshots/05-graph.png)
+
+### entities_list
+![06-entities_list.png](screenshots/06-entities_list.png)
+
+### pages_issues
+![07-pages_issues.png](screenshots/07-pages_issues.png)
+
+### structured_data
+![08-structured_data.png](screenshots/08-structured_data.png)
+
 ### reports
-![05-reports.png](screenshots/05-reports.png)
+![09-reports.png](screenshots/09-reports.png)
 
 ### account
-![06-account.png](screenshots/06-account.png)
-
+![10-account.png](screenshots/10-account.png)

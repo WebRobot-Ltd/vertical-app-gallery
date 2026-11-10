@@ -1,8 +1,8 @@
 # Redazione Multilingua
 
-_Contenuti SEO nel tono del tuo brand, in più lingue._
+_Contenuti SEO in più lingue, nel tono di ogni brand, fino alla bozza sul tuo CMS._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (11 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,11 +10,10 @@ Vorrei un'app che chiamo Redazione Multilingua, per agenzie e uffici marketing c
 
 ## Features not expressible today (spec.extensions)
 
-- **serp_api_key**: The paid SERP API key cannot be placed in the manifest: the owner must configure it as a platform credential for the serp_search tool.
-- **cms_publish**: Automatic draft publishing to the client's CMS (WordPress REST or other) after approval, with credentials saved by the admin, is not available yet: per-customer credentials are not supported. For now the approved text is copied from the archive; brands only store the CMS API URL.
-- **approval_flow**: Explicit approve action and status change draft->approved on contents is not yet expressible; approval is currently implicit by saving in the archive.
+- **cms_shared_credentials**: The CMS key is saved per user; a single key saved by the account admin and shared with the whole team is not available yet, nor are custom CMS domains outside the listed egress hosts.
+- **per_word_exact**: Credits follow the words per language field of the brief; the exact count of generated words is not metered.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -25,21 +24,26 @@ Vorrei un'app che chiamo Redazione Multilingua, per agenzie e uffici marketing c
 ### home
 ![02-home.png](screenshots/02-home.png)
 
+### brand_new
+![03-brand_new.png](screenshots/03-brand_new.png)
+
 ### brands
-![03-brands.png](screenshots/03-brands.png)
+![04-brands.png](screenshots/04-brands.png)
 
 ### new
-![04-new.png](screenshots/04-new.png)
+![05-new.png](screenshots/05-new.png)
 
-### revise
-![05-revise.png](screenshots/05-revise.png)
+### runs
+![06-runs.png](screenshots/06-runs.png)
+
+### approvals
+![07-approvals.png](screenshots/07-approvals.png)
+
+### edit_chat
+![08-edit_chat.png](screenshots/08-edit_chat.png)
 
 ### archive
-![06-archive.png](screenshots/06-archive.png)
-
-### history
-![07-history.png](screenshots/07-history.png)
+![09-archive.png](screenshots/09-archive.png)
 
 ### account
-![08-account.png](screenshots/08-account.png)
-
+![10-account.png](screenshots/10-account.png)

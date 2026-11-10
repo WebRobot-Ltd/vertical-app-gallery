@@ -4,16 +4,16 @@ metadata:
   slug: preventivocargo
   displayName: PreventivoCargo
   tagline:
-    it: Preventivo trasporto in pochi secondi, vettori in gara, tracking fino alla consegna.
-    en: Freight quotes in seconds, carriers bidding, tracking through to delivery.
-    de: Frachtangebot in Sekunden, Frachtführer bieten, Tracking bis zur Zustellung.
+    it: Preventivo trasporto in pochi secondi, vettori in gara, consegna tracciata.
+    en: Freight quote in seconds, carriers bidding, tracked delivery.
+    de: Frachtangebot in Sekunden, Frachtführer bieten, verfolgte Lieferung.
   description:
-    it: 'Per spedizionieri e aziende che spediscono su strada in Italia ed Europa: prezzo indicativo con forchetta e tempi,
-      marketplace di vettori, approvazione dei margini e dashboard per l''operatore.'
-    en: 'For forwarders and shippers moving goods by road in Italy and Europe: indicative price with range and transit time,
-      carrier marketplace, margin approval and an operator dashboard.'
-    de: 'Für Spediteure und Versender im Straßengüterverkehr in Italien und Europa: Richtpreis mit Spanne und Laufzeit, Frachtführer-Marktplatz,
-      Margenfreigabe und Dashboard für den Disponenten.'
+    it: Richiedi un prezzo indicativo per una spedizione su strada in Italia ed Europa. Se accetti, il carico va ai vettori
+      registrati che fanno offerta; l'operatore sceglie e conferma, tu segui la consegna e trovi il documento firmato.
+    en: Request an indicative price for a road shipment in Italy and Europe. If you accept, the load goes to registered carriers
+      who bid; the operator picks and confirms, and you follow the delivery and get the signed document.
+    de: Fordern Sie einen Richtpreis für einen Straßentransport in Italien und Europa an. Nach Ihrer Annahme bieten registrierte
+      Frachtführer; der Disponent wählt und bestätigt, Sie verfolgen die Lieferung und erhalten den unterschriebenen Lieferschein.
   langs:
   - it
   - en
@@ -27,8 +27,8 @@ spec:
     palette:
       primary: '#12304a'
       accent: '#e07a1f'
-      background: '#f6f8fa'
-      foreground: '#16212c'
+      background: '#f6f7f9'
+      foreground: '#17212b'
     fonts:
       body: Inter
       display: Manrope
@@ -52,10 +52,10 @@ spec:
       href: '#vettori'
     cta:
       label:
-        it: Richiedi un preventivo
-        en: Get a quote
-        de: Angebot anfordern
-      href: /v/new_quote
+        it: Accedi
+        en: Sign in
+        de: Anmelden
+      href: /login
   auth:
     method: magic_link
     anonymous:
@@ -63,40 +63,54 @@ spec:
       - home
     roles:
     - key: admin
+      assignedBy: admin_emails
+    - key: operator
       label:
         it: Operatore
         en: Operator
         de: Disponent
-      assignedBy: admin_emails
-    - key: customer
-      label:
-        it: Cliente
-        en: Customer
-        de: Kunde
-      assignedBy: signup
+      assignedBy: invite
     - key: carrier
       label:
         it: Vettore
         en: Carrier
         de: Frachtführer
-      assignedBy: invite
+      assignedBy: derived
+      from: collection:carriers.email
+    - key: user
+      label:
+        it: Cliente
+        en: Customer
+        de: Kunde
+      assignedBy: signup
   limits:
   - action: agent:quoter
     per: user
-    max: 30
+    max: 20
     window: day
     roles:
-    - customer
-  egress:
-    hosts:
-    - nominatim.openstreetmap.org
-    notes: Nominatim (OpenStreetMap) geocoding of addresses, data ODbL; low volume, identifying use, attribution required.
-      Distances, tolls and diesel prices are collected from open sources through the WebRobot MCP.
+    - user
+  slots:
+  - key: load_values
+    description: Seasonality factor and chargeable weight from the form
+    timeoutMs: 2000
+    example:
+      values:
+        pickup_date: '2026-12-10'
+        pallets: 10
+        weight_kg: 4000
+      lang: it
+    code: "def num(x):\n    try:\n        return float(x)\n    except Exception:\n        return 0.0\n\nFACTORS = {1:0.95,2:0.95,3:1.0,4:1.0,5:1.03,6:1.03,7:1.0,8:0.95,9:1.05,10:1.08,11:1.1,12:1.12}\n\
+      \ndef main(input):\n    v = input.get('values') or {}\n    d = str(v.get('pickup_date') or '')\n    month = int(d[5:7])\
+      \ if len(d) >= 7 and d[5:7].isdigit() else 0\n    f = FACTORS.get(month, 1.0)\n    pal = num(v.get('pallets'))\n   \
+      \ ldm = num(v.get('ldm'))\n    if not ldm:\n        ldm = pal * 0.4\n    w = num(v.get('weight_kg'))\n    ck = max(w,\
+      \ ldm * 1850)\n    return {'season_factor': f, 'season_note': 'high season' if f >= 1.05 else ('low season' if f < 1.0\
+      \ else 'normal season'), 'ldm_eff': round(ldm, 1), 'chargeable_kg': round(ck)}\n"
   agents:
   - key: quoter
     role: main
     description: Normalises addresses, computes distance and tolls from open data, estimates the price from the forwarder's
-      route history, diesel price, season and empty-return risk.
+      lane history, fuel and seasonality.
     profile:
       inline:
         display_name: PreventivoCargo quoter
@@ -105,7 +119,7 @@ spec:
           engine: agent_sdk
           model: claude-sonnet-5-5
           max_turns: 25
-          max_budget_usd: 0.6
+          max_budget_usd: 0.8
           permission_mode: bypassPermissions
           disallowed_tools:
           - Bash
@@ -117,115 +131,123 @@ spec:
           - NotebookEdit
           - WebFetch
           - WebSearch
-          mcp_servers:
-          - name: webrobot
-            type: http
-            url: https://mcp-full.webrobot.eu/mcp
-            allow: all
-          system_prompt: 'You are the pricing analyst of a road-freight forwarder (Italy and Europe). Given a shipment request
-            you: 1) normalise origin and destination addresses with the tool nominatim_search (country, city, postcode, coordinates);
-            2) get road distance, driving time and tolls from open data (use the WebRobot MCP to collect them from public
-            sources; state the source); 3) read comparable past lanes with the tool history_read (the forwarder''s route history:
-            lane, load type, price paid, date) and base the price on them, adjusted for season (month), the latest published
-            diesel price (collect it from an official public source, cite it and its date), load type (pallets or loading
-            metres, weight, temperature control, ADR, tail lift, appointment) and the risk of an empty return leg (backhaul
-            likelihood on the destination area). You do not run a trained ML model: say clearly that the estimate is derived
-            from the historical lanes found, and give the number of comparable lanes used. If there is no comparable history,
-            widen the search and lower the stated confidence. Never invent figures, tolls or fuel prices: if a value is unavailable
-            say so and widen the range. The price is indicative, not binding. Output: a Markdown report starting with ''#
-            Preventivo <origin> → <destination>'' then sections ## Riepilogo (price range low–mid–high in EUR, transit time,
-            pickup and delivery feasibility within the window), ## Percorso (normalised addresses, km, hours, tolls), ## Come
-            abbiamo calcolato il prezzo (history, season, diesel, empty-return risk, confidence), ## Servizi e requisiti (temperature,
-            ADR, tail lift, appointment surcharges), ## Prossimi passi (how to accept). Write in the language with the ISO
-            code given in the goal. Add a ```chart bar block comparing the cost components (fuel, tolls, driver and vehicle,
-            empty-return risk, margin band) only with real figures. Finish with a final JSON block (the last fenced json block)
-            with fields: origin, destination, load_date, delivery_window, goods, pallets, ldm, weight_kg, temperature, adr,
-            services, distance_km, tolls_eur, price_low, price_mid, price_high, transit_days, confidence, status (always "quoted").'
-    goalTemplate: 'New shipment quote request, today is {date}.
+          system_prompt: 'You are the pricing analyst of a road freight forwarder (Italy and Europe). You give an INDICATIVE
+            quote within seconds.
 
-      Pickup: {origin} on {load_date}.
+            Steps:
 
-      Delivery: {destination}, window {delivery_from} to {delivery_to}.
+            1. Call geocode for the pickup and the delivery address (Nominatim, query like q=<address>&format=json&limit=1&addressdetails=1).
+            Write the normalised addresses (street, postcode, city, country) and the zone as ''<ISO country>-<region or province>''.
 
-      Goods: {goods}. {?pallets}Pallets: {pallets}.{/pallets} {?ldm}Loading metres: {ldm}.{/ldm} Weight: {weight_kg} kg.
+            2. Call route with path ''/<lon1>,<lat1>;<lon2>,<lat2>'' and query ''overview=false'' to get the distance in km
+            and duration. Transit days = driving time / 9h per day, plus one day if the delivery window needs it.
 
-      Temperature: {temperature_label}. ADR: {adr}. Tail lift: {tail_lift}. Delivery appointment: {appointment}.
+            3. Tolls: there is no open toll API. Estimate them with typical heavy-vehicle rates per km (Italy ~0.20 EUR, Germany
+            ~0.34, Austria ~0.30, France ~0.25, Switzerland ~0.80, others ~0.15) over the countries crossed, and label them
+            clearly as an estimate.
+
+            4. Call read_history to find the forwarder''s past lanes similar in origin, destination, pallets/weight, ADR and
+            temperature; derive a median EUR/km. If there is little or no history, say so and use a transparent market benchmark
+            with a wider range. Never invent history.
+
+            5. Call read_fuel for the latest published diesel price and scale the fuel part (~30% of the cost) against the
+            price in the history''s period when known.
+
+            6. Apply the seasonality factor given in the goal. Add the empty-return risk: if the destination is a weak freight
+            area (history shows few outbound loads from there), add 5-15%. Add surcharges: ADR ~ +20-30%, controlled temperature
+            ~ +15-25%, tail lift and appointment each a fixed fee.
+
+            7. Output a price range (low / mid / high) in EUR and the transit time. Be honest on confidence.
+
+            8. Generate a reference ''PC-<YYYYMMDD>-<4 random digits>''. Call write_shipment once (status ''quoted'', confirm
+            false, all the request data, pickup_zone, dest_zone, distance_km, eta_text, ref, customer_email) and write_quote
+            once (ref, price_low, price_mid, price_high, currency EUR, distance_km, tolls_eur, fuel_index, transit_days, notes).
+
+            Report structure (language of the goal): a level-1 title ''# Preventivo <pickup city> → <delivery city>'' (translate
+            ''Preventivo'' to the report language), then ## Price (range, indicative), ## Route and times (km, tolls estimate,
+            transit), ## What drives the price (seasonality, fuel, return risk, surcharges), ## Assumptions and limits, ##
+            Next step: tell the customer that to accept they open ''My shipments'' and choose Accept, and the load then goes
+            to registered carriers. Add a ```chart bar block with the price breakdown (base, tolls, fuel, surcharges) using
+            real computed figures. The price is indicative and not a binding offer.'
+          mcp_servers: []
+    context:
+    - key: season_factor
+      from: slot:load_values
+    - key: season_note
+      from: slot:load_values
+    - key: ldm_eff
+      from: slot:load_values
+    - key: chargeable_kg
+      from: slot:load_values
+    - key: customer_email
+      from: user.email
+    goalTemplate: 'Quote request. Today is {date}. Customer: {customer_email}.
+
+      Pickup: {pickup_address} on {pickup_date}.
+
+      Delivery: {delivery_address}, window {delivery_from} to {delivery_to}.
+
+      Goods: {goods_type_label}. Pallets: {pallets}. Linear metres: {ldm} (effective {ldm_eff}). Weight: {weight_kg} kg (chargeable
+      {chargeable_kg} kg).
+
+      Temperature: {temp_label}. ADR: {adr}. Tail lift: {tail_lift}. Delivery appointment: {appointment}.
+
+      Seasonality factor: {season_factor} ({season_note}).
 
       {?notes}Notes: {notes}{/notes}
 
-      Write the quote in the language with ISO code {lang}.'
-    output: markdown+json
-    resultSchema:
-      type: object
-      properties:
-        origin:
-          type: string
-        destination:
-          type: string
-        load_date:
-          type: string
-        delivery_window:
-          type: string
-        goods:
-          type: string
-        pallets:
-          type: number
-        ldm:
-          type: number
-        weight_kg:
-          type: number
-        temperature:
-          type: string
-        adr:
-          type: boolean
-        services:
-          type: string
-        distance_km:
-          type: number
-        tolls_eur:
-          type: number
-        price_low:
-          type: number
-        price_mid:
-          type: number
-        price_high:
-          type: number
-        transit_days:
-          type: number
-        confidence:
-          type: string
-        status:
-          type: string
-    writesTo:
-      collection: shipments
-      parse: json_last
+      Write the report in the language with ISO code {lang}.'
     appTools:
-    - name: nominatim_search
-      description: Geocode and normalise an address (OpenStreetMap Nominatim). Use query like q=<address>&format=jsonv2&addressdetails=1&limit=1
+    - name: geocode
+      description: Normalise and geocode an address (OpenStreetMap Nominatim)
       action: http
       http:
         method: GET
         url: https://nominatim.openstreetmap.org/search
         attribution: © OpenStreetMap contributors, ODbL
-    - name: history_read
-      description: Read the forwarder's historical lanes (origin, destination, load type, price paid, date).
+    - name: route
+      description: Driving route between two points (OSRM); path '/lon1,lat1;lon2,lat2'
+      action: http
+      http:
+        method: GET
+        url: https://router.project-osrm.org/route/v1/driving
+        allowPath: true
+        attribution: © OpenStreetMap contributors, ODbL, OSRM
+    - name: read_history
+      description: Search the forwarder's historical lanes and prices
       action: search
       collection: route_history
       scope: all
+    - name: read_fuel
+      description: Latest published diesel price
+      action: read
+      collection: fuel_index
+      scope: all
+    - name: write_shipment
+      description: Save the shipment request of this customer
+      action: write
+      collection: shipments
+      scope: user
+    - name: write_quote
+      description: Save the indicative quote of this customer
+      action: write
+      collection: quotes
+      scope: user
+    output: markdown
     limits:
       maxTurns: 25
-      maxBudgetUsd: 0.6
+      maxBudgetUsd: 0.8
   - key: publisher
     role: helper
-    description: When a customer accepts a quote, publishes an anonymised load on the carrier marketplace.
+    description: Publishes an accepted shipment to the carrier marketplace, without customer data.
     profile:
       inline:
-        display_name: PreventivoCargo load publisher
+        display_name: PreventivoCargo publisher
         crews:
         - id: publisher
           engine: agent_sdk
           model: claude-sonnet-5-5
-          max_turns: 4
+          max_turns: 6
           max_budget_usd: 0.1
           permission_mode: bypassPermissions
           disallowed_tools:
@@ -238,57 +260,36 @@ spec:
           - NotebookEdit
           - WebFetch
           - WebSearch
-          system_prompt: 'You turn an accepted shipment into an anonymous marketplace listing for carriers. The shipment data
-            is given in the task. Include only: pickup area (city and country, no street), delivery area, pickup date, delivery
-            window, goods type, pallets or loading metres, weight, temperature, ADR, services, distance and the zone key (a
-            lowercase region code such as it-lombardia). Never include the customer''s name, email, street addresses or the
-            price quoted to the customer. Output only a final JSON block with those fields plus shipment_ref and status ''open''.'
-    goalTemplate: Publish the accepted shipment described in the task to the carrier marketplace. Today is {date}.
-    output: json
-    resultSchema:
-      type: object
-      properties:
-        shipment_ref:
-          type: string
-        zone:
-          type: string
-        pickup_area:
-          type: string
-        delivery_area:
-          type: string
-        load_date:
-          type: string
-        delivery_window:
-          type: string
-        goods:
-          type: string
-        loading:
-          type: string
-        weight_kg:
-          type: number
-        temperature:
-          type: string
-        adr:
-          type: boolean
-        services:
-          type: string
-        distance_km:
-          type: number
-        status:
-          type: string
-    writesTo:
-      collection: open_loads
-      parse: json_last
-      keyBy: shipment_ref
+          system_prompt: 'You publish an accepted shipment on the carrier marketplace. Read the shipment by ref with read_shipment.
+            If its status is not ''quoted'', do nothing and say so. Otherwise create ONE load with write_load: shipment_ref,
+            pickup_zone, dest_zone, pickup_date, delivery_to, goods_type, pallets, ldm, weight_kg, temp, adr, tail_lift, appointment,
+            status ''open''. NEVER copy addresses, names or emails of the customer, and no prices. Then set the shipment status
+            to ''bidding'' with set_shipment_status. Answer with one line starting ''# '' that says the load was published.'
+    goalTemplate: The customer accepted shipment {record.ref}. Publish it.
+    appTools:
+    - name: read_shipment
+      description: Read shipments
+      action: read
+      collection: shipments
+      scope: all
+    - name: write_load
+      description: Create a marketplace load
+      action: write
+      collection: loads
+      scope: all
+    - name: set_shipment_status
+      description: Update the status of a shipment
+      action: write
+      collection: shipments
+      scope: all
+    output: markdown
     limits:
-      maxTurns: 4
+      maxTurns: 6
       maxBudgetUsd: 0.1
   - key: dispatcher
     role: helper
-    description: Compares each carrier bid with the quoted price, computes the margin and asks the operator's approval when
-      it is below threshold.
-    awaits:
-    - margin_override
+    description: Checks the margin of a carrier assignment, asks the operator's approval below the threshold, and confirms
+      the assignment.
     profile:
       inline:
         display_name: PreventivoCargo dispatcher
@@ -296,8 +297,8 @@ spec:
         - id: dispatcher
           engine: agent_sdk
           model: claude-sonnet-5-5
-          max_turns: 6
-          max_budget_usd: 0.15
+          max_turns: 12
+          max_budget_usd: 0.2
           permission_mode: bypassPermissions
           disallowed_tools:
           - Bash
@@ -309,100 +310,191 @@ spec:
           - NotebookEdit
           - WebFetch
           - WebSearch
-          system_prompt: You assist the forwarder's operator. The new carrier bid is given in the task. Compute margin = customer
-            price (price_mid of the shipment) minus bid minus the per-shipment commission, in EUR and percent. The margin
-            threshold is 8%. If the margin is below the threshold, call the tool request_margin_override with shipment_ref,
-            bid, margin_eur, margin_pct and your recommendation; do not assign anything yourself. Otherwise recommend the
-            bid. Never invent figures. Output a short Markdown note starting with '# Offerta <shipment_ref>' and a final JSON
-            block with shipment_ref, carrier, bid_eur, price_eur, margin_eur, margin_pct, below_threshold.
-    goalTemplate: Evaluate the new carrier bid described in the task against the shipment's quoted price. Today is {date}.
-    output: markdown+json
-    resultSchema:
-      type: object
-      properties:
-        shipment_ref:
-          type: string
-        carrier:
-          type: string
-        bid_eur:
-          type: number
-        price_eur:
-          type: number
-        margin_eur:
-          type: number
-        margin_pct:
-          type: number
-        below_threshold:
-          type: boolean
-    writesTo:
-      collection: margin_log
-      parse: json_last
+          system_prompt: 'You finalise a carrier assignment for a freight forwarder. The margin threshold is 8% of the customer
+            price.
+
+            New assignment (goal has the assignment): read the assignment with read_assignments and the quote with read_quotes
+            (by shipment_ref). customer_price = quote price_mid. margin_eur = customer_price - carrier_cost; margin_pct =
+            margin_eur / customer_price * 100. Update the assignment with save_assignment (customer_price, margin_eur, margin_pct,
+            month = first day of the pickup month YYYY-MM-01). If margin_pct >= 8: confirm it (step below). Otherwise set
+            the assignment status ''pending_approval'' and call request_margin_ok with the shipment_ref, the margin and the
+            carrier; then stop.
+
+            Approval granted (goal has the approval event): find the assignment of that shipment_ref and confirm it.
+
+            Confirm = assignment status ''confirmed''; shipment: carrier_email and status ''assigned'' with save_shipment;
+            the load with that shipment_ref: status ''assigned'' and carrier_email with save_load. Be idempotent: if the assignment
+            is already confirmed do nothing.
+
+            Answer with a short report starting ''# Assignment <shipment_ref>''.'
+    goalTemplate: 'Event: {event}'
+    awaits:
+    - margin_ok
+    appTools:
+    - name: read_assignments
+      description: Read assignments
+      action: read
+      collection: assignments
+      scope: all
+    - name: read_quotes
+      description: Read quotes
+      action: read
+      collection: quotes
+      scope: all
+    - name: save_assignment
+      description: Update an assignment
+      action: write
+      collection: assignments
+      scope: all
+    - name: save_shipment
+      description: Update a shipment
+      action: write
+      collection: shipments
+      scope: all
+    - name: save_load
+      description: Update a marketplace load
+      action: write
+      collection: loads
+      scope: all
+    output: markdown
     limits:
-      maxTurns: 6
-      maxBudgetUsd: 0.15
+      maxTurns: 12
+      maxBudgetUsd: 0.2
+  - key: fuel_watcher
+    role: scheduled
+    description: 'Weekly: reads the published diesel price and saves it.'
+    profile:
+      inline:
+        display_name: PreventivoCargo fuel watcher
+        crews:
+        - id: fuel
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Once a week you collect the latest officially published retail diesel price: Italy (MASE weekly
+            prices) and the EU average (EU Weekly Oil Bulletin). Use the WebRobot MCP to read the official pages. Never invent
+            figures: if a value is not found, leave it null. Answer with ''# Diesel prices <date>'' and a short note on the
+            sources, then a final fenced json block: {"week":"YYYY-Www","diesel_it":<EUR/l>,"diesel_eu_avg":<EUR/l>,"source":"..."}.'
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+    goalTemplate: Today is {date}. Collect the latest published diesel prices.
+    writesTo:
+      collection: fuel_index
+      parse: json_last
+      keyBy: week
+    output: markdown+json
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.5
   inputForm:
     title:
-      it: Richiesta di trasporto
-      en: Transport request
-      de: Transportanfrage
+      it: Richiedi un preventivo
+      en: Request a quote
+      de: Angebot anfordern
     fields:
-    - name: origin
+    - name: pickup_address
       type: text
       required: true
       label:
         it: Luogo di carico
-        en: Pickup location
+        en: Pickup address
         de: Beladeort
-    - name: load_date
+    - name: pickup_date
       type: date
       required: true
       label:
         it: Data di carico
         en: Pickup date
-        de: Ladedatum
-    - name: destination
+        de: Beladedatum
+    - name: delivery_address
       type: text
       required: true
       label:
         it: Luogo di consegna
-        en: Delivery location
-        de: Lieferort
+        en: Delivery address
+        de: Entladeort
     - name: delivery_from
       type: date
       required: true
       label:
         it: Consegna dal
-        en: Delivery from
+        en: Deliver from
         de: Lieferung ab
     - name: delivery_to
       type: date
       required: true
       label:
         it: Consegna entro
-        en: Delivery by
+        en: Deliver by
         de: Lieferung bis
-    - name: goods
-      type: text
+    - name: goods_type
+      type: select
       required: true
       label:
         it: Tipo di merce
-        en: Type of goods
-        de: Art der Ware
+        en: Goods type
+        de: Warenart
+      options:
+      - value: general
+        label:
+          it: Merce generica
+          en: General cargo
+          de: Stückgut
+      - value: food
+        label:
+          it: Alimentari
+          en: Food
+          de: Lebensmittel
+      - value: pharma
+        label:
+          it: Farmaceutico
+          en: Pharma
+          de: Pharma
+      - value: chemicals
+        label:
+          it: Chimico
+          en: Chemicals
+          de: Chemie
+      - value: machinery
+        label:
+          it: Macchinari
+          en: Machinery
+          de: Maschinen
+      - value: other
+        label:
+          it: Altro
+          en: Other
+          de: Sonstiges
     - name: pallets
       type: number
       label:
-        it: Numero di bancali
+        it: Numero bancali
         en: Pallets
         de: Paletten
     - name: ldm
       type: number
       label:
         it: Metri lineari
-        en: Loading metres
+        en: Linear metres
         de: Lademeter
       help:
         it: Compila bancali oppure metri lineari
-        en: Fill pallets or loading metres
+        en: Fill in pallets or linear metres
         de: Paletten oder Lademeter angeben
     - name: weight_kg
       type: number
@@ -411,7 +503,7 @@ spec:
         it: Peso (kg)
         en: Weight (kg)
         de: Gewicht (kg)
-    - name: temperature
+    - name: temp
       type: select
       required: true
       default: ambient
@@ -432,9 +524,9 @@ spec:
           de: Gekühlt +2/+8 °C
       - value: frozen
         label:
-          it: Surgelato −18 °C
-          en: Frozen −18 °C
-          de: Tiefgekühlt −18 °C
+          it: Surgelato -18 °C
+          en: Frozen -18 °C
+          de: Tiefkühl -18 °C
     - name: adr
       type: boolean
       label:
@@ -452,10 +544,10 @@ spec:
       label:
         it: Consegna su appuntamento
         en: Delivery appointment
-        de: Avisierung
+        de: Terminlieferung
     - name: notes
       type: textarea
-      maxLength: 500
+      maxLength: 400
       label:
         it: Note (facoltative)
         en: Notes (optional)
@@ -464,18 +556,24 @@ spec:
     collections:
     - name: shipments
       ownedBy: user
-      description: 'The customer''s own shipments: quote, status, chosen carrier, tracking status and link to the signed transport
-        document'
+      description: Logistic data and tracking of each shipment (no prices)
+      retentionDays: 1095
       fields:
-      - name: origin
+      - name: ref
         type: text
-      - name: destination
+      - name: customer_email
+        type: email
+      - name: pickup_address
         type: text
-      - name: load_date
+      - name: pickup_date
         type: date
-      - name: delivery_window
+      - name: delivery_address
         type: text
-      - name: goods
+      - name: delivery_from
+        type: date
+      - name: delivery_to
+        type: date
+      - name: goods_type
         type: text
       - name: pallets
         type: number
@@ -483,176 +581,299 @@ spec:
         type: number
       - name: weight_kg
         type: number
-      - name: temperature
+      - name: temp
         type: text
       - name: adr
         type: boolean
-      - name: services
+      - name: tail_lift
+        type: boolean
+      - name: appointment
+        type: boolean
+      - name: pickup_zone
+        type: text
+      - name: dest_zone
         type: text
       - name: distance_km
         type: number
-      - name: tolls_eur
-        type: number
+      - name: eta_text
+        type: text
+      - name: status
+        type: select
+        label:
+          it: Stato
+          en: Status
+          de: Status
+        options:
+        - quoted
+        - requested
+        - bidding
+        - assigned
+        - in_transit
+        - delivered
+        - cancelled
+      - name: confirm
+        type: boolean
+        label:
+          it: Accetto il preventivo e pubblico il carico
+          en: I accept the quote and publish the load
+          de: Ich nehme das Angebot an und veröffentliche die Ladung
+      - name: carrier_email
+        type: email
+      - name: pod
+        type: file
+        accept:
+        - pdf
+        - jpg
+        - png
+        maxMb: 10
+        label:
+          it: Documento di trasporto firmato
+          en: Signed delivery note
+          de: Unterschriebener Lieferschein
+      access:
+      - role: operator
+        can:
+        - read
+        - write
+      - role: carrier
+        where:
+          carrier_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: quotes
+      ownedBy: user
+      description: Indicative prices shown to the customer
+      retentionDays: 1095
+      fields:
+      - name: ref
+        type: text
       - name: price_low
         type: number
       - name: price_mid
         type: number
       - name: price_high
         type: number
-      - name: transit_days
-        type: number
-      - name: confidence
-        type: text
-      - name: status
-        type: select
-        options:
-        - quoted
-        - accepted
-        - assigned
-        - in_transit
-        - delivered
-      - name: tracking_note
-        type: text
-      - name: pod_url
-        type: url
-        label: Signed transport document (link)
-    - name: open_loads
-      ownedBy: shared
-      description: Anonymised loads open to carrier bids (no customer data, no price)
-      fields:
-      - name: shipment_ref
-        type: text
-      - name: zone
-        type: text
-      - name: pickup_area
-        type: text
-      - name: delivery_area
-        type: text
-      - name: load_date
-        type: date
-      - name: delivery_window
-        type: text
-      - name: goods
-        type: text
-      - name: loading
-        type: text
-      - name: weight_kg
-        type: number
-      - name: temperature
-        type: text
-      - name: adr
-        type: boolean
-      - name: services
+      - name: currency
         type: text
       - name: distance_km
         type: number
-      - name: status
-        type: text
-    - name: bids
-      ownedBy: user
-      description: A carrier's own bids on open loads
+      - name: tolls_eur
+        type: number
+      - name: fuel_index
+        type: number
+      - name: transit_days
+        type: number
+      - name: notes
+        type: textarea
+      access:
+      - role: operator
+    - name: loads
+      ownedBy: org
+      description: Marketplace loads, anonymised (no customer data, no prices)
       fields:
       - name: shipment_ref
         type: text
-        required: true
-      - name: amount_eur
-        type: number
-        required: true
-      - name: vehicle
+      - name: pickup_zone
         type: text
-      - name: pickup_eta
+      - name: dest_zone
+        type: text
+      - name: pickup_date
         type: date
-      - name: note
+      - name: delivery_to
+        type: date
+      - name: goods_type
         type: text
-    - name: carriers
-      ownedBy: user
-      description: 'Carrier profile: company, zones covered, vehicles, permits (ADR, ATP)'
-      fields:
-      - name: company
-        type: text
-        required: true
-      - name: vat_number
-        type: text
-      - name: zones
-        type: text
-      - name: vehicles
-        type: text
-      - name: adr_permit
-        type: boolean
-      - name: atp_cold_chain
-        type: boolean
-    - name: route_history
-      ownedBy: org
-      description: The forwarder's historical lanes used to estimate prices
-      fields:
-      - name: origin
-        type: text
-      - name: destination
-        type: text
-      - name: load_type
-        type: text
+      - name: pallets
+        type: number
+      - name: ldm
+        type: number
       - name: weight_kg
         type: number
+      - name: temp
+        type: text
+      - name: adr
+        type: boolean
+      - name: tail_lift
+        type: boolean
+      - name: appointment
+        type: boolean
+      - name: status
+        type: select
+        options:
+        - open
+        - assigned
+        - closed
+      - name: carrier_email
+        type: email
+      access:
+      - role: carrier
+        where:
+          status: open
+      - role: carrier
+        where:
+          carrier_email: '{user.email}'
+      - role: operator
+        can:
+        - read
+        - write
+    - name: bids
+      ownedBy: user
+      description: Offers made by carriers on open loads
+      fields:
+      - name: load_ref
+        type: select
+        required: true
+        optionsFrom: collection:loads
+        label:
+          it: Carico
+          en: Load
+          de: Ladung
+      - name: carrier_email
+        type: email
+        required: true
+        label:
+          it: La tua email di accesso
+          en: Your login email
+          de: Ihre Login-E-Mail
       - name: price_eur
         type: number
-      - name: date
-        type: date
-    - name: margin_log
+        required: true
+        label:
+          it: Offerta (EUR)
+          en: Bid (EUR)
+          de: Gebot (EUR)
+      - name: pickup_slot
+        type: text
+        label:
+          it: Disponibilità al carico
+          en: Pickup availability
+          de: Verfügbarkeit Beladung
+      - name: notes
+        type: textarea
+        label:
+          it: Note
+          en: Notes
+          de: Hinweise
+      access:
+      - role: operator
+    - name: assignments
       ownedBy: org
-      description: Margin per evaluated bid, for the operator dashboard
+      description: Carrier choice, cost and margin of each shipment (back office)
       fields:
       - name: shipment_ref
         type: text
-      - name: carrier
-        type: text
-      - name: bid_eur
+        required: true
+        label:
+          it: Riferimento spedizione
+          en: Shipment ref
+          de: Sendungsreferenz
+      - name: carrier_email
+        type: email
+        required: true
+        label:
+          it: Vettore scelto (email)
+          en: Chosen carrier (email)
+          de: Gewählter Frachtführer (E-Mail)
+      - name: carrier_cost
         type: number
-      - name: price_eur
+        required: true
+        label:
+          it: Costo vettore (EUR)
+          en: Carrier cost (EUR)
+          de: Frachtführerkosten (EUR)
+      - name: customer_price
         type: number
       - name: margin_eur
         type: number
       - name: margin_pct
         type: number
-      - name: below_threshold
+      - name: status
+        type: select
+        default: proposed
+        options:
+        - proposed
+        - pending_approval
+        - confirmed
+      - name: month
+        type: date
+      access:
+      - role: operator
+        can:
+        - read
+        - write
+    - name: carriers
+      ownedBy: org
+      description: Registered carriers
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: email
+        type: email
+        required: true
+      - name: zones
+        type: text
+        help:
+          it: Zone coperte, es. IT-Lombardia, DE-Bayern
+          en: Covered zones, e.g. IT-Lombardia, DE-Bayern
+          de: Gebiete, z. B. IT-Lombardia, DE-Bayern
+      - name: vat
+        type: text
+      - name: adr_certified
         type: boolean
-  approvals:
-  - key: margin_override
-    title:
-      it: Margine sotto soglia
-      en: Margin below threshold
-      de: Marge unter Schwelle
-    description: 'The best bid leaves a margin under 8%: the operator must approve before assigning the carrier.'
-    role: admin
-    decidedBy: role
-    fields:
-    - shipment_ref
-    - bid
-    - margin_eur
-    - margin_pct
-    - recommendation
-    timeoutMinutes: 1440
-    onTimeout: reject
-  triggers:
-  - key: publish_accepted
-    description: Publish to the marketplace when a customer accepts a quote
-    'on':
-      collection: shipments
-      op: update
-      where:
-        status: accepted
-    start:
-      agent: publisher
-    goal: 'Publish this accepted shipment: {event}'
-    asUser: true
-  - key: evaluate_bid
-    description: Evaluate each new carrier bid for margin
-    'on':
-      collection: bids
-      op: insert
-    start:
-      agent: dispatcher
-    goal: 'Evaluate this bid against the shipment''s quoted price: {event}'
-    asUser: false
+      - name: notes
+        type: textarea
+      access:
+      - role: operator
+        can:
+        - read
+        - write
+    - name: route_history
+      ownedBy: org
+      description: The forwarder's historical lanes, used to estimate prices
+      fields:
+      - name: origin
+        type: text
+        required: true
+      - name: destination
+        type: text
+        required: true
+      - name: km
+        type: number
+      - name: pallets
+        type: number
+      - name: weight_kg
+        type: number
+      - name: price_eur
+        type: number
+        required: true
+      - name: date
+        type: date
+        required: true
+      - name: adr
+        type: boolean
+      - name: temp
+        type: text
+      - name: return_empty
+        type: boolean
+      access:
+      - role: operator
+        can:
+        - read
+        - write
+    - name: fuel_index
+      ownedBy: app
+      description: Weekly published diesel price
+      fields:
+      - name: week
+        type: text
+      - name: diesel_it
+        type: number
+      - name: diesel_eu_avg
+        type: number
+      - name: source
+        type: text
   views:
   - key: home
     type: page
@@ -660,25 +881,26 @@ spec:
     title: PreventivoCargo
     sections:
     - type: hero
+      band: true
       eyebrow:
-        it: Trasporto merci su strada · Italia ed Europa
-        en: Road freight · Italy and Europe
-        de: Straßengüterverkehr · Italien und Europa
+        it: Trasporto merci su strada
+        en: Road freight
+        de: Straßengüterverkehr
       title:
-        it: Il prezzo del tuo trasporto in **pochi secondi**, il vettore giusto in poche ore.
-        en: Your freight price in **seconds**, the right carrier in hours.
-        de: Ihr Frachtpreis in **Sekunden**, der richtige Frachtführer in Stunden.
+        it: Il prezzo del tuo **trasporto** in pochi secondi.
+        en: The price of your **shipment** in seconds.
+        de: Der Preis Ihrer **Sendung** in Sekunden.
       text:
-        it: 'Compila la richiesta: un agente AI normalizza gli indirizzi, calcola distanza e pedaggi da dati aperti e stima
-          un prezzo con forchetta e tempi, tenendo conto di stagione, gasolio e rischio di ritorno a vuoto.'
-        en: 'Fill in the request: an AI agent normalises addresses, computes distance and tolls from open data and estimates
-          a price with range and transit time, considering season, diesel and empty-return risk.'
-        de: 'Anfrage ausfüllen: Ein KI-Agent normalisiert Adressen, berechnet Strecke und Maut aus offenen Daten und schätzt
-          einen Preis mit Spanne und Laufzeit unter Berücksichtigung von Saison, Diesel und Leerfahrtrisiko.'
+        it: 'Inserisci carico e consegna: ricevi una forchetta di prezzo e i tempi. Se accetti, i vettori registrati fanno
+          offerta e segui la consegna fino al documento firmato.'
+        en: 'Enter pickup and delivery: get a price range and transit time. If you accept, registered carriers bid and you
+          follow the delivery up to the signed document.'
+        de: 'Be- und Entladeort eingeben: Preisspanne und Laufzeit erhalten. Nach Annahme bieten registrierte Frachtführer,
+          und Sie verfolgen die Lieferung bis zum unterschriebenen Lieferschein.'
       actions:
       - label:
           it: Richiedi un preventivo
-          en: Get a quote
+          en: Request a quote
           de: Angebot anfordern
         href: /v/new_quote
         style: primary
@@ -688,8 +910,6 @@ spec:
           de: Anmelden
         href: /login
         style: ghost
-      layout: stack
-      band: true
     - type: steps
       id: come-funziona
       title:
@@ -698,41 +918,35 @@ spec:
         de: So funktioniert's
       items:
       - title:
-          it: Richiesta
-          en: Request
-          de: Anfrage
+          it: Preventivo
+          en: Quote
+          de: Angebot
         text:
-          it: Carico, consegna, merce, bancali o metri lineari, peso, temperatura, ADR e servizi accessori.
-          en: Pickup, delivery, goods, pallets or loading metres, weight, temperature, ADR and extra services.
-          de: Beladung, Lieferung, Ware, Paletten oder Lademeter, Gewicht, Temperatur, ADR und Zusatzleistungen.
-        badge: 📝
+          it: Indirizzi normalizzati, distanza e pedaggi da dati open, prezzo stimato sullo storico delle tratte con stagionalità,
+            gasolio e rischio di ritorno a vuoto.
+          en: Normalised addresses, distance and tolls from open data, price estimated from lane history with seasonality,
+            diesel and empty-return risk.
+          de: Normalisierte Adressen, Distanz und Maut aus offenen Daten, Preis aus der Streckenhistorie mit Saisonalität,
+            Diesel und Leerfahrtrisiko.
+        badge: '1'
       - title:
-          it: Prezzo indicativo
-          en: Indicative price
-          de: Richtpreis
+          it: Offerte dei vettori
+          en: Carrier bids
+          de: Frachtführer-Gebote
         text:
-          it: Forchetta di prezzo e tempi di transito, con la spiegazione dei calcoli.
-          en: Price range and transit time, with the reasoning shown.
-          de: Preisspanne und Laufzeit mit nachvollziehbarer Berechnung.
-        badge: ⚡
+          it: Se accetti, il carico è visibile ai vettori della zona; l'operatore sceglie e conferma.
+          en: If you accept, the load is visible to carriers in the area; the operator picks and confirms.
+          de: Nach Annahme sehen Frachtführer der Region die Ladung; der Disponent wählt und bestätigt.
+        badge: '2'
       - title:
-          it: Marketplace vettori
-          en: Carrier marketplace
-          de: Frachtführer-Marktplatz
+          it: Tracking e documento
+          en: Tracking and document
+          de: Tracking und Lieferschein
         text:
-          it: Se accetti, i vettori della zona fanno offerta e l'operatore sceglie e conferma.
-          en: If you accept, carriers in the area bid and the operator picks and confirms.
-          de: Bei Annahme bieten Frachtführer der Region; der Disponent wählt und bestätigt.
-        badge: 🚚
-      - title:
-          it: Tracking e documenti
-          en: Tracking and documents
-          de: Tracking und Dokumente
-        text:
-          it: Segui lo stato della consegna e ritrova il documento di trasporto firmato.
-          en: Follow delivery status and find the signed transport document.
-          de: Lieferstatus verfolgen und den unterschriebenen Frachtbrief abrufen.
-        badge: 📍
+          it: Aggiornamenti via email e documento di trasporto firmato caricato dal vettore.
+          en: Email updates and the signed delivery note uploaded by the carrier.
+          de: E-Mail-Updates und der vom Frachtführer hochgeladene unterschriebene Lieferschein.
+        badge: '3'
     - type: cards
       id: vettori
       title:
@@ -745,31 +959,35 @@ spec:
           en: Loads in your area
           de: Ladungen in Ihrer Region
         text:
-          it: Vedi i carichi disponibili (senza dati del cliente), fai la tua offerta e ricevi solo quelli che ti vengono
-            assegnati.
-          en: See available loads (without customer data), place your bid and only get the loads assigned to you.
-          de: Verfügbare Ladungen ohne Kundendaten ansehen, bieten und nur zugewiesene Ladungen erhalten.
+          it: Registrati con lo spedizioniere, vedi i carichi disponibili e fai la tua offerta.
+          en: Register with the forwarder, see available loads and place your bid.
+          de: Beim Spediteur registrieren, verfügbare Ladungen sehen und bieten.
     - type: note
       content:
-        it: Il prezzo è indicativo e non vincolante. Commissione per spedizione applicata dalla piattaforma.
-        en: The price is indicative and not binding. A per-shipment commission applies.
-        de: Der Preis ist unverbindlich. Pro Sendung fällt eine Provision an.
+        it: I prezzi sono indicativi e non costituiscono offerta vincolante. Pedaggi stimati.
+        en: Prices are indicative and not a binding offer. Tolls are estimated.
+        de: Preise sind unverbindlich. Maut ist geschätzt.
   - key: new_quote
     type: new_run
     title:
-      it: Nuova richiesta
-      en: New request
-      de: Neue Anfrage
-    source: agent:quoter
+      it: Nuovo preventivo
+      en: New quote
+      de: Neues Angebot
     roles:
-    - customer
+    - user
     - admin
-  - key: quote
-    type: report
+  - key: quotes_history
+    type: history
     title:
-      it: Preventivo
-      en: Quote
-      de: Angebot
+      it: I miei preventivi
+      en: My quotes
+      de: Meine Angebote
+    source: run
+    roles:
+    - user
+    - admin
+  - key: quote_report
+    type: report
     source: run
     printable: true
     nav: false
@@ -780,102 +998,83 @@ spec:
       en: My shipments
       de: Meine Sendungen
     source: collection:shipments
-    data:
-      display: table
-      fields:
-      - key: origin
-        label:
-          it: Carico
-          en: Pickup
-          de: Beladung
-      - key: destination
-        label:
-          it: Consegna
-          en: Delivery
-          de: Lieferung
-      - key: load_date
-        label: Date
-        format: date
-      - key: price_mid
-        label:
-          it: Prezzo
-          en: Price
-          de: Preis
-        format: money
-      - key: status
-        label: Status
-        format: badge
-      - key: tracking_note
-        label: Tracking
-      - key: pod_url
-        label: POD
-        format: link
-      sort:
-        field: load_date
-        dir: desc
-      limit: 100
+    columns:
+    - ref
+    - pickup_address
+    - pickup_date
+    - delivery_address
+    - delivery_to
+    - status
+    - eta_text
+    - pod
     roles:
-    - customer
-  - key: history
-    type: history
+    - user
+  - key: accept
+    type: form
     title:
-      it: Storico preventivi
-      en: Quote history
-      de: Angebotsverlauf
-    source: run
+      it: Accetta preventivo
+      en: Accept quote
+      de: Angebot annehmen
+    collection: shipments
+    fields:
+    - confirm
+    edit: true
+    submit:
+      label:
+        it: Accetta
+        en: Accept
+        de: Annehmen
+      message:
+        it: Carico pubblicato ai vettori.
+        en: Load published to carriers.
+        de: Ladung an Frachtführer veröffentlicht.
+      redirect: my_shipments
+    nav: false
     roles:
-    - customer
-    - admin
-  - key: loadboard
+    - user
+  - key: loads_open
     type: table
     title:
       it: Carichi disponibili
       en: Available loads
       de: Verfügbare Ladungen
-    source: collection:open_loads
-    data:
-      display: table
-      fields:
-      - key: zone
-        label: Zone
-      - key: pickup_area
-        label:
-          it: Da
-          en: From
-          de: Von
-      - key: delivery_area
-        label:
-          it: A
-          en: To
-          de: Nach
-      - key: load_date
-        label: Date
-        format: date
-      - key: loading
-        label:
-          it: Carico
-          en: Load
-          de: Ladung
-      - key: weight_kg
-        label: kg
-        format: number
-      - key: temperature
-        label: °C
-      - key: adr
-        label: ADR
-      - key: shipment_ref
-        label: Ref
-      filters:
-      - field: status
-        op: '='
-        value: open
-      sort:
-        field: load_date
-        dir: asc
-      limit: 100
+    source: collection:loads
+    columns:
+    - shipment_ref
+    - pickup_zone
+    - dest_zone
+    - pickup_date
+    - delivery_to
+    - goods_type
+    - pallets
+    - ldm
+    - weight_kg
+    - temp
+    - adr
+    - tail_lift
+    - appointment
+    - status
     roles:
     - carrier
-    - admin
+  - key: bid
+    type: form
+    title:
+      it: Fai un'offerta
+      en: Place a bid
+      de: Gebot abgeben
+    collection: bids
+    submit:
+      label:
+        it: Invia offerta
+        en: Send bid
+        de: Gebot senden
+      message:
+        it: Offerta inviata.
+        en: Bid sent.
+        de: Gebot gesendet.
+      redirect: my_bids
+    roles:
+    - carrier
   - key: my_bids
     type: table
     title:
@@ -883,116 +1082,280 @@ spec:
       en: My bids
       de: Meine Gebote
     source: collection:bids
-    data:
-      display: table
-      fields:
-      - key: shipment_ref
-        label: Ref
-      - key: amount_eur
-        label: EUR
-        format: money
-      - key: vehicle
-        label: Vehicle
-      - key: pickup_eta
-        label: ETA
-        format: date
-      limit: 100
+    columns:
+    - load_ref
+    - price_eur
+    - pickup_slot
+    - notes
     roles:
     - carrier
-  - key: carrier_profile
+  - key: my_jobs
     type: table
     title:
-      it: Profilo vettore
-      en: Carrier profile
-      de: Frachtführerprofil
-    source: collection:carriers
+      it: Carichi assegnati
+      en: Assigned loads
+      de: Zugewiesene Ladungen
+    source: collection:shipments
+    columns:
+    - ref
+    - pickup_address
+    - pickup_date
+    - delivery_address
+    - delivery_from
+    - delivery_to
+    - goods_type
+    - pallets
+    - weight_kg
+    - temp
+    - adr
+    - status
+    - pod
     roles:
     - carrier
-  - key: approvals
-    type: approvals
+  - key: update_delivery
+    type: form
     title:
-      it: Approvazioni
-      en: Approvals
-      de: Freigaben
-    approvals:
-    - margin_override
+      it: Aggiorna consegna
+      en: Update delivery
+      de: Lieferung aktualisieren
+    collection: shipments
+    fields:
+    - status
+    - pod
+    edit: true
+    submit:
+      label:
+        it: Salva
+        en: Save
+        de: Speichern
+      message:
+        it: Aggiornamento salvato.
+        en: Update saved.
+        de: Aktualisierung gespeichert.
+      redirect: my_jobs
+    nav: false
     roles:
-    - admin
-  - key: margins
-    type: page
-    title:
-      it: Margini
-      en: Margins
-      de: Margen
-    roles:
-    - admin
-    sections:
-    - type: data
-      title:
-        it: Margini per offerta
-        en: Margin per bid
-        de: Marge je Gebot
-      source: collection:margin_log
-      display: kpi
-      kpis:
-      - label:
-          it: Offerte valutate
-          en: Bids evaluated
-          de: Bewertete Gebote
-        agg: count
-      - label:
-          it: Margine medio %
-          en: Average margin %
-          de: Durchschnittsmarge %
-        agg: avg
-        field: margin_pct
-        format: percent
-      - label:
-          it: Margine totale
-          en: Total margin
-          de: Gesamtmarge
-        agg: sum
-        field: margin_eur
-        format: money
-    - type: data
-      source: collection:margin_log
-      display: chart
-      chart: bar
-      fields:
-      - key: shipment_ref
-        label: Ref
-      - key: margin_eur
-        label: EUR
-      limit: 30
-    - type: data
-      source: collection:margin_log
-      display: table
-      fields:
-      - key: shipment_ref
-        label: Ref
-      - key: carrier
-        label: Carrier
-      - key: bid_eur
-        label: Bid
-        format: money
-      - key: price_eur
-        label: Price
-        format: money
-      - key: margin_pct
-        label: '%'
-        format: percent
-      - key: below_threshold
-        label: < 8%
-        format: badge
-      limit: 100
-  - key: admin_runs
-    type: admin
+    - carrier
+  - key: ops_shipments
+    type: table
     title:
       it: Tutte le spedizioni
       en: All shipments
       de: Alle Sendungen
-    source: run
+    source: collection:shipments
+    columns:
+    - ref
+    - customer_email
+    - pickup_zone
+    - dest_zone
+    - pickup_date
+    - delivery_to
+    - status
+    - carrier_email
+    - pod
+    export: true
     roles:
+    - operator
+    - admin
+  - key: ops_quotes
+    type: table
+    title:
+      it: Preventivi
+      en: Quotes
+      de: Angebote
+    source: collection:quotes
+    columns:
+    - ref
+    - price_low
+    - price_mid
+    - price_high
+    - distance_km
+    - tolls_eur
+    - fuel_index
+    - transit_days
+    roles:
+    - operator
+    - admin
+  - key: ops_bids
+    type: table
+    title:
+      it: Offerte ricevute
+      en: Bids received
+      de: Eingegangene Gebote
+    source: collection:bids
+    columns:
+    - load_ref
+    - carrier_email
+    - price_eur
+    - pickup_slot
+    - notes
+    roles:
+    - operator
+    - admin
+  - key: assign
+    type: form
+    title:
+      it: Scegli vettore
+      en: Choose carrier
+      de: Frachtführer wählen
+    collection: assignments
+    fields:
+    - shipment_ref
+    - carrier_email
+    - carrier_cost
+    submit:
+      label:
+        it: Conferma vettore
+        en: Confirm carrier
+        de: Frachtführer bestätigen
+      message:
+        it: 'Margine in verifica: sotto soglia serve approvazione.'
+        en: 'Margin being checked: below threshold needs approval.'
+        de: 'Marge wird geprüft: unter dem Schwellenwert ist eine Freigabe nötig.'
+    roles:
+    - operator
+    - admin
+  - key: approvals
+    type: approvals
+    title:
+      it: Approvazioni margini
+      en: Margin approvals
+      de: Margenfreigaben
+    approvals:
+    - margin_ok
+    roles:
+    - operator
+    - admin
+  - key: margins
+    type: page
+    title:
+      it: Dashboard margini
+      en: Margin dashboard
+      de: Margen-Dashboard
+    roles:
+    - operator
+    - admin
+    sections:
+    - type: data
+      source: collection:assignments
+      display: kpi
+      filters:
+      - field: status
+        op: '='
+        value: confirmed
+      kpis:
+      - label:
+          it: Spedizioni
+          en: Shipments
+          de: Sendungen
+        agg: count
+      - label:
+          it: Margine totale (EUR)
+          en: Total margin (EUR)
+          de: Gesamtmarge (EUR)
+        agg: sum
+        field: margin_eur
+        format: money
+      - label:
+          it: Margine medio %
+          en: Average margin %
+          de: Ø Marge %
+        agg: avg
+        field: margin_pct
+        format: number
+    - type: data
+      title:
+        it: Ricavi e margine per mese
+        en: Revenue and margin by month
+        de: Umsatz und Marge pro Monat
+      source: collection:assignments
+      display: chart
+      chart: bar
+      filters:
+      - field: status
+        op: '='
+        value: confirmed
+      groupBy:
+        field: month
+        bucket: month
+        aggs:
+        - key: revenue
+          agg: sum
+          field: customer_price
+        - key: margin
+          agg: sum
+          field: margin_eur
+      fields:
+      - key: month
+      - key: revenue
+      - key: margin
+    - type: data
+      title:
+        it: Dettaglio
+        en: Detail
+        de: Details
+      source: collection:assignments
+      display: table
+      fields:
+      - key: shipment_ref
+      - key: carrier_email
+      - key: carrier_cost
+        format: money
+      - key: customer_price
+        format: money
+      - key: margin_eur
+        format: money
+      - key: margin_pct
+        format: number
+      - key: status
+        format: badge
+      limit: 100
+  - key: carriers_list
+    type: table
+    title:
+      it: Vettori registrati
+      en: Registered carriers
+      de: Registrierte Frachtführer
+    source: collection:carriers
+    columns:
+    - name
+    - email
+    - zones
+    - vat
+    - adr_certified
+    roles:
+    - operator
+    - admin
+  - key: carrier_new
+    type: form
+    title:
+      it: Registra vettore
+      en: Register carrier
+      de: Frachtführer erfassen
+    collection: carriers
+    submit:
+      label:
+        it: Salva
+        en: Save
+        de: Speichern
+      redirect: carriers_list
+    roles:
+    - operator
+    - admin
+  - key: lane_new
+    type: form
+    title:
+      it: Aggiungi tratta storica
+      en: Add historical lane
+      de: Historische Strecke hinzufügen
+    collection: route_history
+    submit:
+      label:
+        it: Salva
+        en: Save
+        de: Speichern
+    roles:
+    - operator
     - admin
   - key: account
     type: account
@@ -1001,15 +1364,163 @@ spec:
       en: Credits
       de: Guthaben
     roles:
-    - customer
+    - user
+  approvals:
+  - key: margin_ok
+    title:
+      it: Margine sotto soglia
+      en: Margin below threshold
+      de: Marge unter Schwellenwert
+    description: The margin of a carrier assignment is below 8%
+    role: operator
+    decidedBy: role
+    fields:
+    - shipment_ref
+    - margin_pct
+    - carrier_email
+    timeoutMinutes: 2880
+    onTimeout: reject
+  triggers:
+  - key: publish_load
+    'on':
+      collection: shipments
+      op: update
+      where:
+        confirm: true
+    start:
+      agent: publisher
+    goal: The customer accepted shipment {record.ref}. Publish it.
+    asUser: false
+  - key: dispatch_new
+    'on':
+      collection: assignments
+      op: insert
+      where:
+        status: proposed
+    start:
+      agent: dispatcher
+    goal: 'New assignment: {event}'
+    asUser: false
+  - key: dispatch_approved
+    'on':
+      approval: margin_ok
+      decision: approved
+    start:
+      agent: dispatcher
+    goal: 'Margin approved: {event}. Confirm the assignment.'
+    asUser: false
+  - key: margin_rejected
+    'on':
+      approval: margin_ok
+      decision: rejected
+    notify:
+      to: admins
+      subject:
+        it: Margine rifiutato
+        en: Margin rejected
+        de: Marge abgelehnt
+      body:
+        it: 'Un''assegnazione con margine sotto soglia è stata rifiutata: scegli un altro vettore.'
+        en: 'An assignment below the margin threshold was rejected: choose another carrier.'
+        de: 'Eine Zuweisung unter dem Margenschwellenwert wurde abgelehnt: bitte anderen Frachtführer wählen.'
+      link: ops_shipments
+  - key: new_bid
+    'on':
+      collection: bids
+      op: insert
+    notify:
+      to: role:operator
+      subject:
+        it: Nuova offerta per il carico {record.load_ref}
+        en: New bid for load {record.load_ref}
+        de: Neues Gebot für Ladung {record.load_ref}
+      body:
+        it: Offerta di {record.price_eur} EUR da {record.carrier_email}.
+        en: Bid of {record.price_eur} EUR from {record.carrier_email}.
+        de: Gebot über {record.price_eur} EUR von {record.carrier_email}.
+      link: ops_bids
+  - key: commission
+    'on':
+      collection: shipments
+      op: update
+      where:
+        status: assigned
+    charge:
+      credits: 30
+      reason: commission per shipment
+  - key: notify_assigned
+    'on':
+      collection: shipments
+      op: update
+      where:
+        status: assigned
+    notify:
+      to:
+      - record.customer_email
+      subject:
+        it: 'Spedizione {record.ref}: vettore assegnato'
+        en: 'Shipment {record.ref}: carrier assigned'
+        de: 'Sendung {record.ref}: Frachtführer zugewiesen'
+      body:
+        it: Un vettore è stato assegnato alla tua spedizione {record.ref}.
+        en: A carrier has been assigned to your shipment {record.ref}.
+        de: Ihrer Sendung {record.ref} wurde ein Frachtführer zugewiesen.
+      link: my_shipments
+  - key: notify_transit
+    'on':
+      collection: shipments
+      op: update
+      where:
+        status: in_transit
+    notify:
+      to:
+      - record.customer_email
+      subject:
+        it: 'Spedizione {record.ref}: in viaggio'
+        en: 'Shipment {record.ref}: in transit'
+        de: 'Sendung {record.ref}: unterwegs'
+      body:
+        it: La merce è stata caricata ed è in viaggio.
+        en: Your goods have been picked up and are on the way.
+        de: Ihre Ware wurde abgeholt und ist unterwegs.
+      link: my_shipments
+  - key: notify_delivered
+    'on':
+      collection: shipments
+      op: update
+      where:
+        status: delivered
+    notify:
+      to:
+      - record.customer_email
+      - role:operator
+      subject:
+        it: 'Spedizione {record.ref}: consegnata'
+        en: 'Shipment {record.ref}: delivered'
+        de: 'Sendung {record.ref}: zugestellt'
+      body:
+        it: La spedizione {record.ref} è stata consegnata. Il documento di trasporto firmato è disponibile nell'app.
+        en: Shipment {record.ref} has been delivered. The signed delivery note is available in the app.
+        de: Sendung {record.ref} wurde zugestellt. Der unterschriebene Lieferschein ist in der App verfügbar.
+      link: my_shipments
+  schedules:
+  - agent: fuel_watcher
+    cron: 0 5 * * 1
+    action: run
+    owner: app
+  egress:
+    hosts:
+    - nominatim.openstreetmap.org
+    - router.project-osrm.org
+    notes: 'Nominatim (geocoding) and the OSRM demo router: OpenStreetMap data, ODbL, light use under their usage policies;
+      move to a dedicated router if volumes grow.'
+  notifications:
+    emailOnRunDone: true
   billing:
     modes:
     - credits
-    - per_transaction
     currency: eur
-    signupCredits: 30
-    transactionFeePct: 8
-    sellers: collection:carriers
+    signupCredits: 60
     metering:
       creditEur: 0.01
       markupPct: 50
@@ -1023,20 +1534,20 @@ spec:
     packs:
     - key: small
       credits: 300
-      price: 5
+      price: 15
       label: Small
     - key: large
-      credits: 2000
-      price: 30
+      credits: 1500
+      price: 60
       label: Large
   extensions:
-  - key: email_tracking
-    description: 'Email updates on delivery tracking are not available yet: customers see the status in My shipments.'
-  - key: pod_upload
-    description: 'Uploading the signed transport document is not available yet: the carrier gives a link, saved in pod_url.'
   - key: trained_price_model
-    description: 'No trained ML model can run on the platform: the agent estimates from the lanes in route_history (to be
-      loaded by the operator), season, diesel and empty-return risk.'
-  - key: carrier_assignment
-    description: 'Carrier selection by the operator and carrier-only visibility of assigned loads need custom logic: today
-      carriers see anonymised open loads and their own bids; assignment is done by the operator in the back office.'
+    description: 'A price model trained on the forwarder''s lane history is not available yet: the quoter estimates from similar
+      lanes (median EUR/km) adjusted for fuel, seasonality and return risk. Bulk CSV import of the history and model training
+      are missing.'
+  - key: toll_api
+    description: 'No open toll API: tolls are estimated with per-country per-km rates.'
+  - key: carrier_zone_filter
+    description: Carriers see all open loads; automatic filtering by the zones of their profile is not available yet.
+  - key: sms_whatsapp_tracking
+    description: Tracking updates are by email only; SMS/WhatsApp/push and live GPS positions are not available yet.

@@ -1,8 +1,8 @@
 # Campo Digitale
 
-_Il quaderno di campagna che controlla i trattamenti e ti avvisa dei rischi._
+_Il gestionale per la tua azienda agricola: appezzamenti, quaderno di campagna, meteo e satellite._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (18 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,15 +10,15 @@ Ci serve Campo Digitale, un gestionale per aziende agricole. L'agricoltore si re
 
 ## Features not expressible today (spec.extensions)
 
-- **map_editor**: Disegno degli appezzamenti su mappa: non disponibile; per ora perimetro come GeoJSON incollato e coordinate del centro.
-- **vigor_ndvi**: Indice di vigore settimanale da immagini Copernicus/Sentinel-2 e segnalazione zone in sofferenza: richiede accesso autenticato a Copernicus Data Space e analisi raster, non esprimibile oggi.
-- **sensors**: Collegamento di stazioni meteo e sonde di umidità: richiede credenziali per cliente o ingest dai dispositivi, non disponibile.
-- **offline_mobile**: App mobile con uso offline in campagna e sincronizzazione: il guscio nativo c'è, la modalità offline no.
-- **notifications**: Avvisi push o email quando il rischio supera la soglia: per ora gli avvisi compaiono nell'app.
-- **per_hectare_billing**: Abbonamento annuale calcolato per ettaro: approssimato con scaglioni di ettari.
-- **consultant_multi_farm**: Vista unica del consulente su più aziende: oggi via condivisione per record (viewer/editor) di appezzamenti e quaderno.
+- **polygon_drawing**: Disegno dei perimetri degli appezzamenti sulla mappa: la vista map mostra solo marcatori; per ora lat/lon e GeoJSON si inseriscono nel form. Serve un editor di poligoni.
+- **offline_mobile**: Uso offline in campagna con sincronizzazione al ritorno della rete: il guscio mobile è dichiarato, ma la cache offline e la sincronizzazione del quaderno non sono ancora espresse nel manifest.
+- **per_hectare_pricing**: Il prezzo annuale proporzionale agli ettari non è disponibile: usati tre scaglioni di piano annuale; il limite totale di ettari per piano va verificato.
+- **sensor_ownership**: I dati dei sensori arrivano da webhook /api/hooks/sensor_hook senza utente: l'associazione dispositivo-azienda e l'isolamento per cliente richiedono una verifica.
+- **copernicus_auth**: L'accesso a Copernicus Data Space richiede un token OAuth a breve durata: per ora il token è incollato dall'admin come chiave; serve lo scambio OAuth automatico.
+- **phyto_register**: Il registro fitosanitario del Ministero della Salute non ha API pubbliche: l'agente lo consulta via scraping della banca dati; verificare termini d'uso e stabilità.
+- **consultant_multi_farm**: Il consulente vede le aziende che lo indicano in consultant_email sugli appezzamenti; il quaderno è condiviso solo se la voce riporta la stessa email.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -29,27 +29,32 @@ Ci serve Campo Digitale, un gestionale per aziende agricole. L'agricoltore si re
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### overview
-![03-overview.png](screenshots/03-overview.png)
+### new_parcel
+![03-new_parcel.png](screenshots/03-new_parcel.png)
 
-### plots
-![04-plots.png](screenshots/04-plots.png)
+### parcels
+![04-parcels.png](screenshots/04-parcels.png)
 
-### log
-![05-log.png](screenshots/05-log.png)
+### map
+![05-map.png](screenshots/05-map.png)
 
-### checks
-![06-checks.png](screenshots/06-checks.png)
+### new_entry
+![06-new_entry.png](screenshots/06-new_entry.png)
 
-### watches
-![07-watches.png](screenshots/07-watches.png)
+### logbook
+![07-logbook.png](screenshots/07-logbook.png)
 
-### alerts
-![08-alerts.png](screenshots/08-alerts.png)
+### risk_watches
+![08-risk_watches.png](screenshots/08-risk_watches.png)
+
+### vigor_watches
+![09-vigor_watches.png](screenshots/09-vigor_watches.png)
+
+### sensors
+![10-sensors.png](screenshots/10-sensors.png)
 
 ### chat
-![09-chat.png](screenshots/09-chat.png)
+![11-chat.png](screenshots/11-chat.png)
 
 ### account
-![10-account.png](screenshots/10-account.png)
-
+![12-account.png](screenshots/12-account.png)

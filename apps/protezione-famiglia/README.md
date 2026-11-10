@@ -1,26 +1,43 @@
 # ProtezioneFamiglia
 
-_Quanto serve davvero alla tua famiglia se un giorno non ci sei?_
+_Quanto serve davvero alla tua famiglia se un giorno non ci fossi?_
 
-**Manifest status:** remaining errors
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (12 checks passed)
 
 ## Description given to the app builder (Italian)
 
 Voglio ProtezioneFamiglia, un consulente online per chi valuta una polizza vita temporanea caso morte. L'utente risponde a domande su reddito, mutuo, figli, risparmi e spese familiari. Un calcolo determina il capitale che servirebbe alla famiglia e la durata consigliata, e un agente spiega il risultato in linguaggio semplice con esempi. L'utente può salvare la simulazione e chiedere di essere ricontattato da un intermediario iscritto all'albo, che riceve la richiesta in una coda e la gestisce; l'app non vende polizze direttamente. Ogni utente vede solo le proprie simulazioni. Gratuito per l'utente, compenso per contatto qualificato dall'intermediario.
 
-## Remaining errors
+## Functional test: what did not pass
 
-- `agent advisor: goalTemplate placeholder {part_education} is not a form field, a context key or a built-in`
-- `agent advisor: goalTemplate placeholder {part_support} is not a form field, a context key or a built-in`
-- `agent advisor: goalTemplate placeholder {support_years} is not a form field, a context key or a built-in`
-- `agent advisor: goalTemplate placeholder {part_mortgage} is not a form field, a context key or a built-in`
-- `agent advisor: goalTemplate placeholder {part_savings} is not a form field, a context key or a built-in`
-- `agent advisor: goalTemplate placeholder {part_final} is not a form field, a context key or a built-in`
-- `agent advisor: goalTemplate placeholder {duration} is not a form field, a context key or a built-in`
-- `agent advisor: goalTemplate placeholder {capital} is not a form field, a context key or a built-in`
+- **trigger has its effect** (trigger new_callback): email to role:intermediary: no such recipient in the test (role nobody holds or empty field) _(warning)_
 
 ## Features not expressible today (spec.extensions)
 
-- **intermediary_fee**: Per-qualified-contact fee charged to intermediaries is not supported by billing yet: invoice outside the app, counting approved contact_request items.
-- **intermediary_email**: Email notification to intermediaries on new requests is not available yet: they check the queue view.
+- **qualified_contact_fee**: Fee paid by the intermediary for each qualified contact (status qualified) is invoiced to the intermediary outside the app: automatic charging of a non-customer user is not available yet.
 
+## Screenshots (interpretive runtime, no data)
+
+### home-anon
+![00-home-anon.png](screenshots/00-home-anon.png)
+
+### home-mobile
+![01-home-mobile.png](screenshots/01-home-mobile.png)
+
+### home
+![02-home.png](screenshots/02-home.png)
+
+### new_sim
+![03-new_sim.png](screenshots/03-new_sim.png)
+
+### history
+![04-history.png](screenshots/04-history.png)
+
+### callback
+![05-callback.png](screenshots/05-callback.png)
+
+### queue
+![06-queue.png](screenshots/06-queue.png)
+
+### handle
+![07-handle.png](screenshots/07-handle.png)

@@ -1,8 +1,8 @@
 # VetrinaAI
 
-_Scopri come gli assistenti AI raccontano il tuo hotel._
+_Scopri come gli assistenti AI parlano del tuo hotel._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (13 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,11 +10,9 @@ Vorrei costruire VetrinaAI, un servizio in abbonamento per hotel che vogliono sa
 
 ## Features not expressible today (spec.extensions)
 
-- **official_llm_apis**: Querying several third-party LLMs through their official APIs needs a provider API key, which the manifest cannot hold. For now the check uses a single model and says so in the report; multi-model probing needs platform-side credentials.
-- **weekly_email**: Emailing the weekly report is not available yet: reports are read in the dashboard.
-- **group_managers**: Chains and per-property managers: the chain owner creates all properties and per-record sharing (viewer) invites each manager to their own; a dedicated invite role is not modelled yet.
+- **group_discount_per_property**: Per-property monthly price with automatic volume discount is approximated by the group and chain plans; exact per-seat metering is not available yet.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -25,18 +23,29 @@ Vorrei costruire VetrinaAI, un servizio in abbonamento per hotel che vogliono sa
 ### home
 ![02-home.png](screenshots/02-home.png)
 
+### hotel_new
+![03-hotel_new.png](screenshots/03-hotel_new.png)
+
+### hotels
+![04-hotels.png](screenshots/04-hotels.png)
+
 ### watches
-![03-watches.png](screenshots/03-watches.png)
-
-### trend
-![04-trend.png](screenshots/04-trend.png)
-
-### answers
-![05-answers.png](screenshots/05-answers.png)
+![05-watches.png](screenshots/05-watches.png)
 
 ### dashboard
 ![06-dashboard.png](screenshots/06-dashboard.png)
 
-### account
-![07-account.png](screenshots/07-account.png)
+### trend
+![07-trend.png](screenshots/07-trend.png)
 
+### latest
+![08-latest.png](screenshots/08-latest.png)
+
+### answers_table
+![09-answers_table.png](screenshots/09-answers_table.png)
+
+### history
+![10-history.png](screenshots/10-history.png)
+
+### account
+![11-account.png](screenshots/11-account.png)

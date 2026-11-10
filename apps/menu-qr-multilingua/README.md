@@ -2,7 +2,7 @@
 
 _Il menu digitale che parla la lingua dei tuoi clienti._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (14 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,12 @@ Mi serve MenuParlante, un menu digitale per ristoranti. Il ristoratore inserisce
 
 ## Features not expressible today (spec.extensions)
 
-- **qr_codes**: Printable QR code per table pointing to /v/menu?r=<restaurant code>&t=<table>: the manifest cannot generate QR images yet; for now the owner builds them from that link.
-- **photo_upload**: File upload is not available: photos are given as a link.
-- **email_digest**: Notifications are not available: the weekly summary is saved in the app (Weekly summary view), not sent by email.
-- **menu_analytics**: Counting dish views and guest questions is not available to anonymous visitors yet: the digest cannot report real figures until the runtime logs them.
-- **restaurant_isolation**: Dishes are in one shared collection (so guests can read them without login) keyed by restaurant code. Restricting editing to the staff of the owning restaurant, picking the restaurant from the QR parameter, and the interactive allergy/vegetarian/gluten-free and language switch filters need runtime support.
+- **qr_codes**: Generating and printing a QR image per table is not available: the app shows the table links to turn into QR codes.
+- **menu_stats_capture**: Recording anonymous dish views and guest questions into menu_stats needs a collector (webhook) the manifest cannot create; until then the weekly summary will report no data.
+- **guest_filters**: Interactive allergy/vegetarian/gluten-free filter chips on the public menu are not available yet; the cards show the flags and the waiter chat filters by diet.
+- **instant_sold_out**: Sold-out changes are republished by the translator agent within moments, not strictly instantly.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,27 +26,26 @@ Mi serve MenuParlante, un menu digitale per ristoranti. Il ristoratore inserisce
 ### home
 ![02-home.png](screenshots/02-home.png)
 
+### restaurant
+![03-restaurant.png](screenshots/03-restaurant.png)
+
+### dish_form
+![04-dish_form.png](screenshots/04-dish_form.png)
+
+### dishes
+![05-dishes.png](screenshots/05-dishes.png)
+
+### tables
+![06-tables.png](screenshots/06-tables.png)
+
 ### menu
-![03-menu.png](screenshots/03-menu.png)
+![07-menu.png](screenshots/07-menu.png)
 
 ### waiter_chat
-![04-waiter_chat.png](screenshots/04-waiter_chat.png)
+![08-waiter_chat.png](screenshots/08-waiter_chat.png)
 
-### dish_list
-![05-dish_list.png](screenshots/05-dish_list.png)
-
-### restaurant
-![06-restaurant.png](screenshots/06-restaurant.png)
-
-### translate
-![07-translate.png](screenshots/07-translate.png)
-
-### runs
-![08-runs.png](screenshots/08-runs.png)
-
-### digests
-![09-digests.png](screenshots/09-digests.png)
+### summary
+![09-summary.png](screenshots/09-summary.png)
 
 ### account
 ![10-account.png](screenshots/10-account.png)
-

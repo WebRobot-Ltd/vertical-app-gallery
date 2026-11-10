@@ -2,20 +2,22 @@
 
 _Trova il commerciale giusto, con punteggi motivati e decisione sempre tua._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (15 checks passed)
 
 ## Description given to the app builder (Italian)
 
 Mi serve VenditoreGiusto per le aziende che assumono commerciali. Il recruiter crea una posizione con ruolo, settore, zona, esperienza richiesta, competenze, fascia di retribuzione e domande di screening. I candidati arrivano in due modi: si candidano da una pagina pubblica caricando il CV in PDF e rispondendo alle domande, oppure il recruiter carica in blocco i CV che ha già ricevuto. Un team di agenti legge ogni CV, estrae esperienze e risultati di vendita, assegna un punteggio di aderenza motivato, poi scrive ai candidati migliori un'email con domande di approfondimento e legge le risposte, aggiornando il punteggio. Il recruiter vede una classifica con il riassunto di ogni candidato e decide chi invitare al colloquio; l'app non scarta mai nessuno in automatico senza conferma umana e informa i candidati sul trattamento dei dati. I dati sono cancellati dopo sei mesi. Ogni azienda vede solo i suoi candidati. Pagamento a posizione aperta oppure abbonamento mensile. Italiano.
 
+## Functional test: what did not pass
+
+- **trigger has its effect** (trigger privacy_notice): email to record.email: no such recipient in the test (role nobody holds or empty field) _(warning)_
+
 ## Features not expressible today (spec.extensions)
 
-- **public_application**: Pagina pubblica di candidatura con caricamento del CV in PDF e risposte allo screening: non disponibile (niente file, e i visitatori anonimi non possono scrivere nei dati di un'azienda). Per ora il recruiter incolla il testo dei CV.
-- **candidate_emails**: Invio automatico delle email di approfondimento e lettura delle risposte: non disponibile. L'agente prepara la bozza con le domande; il recruiter la invia e incolla le risposte per aggiornare il punteggio.
-- **retention_6_months**: Cancellazione automatica dei dati dei candidati dopo sei mesi: da configurare come regola di conservazione sulla collezione candidates.
-- **position_entity**: Le posizioni sono parametri della valutazione; una collezione dedicata con candidature per posizione è un'evoluzione successiva.
+- **public_apply_page**: Pagina pubblica di candidatura (CV PDF + domande di screening) che salva il candidato direttamente nei dati dell'azienda che ha aperto la posizione: oggi un visitatore anonimo può scrivere solo in una casella dell'owner dell'app, non nei dati di una singola azienda. Per ora i CV ricevuti si caricano in blocco dal recruiter.
+- **inbound_email_replies**: Lettura automatica delle risposte email dei candidati: per ora il recruiter incolla la risposta nella scheda candidato e l'agente aggiorna il punteggio.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -26,18 +28,23 @@ Mi serve VenditoreGiusto per le aziende che assumono commerciali. Il recruiter c
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### new
-![03-new.png](screenshots/03-new.png)
+### privacy
+![03-privacy.png](screenshots/03-privacy.png)
 
-### runs
-![04-runs.png](screenshots/04-runs.png)
+### new_position
+![04-new_position.png](screenshots/04-new_position.png)
 
-### cands
-![05-cands.png](screenshots/05-cands.png)
+### positions_list
+![05-positions_list.png](screenshots/05-positions_list.png)
 
-### invites
-![06-invites.png](screenshots/06-invites.png)
+### upload_cv
+![06-upload_cv.png](screenshots/06-upload_cv.png)
+
+### ranking
+![07-ranking.png](screenshots/07-ranking.png)
+
+### candidate
+![08-candidate.png](screenshots/08-candidate.png)
 
 ### account
-![07-account.png](screenshots/07-account.png)
-
+![09-account.png](screenshots/09-account.png)

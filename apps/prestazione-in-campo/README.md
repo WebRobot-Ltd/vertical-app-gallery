@@ -1,8 +1,8 @@
 # Prestazione in Campo
 
-_Carico, rischio e performance degli atleti, dopo ogni sessione._
+_Carico, rischio sovraccarico e piano settimanale per ogni atleta._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (35 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,14 +10,10 @@ Mi serve Prestazione in Campo, la piattaforma di analisi per un servizio che mis
 
 ## Features not expressible today (spec.extensions)
 
-- **file_upload**: I dati dei dispositivi si incollano o si linkano: il caricamento di file non è ancora disponibile.
-- **auto_ingest**: L'arrivo automatico dei dati da dispositivi/telecamere richiede connettori non ancora disponibili; per ora inserimento manuale.
-- **athlete_own_data**: La vista 'metrics' per il ruolo atleta deve essere filtrata ai soli record dell'atleta (match email/nome) e il ruolo medico non deve vedere la modifica della rosa: richiede filtro per utente a livello di runtime.
-- **record_editing**: Creazione e modifica di rosa e dati sanitari da parte del preparatore e del medico (form sulle collezioni): da completare nello studio.
-- **per_team_tenancy**: Una installazione per squadra; più squadre nello stesso deployment richiedono un campo team su tutte le collezioni.
-- **notifications**: Invio automatico via email del report dopo ogni sessione e del riepilogo settimanale: notifiche non ancora disponibili, i report sono consultabili nell'app.
+- **device_auto_ingest**: Automatic arrival of device data (webhook/API from the sensor vendor) and automatic analysis on arrival: for now sessions are uploaded as exported files.
+- **video_metrics**: Camera and video-processing indicators are provided separately and not part of this software layer.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -34,24 +30,35 @@ Mi serve Prestazione in Campo, la piattaforma di analisi per un servizio che mis
 ### sessions
 ![04-sessions.png](screenshots/04-sessions.png)
 
-### weekly_view
-![05-weekly_view.png](screenshots/05-weekly_view.png)
+### session_reports_list
+![05-session_reports_list.png](screenshots/05-session_reports_list.png)
 
-### assistant_chat
-![06-assistant_chat.png](screenshots/06-assistant_chat.png)
+### weekly_list
+![06-weekly_list.png](screenshots/06-weekly_list.png)
 
-### roster
-![07-roster.png](screenshots/07-roster.png)
+### loads
+![07-loads.png](screenshots/07-loads.png)
 
 ### metrics
 ![08-metrics.png](screenshots/08-metrics.png)
 
-### health
-![09-health.png](screenshots/09-health.png)
+### health_data
+![09-health_data.png](screenshots/09-health_data.png)
 
-### risks
-![10-risks.png](screenshots/10-risks.png)
+### roster
+![10-roster.png](screenshots/10-roster.png)
+
+### athlete_form
+![11-athlete_form.png](screenshots/11-athlete_form.png)
+
+### health_form
+![12-health_form.png](screenshots/12-health_form.png)
+
+### health_profiles_list
+![13-health_profiles_list.png](screenshots/13-health_profiles_list.png)
+
+### assistant_chat
+![14-assistant_chat.png](screenshots/14-assistant_chat.png)
 
 ### account
-![11-account.png](screenshots/11-account.png)
-
+![15-account.png](screenshots/15-account.png)

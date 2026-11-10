@@ -2,7 +2,7 @@
 
 _Audioguide multilingua che rispondono solo con i materiali del tuo museo._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (17 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,13 +10,12 @@ MuseoVoce crea audioguide multilingua per musei, siti archeologici e mostre. Il 
 
 ## Features not expressible today (spec.extensions)
 
-- **voice_io**: Speech-to-text for visitor questions and text-to-speech audio playback in each language are not available yet: the chat is text for now.
-- **file_upload**: Uploading PDFs and files is not available yet: the curator pastes text or links.
-- **qr_codes**: QR code generation per work (link /v/visit?work=<id>) and per-museum catalogue filtering are not available yet.
-- **analytics**: Most-listened works and most-asked questions need visitor events written by the guide, which anonymous agents cannot do yet.
-- **work_quota**: Enforcing the number of works allowed by the license plan is not available yet.
+- **voice_io**: Speech-to-text and text-to-speech for the visitor's voice chat (browser or TTS service) are not yet available as manifest features; the chat is text-based for now.
+- **usage_analytics**: Most-listened works and most-asked questions need logging of visitor chats/plays into a per-museum collection; anonymous agents cannot write records yet. Not available.
+- **qr_codes**: QR codes pointing to /v/listen?page=<work code> must be generated and printed by the museum; no QR generator in the manifest.
+- **museum_scoping**: Published guides sit in one shared catalogue with a museum field; strict per-museum separation of visitor lookups needs the QR link to carry the museum and code.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -27,24 +26,32 @@ MuseoVoce crea audioguide multilingua per musei, siti archeologici e mostre. Il 
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### visit
-![03-visit.png](screenshots/03-visit.png)
+### listen
+![03-listen.png](screenshots/03-listen.png)
 
-### new_guide
-![04-new_guide.png](screenshots/04-new_guide.png)
+### artworks_form
+![04-artworks_form.png](screenshots/04-artworks_form.png)
 
-### guides_history
-![05-guides_history.png](screenshots/05-guides_history.png)
+### artworks
+![05-artworks.png](screenshots/05-artworks.png)
 
-### approvals
-![06-approvals.png](screenshots/06-approvals.png)
+### material_form
+![06-material_form.png](screenshots/06-material_form.png)
 
-### works
-![07-works.png](screenshots/07-works.png)
+### materials
+![07-materials.png](screenshots/07-materials.png)
 
-### materials_view
-![08-materials_view.png](screenshots/08-materials_view.png)
+### new_story
+![08-new_story.png](screenshots/08-new_story.png)
+
+### history
+![09-history.png](screenshots/09-history.png)
+
+### review
+![10-review.png](screenshots/10-review.png)
+
+### published
+![11-published.png](screenshots/11-published.png)
 
 ### account
-![09-account.png](screenshots/09-account.png)
-
+![12-account.png](screenshots/12-account.png)

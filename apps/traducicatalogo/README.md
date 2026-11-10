@@ -2,7 +2,7 @@
 
 _Schede prodotto tradotte in 17 lingue, con revisione automatica e umana._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (13 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,14 +10,10 @@ Vorrei TraduciCatalogo, un servizio self-service per e-commerce, editori e produ
 
 ## Features not expressible today (spec.extensions)
 
-- **file_upload**: Uploading CSV/XLSX files is not available yet: the user pastes the rows or gives a public link.
-- **file_download**: Downloading the same CSV/XLSX file with the translated columns is not available yet: the report is shown as tables to copy or print.
-- **email_on_done**: Email when the project is delivered is not available yet (notifications).
-- **cell_editing**: Manual editing of cells in a side-by-side grid is not available yet; single-cell new versions are requested through the 'single cell' mode of the form.
-- **store_connectors**: Connecting an online store with the customer's own credentials (Shopify, WooCommerce) is not available yet; only public links.
-- **per_word_pricing**: Credits are metered on real usage (AI tokens and compute), which scales with words and languages; a fixed per-word-per-language tariff would need custom logic.
+- **store_connection**: Direct connection to online stores (Shopify, WooCommerce) needs per-store API keys; for now the store URL is read by the agent and XLSX/CSV is the supported path.
+- **file_export**: The download of the original file with added translated columns is provided as a CSV export of the translations table; a re-assembled XLSX is not yet available.
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -28,15 +24,23 @@ Vorrei TraduciCatalogo, un servizio self-service per e-commerce, editori e produ
 ### home
 ![02-home.png](screenshots/02-home.png)
 
-### new_project
-![03-new_project.png](screenshots/03-new_project.png)
+### new
+![03-new.png](screenshots/03-new.png)
 
 ### projects
 ![04-projects.png](screenshots/04-projects.png)
 
+### side_by_side
+![05-side_by_side.png](screenshots/05-side_by_side.png)
+
+### edit_cell
+![06-edit_cell.png](screenshots/06-edit_cell.png)
+
+### regenerate
+![07-regenerate.png](screenshots/07-regenerate.png)
+
 ### reviews
-![05-reviews.png](screenshots/05-reviews.png)
+![08-reviews.png](screenshots/08-reviews.png)
 
 ### account
-![06-account.png](screenshots/06-account.png)
-
+![09-account.png](screenshots/09-account.png)

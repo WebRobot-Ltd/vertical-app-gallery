@@ -1,8 +1,8 @@
 # CriptoFisco
 
-_Plusvalenze cripto e dati per quadro RT e RW, pronti per la dichiarazione._
+_Plusvalenze cripto e dati per i quadri RT e RW, pronti per la dichiarazione._
 
-**Manifest status:** valid (schema validator + runtime contract)
+**Manifest:** valid (schema + runtime contract) · **Functional test:** passed (21 checks passed)
 
 ## Description given to the app builder (Italian)
 
@@ -10,12 +10,10 @@ Voglio CriptoFisco, un'app che calcola plusvalenze e minusvalenze su cripto-atti
 
 ## Features not expressible today (spec.extensions)
 
-- **exchange_api_keys**: Collegamento degli exchange con chiavi API in sola lettura cifrate: non ancora disponibile (richiede credenziali del cliente). Per ora CSV incollati come testo.
-- **file_upload**: Caricamento di file CSV non disponibile: il contribuente incolla il contenuto.
-- **pdf_excel_export**: Export PDF ed Excel: oggi il report è stampabile (salva come PDF); l'Excel non è ancora generabile.
-- **evm_explorers**: Explorer on-chain che richiedono chiave (es. Etherscan) non inclusi: solo Bitcoin via Blockstream; altre reti tramite CSV.
+- **exchange_signed_api**: Molti exchange (Binance, Kraken, Coinbase) richiedono richieste firmate (HMAC) con la chiave: il runtime non può firmarle. Oggi l'importazione da exchange funziona solo per endpoint con la sola chiave in header; per gli altri si usano i CSV di esportazione.
+- **excel_export**: L'esportazione Excel nativa non è disponibile: il prospetto è stampabile in PDF e le tabelle si scaricano in CSV (apribile in Excel).
 
-## Screenshots (interpretive runtime)
+## Screenshots (interpretive runtime, no data)
 
 ### home-anon
 ![00-home-anon.png](screenshots/00-home-anon.png)
@@ -29,30 +27,35 @@ Voglio CriptoFisco, un'app che calcola plusvalenze e minusvalenze su cripto-atti
 ### new_run
 ![03-new_run.png](screenshots/03-new_run.png)
 
-### wallets_view
-![04-wallets_view.png](screenshots/04-wallets_view.png)
-
-### csv_view
-![05-csv_view.png](screenshots/05-csv_view.png)
-
-### transactions_view
-![06-transactions_view.png](screenshots/06-transactions_view.png)
-
-### delegations_view
-![07-delegations_view.png](screenshots/07-delegations_view.png)
+### history
+![04-history.png](screenshots/04-history.png)
 
 ### dashboard
-![08-dashboard.png](screenshots/08-dashboard.png)
+![05-dashboard.png](screenshots/05-dashboard.png)
 
-### approvals_view
-![09-approvals_view.png](screenshots/09-approvals_view.png)
+### reports
+![06-reports.png](screenshots/06-reports.png)
 
-### history
-![10-history.png](screenshots/10-history.png)
+### to_confirm
+![07-to_confirm.png](screenshots/07-to_confirm.png)
+
+### confirm_tx
+![08-confirm_tx.png](screenshots/08-confirm_tx.png)
+
+### add_wallet
+![09-add_wallet.png](screenshots/09-add_wallet.png)
+
+### my_wallets
+![10-my_wallets.png](screenshots/10-my_wallets.png)
+
+### delegate
+![11-delegate.png](screenshots/11-delegate.png)
 
 ### clients
-![11-clients.png](screenshots/11-clients.png)
+![12-clients.png](screenshots/12-clients.png)
+
+### approvals
+![13-approvals.png](screenshots/13-approvals.png)
 
 ### account
-![12-account.png](screenshots/12-account.png)
-
+![14-account.png](screenshots/14-account.png)
