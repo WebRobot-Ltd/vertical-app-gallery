@@ -1,0 +1,1345 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: taxloom
+  displayName: Taxloom
+  tagline:
+    en: AI workpapers for accounting and tax firms, reviewed by your people.
+    nl: AI-werkpapieren voor boekhoud- en belastingkantoren, nagekeken door je team.
+  description:
+    en: Taxloom keeps each client's file, prepares workpapers step by step, answers technical questions with citations, tracks
+      MTD for Income Tax quarterly updates and routes every workpaper through preparer, manager and partner before it is shared.
+    nl: Taxloom bewaart het dossier van elke klant, bereidt werkpapieren stap voor stap voor, beantwoordt technische vragen
+      met bronnen, volgt de driemaandelijkse MTD-updates en laat elk werkpapier door preparer, manager en partner gaan voordat
+      het gedeeld wordt.
+  langs:
+  - en
+  - nl
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12304a'
+      accent: '#0f8b8d'
+      background: '#f6f8fa'
+      foreground: '#16212c'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Tax
+      color: primary
+    - text: loom
+      color: accent
+    width: wide
+  header:
+    links:
+    - label:
+        en: How it works
+        nl: Hoe het werkt
+      href: '#how'
+    - label:
+        en: Controls
+        nl: Controles
+      href: '#controls'
+    cta:
+      label:
+        en: Sign in
+        nl: Inloggen
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: partner
+      label: Partner
+      assignedBy: invite
+    - key: manager
+      label: Manager
+      assignedBy: invite
+    - key: preparer
+      label: Preparer
+      assignedBy: invite
+    - key: client
+      label:
+        en: Client
+        nl: Klant
+      assignedBy: derived
+      from: collection:clients.client_email
+  limits:
+  - action: chat
+    per: user
+    max: 60
+    window: day
+  - action: agent:preparer
+    per: user
+    max: 30
+    window: day
+  agents:
+  - key: preparer
+    role: main
+    description: Prepares a workpaper step by step from the client's file, then walks it through preparer review, manager
+      approval and partner sign-off.
+    awaits:
+    - preparer_review
+    - manager_approval
+    - partner_signoff
+    profile:
+      inline:
+        display_name: Taxloom workpaper preparer
+        crews:
+        - id: preparer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 2.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a UK tax and accounting workpaper preparer for a firm. You work only from the client''s
+            file and the firm''s template.
+
+
+            Steps: 1) read_clients to get the client record; 2) read_documents to list the client''s uploads and open the
+            relevant ones with read_upload (file ids); 3) read_templates and follow the firm''s template for the job type;
+            4) work step by step: reconcile the trial balance (flag every difference), compute adjustments (add-backs, capital
+            allowances, disallowables, dividends, property income, P11D items as relevant), then draft the corporation tax
+            computation or the self assessment working papers; 5) cite HMRC manuals and legislation.gov.uk for every technical
+            position, using gov_search, gov_content and legislation_get; never cite from memory; 6) save the draft with save_workpaper
+            (stage ''preparer_review'') and call request_preparer_review.
+
+
+            When you are resumed by an approval decision: if approved by the preparer, set the stage to ''manager_approval''
+            via save_workpaper and call request_manager_approval; if approved by the manager, set ''partner_signoff'' and
+            call request_partner_signoff; if approved by the partner, set the stage to ''shared'' (this notifies the client);
+            if any step is rejected, set the stage back to ''draft'', read the reviewer''s comments and revise the workpaper.
+
+
+            Output format: a level-1 ''# '' title ''<Client> — <job> <tax year>'', then ## Scope and sources, ## Trial balance
+            reconciliation, ## Adjustments, ## Computation, ## Open points and missing documents, ## References. Use tables
+            for figures; add a chart fenced block only when comparing figures. Never invent figures: list missing information
+            as open points. You do not file anything: filing goes through HMRC-recognised software by the firm. Write in the
+            language with ISO code given in the goal.'
+          mcp_servers: []
+    goalTemplate: 'Client: {client}
+
+      Job: {job_type_label}
+
+      Tax year / period: {tax_year}
+
+      {?instructions}Instructions from the preparer: {instructions}{/instructions}
+
+      Today is {date}. Prepare the workpaper and write it in the language with ISO code {lang}.'
+    appTools:
+    - name: read_clients
+      description: Read the firm's client records
+      action: read
+      collection: clients
+      scope: all
+    - name: read_documents
+      description: List documents in the client files
+      action: search
+      collection: documents
+      scope: all
+    - name: read_templates
+      description: Read the firm's workpaper templates
+      action: read
+      collection: workpaper_templates
+      scope: all
+    - name: read_upload
+      description: Read an uploaded file by id (OCR included)
+      action: read_file
+    - name: save_workpaper
+      description: Create or update a workpaper record with its stage
+      action: write
+      collection: workpapers
+      scope: all
+    - name: gov_search
+      description: Search HMRC manuals and guidance on GOV.UK
+      action: http
+      http:
+        method: GET
+        url: https://www.gov.uk/api/search.json
+        attribution: GOV.UK, Open Government Licence v3.0
+    - name: gov_content
+      description: Fetch a GOV.UK page, e.g. an HMRC manual section, by path
+      action: http
+      http:
+        method: GET
+        url: https://www.gov.uk/api/content
+        allowPath: true
+        attribution: GOV.UK, Open Government Licence v3.0
+    - name: legislation_get
+      description: Fetch a provision from legislation.gov.uk by path, e.g. /ukpga/2010/4/section/1/data.htm
+      action: http
+      http:
+        method: GET
+        url: https://www.legislation.gov.uk
+        allowPath: true
+        attribution: legislation.gov.uk, Open Government Licence v3.0
+    output: markdown
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 2.0
+  - key: researcher
+    role: helper
+    description: Answers technical tax questions with citations to HMRC manuals and legislation.gov.uk.
+    profile:
+      inline:
+        display_name: Taxloom technical researcher
+        crews:
+        - id: researcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You answer technical UK tax and accounting questions for firm staff. Look the answer up with gov_search
+            / gov_content (HMRC manuals) and legislation_get (legislation.gov.uk) before answering; never rely on memory for
+            a rule. Structure: short answer first, then the reasoning, then a Sources list with the manual reference (e.g.
+            CTM, SAIM, PIM, BIM) or Act and section, each with its URL. Say plainly when the sources do not settle the point
+            or when the rule may have changed; this is support for a professional''s judgement, not advice to the end client.
+            Answer in the language with ISO code given.'
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New question: {message}
+
+      Answer in the language with ISO code {lang}.'
+    appTools:
+    - name: gov_search
+      description: Search HMRC manuals and guidance on GOV.UK
+      action: http
+      http:
+        method: GET
+        url: https://www.gov.uk/api/search.json
+        attribution: GOV.UK, Open Government Licence v3.0
+    - name: gov_content
+      description: Fetch a GOV.UK page, e.g. an HMRC manual section, by path
+      action: http
+      http:
+        method: GET
+        url: https://www.gov.uk/api/content
+        allowPath: true
+        attribution: GOV.UK, Open Government Licence v3.0
+    - name: legislation_get
+      description: Fetch a provision from legislation.gov.uk by path, e.g. /ukpga/2010/4/section/1/data.htm
+      action: http
+      http:
+        method: GET
+        url: https://www.legislation.gov.uk
+        allowPath: true
+        attribution: legislation.gov.uk, Open Government Licence v3.0
+    output: markdown
+  - key: mtd_planner
+    role: helper
+    description: Creates the quarterly MTD for Income Tax update records for a new client.
+    profile:
+      inline:
+        display_name: Taxloom MTD planner
+        crews:
+        - id: mtd_planner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You set up Making Tax Digital for Income Tax quarterly updates. For the client given, create with
+            add_mtd_update four records for the current tax year (standard quarters): Q1 6 Apr-5 Jul due 7 Aug; Q2 6 Jul-5
+            Oct due 7 Nov; Q3 6 Oct-5 Jan due 7 Feb; Q4 6 Jan-5 Apr due 7 May. Fields: client_email, client_name, tax_year
+            (e.g. 2026-27), quarter (Q1..Q4), period_start, period_end, due_date (YYYY-MM-DD), status ''pending''. First check
+            with read_mtd_updates that the quarter does not exist yet. Reply with one line saying what you created. Never
+            invent a client.'
+    appTools:
+    - name: read_mtd_updates
+      description: Read MTD quarterly update records
+      action: read
+      collection: mtd_updates
+      scope: all
+    - name: add_mtd_update
+      description: Add an MTD quarterly update record
+      action: append
+      collection: mtd_updates
+      scope: all
+    output: markdown
+  inputForm:
+    title:
+      en: New workpaper
+      nl: Nieuw werkpapier
+    fields:
+    - name: client
+      type: select
+      required: true
+      label:
+        en: Client
+        nl: Klant
+      optionsFrom: collection:clients
+    - name: job_type
+      type: select
+      required: true
+      label:
+        en: Job
+        nl: Opdracht
+      options:
+      - value: tb_rec
+        label:
+          en: Trial balance reconciliation
+          nl: Proefbalans afstemmen
+      - value: adjustments
+        label:
+          en: Adjustments
+          nl: Correcties
+      - value: ct600
+        label:
+          en: Corporation tax computation
+          nl: Vennootschapsbelastingberekening
+      - value: sa
+        label:
+          en: Self assessment working papers
+          nl: Werkpapieren inkomstenbelasting
+    - name: tax_year
+      type: text
+      required: true
+      label:
+        en: Tax year or period
+        nl: Belastingjaar of periode
+      help:
+        en: e.g. 2025-26 or year ended 31 March 2026
+    - name: instructions
+      type: textarea
+      maxLength: 800
+      label:
+        en: Instructions (optional)
+        nl: Instructies (optioneel)
+  data:
+    collections:
+    - name: clients
+      ownedBy: org
+      description: The firm's client list (filled by staff, a CSV import on the data page, or the staff form)
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Name
+      - name: client_email
+        type: email
+        required: true
+        label: Client email
+      - name: client_type
+        type: select
+        options:
+        - company
+        - individual
+        - partnership
+        label: Type
+      - name: utr
+        type: text
+        label: UTR
+      - name: company_number
+        type: text
+        label: Company number
+      - name: year_end
+        type: date
+        label: Year end
+      - name: mtd_itsa
+        type: boolean
+        label: MTD for Income Tax
+      - name: office
+        type: select
+        options:
+        - uk
+        - be
+        label: Office
+      - name: manager_email
+        type: email
+        label: Manager
+      - name: notes
+        type: textarea
+        label: Notes
+      access:
+      - role: partner
+        can:
+        - read
+        - write
+      - role: manager
+        can:
+        - read
+        - write
+      - role: preparer
+        can:
+        - read
+        - write
+      - role: client
+        where:
+          client_email: '{user.email}'
+        can:
+        - read
+    - name: documents
+      ownedBy: org
+      description: 'Client file: prior-year returns, trial balances, P11Ds, dividend vouchers, property income records, correspondence'
+      fields:
+      - name: client_email
+        type: email
+        required: true
+        label: Client email
+      - name: client_name
+        type: text
+        label: Client
+      - name: doc_type
+        type: select
+        required: true
+        options:
+        - prior_return
+        - trial_balance
+        - p11d
+        - dividend_voucher
+        - property_income
+        - correspondence
+        - other
+        label: Document type
+      - name: tax_year
+        type: text
+        label: Tax year
+      - name: file
+        type: file
+        required: true
+        accept:
+        - pdf
+        - docx
+        - xlsx
+        - csv
+        - txt
+        - jpg
+        - png
+        maxMb: 15
+        multiple: true
+        label: File
+      - name: notes
+        type: textarea
+        label: Notes
+      access:
+      - role: partner
+        can:
+        - read
+        - write
+      - role: manager
+        can:
+        - read
+        - write
+      - role: preparer
+        can:
+        - read
+        - write
+      - role: client
+        where:
+          client_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: doc_requests
+      ownedBy: org
+      description: Missing-document requests sent to clients
+      fields:
+      - name: client_email
+        type: email
+        required: true
+        label: Client email
+      - name: client_name
+        type: text
+        label: Client
+      - name: description
+        type: textarea
+        required: true
+        label: What is needed
+      - name: due_date
+        type: date
+        label: Needed by
+      - name: status
+        type: select
+        options:
+        - open
+        - received
+        default: open
+        label: Status
+      access:
+      - role: partner
+        can:
+        - read
+        - write
+      - role: manager
+        can:
+        - read
+        - write
+      - role: preparer
+        can:
+        - read
+        - write
+      - role: client
+        where:
+          client_email: '{user.email}'
+        can:
+        - read
+    - name: workpapers
+      ownedBy: org
+      description: Jobs and their workpapers by stage
+      fields:
+      - name: client_email
+        type: email
+        required: true
+        label: Client email
+      - name: client_name
+        type: text
+        label: Client
+      - name: job_type
+        type: select
+        options:
+        - tb_rec
+        - adjustments
+        - ct600
+        - sa
+        label: Job
+      - name: tax_year
+        type: text
+        label: Period
+      - name: title
+        type: text
+        label: Title
+      - name: stage
+        type: select
+        options:
+        - draft
+        - preparer_review
+        - manager_approval
+        - partner_signoff
+        - shared
+        default: draft
+        label: Stage
+      - name: due_date
+        type: date
+        label: Deadline
+      - name: body
+        type: textarea
+        label: Workpaper
+      access:
+      - role: partner
+        can:
+        - read
+        - write
+      - role: manager
+        can:
+        - read
+        - write
+      - role: preparer
+        can:
+        - read
+        - write
+      - role: client
+        where:
+          client_email: '{user.email}'
+          stage: shared
+        can:
+        - read
+    - name: workpaper_templates
+      ownedBy: org
+      description: The firm's editable workpaper templates
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Template name
+      - name: job_type
+        type: select
+        options:
+        - tb_rec
+        - adjustments
+        - ct600
+        - sa
+        label: Job
+      - name: body
+        type: textarea
+        required: true
+        label: Template (headings, checklist, wording)
+      access:
+      - role: partner
+        can:
+        - read
+        - write
+      - role: manager
+        can:
+        - read
+        - write
+      - role: preparer
+        can:
+        - read
+    - name: mtd_updates
+      ownedBy: org
+      description: MTD for Income Tax quarterly updates per client
+      retentionDays: 2555
+      fields:
+      - name: client_email
+        type: email
+        required: true
+        label: Client email
+      - name: client_name
+        type: text
+        label: Client
+      - name: tax_year
+        type: text
+        label: Tax year
+      - name: quarter
+        type: select
+        options:
+        - Q1
+        - Q2
+        - Q3
+        - Q4
+        label: Quarter
+      - name: period_start
+        type: date
+        label: From
+      - name: period_end
+        type: date
+        label: To
+      - name: due_date
+        type: date
+        label: Due
+      - name: status
+        type: select
+        options:
+        - pending
+        - records_received
+        - submitted
+        default: pending
+        label: Status
+      access:
+      - role: partner
+        can:
+        - read
+        - write
+      - role: manager
+        can:
+        - read
+        - write
+      - role: preparer
+        can:
+        - read
+        - write
+      - role: client
+        where:
+          client_email: '{user.email}'
+        can:
+        - read
+  approvals:
+  - key: preparer_review
+    title:
+      en: Preparer review
+      nl: Nazicht door preparer
+    role: preparer
+    fields:
+    - title
+    - client_name
+    - stage
+  - key: manager_approval
+    title:
+      en: Manager approval
+      nl: Goedkeuring manager
+    role: manager
+    fields:
+    - title
+    - client_name
+    - stage
+  - key: partner_signoff
+    title:
+      en: Partner sign-off
+      nl: Afsluiting partner
+    role: partner
+    fields:
+    - title
+    - client_name
+    - stage
+  triggers:
+  - key: after_review
+    'on':
+      approval: preparer_review
+      decision: any
+    start:
+      agent: preparer
+    goal: 'The preparer review was decided: {event}. Continue the workflow for that workpaper as described in your instructions.'
+  - key: after_manager
+    'on':
+      approval: manager_approval
+      decision: any
+    start:
+      agent: preparer
+    goal: 'The manager approval was decided: {event}. Continue the workflow for that workpaper as described in your instructions.'
+  - key: after_signoff
+    'on':
+      approval: partner_signoff
+      decision: any
+    start:
+      agent: preparer
+    goal: 'The partner sign-off was decided: {event}. Continue the workflow for that workpaper as described in your instructions.'
+  - key: workpaper_shared
+    'on':
+      collection: workpapers
+      op: update
+      where:
+        stage: shared
+    notify:
+      to:
+      - record.client_email
+      subject:
+        en: Your {record.title} is ready
+        nl: Uw {record.title} is klaar
+      body:
+        en: Your accountant has shared a new document with you in the Taxloom portal. Please sign in to read it.
+        nl: Uw boekhouder heeft een nieuw document met u gedeeld in het Taxloom-portaal. Log in om het te bekijken.
+      link: my_workpapers
+  - key: doc_requested
+    'on':
+      collection: doc_requests
+      op: insert
+    notify:
+      to:
+      - record.client_email
+      subject:
+        en: Documents needed by your accountant
+        nl: Uw boekhouder heeft documenten nodig
+      body:
+        en: 'We are missing: {record.description}. Please upload it in the portal.'
+        nl: 'Wij missen nog: {record.description}. Upload het in het portaal.'
+      link: upload_document
+  - key: new_mtd_client
+    'on':
+      collection: clients
+      op: insert
+      where:
+        mtd_itsa: true
+    start:
+      agent: mtd_planner
+    goal: Set up the MTD quarterly updates for client {record.name}, email {record.client_email}. Today is {date}.
+  - key: mtd_week_before
+    'on':
+      date:
+        collection: mtd_updates
+        field: due_date
+        offsetDays: -7
+        hour: 8
+    notify:
+      to:
+      - record.client_email
+      subject:
+        en: MTD quarterly update due in 7 days
+        nl: MTD-kwartaalupdate over 7 dagen
+      body:
+        en: Your {record.quarter} update for {record.tax_year} is due on {record.due_date}. Please send us your income and
+          expense records in the portal.
+        nl: Uw update voor {record.quarter} {record.tax_year} is verschuldigd op {record.due_date}. Bezorg ons uw inkomsten-
+          en uitgavenregistraties via het portaal.
+      link: upload_document
+  - key: mtd_day_before
+    'on':
+      date:
+        collection: mtd_updates
+        field: due_date
+        offsetDays: -1
+        hour: 8
+    notify:
+      to:
+      - record.client_email
+      - role:manager
+      subject:
+        en: MTD quarterly update due tomorrow
+        nl: MTD-kwartaalupdate morgen
+      body:
+        en: The {record.quarter} update for {record.tax_year} ({record.client_name}) is due tomorrow ({record.due_date}).
+          Records are needed now if not yet sent.
+        nl: De update voor {record.quarter} {record.tax_year} ({record.client_name}) is morgen verschuldigd ({record.due_date}).
+      link: mtd
+  views:
+  - key: home
+    type: page
+    title: Taxloom
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow:
+        en: For accounting and tax firms
+        nl: Voor boekhoud- en belastingkantoren
+      title:
+        en: Workpapers prepared by **agents**, signed off by your **people**.
+        nl: Werkpapieren voorbereid door **agenten**, goedgekeurd door jouw **team**.
+      text:
+        en: Client files, trial balance reconciliations, tax computations, MTD quarterly tracking and a client portal, with
+          preparer, manager and partner control at every step.
+        nl: Klantdossiers, proefbalansafstemming, belastingberekeningen, MTD-opvolging en een klantenportaal, met controle
+          door preparer, manager en partner.
+      actions:
+      - label:
+          en: Sign in
+          nl: Inloggen
+        href: /login
+        style: primary
+    - type: steps
+      id: how
+      title:
+        en: How it works
+        nl: Hoe het werkt
+      items:
+      - title:
+          en: Build the client file
+          nl: Bouw het dossier
+        text:
+          en: Upload prior-year returns, trial balances, P11Ds, dividend vouchers and property records, or let clients upload
+            them.
+          nl: Upload vorige aangiftes, proefbalansen, P11D's, dividendbewijzen en vastgoedgegevens, of laat klanten uploaden.
+      - title:
+          en: Agents prepare
+          nl: Agenten bereiden voor
+        text:
+          en: Reconcile, adjust and draft the computation using your firm's templates, with citations to HMRC manuals and
+            legislation.gov.uk.
+          nl: Afstemmen, corrigeren en de berekening opstellen met de sjablonen van je kantoor, met bronvermelding.
+      - title:
+          en: Review, approve, sign off
+          nl: Nazien, goedkeuren, afsluiten
+        text:
+          en: Preparer, manager and partner each decide before anything reaches the client. Filing is done in HMRC-recognised
+            software.
+          nl: Preparer, manager en partner beslissen elk voordat iets de klant bereikt.
+    - type: cards
+      id: controls
+      title:
+        en: Controls
+        nl: Controles
+      items:
+      - title:
+          en: Clients see only their own
+          nl: Klanten zien alleen hun eigen gegevens
+        text:
+          en: The portal shows a client's requests, MTD deadlines and shared workpapers only.
+          nl: Het portaal toont alleen de aanvragen, MTD-deadlines en gedeelde werkpapieren van de klant.
+      - title:
+          en: MTD for Income Tax
+          nl: MTD voor inkomstenbelasting
+        text:
+          en: Quarterly updates tracked per client, with email reminders a week and a day before.
+          nl: Kwartaalupdates per klant, met e-mailherinneringen een week en een dag vooraf.
+    - type: note
+      content:
+        en: Taxloom supports professional judgement and does not file returns. Every workpaper is reviewed by people.
+        nl: Taxloom ondersteunt professioneel oordeel en dient geen aangiftes in. Elk werkpapier wordt door mensen nagekeken.
+  - key: overview
+    type: page
+    title:
+      en: Dashboard
+      nl: Dashboard
+    roles:
+    - partner
+    - manager
+    - admin
+    - preparer
+    sections:
+    - type: data
+      id: jobs-by-stage
+      title:
+        en: Jobs by stage
+        nl: Opdrachten per fase
+      source: collection:workpapers
+      display: chart
+      chart: bar
+      fields:
+      - key: stage
+        label: Stage
+      - key: count
+        label: Jobs
+      groupBy:
+        field: stage
+        aggs: []
+    - type: data
+      id: job-deadlines
+      title:
+        en: Upcoming job deadlines
+        nl: Komende deadlines
+      source: collection:workpapers
+      display: table
+      fields:
+      - key: due_date
+        label: Deadline
+        format: date
+      - key: client_name
+        label: Client
+      - key: title
+        label: Job
+      - key: stage
+        label: Stage
+        format: badge
+      filters:
+      - field: stage
+        op: '!='
+        value: shared
+      sort:
+        field: due_date
+        dir: asc
+      limit: 30
+    - type: data
+      id: mtd-deadlines
+      title:
+        en: MTD updates outstanding
+        nl: Openstaande MTD-updates
+      source: collection:mtd_updates
+      display: table
+      fields:
+      - key: due_date
+        label: Due
+        format: date
+      - key: client_name
+        label: Client
+      - key: quarter
+        label: Quarter
+      - key: status
+        label: Status
+        format: badge
+      filters:
+      - field: status
+        op: '!='
+        value: submitted
+      sort:
+        field: due_date
+        dir: asc
+      limit: 30
+  - key: new_workpaper
+    type: new_run
+    title:
+      en: New workpaper
+      nl: Nieuw werkpapier
+    roles:
+    - partner
+    - manager
+    - preparer
+    - admin
+  - key: runs
+    type: history
+    title:
+      en: My runs
+      nl: Mijn runs
+    source: run
+    roles:
+    - partner
+    - manager
+    - preparer
+    - admin
+  - key: run_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: workpapers_list
+    type: table
+    title:
+      en: Workpapers
+      nl: Werkpapieren
+    source: collection:workpapers
+    export: true
+    roles:
+    - partner
+    - manager
+    - preparer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: client_name
+        label: Client
+      - key: title
+        label: Title
+      - key: stage
+        label: Stage
+        format: badge
+      - key: due_date
+        label: Deadline
+        format: date
+      sort:
+        field: due_date
+        dir: asc
+  - key: approvals_view
+    type: approvals
+    title:
+      en: Reviews and sign-offs
+      nl: Nazicht en goedkeuring
+    roles:
+    - partner
+    - manager
+    - preparer
+    - admin
+  - key: clients_list
+    type: table
+    title:
+      en: Clients
+      nl: Klanten
+    source: collection:clients
+    export: true
+    roles:
+    - partner
+    - manager
+    - preparer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Name
+      - key: client_type
+        label: Type
+        format: badge
+      - key: year_end
+        label: Year end
+        format: date
+      - key: mtd_itsa
+        label: MTD
+      - key: office
+        label: Office
+        format: badge
+  - key: client_form
+    type: form
+    title:
+      en: Add client
+      nl: Klant toevoegen
+    collection: clients
+    submit:
+      label:
+        en: Save client
+        nl: Klant opslaan
+      message:
+        en: Client saved.
+        nl: Klant opgeslagen.
+      redirect: clients_list
+    edit: true
+    roles:
+    - partner
+    - manager
+    - admin
+  - key: files_list
+    type: table
+    title:
+      en: Client files
+      nl: Klantdossiers
+    source: collection:documents
+    roles:
+    - partner
+    - manager
+    - preparer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: client_name
+        label: Client
+      - key: doc_type
+        label: Type
+        format: badge
+      - key: tax_year
+        label: Year
+      - key: file
+        label: File
+      - key: notes
+        label: Notes
+  - key: file_form
+    type: form
+    title:
+      en: Add to client file
+      nl: Aan dossier toevoegen
+    collection: documents
+    submit:
+      label:
+        en: Upload
+        nl: Uploaden
+      message:
+        en: Document added.
+        nl: Document toegevoegd.
+      redirect: files_list
+    roles:
+    - partner
+    - manager
+    - preparer
+    - admin
+  - key: request_form
+    type: form
+    title:
+      en: Request missing document
+      nl: Document opvragen
+    collection: doc_requests
+    submit:
+      label:
+        en: Send request
+        nl: Aanvraag versturen
+      message:
+        en: The client has been emailed.
+        nl: De klant is per e-mail verwittigd.
+    roles:
+    - partner
+    - manager
+    - preparer
+    - admin
+  - key: mtd
+    type: table
+    title:
+      en: MTD quarterly updates
+      nl: MTD-kwartaalupdates
+    source: collection:mtd_updates
+    export: true
+    roles:
+    - partner
+    - manager
+    - preparer
+    - admin
+    - client
+    data:
+      display: table
+      fields:
+      - key: client_name
+        label: Client
+      - key: tax_year
+        label: Tax year
+      - key: quarter
+        label: Quarter
+      - key: due_date
+        label: Due
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: due_date
+        dir: asc
+  - key: mtd_form
+    type: form
+    title:
+      en: Add or edit MTD update
+      nl: MTD-update toevoegen
+    collection: mtd_updates
+    submit:
+      label: Save
+      message:
+        en: Saved.
+        nl: Opgeslagen.
+      redirect: mtd
+    edit: true
+    roles:
+    - partner
+    - manager
+    - preparer
+    - admin
+  - key: ask
+    type: chat
+    title:
+      en: Technical research
+      nl: Technisch onderzoek
+    source: agent:researcher
+    examples:
+    - How is a director's loan overdrawn at year end treated under s455 CTA 2010?
+    - When must a P11D benefit be reported for a company car?
+    - 'Property allowance versus actual expenses: which manual explains the choice?'
+    placeholder:
+      en: Ask a technical question...
+      nl: Stel een technische vraag...
+    roles:
+    - partner
+    - manager
+    - preparer
+    - admin
+  - key: templates_list
+    type: table
+    title:
+      en: Workpaper templates
+      nl: Sjablonen
+    source: collection:workpaper_templates
+    roles:
+    - partner
+    - manager
+    - preparer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Name
+      - key: job_type
+        label: Job
+        format: badge
+  - key: template_form
+    type: form
+    title:
+      en: Edit template
+      nl: Sjabloon bewerken
+    collection: workpaper_templates
+    submit:
+      label: Save
+      message:
+        en: Template saved.
+        nl: Sjabloon opgeslagen.
+      redirect: templates_list
+    edit: true
+    roles:
+    - partner
+    - manager
+    - admin
+  - key: my_workpapers
+    type: table
+    title:
+      en: My documents
+      nl: Mijn documenten
+    source: collection:workpapers
+    roles:
+    - client
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Title
+      - key: tax_year
+        label: Period
+      - key: body
+        label: Content
+  - key: my_requests
+    type: table
+    title:
+      en: What my accountant needs
+      nl: Wat mijn boekhouder nodig heeft
+    source: collection:doc_requests
+    roles:
+    - client
+    data:
+      display: table
+      fields:
+      - key: description
+        label: Needed
+      - key: due_date
+        label: By
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: due_date
+        dir: asc
+  - key: upload_document
+    type: form
+    title:
+      en: Upload a document
+      nl: Document uploaden
+    collection: documents
+    fields:
+    - client_email
+    - doc_type
+    - tax_year
+    - file
+    - notes
+    submit:
+      label:
+        en: Send to my accountant
+        nl: Naar mijn boekhouder sturen
+      message:
+        en: Thank you, your accountant has it.
+        nl: Bedankt, uw boekhouder heeft het ontvangen.
+    roles:
+    - client
+  - key: account
+    type: account
+    title:
+      en: Plan and credits
+      nl: Abonnement en tegoed
+    roles:
+    - partner
+    - admin
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 20
+    costs:
+      agent:preparer: 25
+    packs:
+    - key: returns_100
+      credits: 100
+      price: 90
+      label:
+        en: 100 credits (4 returns)
+        nl: 100 tegoed (4 aangiftes)
+    - key: returns_500
+      credits: 500
+      price: 400
+      label:
+        en: 500 credits (20 returns)
+        nl: 500 tegoed (20 aangiftes)
+    plans:
+    - key: seat
+      price: 59
+      interval: month
+      label:
+        en: Taxloom seat (per user)
+        nl: Taxloom-licentie (per gebruiker)
+      credits: 50
+      creditsReset: monthly
+      roles:
+      - partner
+      - admin
+  egress:
+    hosts:
+    - www.gov.uk
+    - www.legislation.gov.uk
+    notes: 'GOV.UK search and content APIs (HMRC internal manuals) and legislation.gov.uk: both published under the Open Government
+      Licence v3.0, reuse allowed with attribution.'
+  extensions:
+  - key: oauth_connectors
+    description: 'Connecting practice management and ledger software by OAuth (client lists, figures) is not available yet.
+      Until then: import client lists as CSV on the data page and upload trial balances as files; an API-key connector can
+      be added when the software offers one.'
+  - key: seat_pricing
+    description: Per-seat billing is modelled as a monthly plan bought by each partner/admin; automatic seat counting per
+      firm is not available.
+  - key: hmrc_filing
+    description: Filing and MTD submissions are done by the firm in HMRC-recognised software; Taxloom only prepares and tracks.

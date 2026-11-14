@@ -1,0 +1,1184 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: leanleaf
+  displayName: Leanleaf
+  tagline:
+    en: Gentle, guided weight loss with an AI coach in your pocket.
+  description:
+    en: Leanleaf builds a personal plan from NHS and NICE public guidance, with daily calorie targets and fasting windows.
+      You log meals by photo, weight, water and mood, and an AI coach chats with you daily, reviews your week and adjusts
+      the plan. Worrying messages go to a human coach.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#14532d'
+      accent: '#65a30d'
+      background: '#f7faf5'
+      foreground: '#17211b'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Lean
+      color: primary
+    - text: leaf
+      color: accent
+    button: accent
+    buttonShape: pill
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Safety
+      href: '#safety'
+    cta:
+      label: Get started
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: coach
+      label: Human coach
+      assignedBy: derived
+      from: collection:profiles.coach_email
+    - key: user
+      label: Member
+      assignedBy: signup
+  limits:
+  - action: agent:coach
+    per: user
+    max: 3
+    window: day
+    plans:
+      monthly: 60
+      annual: 60
+  - action: agent:nutrition
+    per: user
+    max: 4
+    window: day
+    plans:
+      monthly: 20
+      annual: 20
+  agents:
+  - key: planner
+    role: helper
+    description: Screens the profile for risk flags and builds the personal plan.
+    profile:
+      inline:
+        display_name: Leanleaf planner
+        crews:
+        - id: planner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You build weight-loss plans for adults in the UK, following NHS and NICE public guidance (steady
+            loss of 0.5-1 kg per week, a deficit of about 500-600 kcal a day, balanced eating, regular activity). You are
+            not a doctor and never give medical advice.
+
+
+            STEP 1 - SCREEN. Compute BMI = weight_kg / (height_m^2). The plan is NOT SUITABLE if ANY of these is true: age
+            under 18; BMI under 18.5; goal weight giving BMI under 18.5; eating disorder history; pregnant or breastfeeding.
+            Then call append_plan ONCE with status "not_suitable", the other numeric fields empty, and a kind summary: this
+            plan is not designed for you, please speak to your GP or the NHS (https://www.nhs.uk/better-health/lose-weight/
+            ; eating disorders: https://www.nhs.uk/mental-health/conditions/eating-disorders/ and the charity Beat 0808 801
+            0677). Do not give any targets.
+
+
+            STEP 2 - PLAN. Otherwise estimate maintenance with Mifflin-St Jeor times an activity factor (sedentary 1.2, light
+            1.375, moderate 1.55, high 1.725), subtract about 500 kcal. Never go below 1200 kcal (female) or 1500 kcal (male).
+            Set protein_g about 1.0-1.2 g per kg of goal weight. Fasting window: only a gentle overnight window, 12:10 up
+            to at most 14:10 hours, with eating_start and eating_end times as HH:MM. If the person reports diabetes, kidney
+            disease, medication that needs food, or any other relevant condition, set fasting_window to "none" and put in
+            caution: "Please check this plan with your GP or pharmacist before starting". Respect dietary preferences. Estimated
+            weekly_target_kg is 0.5 (0.75 at most).
+
+
+            Call append_plan ONCE with status "active", daily_kcal, protein_g, fasting_window (e.g. "12:12"), eating_start,
+            eating_end, weekly_target_kg, summary (3-5 friendly sentences, plus the main habits to focus on), caution, created_on
+            (today), and coach_email copied from the profile when present. Never invent figures. Finish with a short Markdown
+            message starting with a level-1 title "# Your Leanleaf plan" saying what you saved.'
+          mcp_servers: []
+    goalTemplate: 'New profile. Age {record.age}, sex {record.sex}, height {record.height_cm} cm, weight {record.weight_kg}
+      kg, goal weight {record.goal_weight_kg} kg, activity {record.activity}. Dietary preferences: {record.dietary_prefs}.
+      Health conditions: {record.health_conditions}. Eating habits: {record.eating_habits}. Eating disorder history: {record.eating_disorder_history}.
+      Pregnant or breastfeeding: {record.pregnant_or_breastfeeding}. Coach email: {record.coach_email}. Today is {date}. Write
+      in English.'
+    appTools:
+    - name: append_plan
+      description: Save the personal plan for the user
+      action: append
+      collection: plans
+      scope: user
+    output: markdown
+  - key: nutrition
+    role: helper
+    description: Estimates the nutrition of a meal photo.
+    profile:
+      inline:
+        display_name: Leanleaf nutrition estimator
+        crews:
+        - id: nutrition
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You estimate the nutrition of one logged meal. If a photo file id is given, open it with read_photo
+            and identify the foods and rough portions. Use the typical per-100 g values of the UK McCance and Widdowson Composition
+            of Foods Integrated Dataset (CoFID) that you know, and cross-check packaged or branded foods with off_search (Open
+            Food Facts: GET with query search_terms=<food>&search_simple=1&action=process&json=1&page_size=5&fields=product_name,nutriments;
+            read nutriments energy-kcal_100g, proteins_100g, carbohydrates_100g, fat_100g). Then call update_meal ONCE on
+            the meal record from the event with kcal, protein_g, carbs_g, fat_g (numbers for the whole portion), nutrition_notes
+            (the foods and portion sizes you assumed, the sources, and "estimate") and estimate_status "done". These are estimates:
+            say so, round sensibly, never claim precision, never give medical advice or comment on the person''s body. If
+            the photo shows no food, save nutrition_notes explaining, estimate_status "done" and leave the numbers empty.
+            Finish with a Markdown message starting with "# Meal estimate" with a short table.'
+          mcp_servers: []
+    goalTemplate: 'A meal was logged. Record: {event}. Photo file id(s): {record.photo}. Meal type: {record.meal_type}. Description
+      from the user: {record.description}. Write in English.'
+    appTools:
+    - name: read_photo
+      description: Read a meal photo the user uploaded
+      action: read_file
+    - name: off_search
+      description: Search Open Food Facts for nutrition per 100 g
+      action: http
+      http:
+        method: GET
+        url: https://world.openfoodfacts.org/cgi/search.pl
+        allowPath: false
+        attribution: Open Food Facts, ODbL
+    - name: update_meal
+      description: Save the nutrition estimate on the logged meal record
+      action: write
+      collection: meals
+      scope: user
+    output: markdown
+  - key: coach
+    role: main
+    description: Daily AI coach chat.
+    memory: user
+    profile:
+      inline:
+        display_name: Leanleaf coach
+        chat_mode: true
+        crews:
+        - id: coach
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Leanleaf, a warm, brief, non-judgemental weight-loss coach for adults in the UK. You motivate,
+            give practical tips on meals, habits, sleep, water and activity, celebrate progress and help people follow their
+            plan, based on NHS and NICE public guidance.
+
+
+            HARD RULES
+
+            - You are not a doctor. Never diagnose, never advise on medication, supplements, symptoms or conditions: say that
+            is a question for their GP, pharmacist or NHS 111.
+
+            - If the plan status is not_suitable or there is no plan, do not coach weight loss: kindly point to the NHS (https://www.nhs.uk/better-health/lose-weight/)
+            and their GP.
+
+            - Never suggest eating below the plan''s daily_kcal, longer fasts than the plan, or faster loss than the plan.
+            If asked, decline kindly.
+
+            - ESCALATE: if the person mentions disordered eating (purging, bingeing, extreme restriction, fear of food), self-harm
+            or hopeless feelings, dizziness, fainting, chest pain, pregnancy, severe distress, or anything that worries you,
+            call escalate ONCE (reason, message_excerpt, severity low|medium|high, coach_email copied from the profile, status
+            "open"), reply with care, and point to the right help: NHS 111, 999 in an emergency, Samaritans 116 123, Beat
+            0808 801 0677 for eating disorders. Tell them a human coach will be informed.
+
+            - Use read_weigh_ins and read_meals to base your answers on their real data; log_weigh_in when they tell you their
+            weight, water or mood today. Never invent figures. Use your memory (remember) for goals and preferences they tell
+            you, in a few points.
+
+            - Replies: under 150 words, plain English, one clear next step. Start the first message of the day with a short
+            greeting.'
+          mcp_servers: []
+    context:
+    - key: profile
+      from: collection:profiles
+    - key: plan
+      from: collection:plans
+    goalTemplate: 'Today is {date}. Member profile (JSON lines): {profile}
+
+      Plans (JSON lines, newest last): {plan}
+
+      Conversation so far:
+
+      {history}
+
+      New message from the member: {message}
+
+      Reply in English.'
+    appTools:
+    - name: read_weigh_ins
+      description: Read the user's weight, water and mood logs
+      action: read
+      collection: weigh_ins
+      scope: user
+    - name: read_meals
+      description: Read the user's logged meals with nutrition estimates
+      action: read
+      collection: meals
+      scope: user
+    - name: log_weigh_in
+      description: Log a weight, water or mood entry for the user
+      action: append
+      collection: weigh_ins
+      scope: user
+    - name: escalate
+      description: Alert the human coach about a worrying message
+      action: append
+      collection: escalations
+      scope: user
+    output: markdown
+  - key: reviewer
+    role: scheduled
+    description: Weekly review of each member, adjusts the plan and writes a summary for the human coach.
+    profile:
+      inline:
+        display_name: Leanleaf weekly reviewer
+        crews:
+        - id: reviewer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You review one member''s last 7 days for Leanleaf, following NHS and NICE public guidance. Use read_weigh_ins
+            and read_meals. Start with a level-1 title "# Your week - <date>". Sections: ## How the week went (weight change,
+            average daily kcal vs plan, logging consistency, water, mood), ## What worked, ## Next week (2-3 specific habits),
+            ## Plan check. Be kind and honest; never invent figures; if data is missing, say so and encourage logging. You
+            are not a doctor: no medical advice. Adjust the plan only within safe limits: never below 1200 kcal (female) or
+            1500 kcal (male), at most 100-200 kcal change per week, loss no faster than 1 kg per week, fasting window never
+            over 14:10, and never if the plan is not_suitable. If a change is justified (stalled for 2+ weeks, loss too fast,
+            constant hunger or low mood), call adjust_plan ONCE with the full new plan (status active, same fields as before,
+            created_on today, coach_email from profile) and explain why in the report. If weight loss is faster than 1 kg
+            per week, mood is repeatedly low, or you see worrying signs, say gently to speak to their GP. Then call coach_summary
+            ONCE (week_of, avg_weight_kg, weight_change_kg, avg_kcal, days_logged, flags as short text, coach_email from the
+            profile).'
+          mcp_servers: []
+    context:
+    - key: profile
+      from: collection:profiles
+    - key: plan
+      from: collection:plans
+    appTools:
+    - name: read_weigh_ins
+      description: Read the user's weight, water and mood logs
+      action: read
+      collection: weigh_ins
+      scope: user
+    - name: read_meals
+      description: Read the user's logged meals with nutrition estimates
+      action: read
+      collection: meals
+      scope: user
+    - name: adjust_plan
+      description: Save an adjusted plan for the user
+      action: append
+      collection: plans
+      scope: user
+    - name: coach_summary
+      description: Save the weekly summary the human coach sees
+      action: append
+      collection: coach_summaries
+      scope: user
+    writesTo:
+      collection: weekly_reviews
+      parse: whole
+    output: markdown
+  templates:
+  - key: weekly_review
+    title:
+      en: Weekly review
+    description:
+      en: Every Sunday your coach reviews your week and adjusts your plan if needed.
+    agent: reviewer
+    params:
+    - name: focus
+      type: select
+      label:
+        en: Focus this month
+      options:
+      - value: habits
+        label: Building habits
+      - value: eating
+        label: Eating better
+      - value: activity
+        label: Moving more
+    goal: 'Review the week for "{instance}". Focus: {?focus}{focus}{/focus}{!focus}general progress{/focus}. Profile: {profile}
+
+      Plans: {plan}
+
+      Today is {date}. Write in English.'
+    schedule:
+      cron: 0 8 * * 0
+      userCanChange: true
+    maxPerUser: 1
+    deliver:
+      to: owner
+      onlyIfNew: true
+  data:
+    collections:
+    - name: profiles
+      ownedBy: user
+      description: Member profile and risk screening. The admins assign a coach by setting coach_email on the built-in data
+        page.
+      retentionDays: 1095
+      fields:
+      - name: age
+        type: number
+        required: true
+        label: Age
+      - name: sex
+        type: select
+        required: true
+        label: Sex
+        options:
+        - value: female
+          label: Female
+        - value: male
+          label: Male
+      - name: height_cm
+        type: number
+        required: true
+        label: Height (cm)
+      - name: weight_kg
+        type: number
+        required: true
+        label: Weight (kg)
+      - name: goal_weight_kg
+        type: number
+        required: true
+        label: Goal weight (kg)
+      - name: activity
+        type: select
+        required: true
+        label: Activity level
+        options:
+        - value: sedentary
+          label: Sedentary
+        - value: light
+          label: Light (1-3 days a week)
+        - value: moderate
+          label: Moderate (3-5 days a week)
+        - value: high
+          label: High (6-7 days a week)
+      - name: dietary_prefs
+        type: multiselect
+        label: Dietary preferences
+        options:
+        - value: vegetarian
+          label: Vegetarian
+        - value: vegan
+          label: Vegan
+        - value: halal
+          label: Halal
+        - value: kosher
+          label: Kosher
+        - value: gluten_free
+          label: Gluten free
+        - value: dairy_free
+          label: Dairy free
+        - value: none
+          label: None
+      - name: health_conditions
+        type: textarea
+        maxLength: 600
+        label: Health conditions
+        help: For example diabetes, thyroid, high blood pressure. Leave empty if none.
+      - name: eating_habits
+        type: textarea
+        maxLength: 600
+        label: Eating habits
+        help: Typical day, snacking, night eating, eating out.
+      - name: eating_disorder_history
+        type: boolean
+        label: I have had an eating disorder in the past or present
+      - name: pregnant_or_breastfeeding
+        type: boolean
+        label: I am pregnant or breastfeeding
+      - name: coach_email
+        type: email
+        label: Assigned coach
+      access:
+      - role: coach
+        where:
+          coach_email: '{user.email}'
+        can:
+        - read
+    - name: plans
+      ownedBy: user
+      description: Personal plans written by the planner and the weekly reviewer
+      fields:
+      - name: status
+        type: select
+        options:
+        - active
+        - not_suitable
+      - name: daily_kcal
+        type: number
+      - name: protein_g
+        type: number
+      - name: fasting_window
+        type: text
+      - name: eating_start
+        type: text
+      - name: eating_end
+        type: text
+      - name: weekly_target_kg
+        type: number
+      - name: summary
+        type: textarea
+      - name: caution
+        type: textarea
+      - name: created_on
+        type: date
+      - name: coach_email
+        type: email
+      access:
+      - role: coach
+        where:
+          coach_email: '{user.email}'
+        can:
+        - read
+    - name: meals
+      ownedBy: user
+      description: Meals logged by photo, nutrition filled by the nutrition agent
+      retentionDays: 730
+      fields:
+      - name: photo
+        type: file
+        accept:
+        - jpg
+        - jpeg
+        - png
+        - webp
+        maxMb: 10
+        capture: true
+        label: Meal photo
+      - name: meal_type
+        type: select
+        required: true
+        label: Meal
+        options:
+        - value: breakfast
+          label: Breakfast
+        - value: lunch
+          label: Lunch
+        - value: dinner
+          label: Dinner
+        - value: snack
+          label: Snack
+      - name: description
+        type: text
+        maxLength: 300
+        label: What is it? (optional)
+      - name: logged_on
+        type: date
+        required: true
+        label: Date
+      - name: estimate_status
+        type: select
+        options:
+        - pending
+        - done
+        default: pending
+        roles:
+        - admin
+        label: Estimate status
+      - name: kcal
+        type: number
+      - name: protein_g
+        type: number
+      - name: carbs_g
+        type: number
+      - name: fat_g
+        type: number
+      - name: nutrition_notes
+        type: textarea
+    - name: weigh_ins
+      ownedBy: user
+      description: Weight, water and mood log
+      fields:
+      - name: logged_on
+        type: date
+        required: true
+        label: Date
+      - name: weight_kg
+        type: number
+        label: Weight (kg)
+      - name: water_ml
+        type: number
+        label: Water (ml)
+      - name: mood
+        type: select
+        label: Mood
+        options:
+        - value: great
+          label: Great
+        - value: good
+          label: Good
+        - value: ok
+          label: OK
+        - value: low
+          label: Low
+        - value: bad
+          label: Bad
+      - name: notes
+        type: textarea
+        maxLength: 400
+        label: Notes
+    - name: escalations
+      ownedBy: user
+      description: Worrying messages the AI coach passes to a human coach
+      retentionDays: 1095
+      fields:
+      - name: reason
+        type: text
+      - name: message_excerpt
+        type: textarea
+      - name: severity
+        type: select
+        options:
+        - low
+        - medium
+        - high
+      - name: status
+        type: select
+        options:
+        - open
+        - in_progress
+        - closed
+      - name: coach_email
+        type: email
+      access:
+      - role: coach
+        where:
+          coach_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: coach_summaries
+      ownedBy: user
+      description: Weekly numbers for the human coach
+      retentionDays: 730
+      fields:
+      - name: week_of
+        type: date
+      - name: avg_weight_kg
+        type: number
+      - name: weight_change_kg
+        type: number
+      - name: avg_kcal
+        type: number
+      - name: days_logged
+        type: number
+      - name: flags
+        type: text
+      - name: coach_email
+        type: email
+      access:
+      - role: coach
+        where:
+          coach_email: '{user.email}'
+        can:
+        - read
+    - name: weekly_reviews
+      ownedBy: instance
+      description: The weekly review reports of each member
+  triggers:
+  - key: build_plan
+    'on':
+      collection: profiles
+      op: insert
+    start:
+      agent: planner
+    goal: 'New profile. Age {record.age}, sex {record.sex}, height {record.height_cm} cm, weight {record.weight_kg} kg, goal
+      weight {record.goal_weight_kg} kg, activity {record.activity}. Dietary preferences: {record.dietary_prefs}. Health conditions:
+      {record.health_conditions}. Eating habits: {record.eating_habits}. Eating disorder history: {record.eating_disorder_history}.
+      Pregnant or breastfeeding: {record.pregnant_or_breastfeeding}. Coach email: {record.coach_email}. Today is {date}. Write
+      in English.'
+  - key: estimate_meal
+    'on':
+      collection: meals
+      op: insert
+      where:
+        estimate_status: pending
+    start:
+      agent: nutrition
+    goal: 'A meal was logged. Record: {event}. Photo file id(s): {record.photo}. Meal type: {record.meal_type}. Description
+      from the user: {record.description}. Write in English.'
+  - key: plan_ready
+    'on':
+      collection: plans
+      op: insert
+    notify:
+      to: owner
+      subject:
+        en: Your Leanleaf plan is ready
+      body:
+        en: Your personal plan has been prepared. Open the app to read it.
+      link: plan
+  - key: escalation_alert
+    'on':
+      collection: escalations
+      op: insert
+    notify:
+      to:
+      - record.coach_email
+      - admins
+      subject:
+        en: 'Leanleaf: a member needs a human coach'
+      body:
+        en: 'Severity {record.severity}. Reason: {record.reason}. Open the escalations list to follow up.'
+      link: escalations
+  - key: remind_weigh_in
+    'on':
+      cron: 0 7 * * 1
+    notify:
+      to: role:user
+      subject:
+        en: Weigh-in day
+      body:
+        en: Good morning! Time for your weekly weigh-in. It takes 10 seconds.
+      link: log_checkin
+  - key: remind_meals
+    'on':
+      cron: 30 12 * * *
+    notify:
+      to: role:user
+      subject:
+        en: Log your meals
+      body:
+        en: Snap a photo of your meal and let Leanleaf do the maths.
+      link: log_meal
+  - key: remind_fasting
+    'on':
+      cron: 30 19 * * *
+    notify:
+      to: role:user
+      subject:
+        en: Your eating window is closing
+      body:
+        en: Time to finish your last meal and start your overnight fast, as in your plan.
+      link: plan
+  - key: subscription_started
+    'on':
+      payment: '*'
+    notify:
+      to: owner
+      subject:
+        en: Your Leanleaf subscription
+      body:
+        en: Thank you. Your subscription is active. You can cancel at any time in one step from the Account page.
+      link: account
+  views:
+  - key: home
+    type: page
+    title: Leanleaf
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: AI weight-loss coaching
+      title: Lose weight **gently**, with a coach in your pocket.
+      text: A personal plan built on NHS and NICE public guidance, meals logged with one photo, and a friendly AI coach every
+        day. Real people step in when it matters.
+      actions:
+      - label: Start your plan
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+      note: Not medical advice. Adults only.
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Tell us about you
+        text: 'A short profile: body, activity, food preferences and health.'
+        badge: 📝
+      - title: Get your plan
+        text: Daily calories and a gentle fasting window, based on public NHS and NICE guidance.
+        badge: 🎯
+      - title: Log in seconds
+        text: Photograph meals, add weight, water and mood.
+        badge: 📸
+      - title: Chat and adjust
+        text: Daily coaching and a weekly review that tunes your plan.
+        badge: 💬
+    - type: cards
+      id: safety
+      title: Built to be safe
+      items:
+      - title: Not for everyone
+        text: If you are under 18, underweight, pregnant or breastfeeding, or have had an eating disorder, we will point you
+          to the NHS instead.
+        badge: 🛡️
+      - title: Humans in the loop
+        text: Worrying messages are passed to a human coach. The AI never gives medical advice.
+        badge: 🤝
+      - title: Your data is yours
+        text: You see only your own data. Coaches see only the members assigned to them.
+        badge: 🔒
+      - title: Simple subscription
+        text: Monthly or annual. Cancel in one step, any time.
+        badge: 💳
+    - type: note
+      content: Leanleaf is a lifestyle coaching service and does not replace advice from your GP or the NHS. In an emergency
+        call 999. For urgent advice call NHS 111.
+  - key: profile
+    type: form
+    title: My profile
+    collection: profiles
+    fields:
+    - age
+    - sex
+    - height_cm
+    - weight_kg
+    - goal_weight_kg
+    - activity
+    - dietary_prefs
+    - health_conditions
+    - eating_habits
+    - eating_disorder_history
+    - pregnant_or_breastfeeding
+    submit:
+      label: Build my plan
+      message: Thanks! We are preparing your plan. If it is not suitable for you, we will tell you and point you to the NHS.
+      redirect: plan
+    edit: true
+    roles:
+    - user
+  - key: plan
+    type: cards
+    title: My plan
+    source: collection:plans
+    roles:
+    - user
+    data:
+      display: cards
+      fields:
+      - key: status
+        label: Status
+        format: badge
+      - key: daily_kcal
+        label: Daily calories
+        format: number
+      - key: protein_g
+        label: Protein (g)
+        format: number
+      - key: fasting_window
+        label: Fasting window
+      - key: eating_start
+        label: Eating from
+      - key: eating_end
+        label: Eating until
+      - key: weekly_target_kg
+        label: Weekly target (kg)
+        format: number
+      - key: summary
+        label: Summary
+      - key: caution
+        label: Please note
+      sort:
+        field: created_on
+        dir: desc
+      limit: 1
+      empty: No plan yet. Fill in your profile to get one.
+  - key: coach
+    type: chat
+    title: Coach
+    source: agent:coach
+    roles:
+    - user
+    examples:
+    - I'm struggling with evening snacking
+    - Review my day
+    - What should I eat for lunch?
+    placeholder: Talk to your coach
+  - key: log_meal
+    type: form
+    title: Log a meal
+    collection: meals
+    fields:
+    - photo
+    - meal_type
+    - description
+    - logged_on
+    submit:
+      label: Log meal
+      message: Saved. Your nutrition estimate will appear in a minute.
+      redirect: meals
+    edit: false
+    roles:
+    - user
+  - key: meals
+    type: list
+    title: My meals
+    source: collection:meals
+    roles:
+    - user
+    export: true
+    data:
+      display: list
+      fields:
+      - key: logged_on
+        label: Date
+        format: date
+      - key: meal_type
+        label: Meal
+        format: badge
+      - key: description
+        label: What
+      - key: kcal
+        label: kcal
+        format: number
+      - key: protein_g
+        label: Protein (g)
+        format: number
+      - key: carbs_g
+        label: Carbs (g)
+        format: number
+      - key: fat_g
+        label: Fat (g)
+        format: number
+      - key: nutrition_notes
+        label: Notes
+      sort:
+        field: logged_on
+        dir: desc
+      limit: 50
+      empty: No meals logged yet.
+  - key: log_checkin
+    type: form
+    title: Log weight, water, mood
+    collection: weigh_ins
+    fields:
+    - logged_on
+    - weight_kg
+    - water_ml
+    - mood
+    - notes
+    submit:
+      label: Save
+      message: Logged. Well done!
+      redirect: progress
+    edit: false
+    roles:
+    - user
+  - key: progress
+    type: chart
+    title: Progress
+    source: collection:weigh_ins
+    roles:
+    - user
+    data:
+      display: chart
+      chart: line
+      fields:
+      - key: logged_on
+        label: Date
+        format: date
+      - key: weight_kg
+        label: Weight (kg)
+        format: number
+      sort:
+        field: logged_on
+        dir: asc
+      limit: 120
+      empty: Log your weight to see your progress.
+  - key: reviews
+    type: instances
+    title: Weekly review
+    template: weekly_review
+    roles:
+    - user
+  - key: account
+    type: account
+    title: Subscription
+    roles:
+    - user
+  - key: clients
+    type: table
+    title: My members
+    source: collection:profiles
+    roles:
+    - coach
+    - admin
+    data:
+      display: table
+      fields:
+      - key: age
+        label: Age
+        format: number
+      - key: sex
+        label: Sex
+      - key: weight_kg
+        label: Weight (kg)
+        format: number
+      - key: goal_weight_kg
+        label: Goal (kg)
+        format: number
+      - key: activity
+        label: Activity
+      - key: health_conditions
+        label: Conditions
+      limit: 100
+      empty: No members assigned yet.
+  - key: escalations
+    type: table
+    title: Escalations
+    source: collection:escalations
+    roles:
+    - coach
+    - admin
+    data:
+      display: table
+      fields:
+      - key: severity
+        label: Severity
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+      - key: reason
+        label: Reason
+      - key: message_excerpt
+        label: Message
+      limit: 100
+      empty: Nothing to follow up.
+  - key: member_weeks
+    type: table
+    title: Weekly summaries
+    source: collection:coach_summaries
+    roles:
+    - coach
+    - admin
+    data:
+      display: table
+      fields:
+      - key: week_of
+        label: Week
+        format: date
+      - key: avg_weight_kg
+        label: Avg weight
+        format: number
+      - key: weight_change_kg
+        label: Change (kg)
+        format: number
+      - key: avg_kcal
+        label: Avg kcal
+        format: number
+      - key: days_logged
+        label: Days logged
+        format: number
+      - key: flags
+        label: Flags
+      sort:
+        field: week_of
+        dir: desc
+      limit: 100
+  - key: admin
+    type: tabs
+    title: Admin
+    children:
+    - admin_overview
+    - admin_users
+    - admin_weight
+    - admin_intake
+    - admin_data
+    roles:
+    - admin
+  - key: admin_overview
+    type: admin
+    title: Overview
+    roles:
+    - admin
+    nav: false
+  - key: admin_users
+    type: admin
+    title: Users
+    roles:
+    - admin
+    nav: false
+  - key: admin_weight
+    type: table
+    title: Average weight by week
+    source: collection:weigh_ins
+    roles:
+    - admin
+    nav: false
+    data:
+      display: chart
+      chart: line
+      fields:
+      - key: logged_on
+        label: Week
+        format: date
+      - key: avg_weight
+        label: Average weight (kg)
+        format: number
+      groupBy:
+        field: logged_on
+        bucket: week
+        aggs:
+        - key: avg_weight
+          agg: avg
+          field: weight_kg
+        minCount: 5
+        acrossUsers: true
+  - key: admin_intake
+    type: table
+    title: Average calories by month
+    source: collection:meals
+    roles:
+    - admin
+    nav: false
+    data:
+      display: table
+      fields:
+      - key: logged_on
+        label: Month
+        format: date
+      - key: avg_kcal
+        label: Avg kcal per meal
+        format: number
+      - key: count
+        label: Meals
+        format: number
+      groupBy:
+        field: logged_on
+        bucket: month
+        aggs:
+        - key: avg_kcal
+          agg: avg
+          field: kcal
+        minCount: 5
+        acrossUsers: true
+  - key: admin_data
+    type: admin
+    title: Data
+    roles:
+    - admin
+    nav: false
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: monthly
+      price: 9.99
+      interval: month
+      label: Leanleaf Monthly
+      includes:
+      - Personal plan
+      - Daily AI coach
+      - Meal photo analysis
+      - Weekly review
+      - Human coach escalation
+    - key: annual
+      price: 79
+      interval: year
+      label: Leanleaf Annual
+      includes:
+      - Everything in Monthly
+      - Two months free
+  mobile:
+    appId: com.leanleaf.app
+    appName: Leanleaf
+    capabilities:
+    - name: camera
+      reason:
+        en: To photograph your meals
+    - name: push
+    - name: microphone
+      reason:
+        en: To talk to your coach by voice
+    - name: biometrics
+      reason:
+        en: To keep your health data private with Face ID or fingerprint
+    lock: biometric
+  egress:
+    hosts:
+    - world.openfoodfacts.org
+    notes: 'Open Food Facts, open database (ODbL), used to cross-check packaged foods. CoFID (UK Government, Open Government
+      Licence) has no live API: the agent uses typical values from it.'
+  extensions:
+  - key: cofid_lookup
+    description: CoFID is published as spreadsheets, not an API. Meal estimates use the agent's knowledge of CoFID plus Open
+      Food Facts. Loading CoFID as a shared collection (admin CSV import on the data page) would let the agent read it directly.
+  - key: per_user_reminder_times
+    description: Meal, fasting-window and weigh-in reminders are sent at fixed times to all members as notifications. Reminders
+      at each member's own times, from their personal fasting window, are not available yet.
+  - key: renewal_reminder_and_cancel
+    description: UK rules need a reminder before each renewal and a one-step cancel. The Account page provides plan management;
+      a reminder a set number of days before each renewal charge is not available yet and must be handled in Stripe settings.
+      Check the cancel flow on the Account page before launch.
+  - key: coach_assignment
+    description: Admins assign a human coach by setting coach_email on a member's profile in the data page. Plans, escalations
+      and weekly summaries carry the coach email from the profile at the time they are written, so a coach assigned later
+      sees only newer records.

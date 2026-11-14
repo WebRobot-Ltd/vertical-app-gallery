@@ -1,0 +1,887 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: covaro
+  displayName: Covaro
+  tagline:
+    en: One AI agent for every customer conversation, on every channel.
+  description:
+    en: 'Agentic customer experience for insurers and MGAs: coverage answers with citations, servicing, claim notification,
+      human handoff and full Consumer Duty logging.'
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#12304a'
+      accent: '#0f8b8d'
+      background: '#f6f8fa'
+      foreground: '#16222e'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Co
+      color: primary
+    - text: varo
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Channels
+      href: '#channels'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Insurer admin
+      assignedBy: admin_emails
+    - key: service_agent
+      label: Service agent
+      assignedBy: invite
+    - key: qa_reviewer
+      label: QA reviewer
+      assignedBy: invite
+    - key: user
+      label: Policyholder
+      assignedBy: signup
+  limits:
+  - action: chat
+    per: user
+    max: 200
+    window: day
+    roles:
+    - user
+  agents:
+  - key: assistant
+    role: main
+    description: 'Customer-facing assistant: verifies identity, answers with citations, handles servicing and claims, hands
+      off to humans.'
+    memory: user
+    context:
+    - key: email
+      from: user.email
+    goalTemplate: 'Today is {date}. Customer account email: {email}.
+
+      Conversation so far:
+
+      {history}
+
+
+      New customer message:
+
+      {message}
+
+
+      Reply in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+    awaits:
+    - staff_approval
+    appTools:
+    - name: search_documents
+      description: Search the insurer's policy wordings, product summaries, FAQs and claims procedures. Returns passages with
+        title, section and document id for citation.
+      action: search
+      collection: documents
+      scope: all
+    - name: lookup_policy
+      description: Find a policy by policy_number. Compare date of birth yourself; never reveal any field before both match.
+      action: search
+      collection: policies
+      scope: all
+    - name: create_service_request
+      description: Create a servicing task (address change, add driver, cancellation, document copy) with structured details.
+      action: append
+      collection: service_requests
+      scope: user
+    - name: start_claim
+      description: Record a first notification of loss.
+      action: append
+      collection: claims
+      scope: user
+    - name: create_handoff
+      description: Hand the conversation to a human agent with a summary and the reason.
+      action: append
+      collection: handoffs
+      scope: user
+    - name: log_conversation
+      description: Write the conversation log entry (channel, topic, outcome, sentiment, summary, transcript) at the end of
+        every conversation.
+      action: append
+      collection: conversation_logs
+      scope: user
+    - name: read_upload
+      description: Read a file or photo the customer uploaded
+      action: read_file
+    profile:
+      inline:
+        display_name: Covaro customer assistant
+        chat_mode: true
+        crews:
+        - id: assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the customer assistant of an insurer or MGA. The same agent serves web chat, browser voice,
+            the phone line and email, so keep replies short and plain, without tables, which read badly aloud.
+
+
+            IDENTIFICATION: before any policy-specific information or action, ask for the policy number and date of birth,
+            call lookup_policy and check both match. After 3 failed attempts stop and offer a human. General product questions
+            need no identification.
+
+
+            COVERAGE QUESTIONS: always call search_documents first and answer only from what it returns. Cite each statement
+            as [Document title, section]. If the wording does not clearly answer, say so and offer a human. Never promise
+            that a claim will be paid, and never give legal advice.
+
+
+            SERVICING (change of address, add a driver, cancellation, document copy): collect every needed detail step by
+            step (policy number, effective date, new address or driver name, date of birth, licence details, reason), read
+            the summary back and get confirmation, then call create_service_request with status new. Cancellations and refunds
+            are never decided by you: request the staff_approval approval, tell the customer that staff will review it and
+            that they will be emailed.
+
+
+            CLAIMS: ask the first notification of loss questions: what happened, when, where, anyone injured, third parties,
+            police report, and whether it is drivable. Ask for photos (on the web the customer can attach them, or use the
+            claim form); read them with read_upload. Then call start_claim and give the customer the next steps from the claims
+            procedure documents.
+
+
+            HANDOFF: call create_handoff with a summary and the reason (vulnerable customer, angry, complaint, out of policy
+            scope, identity failed, customer asked for a person) and tell the customer a colleague will follow up. Hand off
+            immediately and never argue when you see signs of vulnerability (bereavement, serious illness, financial difficulty,
+            distress, confusion) or the word complaint. Be warm and never pressure for a sale.
+
+
+            AT THE END of every conversation call log_conversation with channel (web, voice, phone, email), topic, outcome
+            (resolved, handed_off, open), sentiment (positive, neutral, negative), a 2-3 line summary and a short transcript.
+            Never invent policy data, prices or wording.'
+  - key: qa
+    role: analyst
+    description: Scores a sample of logged conversations for Consumer Duty and fair treatment.
+    appTools:
+    - name: read_logs
+      description: Read the conversation log entries the reviewer may see
+      action: read
+      collection: conversation_logs
+      scope: all
+    - name: save_score
+      description: Save the QA score of one conversation
+      action: append
+      collection: qa_scores
+      scope: all
+    goalTemplate: 'Today is {date}. Review a sample of {sample_size} conversations{?since} logged since {since}{/since}{?focus}.
+      Focus: {focus}{/focus}. Write the report in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 1.0
+    profile:
+      inline:
+        display_name: Covaro QA reviewer
+        crews:
+        - id: qa
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a QA analyst for an insurer. Read the logs with read_logs, pick a varied sample (channels,
+            outcomes, negative sentiment, handoffs) and score each conversation 1-5 on: accuracy and citation of the wording,
+            identity checks, fair treatment and Consumer Duty outcomes (clear communication, vulnerable customers recognised,
+            no pressure), correct handoff, and tone. Save each with save_score (conversation reference, date, scores, overall,
+            issues, recommended action). Then write a report starting with a level-1 title "# QA review — <date>", sections
+            ## Summary, ## Scores, ## Conversations to escalate, ## Patterns and training suggestions. Base every point on
+            the logs; never invent content.'
+  inputForm:
+    title: New QA review
+    fields:
+    - name: sample_size
+      type: number
+      required: true
+      default: 20
+      label: Sample size
+    - name: since
+      type: date
+      label: Since (optional)
+    - name: focus
+      type: text
+      maxLength: 200
+      label: Focus (optional)
+      help: e.g. handoffs, vulnerable customers, cancellations
+  channels:
+  - key: web
+    type: web
+    agent: assistant
+  - key: phone_line
+    type: phone
+    agent: assistant
+    greeting: Hello, this is the customer assistant. How can I help you today?
+    language: en
+  - key: email_inbox
+    type: email
+    agent: assistant
+  approvals:
+  - key: staff_approval
+    title: Refund or cancellation approval
+    description: A cancellation or refund proposed by the assistant, reviewed by staff before anything happens
+    role: service_agent
+    fields:
+    - policy_number
+    - request_type
+    - reason
+    - refund_amount
+    timeoutMinutes: 2880
+    onTimeout: reject
+  triggers:
+  - key: handoff_alert
+    'on':
+      collection: handoffs
+      op: insert
+    notify:
+      to:
+      - role:service_agent
+      - admins
+      subject: 'New handoff: {record.reason}'
+      body: 'A conversation was handed to a human. Reason: {record.reason}
+
+
+        Summary: {record.summary}'
+      link: handoffs
+  - key: approval_decided
+    'on':
+      approval: staff_approval
+      decision: any
+    notify:
+      to: owner
+      subject: Update on your request
+      body: Your cancellation or refund request has been reviewed by our team. Open the app for the outcome.
+      link: chat
+  data:
+    collections:
+    - name: documents
+      ownedBy: shared
+      searchable: true
+      description: Policy wordings, product summaries, FAQs, claims procedures. Admins add them on the data page (text pasted
+        or from CSV).
+      fields:
+      - name: title
+        type: text
+        required: true
+      - name: doc_type
+        type: select
+        options:
+        - wording
+        - product_summary
+        - faq
+        - claims_procedure
+      - name: product
+        type: text
+      - name: section
+        type: text
+      - name: content
+        type: textarea
+        required: true
+    - name: policies
+      ownedBy: app
+      description: Policy register used to identify customers (policy number and date of birth). Loaded by admins from CSV.
+      fields:
+      - name: policy_number
+        type: text
+        required: true
+      - name: date_of_birth
+        type: date
+        required: true
+      - name: holder_name
+        type: text
+      - name: product
+        type: text
+      - name: status
+        type: select
+        options:
+        - active
+        - lapsed
+        - cancelled
+      - name: address
+        type: text
+      - name: drivers
+        type: text
+      - name: vulnerability_flag
+        type: boolean
+    - name: service_requests
+      ownedBy: user
+      fields:
+      - name: policy_number
+        type: text
+        required: true
+      - name: request_type
+        type: select
+        options:
+        - change_address
+        - add_driver
+        - cancellation
+        - document_copy
+        - other
+      - name: details
+        type: textarea
+      - name: effective_date
+        type: date
+      - name: reason
+        type: text
+      - name: refund_amount
+        type: number
+      - name: status
+        type: select
+        options:
+        - new
+        - in_progress
+        - awaiting_approval
+        - done
+        - rejected
+      access:
+      - role: service_agent
+        can:
+        - read
+        - write
+    - name: claims
+      ownedBy: user
+      fields:
+      - name: policy_number
+        type: text
+        required: true
+      - name: incident_date
+        type: date
+        required: true
+      - name: location
+        type: location
+      - name: description
+        type: textarea
+        required: true
+      - name: injuries
+        type: boolean
+      - name: third_party_details
+        type: textarea
+      - name: photos
+        type: file
+        accept:
+        - jpg
+        - jpeg
+        - png
+        - pdf
+        maxMb: 10
+        multiple: true
+        capture: true
+      - name: status
+        type: select
+        options:
+        - new
+        - in_review
+        - accepted
+        - declined
+        - closed
+      access:
+      - role: service_agent
+        can:
+        - read
+        - write
+    - name: handoffs
+      ownedBy: user
+      fields:
+      - name: policy_number
+        type: text
+      - name: reason
+        type: select
+        options:
+        - vulnerable
+        - angry
+        - complaint
+        - out_of_scope
+        - identity_failed
+        - customer_request
+      - name: summary
+        type: textarea
+      - name: contact
+        type: text
+      - name: status
+        type: select
+        options:
+        - open
+        - taken
+        - closed
+      access:
+      - role: service_agent
+        can:
+        - read
+        - write
+    - name: conversation_logs
+      ownedBy: user
+      retentionDays: 2190
+      description: Every conversation, kept for Consumer Duty and fair treatment reviews.
+      fields:
+      - name: date
+        type: date
+      - name: channel
+        type: select
+        options:
+        - web
+        - voice
+        - phone
+        - email
+      - name: topic
+        type: text
+      - name: outcome
+        type: select
+        options:
+        - resolved
+        - handed_off
+        - open
+      - name: sentiment
+        type: select
+        options:
+        - positive
+        - neutral
+        - negative
+      - name: summary
+        type: textarea
+      - name: transcript
+        type: textarea
+      - name: policy_number
+        type: text
+      access:
+      - role: service_agent
+      - role: qa_reviewer
+    - name: qa_scores
+      ownedBy: org
+      description: QA scores of sampled conversations
+      fields:
+      - name: conversation_date
+        type: date
+      - name: channel
+        type: text
+      - name: accuracy
+        type: number
+      - name: identity_checks
+        type: number
+      - name: fair_treatment
+        type: number
+      - name: handoff
+        type: number
+      - name: tone
+        type: number
+      - name: overall
+        type: number
+      - name: issues
+        type: textarea
+      - name: action
+        type: text
+      access:
+      - role: qa_reviewer
+        can:
+        - read
+        - write
+  views:
+  - key: home
+    type: page
+    title: Covaro
+    nav: false
+    sections:
+    - type: hero
+      title: One agent for every **customer conversation**
+      text: Policyholders get accurate, cited answers, servicing and claim notification on web chat, voice, phone and email.
+        Your people get the hard cases with a summary, and every conversation is logged for Consumer Duty.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      band: true
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Upload your documents
+        text: Wordings, product summaries, FAQs and claims procedures.
+      - title: The agent serves customers
+        text: Identifies them by policy number and date of birth, answers with citations, collects servicing and claim details.
+      - title: Humans stay in control
+        text: Vulnerable, angry, complaint or out-of-scope cases go to a person; refunds and cancellations need staff approval.
+      - title: Review and improve
+        text: Full logs, QA scoring and dashboards for volumes, resolution and handoffs.
+    - type: cards
+      id: channels
+      title: Channels
+      items:
+      - title: Web chat and voice
+        text: In the browser.
+      - title: Phone line
+        text: The same agent answers calls.
+      - title: Email
+        text: Replies handled by the same agent.
+    - type: note
+      content: Covaro supports customer service teams and does not give legal or financial advice.
+  - key: chat
+    type: chat
+    title: Assistant
+    source: agent:assistant
+    examples:
+    - Does my policy cover windscreen damage?
+    - I want to change my address
+    - I need to report a claim
+    placeholder: Ask a question or tell us what you need
+    roles:
+    - user
+    - admin
+  - key: claim_form
+    type: form
+    title: Report a claim
+    collection: claims
+    fields:
+    - policy_number
+    - incident_date
+    - location
+    - description
+    - injuries
+    - third_party_details
+    - photos
+    submit:
+      label: Send claim
+      message: Your claim has been recorded. We will contact you soon.
+    roles:
+    - user
+  - key: my_requests
+    type: table
+    title: My requests
+    source: collection:service_requests
+    data:
+      display: table
+      fields:
+      - key: request_type
+        label: Type
+      - key: policy_number
+        label: Policy
+      - key: status
+        label: Status
+        format: badge
+    roles:
+    - user
+  - key: requests_admin
+    type: table
+    title: Servicing tasks
+    source: collection:service_requests
+    data:
+      display: table
+      fields:
+      - key: policy_number
+        label: Policy
+      - key: request_type
+        label: Type
+        format: badge
+      - key: details
+        label: Details
+      - key: effective_date
+        label: Effective
+        format: date
+      - key: status
+        label: Status
+        format: badge
+    export: true
+    roles:
+    - service_agent
+    - admin
+  - key: claims_admin
+    type: table
+    title: Claims
+    source: collection:claims
+    data:
+      display: table
+      fields:
+      - key: policy_number
+        label: Policy
+      - key: incident_date
+        label: Date
+        format: date
+      - key: description
+        label: What happened
+      - key: location
+        label: Location
+        format: location
+      - key: status
+        label: Status
+        format: badge
+      actions:
+      - type: directions
+        field: location
+        label: Directions
+    roles:
+    - service_agent
+    - admin
+  - key: handoffs
+    type: table
+    title: Handoffs
+    source: collection:handoffs
+    data:
+      display: table
+      fields:
+      - key: reason
+        label: Reason
+        format: badge
+      - key: policy_number
+        label: Policy
+      - key: summary
+        label: Summary
+      - key: contact
+        label: Contact
+      - key: status
+        label: Status
+        format: badge
+    roles:
+    - service_agent
+    - admin
+  - key: approvals
+    type: approvals
+    title: Approvals
+    roles:
+    - service_agent
+    - admin
+  - key: logs
+    type: table
+    title: Conversation logs
+    source: collection:conversation_logs
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: channel
+        label: Channel
+        format: badge
+      - key: topic
+        label: Topic
+      - key: outcome
+        label: Outcome
+        format: badge
+      - key: sentiment
+        label: Sentiment
+        format: badge
+      - key: summary
+        label: Summary
+      sort:
+        field: date
+        dir: desc
+    export: true
+    roles:
+    - service_agent
+    - qa_reviewer
+    - admin
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - admin
+    - service_agent
+    - qa_reviewer
+    sections:
+    - type: data
+      title: Conversations
+      source: collection:conversation_logs
+      display: kpi
+      kpis:
+      - label: Total conversations
+        agg: count
+    - type: data
+      title: Resolved
+      source: collection:conversation_logs
+      display: kpi
+      filters:
+      - field: outcome
+        op: '='
+        value: resolved
+      kpis:
+      - label: Resolved by the agent
+        agg: count
+    - type: data
+      title: Handoffs
+      source: collection:conversation_logs
+      display: kpi
+      filters:
+      - field: outcome
+        op: '='
+        value: handed_off
+      kpis:
+      - label: Handed to humans
+        agg: count
+    - type: data
+      title: Volume per day
+      source: collection:conversation_logs
+      display: chart
+      chart: line
+      groupBy:
+        field: date
+        bucket: day
+        aggs: []
+      fields:
+      - key: date
+      - key: count
+        label: Conversations
+    - type: data
+      title: Outcomes
+      source: collection:conversation_logs
+      display: chart
+      chart: pie
+      groupBy:
+        field: outcome
+        aggs: []
+      fields:
+      - key: outcome
+      - key: count
+    - type: data
+      title: By channel
+      source: collection:conversation_logs
+      display: chart
+      chart: bar
+      groupBy:
+        field: channel
+        aggs: []
+      fields:
+      - key: channel
+      - key: count
+  - key: qa_run
+    type: new_run
+    title: QA review
+    roles:
+    - qa_reviewer
+    - admin
+  - key: qa_history
+    type: history
+    title: QA reports
+    source: run
+    roles:
+    - qa_reviewer
+    - admin
+  - key: qa_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: qa_table
+    type: table
+    title: QA scores
+    source: collection:qa_scores
+    data:
+      display: table
+      fields:
+      - key: conversation_date
+        label: Date
+        format: date
+      - key: channel
+        label: Channel
+      - key: accuracy
+        label: Accuracy
+        format: number
+      - key: fair_treatment
+        label: Fair treatment
+        format: number
+      - key: overall
+        label: Overall
+        format: number
+      - key: issues
+        label: Issues
+    export: true
+    roles:
+    - qa_reviewer
+    - admin
+  - key: account
+    type: account
+    title: Billing
+    roles:
+    - admin
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 100
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      chat:
+        estimate: 10
+        metered: true
+      agent:qa:
+        estimate: 30
+        metered: true
+    plans:
+    - key: platform
+      price: 499
+      interval: month
+      label: Covaro platform
+      includes:
+      - All channels
+      - Dashboards and logs
+      - QA review
+      credits: 0
+      roles:
+      - admin
+    packs:
+    - key: usage_1000
+      credits: 1000
+      price: 10
+      label: 1,000 conversation credits
+    - key: usage_10000
+      credits: 10000
+      price: 90
+      label: 10,000 conversation credits
+  notifications:
+    emailOnRunDone: true
+  extensions:
+  - key: whatsapp_channel
+    description: 'WhatsApp is not available yet: customers reach the agent on web, voice, phone and email only.'
+  - key: document_upload
+    description: Documents are added by admins on the built-in data page (pasted text or CSV); direct PDF ingestion into the
+      document library is not available yet.
+  - key: anonymous_channels
+    description: Policyholders sign in with a magic link on the web; phone and email channels depend on the platform's channel
+      identification.

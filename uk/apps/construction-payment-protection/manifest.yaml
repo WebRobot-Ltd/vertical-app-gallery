@@ -1,0 +1,1032 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: retainly
+  displayName: Retainly
+  tagline: Protected project payments for construction supply chains.
+  description: Retainly is the software layer around a ring-fenced trust or escrow account held by a regulated banking partner.
+    It handles projects, packages, applications for payment, payment notices, pay-less notices, retentions and cash-flow tracking
+    for everyone in the chain.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12324a'
+      accent: '#d9822b'
+      background: '#f6f4ef'
+      foreground: '#1c2430'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Retain
+      color: primary
+    - text: ly
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Who it is for
+      href: '#roles'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: Client or main contractor
+      assignedBy: signup
+    - key: qs
+      label: Quantity surveyor
+      assignedBy: derived
+      from: collection:projects.qs_email
+    - key: subcontractor
+      label: Subcontractor
+      assignedBy: derived
+      from: collection:packages.sub_email
+    - key: supplier
+      label: Supplier
+      assignedBy: derived
+      from: collection:packages.supplier_email
+  agents:
+  - key: reviewer
+    role: main
+    description: Checks each application for payment against the package schedule and previous valuations, and drafts the
+      payment notice for the QS.
+    profile:
+      inline:
+        display_name: Retainly valuation checker
+        crews:
+        - id: reviewer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a construction payment assistant that supports a quantity surveyor (QS) in the UK. You never
+            decide: the QS approves, adjusts or issues a pay-less notice.
+
+
+            For each new application for payment:
+
+            1. Call read_package with the application''s package to get the package value, schedule, retention and payment
+            terms, and the parties'' emails.
+
+            2. Call past_applications to list the previous valuations of the same package by this subcontractor.
+
+            3. If the application has photos, call read_upload with each file id and note what they show; compare them with
+            the percent complete and the measurements claimed.
+
+            4. Check: cumulative claimed vs package value; claim vs the schedule milestones; claim vs the previous valuations
+            (jumps, double counting, work already paid); retention at the package rate; whether photos and measurements support
+            the percentage.
+
+            5. Call calc_deadlines with valuation_date, due_days, final_date_days and pay_less_days from the package. Use
+            ONLY its returned dates. They are the contract or Scheme defaults. Always tell the QS to confirm them against
+            the contract.
+
+            6. Call save_review once with: record id (from the event), project, sub_email, qs_email, contractor_email, client_email
+            (copied from the package), status "reviewed", due_date, payless_deadline, agent_check (your findings), draft_notice
+            (a draft payment notice: sum considered due, basis of calculation, retention deducted; plus a suggested pay-less
+            reason only if the evidence justifies one), flags (short list of issues or "none").
+
+
+            Finish with a report starting with a level-1 title "# Valuation check — <package> — <valuation date>". Sections:
+            ## Summary, ## Checks, ## Suggested amount, ## Draft payment notice, ## Deadlines to confirm. Never invent figures
+            or photo content. This is decision support, not legal advice.'
+          mcp_servers: []
+    goalTemplate: 'A new application for payment was submitted. Event: {event}
+
+      Package: {record.package}. Valuation date: {record.valuation_date}. Amount claimed: {record.claimed_amount}. Percent
+      complete: {record.percent_complete}. Measurements: {record.measurements}. Photos (file ids): {record.photos}. Notes:
+      {record.notes}
+
+      Check it and save the review. Write the report in the language with ISO code {lang}. Today is {date}.'
+    appTools:
+    - name: read_package
+      description: Read the package records the user can access (value, schedule, retention, payment terms, parties)
+      action: read
+      collection: packages
+      scope: all
+    - name: past_applications
+      description: List previous applications for payment of this user
+      action: search
+      collection: applications
+      scope: user
+    - name: save_review
+      description: Save the check results and draft notice on the application record
+      action: write
+      collection: applications
+      scope: user
+    - name: calc_deadlines
+      description: Compute the payment notice and pay-less deadlines from valuation_date, due_days, final_date_days, pay_less_days
+      action: call
+      slot: deadlines
+    - name: read_upload
+      description: Read a file the user uploaded (photos, OCR included)
+      action: read_file
+    output: markdown
+    limits:
+      maxTurns: 14
+      maxBudgetUsd: 0.6
+  - key: ledger
+    role: helper
+    description: Books the retention held when an application is approved, with its release date.
+    profile:
+      inline:
+        display_name: Retainly retention ledger
+        crews:
+        - id: ledger
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You keep the retention ledger. When an application is approved: call existing_retentions to check
+            whether a retention for this application id already exists; if it does, do nothing and say so. Otherwise call
+            read_package for the package, compute retention = approved_amount x retention_pct / 100 (rounded to 2 decimals),
+            and call add_retention once with: project, package, application_id, amount, release_date (the package''s retention_release_date),
+            status "held", and the sub, contractor, client and QS emails from the package. Finish with a short report starting
+            with "# Retention booked — <package>". Never invent figures.'
+          mcp_servers: []
+    goalTemplate: 'An application was approved. Event: {event}
+
+      Package: {record.package}. Approved amount: {record.approved_amount}. Book the retention held. Today is {date}.'
+    appTools:
+    - name: read_package
+      description: Read the package records the user can access (value, schedule, retention, payment terms, parties)
+      action: read
+      collection: packages
+      scope: all
+    - name: existing_retentions
+      description: List retentions already booked
+      action: search
+      collection: retentions
+      scope: user
+    - name: add_retention
+      description: Add a retention record
+      action: append
+      collection: retentions
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.3
+  slots:
+  - key: deadlines
+    description: 'Statutory-style timetable from the valuation date: payment due date, payment notice deadline and pay-less
+      notice deadline (contract or Scheme defaults).'
+    timeoutMs: 2000
+    example:
+      args:
+        valuation_date: '2026-11-30'
+        due_days: 7
+        final_date_days: 17
+        pay_less_days: 5
+    code: "from datetime import date, timedelta\n\ndef main(input):\n    a = input.get('args') or input.get('values') or {}\n\
+      \    v = date.fromisoformat(str(a['valuation_date'])[:10])\n    due = v + timedelta(days=int(a.get('due_days') or 7))\n\
+      \    final = due + timedelta(days=int(a.get('final_date_days') or 17))\n    pl = final - timedelta(days=int(a.get('pay_less_days')\
+      \ or 5))\n    return {'due_date': due.isoformat(), 'final_date': final.isoformat(), 'payless_deadline': pl.isoformat()}\n"
+  data:
+    collections:
+    - name: projects
+      description: Protected projects created by the client or main contractor
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Project name
+      - name: client_name
+        type: text
+        label: Client
+      - name: client_email
+        type: email
+        label: Client email
+      - name: contractor_name
+        type: text
+        label: Main contractor
+      - name: contractor_email
+        type: email
+        required: true
+        label: Main contractor email
+      - name: qs_email
+        type: email
+        required: true
+        label: Quantity surveyor email
+      - name: contract_value
+        type: number
+        required: true
+        label: Contract value (GBP)
+      - name: retention_pct
+        type: number
+        default: 5
+        label: Retention %
+      - name: payment_schedule
+        type: textarea
+        label: Payment schedule (milestones and amounts)
+      - name: due_days
+        type: number
+        default: 7
+        label: Days from valuation to due date
+      - name: final_date_days
+        type: number
+        default: 17
+        label: Days from due date to final date for payment
+      - name: pay_less_days
+        type: number
+        default: 5
+        label: 'Pay-less notice: days before final date'
+      - name: partner_account_ref
+        type: text
+        label: Banking partner account reference
+        help: Reference issued by the regulated banking partner; no account numbers.
+      - name: status
+        type: select
+        default: active
+        options:
+        - active
+        - on_hold
+        - closed
+      access:
+      - role: qs
+        where:
+          qs_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: user
+        where:
+          contractor_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: user
+        where:
+          client_email: '{user.email}'
+        can:
+        - read
+    - name: packages
+      description: Subcontract or supply packages of a project
+      ownedBy: user
+      fields:
+      - name: project
+        type: select
+        required: true
+        optionsFrom: collection:projects
+        label: Project
+      - name: name
+        type: text
+        required: true
+        label: Package
+      - name: scope
+        type: textarea
+        label: Scope and schedule of values
+      - name: value
+        type: number
+        required: true
+        label: Package value (GBP)
+      - name: sub_email
+        type: email
+        label: Subcontractor email (invited)
+      - name: supplier_email
+        type: email
+        label: Supplier email (invited)
+      - name: contractor_email
+        type: email
+        required: true
+        label: Main contractor email
+      - name: client_email
+        type: email
+        label: Client email
+      - name: qs_email
+        type: email
+        required: true
+        label: QS email
+      - name: retention_pct
+        type: number
+        default: 5
+        label: Retention %
+      - name: retention_release_date
+        type: date
+        label: Retention release date
+      - name: due_days
+        type: number
+        default: 7
+        label: Days from valuation to due date
+      - name: final_date_days
+        type: number
+        default: 17
+        label: Days from due date to final date
+      - name: pay_less_days
+        type: number
+        default: 5
+        label: Pay-less notice days before final date
+      access:
+      - role: subcontractor
+        where:
+          sub_email: '{user.email}'
+      - role: supplier
+        where:
+          supplier_email: '{user.email}'
+      - role: qs
+        where:
+          qs_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: user
+        where:
+          contractor_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: user
+        where:
+          client_email: '{user.email}'
+    - name: applications
+      description: Applications for payment, their checks, notices and decisions
+      ownedBy: user
+      fields:
+      - name: package
+        type: select
+        required: true
+        optionsFrom: collection:packages
+        label: Package
+      - name: valuation_date
+        type: date
+        required: true
+        label: Valuation date
+      - name: claimed_amount
+        type: number
+        required: true
+        label: Amount claimed this period (GBP)
+      - name: percent_complete
+        type: number
+        label: Cumulative % complete
+      - name: measurements
+        type: textarea
+        label: Measurements and quantities
+      - name: photos
+        type: file
+        accept:
+        - jpg
+        - jpeg
+        - png
+        - pdf
+        maxMb: 10
+        multiple: true
+        capture: true
+        label: Supporting photos
+      - name: notes
+        type: textarea
+        label: Notes
+      - name: project
+        type: text
+        label: Project
+      - name: sub_email
+        type: email
+      - name: qs_email
+        type: email
+      - name: contractor_email
+        type: email
+      - name: client_email
+        type: email
+      - name: status
+        type: select
+        default: submitted
+        options:
+        - submitted
+        - reviewed
+        - approved
+        - pay_less
+        - disputed
+        - released
+        label: Status
+      - name: due_date
+        type: date
+        label: Payment notice due
+      - name: payless_deadline
+        type: date
+        label: Pay-less notice deadline
+      - name: agent_check
+        type: textarea
+        label: Agent check
+      - name: draft_notice
+        type: textarea
+        label: Draft payment notice
+      - name: flags
+        type: text
+        label: Flags
+      - name: approved_amount
+        type: number
+        label: Approved amount (GBP)
+      - name: pay_less_reason
+        type: textarea
+        label: Pay-less reason
+      - name: release_ref
+        type: text
+        label: Release reference from the partner
+      access:
+      - role: qs
+        where:
+          qs_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: user
+        where:
+          contractor_email: '{user.email}'
+        can:
+        - read
+      - role: user
+        where:
+          client_email: '{user.email}'
+        can:
+        - read
+    - name: retentions
+      description: Retention held per package with release dates
+      ownedBy: user
+      fields:
+      - name: project
+        type: text
+      - name: package
+        type: text
+      - name: application_id
+        type: text
+      - name: amount
+        type: number
+      - name: release_date
+        type: date
+      - name: status
+        type: select
+        default: held
+        options:
+        - held
+        - due
+        - released
+        - disputed
+      - name: sub_email
+        type: email
+      - name: contractor_email
+        type: email
+      - name: client_email
+        type: email
+      - name: qs_email
+        type: email
+      access:
+      - role: qs
+        where:
+          qs_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: user
+        where:
+          contractor_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: user
+        where:
+          client_email: '{user.email}'
+    - name: partner_events
+      description: Release and funding events received from the banking partner
+      ownedBy: org
+      fields:
+      - name: event_id
+        type: text
+      - name: project_ref
+        type: text
+      - name: type
+        type: text
+      - name: amount
+        type: number
+      - name: status
+        type: text
+      - name: reference
+        type: text
+      retentionDays: 2555
+  triggers:
+  - key: review_application
+    'on':
+      collection: applications
+      op: insert
+      where:
+        status: submitted
+    start:
+      agent: reviewer
+    goal: 'A new application for payment was submitted. Event: {event}
+
+      Package: {record.package}. Valuation date: {record.valuation_date}. Amount claimed: {record.claimed_amount}. Percent
+      complete: {record.percent_complete}. Measurements: {record.measurements}. Photos (file ids): {record.photos}. Notes:
+      {record.notes}
+
+      Check it and save the review.'
+  - key: book_retention
+    'on':
+      collection: applications
+      op: update
+      where:
+        status: approved
+    start:
+      agent: ledger
+    goal: 'An application was approved. Event: {event}
+
+      Package: {record.package}. Approved amount: {record.approved_amount}. Book the retention held.'
+  - key: notify_approved
+    'on':
+      collection: applications
+      op: update
+      where:
+        status: approved
+    notify:
+      to:
+      - owner
+      - record.contractor_email
+      subject: 'Payment approved: {record.package}'
+      body: Your application for payment on {record.package} was approved for {record.approved_amount} GBP. Release from the
+        protected account is made by the banking partner.
+      link: applications
+  - key: notify_pay_less
+    'on':
+      collection: applications
+      op: update
+      where:
+        status: pay_less
+    notify:
+      to:
+      - owner
+      - record.contractor_email
+      subject: 'Pay-less notice issued: {record.package}'
+      body: 'A pay-less notice was issued on {record.package}. Amount to be paid: {record.approved_amount} GBP. Reason: {record.pay_less_reason}'
+      link: applications
+  - key: notify_released
+    'on':
+      collection: applications
+      op: update
+      where:
+        status: released
+    notify:
+      to:
+      - owner
+      - record.client_email
+      subject: 'Payment released: {record.package}'
+      body: 'Payment of {record.approved_amount} GBP on {record.package} was released from the protected account. Reference:
+        {record.release_ref}'
+      link: applications
+  - key: remind_notice_due
+    'on':
+      date:
+        collection: applications
+        field: due_date
+        offsetDays: -1
+        hour: 8
+      where:
+        status: reviewed
+    notify:
+      to: record.qs_email
+      subject: 'Payment notice due tomorrow: {record.package}'
+      body: The payment notice on {record.package} is due tomorrow. The draft is ready in Retainly for your decision.
+      link: applications
+  - key: remind_payless
+    'on':
+      date:
+        collection: applications
+        field: payless_deadline
+        offsetDays: -1
+        hour: 8
+      where:
+        status: reviewed
+    notify:
+      to: record.qs_email
+      subject: 'Pay-less deadline tomorrow: {record.package}'
+      body: The last day to issue a pay-less notice on {record.package} is tomorrow. Approve, adjust or issue a pay-less notice
+        now.
+      link: applications
+  - key: remind_retention
+    'on':
+      date:
+        collection: retentions
+        field: release_date
+        offsetDays: -14
+        hour: 8
+      where:
+        status: held
+    notify:
+      to:
+      - record.contractor_email
+      - record.qs_email
+      subject: 'Retention release in 14 days: {record.package}'
+      body: Retention of {record.amount} GBP on {record.package} is due for release on {record.release_date}. Please inspect
+        and confirm.
+      link: retentions
+  - key: retention_release_day
+    'on':
+      date:
+        collection: retentions
+        field: release_date
+        offsetDays: 0
+        hour: 8
+      where:
+        status: held
+    notify:
+      to:
+      - record.contractor_email
+      - record.qs_email
+      - record.sub_email
+      subject: 'Retention release date today: {record.package}'
+      body: Retention of {record.amount} GBP on {record.package} reaches its release date today.
+      link: retentions
+  - key: partner_hook
+    'on':
+      webhook: true
+    write:
+      collection: partner_events
+      fields:
+        event_id: id
+        project_ref: project_ref
+        type: type
+        amount: amount
+        status: status
+        reference: reference
+      keyBy: event_id
+  - key: partner_event_admins
+    'on':
+      collection: partner_events
+      op: insert
+    notify:
+      to: admins
+      subject: Banking partner event {record.type}
+      body: 'Event {record.event_id} for {record.project_ref}: {record.amount} GBP, status {record.status}.'
+  views:
+  - key: home
+    type: page
+    title: Retainly
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: Construction payment protection
+      title: Get paid on time. **Every link in the chain.**
+      text: 'Project funds sit in a ring-fenced trust or escrow account held by our regulated banking partner. Retainly is
+        the software around it: applications, notices, retentions and a live payment tracker for everyone.'
+      actions:
+      - label: Create a project
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+      aside: '<div style="padding:20px"><strong>This period</strong><br>Due: £48,200<br>Paid: £132,500<br>Disputed: £6,300<br>Retention
+        held: £9,750</div>'
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Set up the project
+        text: Contract value, parties, payment schedule, retention and payment terms.
+      - title: Invite the chain
+        text: Subcontractors and suppliers see only their own packages.
+      - title: Apply and check
+        text: Applications with photos and measurements are checked by an agent against the schedule and previous valuations,
+          which drafts the payment notice.
+      - title: Decide in time
+        text: The QS approves, adjusts or issues a pay-less notice, with reminders before each deadline.
+      - title: Release and retain
+        text: Approved amounts are released by the banking partner. Retentions are tracked with release reminders.
+    - type: cards
+      id: roles
+      title: Who it is for
+      items:
+      - title: Clients and main contractors
+        text: Create projects, see cash flow and the full schedule.
+      - title: Quantity surveyors
+        text: Review drafts, decide and never miss a statutory date.
+      - title: Subcontractors and suppliers
+        text: Submit applications, see what is due, paid and disputed.
+    - type: note
+      content: 'Retainly is software. Client money is held and released by a regulated banking partner, not by Retainly. Drafts
+        and deadlines are decision support, not legal advice: confirm them against your contract and the Construction Act.'
+  - key: new_project
+    type: form
+    title: New project
+    collection: projects
+    submit:
+      label: Create project
+      message: Project created.
+      redirect: projects
+    roles:
+    - user
+    - admin
+  - key: projects
+    type: table
+    title: Projects
+    source: collection:projects
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Project
+      - key: contractor_name
+        label: Contractor
+      - key: contract_value
+        label: Contract value
+        format: money
+      - key: retention_pct
+        label: Retention %
+        format: number
+      - key: status
+        format: badge
+    roles:
+    - user
+    - qs
+    - admin
+  - key: add_package
+    type: form
+    title: Add package
+    collection: packages
+    submit:
+      label: Save and invite
+      message: Package saved. The invited party will see it after signing in with that email.
+      redirect: packages
+    roles:
+    - user
+    - admin
+  - key: packages
+    type: cards
+    title: Packages
+    source: collection:packages
+    data:
+      display: cards
+      fields:
+      - key: name
+        label: Package
+      - key: project
+        label: Project
+      - key: value
+        label: Value
+        format: money
+      - key: retention_pct
+        label: Retention %
+        format: number
+      - key: retention_release_date
+        label: Retention release
+        format: date
+    roles:
+    - user
+    - qs
+    - subcontractor
+    - supplier
+    - admin
+  - key: apply
+    type: form
+    title: Apply for payment
+    collection: applications
+    fields:
+    - package
+    - valuation_date
+    - claimed_amount
+    - percent_complete
+    - measurements
+    - photos
+    - notes
+    submit:
+      label: Submit application
+      message: Submitted. A check and draft notice are being prepared for the QS.
+      redirect: applications
+    roles:
+    - subcontractor
+    - supplier
+    - admin
+  - key: applications
+    type: table
+    title: Payment tracker
+    source: collection:applications
+    export: true
+    data:
+      display: table
+      fields:
+      - key: project
+        label: Project
+      - key: package
+        label: Package
+      - key: valuation_date
+        label: Valuation
+        format: date
+      - key: claimed_amount
+        label: Claimed
+        format: money
+      - key: approved_amount
+        label: Approved
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      - key: due_date
+        label: Notice due
+        format: date
+      - key: payless_deadline
+        label: Pay-less by
+        format: date
+      - key: flags
+        label: Flags
+      sort:
+        field: valuation_date
+        dir: desc
+    roles:
+    - user
+    - qs
+    - subcontractor
+    - supplier
+    - admin
+  - key: decide
+    type: form
+    title: Decide on application
+    collection: applications
+    edit: true
+    fields:
+    - status
+    - approved_amount
+    - pay_less_reason
+    - release_ref
+    submit:
+      label: Save decision
+      message: Decision saved and parties notified.
+      redirect: applications
+    nav: false
+    roles:
+    - qs
+    - admin
+  - key: retentions
+    type: table
+    title: Retentions
+    source: collection:retentions
+    data:
+      display: table
+      fields:
+      - key: project
+        label: Project
+      - key: package
+        label: Package
+      - key: amount
+        label: Retention held
+        format: money
+      - key: release_date
+        label: Release date
+        format: date
+      - key: status
+        format: badge
+      sort:
+        field: release_date
+        dir: asc
+    roles:
+    - user
+    - qs
+    - subcontractor
+    - supplier
+    - admin
+  - key: retention_update
+    type: form
+    title: Update retention
+    collection: retentions
+    edit: true
+    fields:
+    - status
+    - release_date
+    nav: false
+    roles:
+    - qs
+    - user
+    - admin
+  - key: cashflow
+    type: page
+    title: Cash flow
+    roles:
+    - user
+    - qs
+    - admin
+    sections:
+    - type: data
+      title: Totals
+      source: collection:applications
+      display: kpi
+      kpis:
+      - label: Claimed
+        agg: sum
+        field: claimed_amount
+        format: money
+      - label: Approved
+        agg: sum
+        field: approved_amount
+        format: money
+      - label: Applications
+        agg: count
+    - type: data
+      title: Claimed vs approved per project
+      source: collection:applications
+      display: chart
+      chart: bar
+      groupBy:
+        field: project
+        aggs:
+        - key: claimed
+          agg: sum
+          field: claimed_amount
+        - key: approved
+          agg: sum
+          field: approved_amount
+      fields:
+      - key: project
+        label: Project
+      - key: claimed
+        label: Claimed
+      - key: approved
+        label: Approved
+    - type: data
+      title: Approved by month
+      source: collection:applications
+      display: chart
+      chart: line
+      groupBy:
+        field: valuation_date
+        bucket: month
+        aggs:
+        - key: approved
+          agg: sum
+          field: approved_amount
+      fields:
+      - key: valuation_date
+        label: Month
+      - key: approved
+        label: Approved
+    - type: data
+      title: Retention held per project
+      source: collection:retentions
+      display: chart
+      chart: bar
+      groupBy:
+        field: project
+        aggs:
+        - key: held
+          agg: sum
+          field: amount
+      fields:
+      - key: project
+        label: Project
+      - key: held
+        label: Held
+  billing:
+    modes:
+    - per_transaction
+    currency: gbp
+    transactionFeePct: 0.5
+  extensions:
+  - key: fee_on_protected_value
+    description: Pricing is a percentage of project value protected (configured as 0.5%); the fee base is the funded value
+      of each project, which needs a billing rule tied to the banking partner's funding events.
+  - key: partner_release_sync
+    description: Funding and release events from the banking partner arrive on the partner_hook webhook and are stored in
+      the admin-only partner_events collection. Matching them to applications automatically needs custom mapping; for now
+      the QS records the release reference on the decision.
+  - key: decision_links
+    description: The decision and retention update forms open as /v/decide?id=<record>; a button on each tracker row that
+      opens them is not available yet.
+  - key: stat_dates
+    description: Deadlines use contract or Scheme defaults (7 days to due date, 17 days to final date, pay-less notice 5 days
+      before) set per project and package; the QS must confirm them against the contract.

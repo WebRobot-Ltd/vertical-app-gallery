@@ -1,0 +1,661 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: flowsmith
+  displayName: Flowsmith
+  tagline:
+    en: Build automations and AI agents by chatting in plain English.
+  description:
+    en: Describe what you want automated. A builder agent turns it into a workflow with trigger, steps, tools and outputs,
+      shows it as a diagram and asks what it needs to know. Run it on a schedule, a webhook or a form, with approvals for
+      risky steps, run history and failure alerts.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#1f2a44'
+      accent: '#e8590c'
+      background: '#fbf9f6'
+      foreground: '#1a1d24'
+    fonts:
+      body: Inter
+      display: Space Grotesk
+    wordmark:
+    - text: Flow
+      color: primary
+    - text: smith
+      color: accent
+    buttonShape: rounded
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Start building
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      assignedBy: signup
+  limits:
+  - action: agent:runner
+    per: user
+    max: 100
+    window: month
+    roles:
+    - user
+    plans:
+      pro: 3000
+      team: 5000
+  - action: chat
+    per: user
+    max: 200
+    window: day
+    roles:
+    - user
+  agents:
+  - key: builder
+    role: helper
+    description: Chats with the user, asks clarifying questions and saves the workflow with its diagram.
+    profile:
+      inline:
+        display_name: Flowsmith builder
+        crews:
+        - id: builder
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Flowsmith''s builder. The user describes an automation in plain English; you turn it into
+            a workflow. Ask at most 3 short clarifying questions at a time when something is missing (trigger, which service,
+            what output, who is notified, whether sending, spending or deleting is involved). When you have enough, reply
+            with: ## Workflow name, **Trigger** (schedule with cron / webhook / form submission / manual), numbered **Steps**
+            (each: action, tool, input, output), **Tools needed**, **Outputs**, and a **Diagram** as a fenced text block using
+            arrows (Trigger -> Step 1 -> Step 2 -> Output). Mark every step that sends messages externally, spends money or
+            deletes data with [NEEDS APPROVAL] and ask whether approval should be needed the first time only or every time
+            (approval_mode first_time|always). Available tool integrations today: Slack posting, Notion API, HubSpot API (user
+            API keys). Gmail, Google Sheets and other OAuth services and incoming-email triggers are not available yet: say
+            so plainly and offer the nearest alternative (webhook, form, HTTP/API key). Once the user confirms, save with
+            workflows_write (name, description, trigger_type, schedule, steps as the full text spec, diagram, approval_mode,
+            status draft). To change a workflow, read it first with workflows_read. When asked to share one as a template,
+            call gallery_publish with a cleaned copy that has no secrets or personal data. To clone a template, search with
+            gallery_search and save a copy with workflows_write. Never invent connections the user has not made. Use the language
+            with ISO code {lang}.'
+    appTools:
+    - name: workflows_read
+      description: Read the user's workflows
+      action: read
+      collection: workflows
+      scope: user
+    - name: workflows_write
+      description: Create or update a workflow of the user
+      action: write
+      collection: workflows
+      scope: user
+    - name: gallery_search
+      description: Search the template gallery
+      action: search
+      collection: gallery
+      scope: all
+    - name: gallery_publish
+      description: Publish a cleaned workflow template to the gallery
+      action: append
+      collection: gallery
+      scope: all
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+      New message from {user}: {message}
+
+      Today is {date}. Answer in the language with ISO code {lang}.'
+    output: markdown
+  - key: runner
+    role: main
+    description: Executes a workflow step by step, asks for approval on risky steps, logs the run.
+    profile:
+      inline:
+        display_name: Flowsmith runner
+        crews:
+        - id: runner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You run one saved Flowsmith workflow. Read it with workflows_read, then perform its steps in order
+            using only your tools (slack_post, notion_api, hubspot_api). Before any step that sends a message externally,
+            spends money or deletes or modifies data in an outside system, call request_external_action unless the workflow''s
+            approval_mode is first_time and that step was already approved in an earlier run (check your notes in the workflow
+            record). With approval_mode always, ask every time. If a needed connection is missing, stop and say which one
+            to connect on the Connections page. Never invent data. At the end call runs_append once with workflow, status
+            (success|failed), input, output, error, and cost_note. Final answer: a Markdown report starting with a level-1
+            title ''# <workflow name> — run <date>'', then sections ## Input, ## Steps (what happened per step), ## Output,
+            ## Errors. Use the language with ISO code {lang}.'
+    appTools:
+    - name: workflows_read
+      description: Read the user's workflows
+      action: read
+      collection: workflows
+      scope: user
+    - name: runs_append
+      description: Record the result of this run
+      action: append
+      collection: run_logs
+      scope: user
+    - name: slack_post
+      description: 'Post a message to Slack. Body: {channel, text}'
+      action: http
+      http:
+        method: POST
+        url: https://slack.com/api/chat.postMessage
+        credential:
+          provider: slack
+        attribution: Slack API
+    - name: notion_api
+      description: Call the Notion API (path e.g. /v1/pages, /v1/databases/<id>/query)
+      action: http
+      http:
+        method: POST
+        url: https://api.notion.com
+        allowPath: true
+        headers:
+          Notion-Version: '2022-06-28'
+        credential:
+          provider: notion
+        attribution: Notion API
+    - name: hubspot_api
+      description: Read HubSpot CRM data (path e.g. /crm/v3/objects/contacts)
+      action: http
+      http:
+        method: GET
+        url: https://api.hubapi.com
+        allowPath: true
+        credential:
+          provider: hubspot
+        attribution: HubSpot API
+    awaits:
+    - external_action
+    goalTemplate: 'Run the workflow named or identified as: {workflow}.
+
+      {?input}Input for this run: {input}{/input}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 0.8
+      timeoutSeconds: 600
+  inputForm:
+    title: Run a workflow
+    fields:
+    - name: workflow
+      type: select
+      required: true
+      label: Workflow
+      optionsFrom: collection:workflows
+    - name: input
+      type: textarea
+      maxLength: 2000
+      label: Input (optional)
+  data:
+    collections:
+    - name: workflows
+      description: Workflows built in chat; members edit, runners run
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: description
+        type: textarea
+      - name: trigger_type
+        type: select
+        options:
+        - manual
+        - schedule
+        - webhook
+        - form
+      - name: schedule
+        type: text
+      - name: steps
+        type: textarea
+      - name: diagram
+        type: textarea
+      - name: approval_mode
+        type: select
+        options:
+        - first_time
+        - always
+        default: first_time
+      - name: status
+        type: select
+        options:
+        - draft
+        - active
+        - paused
+      - name: members
+        type: array
+        help: Emails of editors
+      - name: runners
+        type: array
+        help: Emails of people who can only run
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: user
+        where:
+          runners: '{user.email}'
+        can:
+        - read
+    - name: run_logs
+      description: Run history with inputs, outputs, errors and cost
+      ownedBy: user
+      retentionDays: 365
+      fields:
+      - name: workflow
+        type: text
+      - name: status
+        type: select
+        options:
+        - success
+        - failed
+      - name: input
+        type: textarea
+      - name: output
+        type: textarea
+      - name: error
+        type: textarea
+      - name: cost_note
+        type: text
+    - name: gallery
+      description: Shared workflow templates
+      ownedBy: app
+      fields:
+      - name: title
+        type: text
+      - name: description
+        type: textarea
+      - name: steps
+        type: textarea
+      - name: diagram
+        type: textarea
+      - name: trigger_type
+        type: text
+      - name: author
+        type: text
+    - name: form_submissions
+      description: Submissions that start a workflow
+      ownedBy: user
+      fields:
+      - name: workflow
+        type: text
+        required: true
+      - name: payload
+        type: textarea
+        required: true
+    credentials:
+    - provider: slack
+      kind: api_key
+      scope: user
+      label: Slack bot token
+      help: Create a Slack app, add chat:write and paste the bot token (xoxb-…).
+    - provider: notion
+      kind: api_key
+      scope: user
+      label: Notion integration token
+      help: Create an internal integration in Notion and share your pages with it.
+    - provider: hubspot
+      kind: api_key
+      scope: user
+      label: HubSpot private app token
+      help: Create a private app in HubSpot settings and paste its token.
+  egress:
+    hosts:
+    - slack.com
+    - api.notion.com
+    - api.hubapi.com
+    notes: Called with each user's own API key to act on their own accounts.
+  approvals:
+  - key: external_action
+    title: Approve this step
+    description: A workflow step wants to send a message, spend money or delete data.
+    decidedBy: requester
+    fields:
+    - workflow
+    - step
+    - details
+    timeoutMinutes: 1440
+  templates:
+  - key: scheduled_workflow
+    title: Scheduled workflow
+    description: Run one of your workflows on a schedule.
+    agent: runner
+    params:
+    - name: workflow
+      type: select
+      required: true
+      label: Workflow
+      optionsFrom: collection:workflows
+    goal: Run the workflow {workflow} (scheduled run "{instance}"). Today is {date}. Write the report in the language with
+      ISO code {lang}.
+    schedule:
+      cron: 0 8 * * *
+      userCanChange: true
+    maxPerUser: 20
+    deliver:
+      to: owner
+      onlyIfNew: false
+  triggers:
+  - key: form_start
+    'on':
+      collection: form_submissions
+      op: insert
+    start:
+      agent: runner
+    goal: 'Run the workflow {record.workflow}. Form submission: {record.payload}'
+  - key: hook_start
+    'on':
+      webhook: true
+    start:
+      agent: runner
+    asUser: false
+    goal: 'A webhook event arrived: {event}. Run the workflow named in the event.'
+  - key: failure_alert
+    'on':
+      collection: run_logs
+      op: insert
+      where:
+        status: failed
+    notify:
+      to: owner
+      subject: 'Flowsmith: workflow {record.workflow} failed'
+      body: 'Your workflow {record.workflow} failed.
+
+
+        Error: {record.error}
+
+
+        Open the run history for the inputs and outputs.'
+      link: history
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Flowsmith
+    sections:
+    - type: hero
+      title: Build **automations** by just asking.
+      text: Tell Flowsmith what you want in plain English. It designs the workflow, draws the diagram, asks the right questions
+        and runs it for you, with your approval on anything risky.
+      actions:
+      - label: Start building
+        href: /login
+        style: primary
+      note: 'Free tier: 100 runs a month.'
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Describe it
+        text: 'Chat: every morning summarise support tickets and post them in Slack.'
+        badge: 💬
+      - title: Review the diagram
+        text: Trigger, steps, tools and outputs, with questions answered before anything runs.
+        badge: 🧭
+      - title: Approve and run
+        text: Schedules, webhooks and forms. Sending, spending and deleting need your OK.
+        badge: ✅
+      - title: Watch and share
+        text: Run history with inputs, outputs, errors and cost. Share templates, work in teams.
+        badge: 👥
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: Free
+        text: 100 runs a month
+        badge: £0
+      - title: Pro
+        text: More runs and priority. £25 a month
+        badge: £25
+      - title: Team
+        text: Shared workflows with roles. £20 per user a month
+        badge: £20
+    - type: note
+      content: 'Gmail, Google Sheets and other OAuth connections are coming. Today: Slack, Notion and HubSpot with API keys.'
+  - key: build
+    type: chat
+    title: Build
+    source: agent:builder
+    roles:
+    - user
+    - admin
+    examples:
+    - Every morning summarise new support emails and post it in Slack
+    - When a form is submitted, create a Notion page and tell me
+    - Weekly list of new HubSpot contacts to my Slack
+    placeholder: Describe the automation you want…
+  - key: workflows
+    type: table
+    title: My workflows
+    source: collection:workflows
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Name
+      - key: trigger_type
+        label: Trigger
+        format: badge
+      - key: schedule
+        label: Schedule
+      - key: approval_mode
+        label: Approvals
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+      empty: No workflows yet. Open Build and describe one.
+  - key: diagram
+    type: cards
+    title: Diagrams
+    source: collection:workflows
+    roles:
+    - user
+    - admin
+    nav: false
+    data:
+      display: cards
+      fields:
+      - key: name
+        label: Name
+      - key: diagram
+        label: Diagram
+      - key: steps
+        label: Steps
+  - key: run
+    type: new_run
+    title: Run now
+    roles:
+    - user
+    - admin
+  - key: history
+    type: table
+    title: Run history
+    source: collection:run_logs
+    export: true
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: workflow
+        label: Workflow
+      - key: status
+        label: Status
+        format: badge
+      - key: input
+        label: Input
+      - key: output
+        label: Output
+      - key: error
+        label: Error
+      - key: cost_note
+        label: Cost
+      empty: No runs yet.
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: schedules
+    type: instances
+    template: scheduled_workflow
+    title: Schedules
+    roles:
+    - user
+    - admin
+  - key: submit
+    type: form
+    title: Submit a form
+    collection: form_submissions
+    submit:
+      label: Send
+      message: Submitted. The workflow is starting.
+    roles:
+    - user
+    - admin
+  - key: gallery
+    type: cards
+    title: Template gallery
+    source: collection:gallery
+    roles:
+    - user
+    - admin
+    data:
+      display: cards
+      fields:
+      - key: title
+        label: Template
+      - key: description
+        label: What it does
+      - key: trigger_type
+        label: Trigger
+        format: badge
+      - key: author
+        label: By
+      empty: No templates yet. Ask the builder to share one. To clone one, ask the builder.
+  - key: approvals
+    type: approvals
+    title: Approvals
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title: Connections & plan
+    roles:
+    - user
+    - admin
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: gbp
+    signupCredits: 100
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:builder:
+        estimate: 3
+        metered: true
+      agent:runner:
+        estimate: 5
+        metered: true
+    packs:
+    - key: runs_500
+      credits: 500
+      price: 5
+      label: 500 credits
+    plans:
+    - key: pro
+      price: 25
+      interval: month
+      label: Pro
+      credits: 3000
+      creditsReset: monthly
+      includes:
+      - Up to 3000 runs a month
+      - Priority runs
+    - key: team
+      price: 20
+      interval: month
+      label: Team (per user)
+      credits: 3000
+      creditsReset: monthly
+      includes:
+      - Shared workflows and connections
+      - Owner, editor and runner roles
+  notifications:
+    emailOnRunDone: false
+  extensions:
+  - key: oauth_connections
+    description: Per-user OAuth for Gmail, Google Sheets, Slack, Notion, HubSpot and others is not available yet. Slack, Notion
+      and HubSpot use API keys for now.
+  - key: generic_http_mcp_tools
+    description: User-defined HTTP and MCP tools with their own API keys (arbitrary hosts) are not available yet; only the
+      listed hosts can be called.
+  - key: incoming_email_trigger
+    description: Triggers from incoming emails are not available yet. Webhooks, forms and schedules are.
+  - key: team_roles
+    description: Owner, editor and runner roles are modelled per workflow with the members and runners lists. Shared team
+      connections and per-user billing seats need a custom team layer.
+  - key: visual_diagram
+    description: The diagram is shown as text arrows; an interactive node diagram needs a custom component.

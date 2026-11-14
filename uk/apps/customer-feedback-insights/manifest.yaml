@@ -1,0 +1,864 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: echoloop
+  displayName: Echoloop
+  tagline:
+    en: Turn customer feedback into the issues your team should fix next.
+  description:
+    en: Echoloop collects feedback from surveys, reviews and support tickets, tags every item with topics, sentiment, urgency
+      and product area, groups similar complaints into issues and tracks whether they fall after a fix ships.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#1f2a44'
+      accent: '#e4572e'
+      background: '#f7f8fb'
+      foreground: '#18202f'
+    fonts:
+      body: Inter
+      display: Sora
+    wordmark:
+    - text: Echo
+      color: primary
+    - text: loop
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Sources
+      href: '#sources'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: analyst
+      label: Analyst
+      assignedBy: invite
+    - key: product_owner
+      label: Product owner
+      assignedBy: derived
+      from: collection:areas.owner_email
+    - key: viewer
+      label: Viewer
+      assignedBy: invite
+  agents:
+  - key: importer
+    role: main
+    description: Reads a CSV export or pulls items from a connected source, tags each item and saves it.
+    profile:
+      inline:
+        display_name: Echoloop tagger
+        crews:
+        - id: importer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Echoloop''s feedback tagger. You receive feedback items (CSV rows, support tickets, reviews,
+            survey answers) in English, French, German, Italian or Spanish. For each item, save one record with the tool write_feedback
+            with these fields: external_id (source id or a hash of channel+date+text, so re-imports do not duplicate), channel,
+            date (YYYY-MM-DD), product, segment, rating (number, empty if absent), text (original text, unchanged, in its
+            original language), language (ISO code), topics (2-4 short lowercase English topic labels, comma separated, consistent
+            across items: reuse labels you have already used), sentiment (positive|neutral|negative), sentiment_score (-1
+            to 1), urgency (low|medium|high|critical; critical only for outages, data loss, security, billing errors, legal
+            threats), product_area (pick from the list returned by read_areas; if none fits use ''unassigned''), owner_email
+            (the owner_email of that area, empty if unassigned). Call read_areas first. Never invent ratings, dates or segments
+            missing from the source; leave them empty. Never translate the stored text. Only use the connected-source tools
+            (fetch_zendesk, fetch_freshdesk, fetch_intercom, fetch_trustpilot) when the user chose that source; page through
+            results within the requested limit. Public reviews come only through the official Trustpilot API; never scrape.
+            For uploaded CSV text use the column headers to map fields; ask nothing, make reasonable mappings and report them.
+            Finish with a report that starts with ''# Import <source> — <N> items'', then sections ## Summary (counts by sentiment,
+            urgency and area), ## Mappings used, ## Skipped or unclear rows. Do not invent items.'
+    goalTemplate: 'Source: {source_label}
+
+      Product: {product}
+
+      {?export}Uploaded file(s): {export}
+
+      Contents:
+
+      {export_text}{/export}
+
+      {?limit}Maximum items to pull: {limit}{/limit}
+
+      {?since}Only items since: {since}{/since}
+
+      {?notes}Notes: {notes}{/notes}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    appTools:
+    - name: write_feedback
+      description: Save or update one tagged feedback item
+      action: write
+      collection: feedback
+      scope: all
+    - name: read_areas
+      description: List product areas with their owner and team
+      action: read
+      collection: areas
+      scope: all
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
+    - name: fetch_zendesk
+      description: 'Zendesk API: fetch tickets (path e.g. /api/v2/tickets.json?per_page=100 appended; query for filters)'
+      action: http
+      http:
+        method: GET
+        url: https://{host}/api/v2/tickets.json
+        allowPath: false
+        attribution: Customer's own Zendesk account
+        credential:
+          provider: zendesk
+          header: Authorization
+          format: Basic {secret}
+    - name: fetch_freshdesk
+      description: 'Freshdesk API: fetch tickets'
+      action: http
+      http:
+        method: GET
+        url: https://{host}/api/v2/tickets
+        allowPath: false
+        attribution: Customer's own Freshdesk account
+        credential:
+          provider: freshdesk
+          header: Authorization
+          format: Basic {secret}
+    - name: fetch_intercom
+      description: 'Intercom API: fetch conversations'
+      action: http
+      http:
+        method: GET
+        url: https://api.intercom.io/conversations
+        allowPath: false
+        attribution: Customer's own Intercom account
+        credential:
+          provider: intercom
+    - name: fetch_trustpilot
+      description: 'Trustpilot official API: reviews of the company''s business unit (path /v1/business-units/<id>/reviews)'
+      action: http
+      http:
+        method: GET
+        url: https://api.trustpilot.com
+        allowPath: true
+        attribution: Trustpilot API, used under the customer's Trustpilot licence
+        credential:
+          provider: trustpilot
+          query: apikey
+    output: markdown
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+  - key: analyst
+    role: scheduled
+    description: 'Daily: groups similar complaints into issues, computes counts and trends, flags spikes, checks whether complaints
+      fall after a fix.'
+    profile:
+      inline:
+        display_name: Echoloop issue analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You maintain the list of customer issues. Read feedback (read_feedback) of the last 90 days and
+            the existing issues (read_issues). Group similar negative or urgent items, in any of English, French, German,
+            Italian or Spanish, into issues: one issue = one underlying problem, with a short English title and a stable key
+            (reuse the key of an existing issue when it matches; new keys are lowercase-with-dashes). For each issue save
+            with write_issue: key, title, product_area, owner_email (from the area), count (items in the last 14 days), count_prev
+            (the 14 days before), trend (rising|stable|falling), spike (yes if count is at least 5 and at least double count_prev,
+            otherwise no; keep a spike ''yes'' only while it holds), example (one verbatim quote in its original language),
+            first_seen, last_seen. Never overwrite team, status, fix_link or fix_shipped_on set by people. Also set issue_key
+            on each grouped feedback item with write_feedback. Fix tracking: for issues with a fix_shipped_on date, compare
+            the weekly rate of matching items in the 4 weeks after with the 4 weeks before, and save post_fix_change (percent
+            change) and post_fix_verdict (e.g. ''complaints down 62% — fix worked'', ''no change'', ''too early: fewer than
+            14 days''). Do not claim causality beyond the numbers; use only counted figures. Finish with a report starting
+            ''# Issue update — <date>'' listing new, rising and spiking issues and fix results.'
+    goalTemplate: Today is {date}. Update issues, trends, spikes and post-fix results. Write the report in language {lang}.
+    appTools:
+    - name: read_feedback
+      description: Read feedback items
+      action: read
+      collection: feedback
+      scope: all
+    - name: write_feedback
+      description: Save or update one tagged feedback item
+      action: write
+      collection: feedback
+      scope: all
+    - name: read_issues
+      description: Read issues
+      action: read
+      collection: issues
+      scope: all
+    - name: write_issue
+      description: Create or update an issue
+      action: write
+      collection: issues
+      scope: all
+    - name: read_areas
+      description: List product areas with their owner and team
+      action: read
+      collection: areas
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 2
+  - key: digester
+    role: scheduled
+    description: Writes the Monday digest for managers.
+    writesTo:
+      collection: digests
+      parse: whole
+    profile:
+      inline:
+        display_name: Echoloop digest writer
+        crews:
+        - id: digester
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the weekly customer-feedback digest for product managers. Read issues (read_issues) and
+            last 14 days of feedback (read_feedback). Start with ''# Echoloop weekly digest — week of <date>''. Sections:
+            ## Headlines (3 bullets), ## Top issues (table: issue, area, count, trend, status, team), ## Rising topics, ##
+            Sentiment this week vs last (figures counted from the data), ## Fixes shipped and what happened, ## Verbatim examples
+            (3 quotes, original language, with channel). Under 400 words. Use only figures from the data; if the data is thin,
+            say so. You may add a ```chart block with real figures.'
+    goalTemplate: Today is {date}. Write the weekly digest in English.
+    appTools:
+    - name: read_feedback
+      description: Read feedback items
+      action: read
+      collection: feedback
+      scope: all
+    - name: read_issues
+      description: Read issues
+      action: read
+      collection: issues
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.6
+  inputForm:
+    title: Import feedback
+    fields:
+    - name: source
+      type: select
+      required: true
+      label: Source
+      options:
+      - value: csv
+        label: CSV export upload
+      - value: zendesk
+        label: Zendesk
+      - value: freshdesk
+        label: Freshdesk
+      - value: intercom
+        label: Intercom
+      - value: trustpilot
+        label: Trustpilot (official API)
+    - name: product
+      type: text
+      label: Product
+      help: Used when the source has no product column
+    - name: export
+      type: file
+      accept:
+      - csv
+      - xlsx
+      - txt
+      maxMb: 15
+      multiple: false
+      label: CSV export
+      visibleWhen: source == 'csv'
+      help: Columns such as channel, date, product, segment, rating, text
+    - name: since
+      type: date
+      label: Only items since
+      visibleWhen: source != 'csv'
+    - name: limit
+      type: number
+      label: Maximum items
+      default: 200
+      visibleWhen: source != 'csv'
+    - name: notes
+      type: textarea
+      maxLength: 400
+      label: Notes (optional)
+  data:
+    collections:
+    - name: areas
+      ownedBy: org
+      description: Product areas with their owner and team; filled by admins on the data page
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Product area
+      - name: owner_email
+        type: email
+        label: Owner email
+      - name: team
+        type: text
+        label: Team
+      access:
+      - role: analyst
+      - role: viewer
+      - role: product_owner
+        where:
+          owner_email: '{user.email}'
+    - name: feedback
+      ownedBy: org
+      description: Tagged feedback items
+      searchable: true
+      retentionDays: 730
+      fields:
+      - name: external_id
+        type: text
+      - name: channel
+        type: select
+        options:
+        - csv
+        - survey
+        - review
+        - zendesk
+        - freshdesk
+        - intercom
+        - salesforce
+        - trustpilot
+        - google
+        - other
+      - name: date
+        type: date
+      - name: product
+        type: text
+      - name: segment
+        type: text
+      - name: rating
+        type: number
+      - name: text
+        type: textarea
+      - name: language
+        type: text
+      - name: topics
+        type: text
+      - name: sentiment
+        type: select
+        options:
+        - positive
+        - neutral
+        - negative
+      - name: sentiment_score
+        type: number
+      - name: urgency
+        type: select
+        options:
+        - low
+        - medium
+        - high
+        - critical
+      - name: product_area
+        type: text
+      - name: owner_email
+        type: email
+      - name: issue_key
+        type: text
+      access:
+      - role: analyst
+        can:
+        - read
+        - write
+      - role: viewer
+      - role: product_owner
+        where:
+          owner_email: '{user.email}'
+    - name: issues
+      ownedBy: org
+      description: Groups of similar complaints
+      fields:
+      - name: key
+        type: text
+      - name: title
+        type: text
+      - name: product_area
+        type: text
+      - name: owner_email
+        type: email
+      - name: count
+        type: number
+      - name: count_prev
+        type: number
+      - name: trend
+        type: select
+        options:
+        - rising
+        - stable
+        - falling
+      - name: spike
+        type: select
+        options:
+        - 'yes'
+        - 'no'
+      - name: team
+        type: text
+        label: Assigned team
+      - name: status
+        type: select
+        label: Status
+        options:
+        - open
+        - investigating
+        - fix_planned
+        - fix_shipped
+        - resolved
+      - name: fix_link
+        type: url
+        label: Link to fix (ticket or release)
+      - name: fix_shipped_on
+        type: date
+        label: Fix shipped on
+      - name: post_fix_change
+        type: number
+      - name: post_fix_verdict
+        type: text
+      - name: example
+        type: textarea
+      - name: first_seen
+        type: date
+      - name: last_seen
+        type: date
+      access:
+      - role: analyst
+        can:
+        - read
+        - write
+      - role: viewer
+      - role: product_owner
+        where:
+          owner_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: digests
+      ownedBy: org
+      description: Weekly digests
+      access:
+      - role: analyst
+      - role: viewer
+      - role: product_owner
+    credentials:
+    - provider: zendesk
+      kind: api_key
+      scope: user
+      label: Zendesk
+      help: Paste base64 of 'email/token:API_TOKEN' (Admin Center > Apps and integrations > APIs)
+      hostLabel: yourcompany.zendesk.com
+    - provider: freshdesk
+      kind: api_key
+      scope: user
+      label: Freshdesk
+      help: Paste base64 of 'API_KEY:X' (Profile settings > API key)
+      hostLabel: yourcompany.freshdesk.com
+    - provider: intercom
+      kind: api_key
+      scope: user
+      label: Intercom
+      help: Access token from Developer Hub > your app > Authentication
+    - provider: trustpilot
+      kind: api_key
+      scope: user
+      label: Trustpilot
+      help: API key from your Trustpilot business developer account (licensed API access)
+  egress:
+    hosts:
+    - '*.zendesk.com'
+    - '*.freshdesk.com'
+    - api.intercom.io
+    - api.trustpilot.com
+    notes: Customers' own helpdesk accounts via their API keys; Trustpilot via its official API under the customer's licence.
+      No scraping.
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Echoloop
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: Customer feedback intelligence
+      title: Hear what customers say, and fix the **right thing** first.
+      text: Echoloop tags every survey answer, review and support ticket, groups similar complaints into issues, and tells
+        you whether they fall after a fix ships. English, French, German, Italian and Spanish.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Bring feedback in
+        text: Connect Zendesk, Freshdesk, Intercom or Trustpilot with an API key, or upload a CSV export.
+      - title: Agents tag and group
+        text: Topics, sentiment, urgency and product area on every item; similar complaints become issues with a count and
+          trend.
+      - title: Act and verify
+        text: Assign a team, set a status, link the fix. Echoloop checks whether complaints drop after it ships.
+    - type: cards
+      id: sources
+      title: Sources
+      items:
+      - title: Helpdesks
+        text: Zendesk, Freshdesk and Intercom through your API key.
+        badge: 🎧
+      - title: Public reviews
+        text: Trustpilot through its official API under your licence. Never scraped.
+        badge: ⭐
+      - title: CSV exports
+        text: 'Surveys and anything else: upload the export.'
+        badge: 📄
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: £500 / month
+        text: Includes 20,000 feedback items each month. Beyond that, usage-based.
+    - type: note
+      content: Echoloop supports decisions; figures come from your own feedback data.
+  - key: import
+    type: new_run
+    title: Import feedback
+    roles:
+    - admin
+    - analyst
+  - key: imports
+    type: history
+    title: Imports
+    source: run
+    roles:
+    - admin
+    - analyst
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - admin
+    - analyst
+    - product_owner
+    - viewer
+    sections:
+    - type: data
+      title: Overview
+      source: collection:issues
+      display: kpi
+      kpis:
+      - label: Open issues
+        agg: count
+      - label: Complaints (14 days)
+        agg: sum
+        field: count
+        format: number
+    - type: data
+      title: Top issues
+      source: collection:issues
+      display: table
+      fields:
+      - key: title
+        label: Issue
+      - key: product_area
+        label: Area
+      - key: count
+        label: Count
+        format: number
+      - key: trend
+        label: Trend
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+      - key: team
+        label: Team
+      - key: post_fix_verdict
+        label: After fix
+      sort:
+        field: count
+        dir: desc
+      limit: 15
+      empty: No issues yet. Import feedback first.
+    - type: data
+      title: Rising topics
+      source: collection:issues
+      display: bar
+      fields:
+      - key: title
+      - key: count
+      filters:
+      - field: trend
+        op: '='
+        value: rising
+      sort:
+        field: count
+        dir: desc
+      limit: 10
+    - type: data
+      title: Sentiment over time
+      source: collection:feedback
+      display: chart
+      chart: line
+      fields:
+      - key: date
+        label: Week
+      - key: avg_sentiment
+        label: Average sentiment
+      groupBy:
+        field: date
+        bucket: week
+        aggs:
+        - key: avg_sentiment
+          agg: avg
+          field: sentiment_score
+    - type: data
+      title: Verbatim examples
+      source: collection:feedback
+      display: cards
+      fields:
+      - key: text
+        label: Customer said
+      - key: channel
+        format: badge
+      - key: segment
+      - key: product_area
+      - key: urgency
+        format: badge
+      filters:
+      - field: sentiment
+        op: '='
+        value: negative
+      sort:
+        field: date
+        dir: desc
+      limit: 12
+  - key: explorer
+    type: table
+    title: Feedback explorer
+    source: collection:feedback
+    columns:
+    - date
+    - channel
+    - product
+    - segment
+    - rating
+    - sentiment
+    - urgency
+    - product_area
+    - topics
+    - text
+    export: true
+    roles:
+    - admin
+    - analyst
+    - product_owner
+    - viewer
+  - key: issues
+    type: table
+    title: Issues
+    source: collection:issues
+    columns:
+    - title
+    - product_area
+    - count
+    - trend
+    - spike
+    - status
+    - team
+    - fix_link
+    - fix_shipped_on
+    - post_fix_change
+    - post_fix_verdict
+    export: true
+    roles:
+    - admin
+    - analyst
+    - product_owner
+    - viewer
+  - key: issue_edit
+    type: form
+    title: Update issue
+    collection: issues
+    fields:
+    - team
+    - status
+    - fix_link
+    - fix_shipped_on
+    edit: true
+    submit:
+      label: Save
+      message: Issue updated.
+      redirect: issues
+    nav: false
+    roles:
+    - admin
+    - analyst
+    - product_owner
+  - key: digests
+    type: table
+    title: Weekly digests
+    source: collection:digests
+    roles:
+    - admin
+    - analyst
+    - product_owner
+    - viewer
+  - key: connections
+    type: account
+    title: Connections and plan
+    roles:
+    - admin
+    - analyst
+  schedules:
+  - agent: analyst
+    action: run
+    cron: 0 5 * * *
+    owner: app
+    goal: Update issues, trends, spikes and post-fix results.
+  - agent: digester
+    action: run
+    cron: 0 7 * * 1
+    owner: app
+    goal: Write the weekly digest.
+    deliver:
+      to:
+      - admins
+      - role:product_owner
+      - role:analyst
+      subject: Echoloop weekly digest — {date}
+      onlyIfNew: true
+  triggers:
+  - key: spike_alert
+    description: Email the area owner when an issue spikes
+    'on':
+      collection: issues
+      op: any
+      where:
+        spike: 'yes'
+    notify:
+      to:
+      - record.owner_email
+      - role:analyst
+      subject: 'Spike in complaints: {record.title}'
+      body: 'Complaints about "{record.title}" ({record.product_area}) are rising fast: {record.count} in the last 14 days
+        against {record.count_prev} before. Example: {record.example}'
+      link: issues
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: gbp
+    signupCredits: 0
+    metering:
+      creditEur: 0.025
+      markupPct: 0
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:importer:
+        estimate: 100
+        metered: true
+    plans:
+    - key: business
+      price: 500
+      interval: month
+      label: Echoloop Business
+      credits: 20000
+      creditsReset: monthly
+      includes:
+      - 20,000 feedback items per month
+      - All sources
+      - Daily issue analysis
+      - Weekly digest
+    packs:
+    - key: overage
+      credits: 5000
+      price: 125
+      label: 5,000 extra items
+  extensions:
+  - key: oauth_connectors
+    description: 'OAuth sign-in to Zendesk, Intercom, Freshdesk and Salesforce is not available yet: sources connect with
+      API keys, and Salesforce and Google reviews (OAuth-only) come in through CSV export until OAuth exists.'
+  - key: interactive_filters
+    description: 'Interactive segment and channel filters on the dashboard blocks: for now use the feedback explorer table;
+      fixed filters are set per block.'
+  - key: area_restriction
+    description: Product owners see only their own areas; analysts and viewers see all. Restricting a viewer to chosen areas
+      needs a per-user area assignment, not available yet.
+  - key: usage_pricing_note
+    description: Plan credits count one per item (20,000 a month); overage pack price (£0.025 per item) is an assumption to
+      confirm.

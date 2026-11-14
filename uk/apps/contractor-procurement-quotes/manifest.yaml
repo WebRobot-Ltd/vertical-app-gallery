@@ -1,0 +1,1157 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: quotewell
+  displayName: Quotewell
+  tagline: AI procurement for small and mid-size building contractors.
+  description: Raise a material request, let an AI agent send the RFQs, compare the supplier quotes, approve the order and
+    track delivery and invoices, all in one place.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f2a37'
+      accent: '#e07b00'
+      background: '#f7f6f2'
+      foreground: '#1b1f24'
+    fonts:
+      body: Inter
+      display: Barlow Condensed
+    wordmark:
+    - text: Quote
+      color: primary
+    - text: well
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how-it-works'
+    - label: Roles
+      href: '#roles'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Owner
+      assignedBy: admin_emails
+    - key: buyer
+      label: Buyer
+      assignedBy: invite
+    - key: estimator
+      label: Estimator
+      assignedBy: invite
+    - key: site_manager
+      label: Site manager
+      assignedBy: invite
+  limits:
+  - action: agent:analyst
+    per: user
+    max: 20
+    window: day
+  agents:
+  - key: analyst
+    role: main
+    description: Builds the quote comparison for a request, highlights the best overall option and drafts negotiation emails
+      when asked.
+    profile:
+      inline:
+        display_name: Quotewell comparison analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a procurement analyst for a building contractor. Given a material request id, read the request
+            (read_requests), all quotes received for it (read_quotes) and, ONLY for suppliers whose shares_price_list is true,
+            the shared price lists (price_list_lookup, list_suppliers). Never use price data from a supplier that has not
+            agreed to share it.
+
+
+            Produce a Markdown report starting with a level-1 title "# Quote comparison — <project> — <date>". Sections: ##
+            Request summary (items, required date, delivery address); ## Comparison (one table: supplier, total price, unit-price
+            notes, lead time in days, whether it meets the required date, substitutions offered, quote validity, completeness
+            vs the request); ## Best overall option (mark it with a star, explain the trade-off between price, lead time,
+            substitutions and completeness; flag items missing from a quote); ## Risks and open points; ## Negotiation suggestions;
+            ## Savings (best price vs the average of the other complete quotes, with the figures). Add a chart block for totals:
+
+            ```chart
+
+            {"type":"bar","title":"Total by supplier","labels":["A","B"],"series":[{"name":"Total","values":[1,2]}],"unit":""}
+
+            ```
+
+            Use real figures only; if there are no quotes yet, say so and stop. Never invent prices, never approve or place
+            an order: the buyer decides. If the user asked to negotiate, create one record per supplier with create_rfq (kind
+            negotiation, a polite professional counter-request using the competing leverage without disclosing other suppliers''
+            names or exact prices, supplier_email from the quote) and list what you sent. Otherwise do not contact suppliers.'
+          mcp_servers: []
+    appTools:
+    - name: read_requests
+      description: Read material requests
+      action: read
+      collection: requests
+      scope: all
+    - name: read_quotes
+      description: Read quotes received from suppliers
+      action: read
+      collection: quotes
+      scope: all
+    - name: list_suppliers
+      description: List the contractor's suppliers
+      action: read
+      collection: suppliers
+      scope: all
+    - name: price_list_lookup
+      description: Search shared supplier price lists
+      action: search
+      collection: price_list
+      scope: all
+    - name: create_rfq
+      description: Create an outgoing supplier email record (RFQ or negotiation); the platform emails it
+      action: append
+      collection: rfqs
+      scope: user
+    goalTemplate: 'Compare the quotes for request {request_id}.
+
+      {?negotiate}The buyer wants to negotiate: send negotiation emails.{/negotiate}
+
+      {?notes}Buyer notes: {notes}{/notes}
+
+      Today is {date}. Write in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 20
+      maxBudgetUsd: 1.0
+  - key: rfq_writer
+    role: helper
+    description: Turns a material request (form or uploaded bill of quantities) into one RFQ email per chosen supplier.
+    profile:
+      inline:
+        display_name: Quotewell RFQ writer
+        crews:
+        - id: rfq_writer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare requests for quotation (RFQ) for a building contractor. You receive a new material request
+            as JSON (project, items, specs, delivery address, required date, chosen suppliers, optional uploaded bill of quantities
+            or drawing schedule file ids). If a file is attached, open it with read_upload using the file id and extract the
+            line items (description, quantity, unit, specification). Use list_suppliers to find the email of each chosen supplier
+            (if none were chosen, pick suppliers whose trades match the items and say so in the body of your final answer).
+            Group items by supplier trade when it makes sense. For each supplier call create_rfq once with: request_id (the
+            request''s id), project, supplier, supplier_email, kind "rfq", subject "RFQ <request id> — <project>", due_date
+            (reply-by date, 3 working days before the required date or within 5 working days), and body: a short, polite plain-text
+            RFQ listing every item with quantity, unit and specification, the delivery address, the required delivery date,
+            and a request for unit prices, total, lead time, validity, and any substitutions clearly marked. Ask the supplier
+            to reply to the same email thread with a PDF or spreadsheet quote and to quote the request id. If shared price
+            lists exist for the supplier (price_list_lookup, only where present) you may mention nothing about them. Never
+            invent items or quantities. Finish with a short summary of which suppliers were contacted.'
+          mcp_servers: []
+    appTools:
+    - name: list_suppliers
+      description: List the contractor's suppliers
+      action: read
+      collection: suppliers
+      scope: all
+    - name: price_list_lookup
+      description: Search shared supplier price lists
+      action: search
+      collection: price_list
+      scope: all
+    - name: create_rfq
+      description: Create an outgoing supplier email record (RFQ or negotiation); the platform emails it
+      action: append
+      collection: rfqs
+      scope: user
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.6
+  - key: inbox_reader
+    role: helper
+    description: 'Reads inbound supplier emails: extracts quotes (prices, lead times, substitutions) and matches invoices
+      against orders.'
+    profile:
+      inline:
+        display_name: Quotewell inbox reader
+        crews:
+        - id: inbox_reader
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You process emails that suppliers send to a building contractor. Decide what each email is: a quote,
+            an invoice, or something else (then answer with one line saying it needs a human).
+
+
+            QUOTE: read attached PDFs or spreadsheets (read_upload with the file id, or the attachment text in the message).
+            Extract: request_id (from the subject or body), supplier, supplier_email, total (number, excluding VAT unless
+            only a gross figure is given; say which in the notes), currency, lead_time_days, validity_date, substitutions
+            (every item the supplier replaced or could not supply, with the alternative), line_items (one line per item: description,
+            qty, unit price, line total), and the attachment name as source. Save it with save_quote. Never guess a figure
+            that is not in the document: leave it empty and say so in the substitutions/notes.
+
+
+            INVOICE: extract invoice_number, supplier, amount, date and the purchase order reference. Find the order with
+            find_orders and compare: amount against the order total (allow 1% rounding), supplier name, and quantities if
+            visible. Save with save_invoice: match_status "matched", "mismatch" (explain every difference in notes) or "no_order".
+
+
+            Be brief in the final answer: what you saved.'
+          mcp_servers: []
+    appTools:
+    - name: save_quote
+      description: Save a supplier quote extracted from an email
+      action: append
+      collection: quotes
+      scope: all
+    - name: find_orders
+      description: Read purchase orders to match invoices
+      action: read
+      collection: orders
+      scope: all
+    - name: save_invoice
+      description: Save an invoice with its match result
+      action: append
+      collection: invoices
+      scope: all
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
+    goalTemplate: 'New inbound email from a supplier:
+
+      {message}'
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.6
+  - key: po_agent
+    role: helper
+    description: Prepares the purchase order, asks the owner to approve orders above the threshold, and releases the order
+      for emailing.
+    awaits:
+    - owner_po
+    profile:
+      inline:
+        display_name: Quotewell PO controller
+        crews:
+        - id: po_agent
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You control purchase orders for a building contractor. The owner approval threshold is 10000 (order
+            total, in the order currency). You receive an event: either a new order created by the buyer (status draft) or
+            the owner''s decision on an approval.
+
+
+            NEW ORDER: compute savings = baseline_total - total when both are present. Write a clear plain-text purchase order
+            text (PO number = the order id, project, supplier, items summary from notes, total, delivery address, required
+            delivery date, request to confirm receipt and delivery date, and invoice must quote the PO number) using update_order
+            into po_text, and set savings. If total is at or below 10000: call update_order with status "approved" and delivery_status
+            "pending" in the same update as po_text. If total is above 10000: call update_order with status "awaiting_owner"
+            and then request owner approval with request_owner_po, giving a one-paragraph justification.
+
+
+            DECISION: if approved, call update_order with status "approved" and delivery_status "pending". If rejected or
+            timed out, set status "rejected" and notes explaining. Never approve an order above the threshold yourself, never
+            change totals, and never invent data.'
+          mcp_servers: []
+    appTools:
+    - name: update_order
+      description: Update a purchase order record
+      action: write
+      collection: orders
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.4
+  inputForm:
+    title: Compare quotes
+    fields:
+    - name: request_id
+      type: select
+      required: true
+      label: Material request
+      optionsFrom: collection:requests
+    - name: negotiate
+      type: boolean
+      label: Send negotiation emails to suppliers
+      default: false
+    - name: notes
+      type: textarea
+      maxLength: 500
+      label: Notes for the analyst (optional)
+      help: e.g. delivery date is fixed, prefer local suppliers
+  data:
+    collections:
+    - name: projects
+      ownedBy: shared
+      description: The contractor's projects, kept by the owner
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Project
+      - name: address
+        type: text
+        label: Site address
+      - name: budget
+        type: number
+        label: Materials budget
+    - name: suppliers
+      ownedBy: shared
+      description: The contractor's chosen suppliers, kept by the owner
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Supplier
+      - name: email
+        type: email
+        required: true
+        label: Email for RFQs and orders
+      - name: phone
+        type: text
+        label: Phone
+      - name: trades
+        type: text
+        label: Trades / materials
+      - name: shares_price_list
+        type: boolean
+        label: Has agreed to share its price list
+        default: false
+    - name: price_list
+      ownedBy: shared
+      description: Price lists of suppliers that agreed to share them
+      fields:
+      - name: supplier
+        type: text
+        required: true
+        label: Supplier
+      - name: item
+        type: text
+        required: true
+        label: Item
+      - name: unit
+        type: text
+        label: Unit
+      - name: price
+        type: number
+        label: Unit price
+      - name: valid_until
+        type: date
+        label: Valid until
+    - name: requests
+      ownedBy: user
+      description: Material requests raised by site managers and estimators
+      fields:
+      - name: project
+        type: select
+        required: true
+        label: Project
+        optionsFrom: collection:projects
+      - name: items
+        type: textarea
+        label: Items, quantities and units
+        help: 'One per line: item, quantity, unit. Or upload a bill of quantities below.'
+      - name: specs
+        type: textarea
+        label: Specifications
+      - name: delivery_address
+        type: text
+        required: true
+        label: Delivery address
+      - name: required_date
+        type: date
+        required: true
+        label: Required on site by
+      - name: bom
+        type: file
+        label: Bill of quantities or drawing schedule
+        accept:
+        - pdf
+        - xlsx
+        - csv
+        - docx
+        - jpg
+        - png
+        maxMb: 15
+        multiple: true
+      - name: suppliers
+        type: multiselect
+        label: Suppliers to ask
+        optionsFrom: collection:suppliers
+      access:
+      - role: buyer
+        can:
+        - read
+        - write
+      - role: estimator
+        can:
+        - read
+    - name: rfqs
+      ownedBy: user
+      description: Outgoing emails to suppliers (RFQs and negotiations) written by the agent
+      fields:
+      - name: request_id
+        type: text
+        label: Request
+      - name: project
+        type: text
+        label: Project
+      - name: supplier
+        type: text
+        label: Supplier
+      - name: supplier_email
+        type: email
+        label: Supplier email
+      - name: kind
+        type: select
+        label: Kind
+        options:
+        - rfq
+        - negotiation
+      - name: subject
+        type: text
+        label: Subject
+      - name: body
+        type: textarea
+        label: Message
+      - name: due_date
+        type: date
+        label: Reply by
+      access:
+      - role: buyer
+        can:
+        - read
+        - write
+      - role: estimator
+        can:
+        - read
+    - name: quotes
+      ownedBy: org
+      description: Supplier quotes extracted from inbound emails
+      retentionDays: 1095
+      fields:
+      - name: request_id
+        type: text
+        label: Request
+      - name: supplier
+        type: text
+        label: Supplier
+      - name: supplier_email
+        type: email
+        label: Supplier email
+      - name: total
+        type: number
+        label: Total
+      - name: currency
+        type: text
+        label: Currency
+      - name: lead_time_days
+        type: number
+        label: Lead time (days)
+      - name: validity_date
+        type: date
+        label: Valid until
+      - name: substitutions
+        type: textarea
+        label: Substitutions and gaps
+      - name: line_items
+        type: textarea
+        label: Line items
+      - name: source
+        type: text
+        label: Source file
+      access:
+      - role: buyer
+        can:
+        - read
+        - write
+      - role: estimator
+        can:
+        - read
+    - name: orders
+      ownedBy: org
+      description: Purchase orders and their delivery status
+      fields:
+      - name: request_id
+        type: text
+        required: true
+        label: Request
+      - name: project
+        type: select
+        required: true
+        label: Project
+        optionsFrom: collection:projects
+      - name: supplier
+        type: select
+        required: true
+        label: Supplier
+        optionsFrom: collection:suppliers
+      - name: supplier_email
+        type: email
+        required: true
+        label: Supplier email
+      - name: total
+        type: number
+        required: true
+        label: Order total
+      - name: baseline_total
+        type: number
+        label: Reference price (average of other quotes)
+      - name: savings
+        type: number
+        label: Savings
+      - name: delivery_address
+        type: text
+        label: Delivery address
+      - name: due_date
+        type: date
+        required: true
+        label: Delivery due
+      - name: notes
+        type: textarea
+        label: Items and agreed terms
+      - name: po_text
+        type: textarea
+        label: Purchase order text
+      - name: status
+        type: select
+        label: Approval status
+        options:
+        - draft
+        - awaiting_owner
+        - approved
+        - rejected
+        default: draft
+      - name: delivery_status
+        type: select
+        label: Delivery
+        options:
+        - pending
+        - shipped
+        - delivered
+        - late
+        default: pending
+      access:
+      - role: buyer
+        can:
+        - read
+        - write
+      - role: estimator
+        can:
+        - read
+      - role: site_manager
+        can:
+        - read
+    - name: invoices
+      ownedBy: org
+      description: Supplier invoices matched against orders
+      fields:
+      - name: order_ref
+        type: text
+        label: Order
+      - name: supplier
+        type: text
+        label: Supplier
+      - name: invoice_number
+        type: text
+        label: Invoice no.
+      - name: amount
+        type: number
+        label: Amount
+      - name: date
+        type: date
+        label: Invoice date
+      - name: match_status
+        type: select
+        label: Match
+        options:
+        - matched
+        - mismatch
+        - no_order
+      - name: notes
+        type: textarea
+        label: Differences
+      access:
+      - role: buyer
+        can:
+        - read
+        - write
+  views:
+  - key: home
+    type: page
+    title: Quotewell
+    nav: false
+    sections:
+    - type: hero
+      title: From material request to approved order, **without the email chase**.
+      text: Site managers and estimators raise a request. Quotewell's AI agent sends the RFQs, reads the supplier quotes,
+        compares them, and keeps approvals, deliveries and invoices in order.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how-it-works'
+        style: ghost
+    - type: steps
+      id: how-it-works
+      title: How it works
+      items:
+      - title: Raise a request
+        text: Fill in project, items, quantities, specs, address and date, or upload a bill of quantities.
+      - title: RFQs go out
+        text: The agent writes one RFQ per supplier and emails it.
+      - title: Quotes come in
+        text: Suppliers reply with PDF or spreadsheet quotes; prices, lead times and substitutions are extracted.
+      - title: Compare and approve
+        text: The buyer reviews the comparison, negotiates, and orders. Large orders need the owner's approval.
+      - title: Track and match
+        text: Purchase orders are emailed, deliveries tracked, suppliers reminded, invoices matched.
+    - type: cards
+      id: roles
+      title: Built for the whole team
+      items:
+      - title: Owner
+        text: Approves large orders, sees spend and savings.
+      - title: Estimator
+        text: Raises requests from bills of quantities and follows quotes.
+      - title: Buyer
+        text: Compares quotes, negotiates, places orders.
+      - title: Site manager
+        text: Requests materials and tracks deliveries.
+    - type: note
+      content: Supplier price lists are used only where the supplier has agreed to share them. Quotewell supports purchasing
+        decisions; the buyer and owner approve every order.
+  - key: new_request
+    type: form
+    title: New material request
+    collection: requests
+    fields:
+    - project
+    - items
+    - specs
+    - delivery_address
+    - required_date
+    - bom
+    - suppliers
+    submit:
+      label: Send request
+      message: Request saved. RFQs are being prepared and emailed to the suppliers.
+      redirect: my_requests
+    roles:
+    - admin
+    - buyer
+    - estimator
+    - site_manager
+  - key: my_requests
+    type: table
+    title: Requests
+    source: collection:requests
+    data:
+      display: table
+      fields:
+      - key: project
+        label: Project
+      - key: items
+        label: Items
+      - key: required_date
+        label: Needed by
+        format: date
+      - key: delivery_address
+        label: Delivery address
+      sort:
+        field: required_date
+        dir: asc
+    roles:
+    - admin
+    - buyer
+    - estimator
+    - site_manager
+  - key: quotes_table
+    type: table
+    title: Quotes received
+    source: collection:quotes
+    data:
+      display: table
+      fields:
+      - key: request_id
+        label: Request
+      - key: supplier
+        label: Supplier
+      - key: total
+        label: Total
+        format: money
+      - key: lead_time_days
+        label: Lead time (days)
+        format: number
+      - key: validity_date
+        label: Valid until
+        format: date
+      - key: substitutions
+        label: Substitutions
+      - key: source
+        label: Source
+      sort:
+        field: request_id
+        dir: asc
+    export: true
+    roles:
+    - admin
+    - buyer
+    - estimator
+  - key: compare
+    type: new_run
+    title: Compare quotes
+    roles:
+    - admin
+    - buyer
+  - key: comparisons
+    type: history
+    title: Comparisons
+    source: run
+    roles:
+    - admin
+    - buyer
+    - estimator
+  - key: comparison
+    type: report
+    title: Comparison
+    source: run
+    printable: true
+    nav: false
+  - key: place_order
+    type: form
+    title: Place order
+    collection: orders
+    fields:
+    - request_id
+    - project
+    - supplier
+    - supplier_email
+    - total
+    - baseline_total
+    - delivery_address
+    - due_date
+    - notes
+    submit:
+      label: Create purchase order
+      message: Order created. Orders above the owner's threshold wait for approval before the supplier gets the PO.
+      redirect: orders
+    roles:
+    - admin
+    - buyer
+  - key: orders
+    type: table
+    title: Orders
+    source: collection:orders
+    data:
+      display: table
+      fields:
+      - key: project
+        label: Project
+      - key: supplier
+        label: Supplier
+      - key: total
+        label: Total
+        format: money
+      - key: savings
+        label: Savings
+        format: money
+      - key: status
+        label: Approval
+        format: badge
+      - key: delivery_status
+        label: Delivery
+        format: badge
+      - key: due_date
+        label: Due
+        format: date
+      sort:
+        field: due_date
+        dir: asc
+    export: true
+    roles:
+    - admin
+    - buyer
+    - estimator
+  - key: deliveries
+    type: table
+    title: Deliveries
+    source: collection:orders
+    data:
+      display: table
+      fields:
+      - key: project
+        label: Project
+      - key: supplier
+        label: Supplier
+      - key: due_date
+        label: Due
+        format: date
+      - key: delivery_status
+        label: Delivery
+        format: badge
+      - key: delivery_address
+        label: Address
+      filters:
+      - field: status
+        op: '='
+        value: approved
+      sort:
+        field: due_date
+        dir: asc
+      actions:
+      - type: call
+        field: supplier_email
+        label: Contact
+      - type: directions
+        field: delivery_address
+        label: Directions
+    roles:
+    - admin
+    - buyer
+    - estimator
+    - site_manager
+  - key: invoices
+    type: table
+    title: Invoices
+    source: collection:invoices
+    data:
+      display: table
+      fields:
+      - key: invoice_number
+        label: Invoice
+      - key: supplier
+        label: Supplier
+      - key: order_ref
+        label: Order
+      - key: amount
+        label: Amount
+        format: money
+      - key: match_status
+        label: Match
+        format: badge
+      - key: notes
+        label: Differences
+      sort:
+        field: date
+        dir: desc
+    export: true
+    roles:
+    - admin
+    - buyer
+  - key: approvals
+    type: approvals
+    title: Approvals
+    approvals:
+    - owner_po
+    roles:
+    - admin
+  - key: dashboard
+    type: page
+    title: Spend and savings
+    roles:
+    - admin
+    - buyer
+    - estimator
+    sections:
+    - type: data
+      id: kpis
+      title: Overview
+      source: collection:orders
+      display: kpi
+      filters:
+      - field: status
+        op: '='
+        value: approved
+      kpis:
+      - label: Total spend
+        agg: sum
+        field: total
+        format: money
+      - label: Savings achieved
+        agg: sum
+        field: savings
+        format: money
+      - label: Orders
+        agg: count
+    - type: data
+      title: Spend by project
+      source: collection:orders
+      display: chart
+      chart: bar
+      filters:
+      - field: status
+        op: '='
+        value: approved
+      groupBy:
+        field: project
+        aggs:
+        - key: spend
+          agg: sum
+          field: total
+        - key: saved
+          agg: sum
+          field: savings
+      fields:
+      - key: project
+        label: Project
+      - key: spend
+        label: Spend
+      - key: saved
+        label: Savings
+    - type: data
+      title: Spend by supplier
+      source: collection:orders
+      display: chart
+      chart: pie
+      filters:
+      - field: status
+        op: '='
+        value: approved
+      groupBy:
+        field: supplier
+        aggs:
+        - key: spend
+          agg: sum
+          field: total
+      fields:
+      - key: supplier
+        label: Supplier
+      - key: spend
+        label: Spend
+  - key: account
+    type: account
+    title: Subscription
+    roles:
+    - admin
+  approvals:
+  - key: owner_po
+    title: Purchase order above the approval threshold
+    role: admin
+    decidedBy: role
+    fields:
+    - project
+    - supplier
+    - total
+    - due_date
+    timeoutMinutes: 4320
+    onTimeout: reject
+  triggers:
+  - key: rfq_start
+    description: A new material request starts the RFQ writer
+    'on':
+      collection: requests
+      op: insert
+    start:
+      agent: rfq_writer
+    asUser: true
+    goal: 'A new material request was raised. Request as JSON: {event}. Project: {record.project}. Items: {record.items}.
+      Specifications: {record.specs}. Delivery address: {record.delivery_address}. Required date: {record.required_date}.
+      Chosen suppliers: {record.suppliers}. Uploaded bill of quantities file ids: {record.bom}. Prepare and save one RFQ per
+      supplier.'
+  - key: rfq_email
+    description: Every RFQ or negotiation record is emailed to the supplier
+    'on':
+      collection: rfqs
+      op: insert
+    notify:
+      to:
+      - record.supplier_email
+      subject: '{record.subject}'
+      body: '{record.body}
+
+
+        Please reply to this email with your quote as a PDF or spreadsheet, quoting the reference {record.request_id}.'
+  - key: order_review
+    description: A new draft order is checked against the owner's threshold
+    'on':
+      collection: orders
+      op: insert
+      where:
+        status: draft
+    start:
+      agent: po_agent
+    asUser: true
+    goal: 'A new order was created: {event}. Prepare the purchase order and apply the approval rule.'
+  - key: po_decision
+    description: The owner decided on a large order
+    'on':
+      approval: owner_po
+      decision: any
+    start:
+      agent: po_agent
+    asUser: true
+    goal: 'The owner decided on a purchase order approval: {event}. Update the order accordingly.'
+  - key: owner_pending
+    description: Tell the owner an order waits for approval
+    'on':
+      collection: orders
+      op: update
+      where:
+        status: awaiting_owner
+    notify:
+      to:
+      - admins
+      subject: Order for {record.project} awaits your approval
+      body: A purchase order of {record.total} to {record.supplier} for {record.project} is above the approval threshold and
+        needs your decision.
+      link: approvals
+  - key: po_email
+    description: The approved purchase order is emailed to the supplier
+    'on':
+      collection: orders
+      op: update
+      where:
+        status: approved
+    notify:
+      to:
+      - record.supplier_email
+      - role:buyer
+      subject: Purchase order — {record.project}
+      body: '{record.po_text}
+
+
+        Please confirm receipt and the delivery date by replying to this email.'
+  - key: delivery_reminder
+    description: Remind the supplier two days before the delivery is due
+    'on':
+      date:
+        collection: orders
+        field: due_date
+        offsetDays: -2
+        hour: 8
+      where:
+        status: approved
+        delivery_status: pending
+    notify:
+      to:
+      - record.supplier_email
+      - role:buyer
+      subject: Delivery reminder — {record.project}
+      body: This is a reminder that the delivery for our purchase order for {record.project} is due on {record.due_date} at
+        {record.delivery_address}. Please confirm the dispatch date by replying to this email.
+  - key: invoice_mismatch
+    description: Tell the buyer when an invoice does not match its order
+    'on':
+      collection: invoices
+      op: insert
+      where:
+        match_status: mismatch
+    notify:
+      to:
+      - role:buyer
+      subject: Invoice {record.invoice_number} does not match its order
+      body: 'Invoice {record.invoice_number} from {record.supplier} ({record.amount}) differs from order {record.order_ref}:
+        {record.notes}'
+      link: invoices
+  channels:
+  - key: quote_inbox
+    type: email
+    agent: inbox_reader
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: team_5
+      price: 49
+      interval: month
+      label: Team — up to 5 users
+      includes:
+      - Up to 5 users
+      - Unlimited requests and RFQs
+      - Dashboards
+    - key: team_15
+      price: 119
+      interval: month
+      label: Business — up to 15 users
+      includes:
+      - Up to 15 users
+      - Unlimited requests and RFQs
+      - Dashboards
+    - key: team_40
+      price: 249
+      interval: month
+      label: Company — up to 40 users
+      includes:
+      - Up to 40 users
+      - Unlimited requests and RFQs
+      - Dashboards
+  notifications:
+    emailOnRunDone: true
+  extensions:
+  - key: user_seat_limit
+    description: The plan limits (5, 15, 40 users) are described in the plans but not enforced by the runtime; the owner invites
+      users within the plan.
+  - key: approval_threshold
+    description: The owner approval threshold (10000) is written in the po_agent system prompt; change it there.
+  - key: inbound_email_address
+    description: The inbound mailbox for supplier replies is set when the email channel is activated; RFQs ask suppliers to
+      reply to the same thread.

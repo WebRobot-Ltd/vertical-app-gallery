@@ -1,0 +1,834 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: mirrorly
+  displayName: Mirrorly
+  tagline:
+    en: See how your brand appears in answers from large language models.
+  description:
+    en: Mirrorly asks buyer-style questions to the major AI models every night through their official APIs, then shows your
+      share of voice, sentiment, rivals and cited sources, and suggests the content and PR actions that would improve your
+      presence.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#1d2a44'
+      accent: '#6c5ce7'
+      background: '#f7f8fc'
+      foreground: '#161b2b'
+    fonts:
+      body: Inter
+      display: Sora
+    wordmark:
+    - text: Mirror
+      color: primary
+    - text: ly
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: owner
+      label: Owner
+      assignedBy: signup
+    - key: analyst
+      label: Analyst
+      assignedBy: invite
+    - key: viewer
+      label: Viewer
+      assignedBy: invite
+  limits:
+  - action: create:prompt_sets
+    max: 1
+    window: total
+    plans:
+      growth: 5
+      agency: -1
+  egress:
+    hosts:
+    - api.openai.com
+    - api.anthropic.com
+    - generativelanguage.googleapis.com
+    notes: Official model provider APIs only, called with each customer's own API key (never chat interfaces). Usage is governed
+      by each provider's API terms and billed to the customer's own account.
+  agents:
+  - key: tracker
+    role: scheduled
+    description: 'Nightly: asks every question to every connected model through official APIs, stores the answers and extracts
+      brand visibility.'
+    memory: none
+    profile:
+      inline:
+        display_name: Mirrorly tracker
+        crews:
+        - id: tracker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 600
+          max_budget_usd: 20
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You measure how a brand appears in answers from large language models. Steps:
+
+            1. Call read_prompts and find the prompt set named in the goal (match brand name or record id). It holds brand,
+            competitors, categories, markets, language, questions (one per line, at most 200) and members (copy members into
+            every record you write).
+
+            2. Call read_metrics to get the previous day''s sov_avg for this brand.
+
+            3. For EVERY question, ask each model the user has connected, using ONLY the provided tools (official APIs). If
+            a tool says the key is not connected, skip that model and say so in the final summary. Ask the question exactly
+            as written, in its language, with no hint about the brand. Requests: ask_openai POST path-less body {"model":"gpt-4.1","input":"<question>","tools":[{"type":"web_search"}]}
+            (read output text and url_citation annotations); ask_anthropic body {"model":"claude-sonnet-4-5","max_tokens":1500,"messages":[{"role":"user","content":"<question>"}],"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":3}]}
+            (text blocks and citations); ask_gemini body {"contents":[{"parts":[{"text":"<question>"}]}],"tools":[{"google_search":{}}]}
+            (candidates text and groundingMetadata).
+
+            4. For each answer extract: mentioned yes/no (the brand or an obvious variant), position (1 = first brand named
+            among all brands in the answer, empty if not mentioned), sentiment (positive/neutral/negative toward our brand),
+            competitors from the set that appear, and the cited source URLs. Use append_answer for each answer (store a trimmed
+            answer, max 1200 characters) and append_citation for each cited source (domain and url). Never invent anything
+            the answer did not contain.
+
+            5. Share of voice for a model = brand mentions divided by (brand mentions + competitor mentions) over all its
+            answers, in percent. Compute sov_openai, sov_anthropic, sov_gemini, sov_avg (mean of connected models), mention_rate,
+            avg_position, sentiment (-1 to 1 mean).
+
+            6. Append ONE record with append_metrics. prev_sov = previous sov_avg. alert = yes when prev_sov exists and prev_sov
+            - sov_avg is greater than the threshold in percentage points given in the goal, else no.
+
+            End with a short Markdown summary starting with a level-1 title ''# <Brand> — visibility run <date>''.'
+    goalTemplate: 'Run the nightly visibility check for prompt set {prompt_set}. Alert threshold: {threshold} percentage points
+      of share of voice. Today is {date}.'
+    appTools:
+    - name: read_prompts
+      description: Read the user's prompt sets
+      action: read
+      collection: prompt_sets
+      scope: user
+    - name: read_metrics
+      description: Read previous daily metrics
+      action: read
+      collection: metrics
+      scope: user
+    - name: append_answer
+      description: Store one model answer with extracted fields
+      action: append
+      collection: answers
+      scope: user
+    - name: append_citation
+      description: Store one cited source
+      action: append
+      collection: citations
+      scope: user
+    - name: append_metrics
+      description: Store the day's metrics for the brand
+      action: append
+      collection: metrics
+      scope: user
+    - name: ask_openai
+      description: Ask a question to OpenAI through the official API (customer's own key)
+      action: http
+      http:
+        method: POST
+        url: https://api.openai.com/v1/responses
+        timeoutMs: 30000
+        maxBytes: 200000
+        attribution: OpenAI API, customer's own key
+        credential:
+          provider: openai
+    - name: ask_anthropic
+      description: Ask a question to Anthropic through the official API (customer's own key)
+      action: http
+      http:
+        method: POST
+        url: https://api.anthropic.com/v1/messages
+        headers:
+          anthropic-version: '2023-06-01'
+        timeoutMs: 30000
+        maxBytes: 200000
+        attribution: Anthropic API, customer's own key
+        credential:
+          provider: anthropic
+          header: x-api-key
+          format: '{secret}'
+    - name: ask_gemini
+      description: Ask a question to Google Gemini through the official API (customer's own key)
+      action: http
+      http:
+        method: POST
+        url: https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent
+        timeoutMs: 30000
+        maxBytes: 200000
+        attribution: Gemini API, customer's own key
+        credential:
+          provider: gemini
+          query: key
+    output: markdown
+    limits:
+      maxTurns: 600
+      maxBudgetUsd: 20
+      timeoutSeconds: 7200
+  - key: analyst
+    role: helper
+    description: 'Weekly: summarises the week and proposes content and PR actions that a marketer must approve.'
+    profile:
+      inline:
+        display_name: Mirrorly analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a brand-visibility analyst for LLM answers. Use read_prompts, read_metrics, read_answers
+            and read_citations to study the brand named in the goal over the last 7 days versus the 7 before. Write a Markdown
+            report starting with ''# <Brand> — weekly LLM visibility summary <date>'' with sections ## Headline, ## Share
+            of voice by model, ## Where we lose to competitors, ## Sources models cite most, ## Recommended actions. Add a
+            chart as a fenced block ```chart {"type":"line","title":"...","labels":[...],"series":[{"name":"...","values":[...]}],"unit":"%"}```
+            using real figures only. Never invent figures. Then propose at most 5 concrete content or PR actions (e.g. a comparison
+            page for a question we lose, a pitch to a cited publication) and call request_action_plan once per action with
+            fields title, type (content or pr), rationale and brand. You only propose; the content work itself is done by
+            humans outside this app. When the goal says an action was approved, call append_task once with that action (status
+            todo, members copied from the prompt set) and finish with one line.'
+          mcp_servers: []
+    goalTemplate: Prepare the weekly summary for prompt set {prompt_set}. Today is {date}.
+    context: []
+    awaits:
+    - action_plan
+    appTools:
+    - name: read_prompts
+      description: Read the user's prompt sets
+      action: read
+      collection: prompt_sets
+      scope: user
+    - name: read_metrics
+      description: Read previous daily metrics
+      action: read
+      collection: metrics
+      scope: user
+    - name: read_answers
+      description: Read stored model answers
+      action: read
+      collection: answers
+      scope: user
+    - name: read_citations
+      description: Read cited sources
+      action: read
+      collection: citations
+      scope: user
+    - name: append_task
+      description: Add an approved action to the task list
+      action: append
+      collection: tasks
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 2
+  templates:
+  - key: nightly_monitor
+    title:
+      en: Nightly monitor
+    description:
+      en: Every night, ask all questions of a prompt set to your connected models.
+    agent: tracker
+    params:
+    - name: prompt_set
+      type: select
+      required: true
+      label:
+        en: Prompt set
+      optionsFrom: collection:prompt_sets
+    - name: threshold
+      type: number
+      required: true
+      default: 5
+      label:
+        en: Alert when share of voice drops by more than (points)
+    goal: 'Run the nightly visibility check for prompt set {prompt_set}. Alert threshold: {threshold} percentage points of
+      share of voice. Today is {date}.'
+    schedule:
+      cron: 0 2 * * *
+      userCanChange: true
+    maxPerUser: 10
+    roles:
+    - owner
+    - admin
+  - key: weekly_report
+    title:
+      en: Monday summary
+    description:
+      en: 'Every Monday: a summary report by email, plus suggested actions for approval.'
+    agent: analyst
+    params:
+    - name: prompt_set
+      type: select
+      required: true
+      label:
+        en: Prompt set
+      optionsFrom: collection:prompt_sets
+    goal: Prepare the weekly summary for prompt set {prompt_set}. Today is {date}.
+    schedule:
+      cron: 0 7 * * 1
+      userCanChange: true
+    maxPerUser: 10
+    roles:
+    - owner
+    - admin
+    deliver:
+      to: owner
+      onlyIfNew: true
+  approvals:
+  - key: action_plan
+    title:
+      en: Content or PR action
+    description: A suggested action to improve brand presence in LLM answers
+    role: analyst
+    decidedBy: role
+    fields:
+    - title
+    - type
+    - rationale
+    - brand
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: sov_alert
+    description: Email the owner when share of voice drops past the threshold
+    'on':
+      collection: metrics
+      op: insert
+      where:
+        alert: 'yes'
+    notify:
+      to: owner
+      subject: 'Mirrorly alert: share of voice dropped for {record.brand}'
+      body: Share of voice for {record.brand} fell from {record.prev_sov}% to {record.sov_avg}% on {record.date}, more than
+        your threshold. Open the dashboard to see the questions where competitors now win.
+      link: dashboard
+  - key: action_approved
+    description: Put an approved action on the task list
+    'on':
+      approval: action_plan
+      decision: approved
+    start:
+      agent: analyst
+    goal: 'An action was approved: {event}. Call append_task once with its title, type, rationale and brand, status todo.
+      Do not write a report.'
+  data:
+    credentials:
+    - provider: openai
+      kind: api_key
+      scope: user
+      label: OpenAI API key
+      help: Create it at platform.openai.com under API keys.
+    - provider: anthropic
+      kind: api_key
+      scope: user
+      label: Anthropic API key
+      help: Create it in the Anthropic Console under API keys.
+    - provider: gemini
+      kind: api_key
+      scope: user
+      label: Google Gemini API key
+      help: Create it in Google AI Studio under Get API key.
+    collections:
+    - name: prompt_sets
+      ownedBy: user
+      description: Brands with their competitors, markets and buyer-style questions
+      fields:
+      - name: brand
+        type: text
+        required: true
+        label: Brand name
+      - name: client
+        type: text
+        label: Client workspace (agencies)
+      - name: competitors
+        type: textarea
+        label: Competitors (one per line)
+      - name: categories
+        type: text
+        label: Product categories
+      - name: markets
+        type: text
+        label: Markets
+      - name: language
+        type: select
+        required: true
+        label: Question language
+        options:
+        - value: en
+          label: English
+        - value: fr
+          label: French
+        - value: de
+          label: German
+      - name: questions
+        type: textarea
+        required: true
+        maxLength: 40000
+        label: Buyer questions
+        help: One per line, up to 200.
+      - name: members
+        type: array
+        label: Team member emails
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: viewer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: answers
+      ownedBy: user
+      retentionDays: 365
+      fields:
+      - name: brand
+        type: text
+      - name: date
+        type: date
+      - name: question
+        type: text
+      - name: model
+        type: text
+      - name: answer
+        type: textarea
+      - name: mentioned
+        type: select
+        options:
+        - 'yes'
+        - 'no'
+      - name: position
+        type: number
+      - name: sentiment
+        type: select
+        options:
+        - positive
+        - neutral
+        - negative
+      - name: competitors
+        type: text
+      - name: sources
+        type: text
+      - name: members
+        type: array
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+      - role: viewer
+        where:
+          members: '{user.email}'
+    - name: metrics
+      ownedBy: user
+      fields:
+      - name: brand
+        type: text
+      - name: date
+        type: date
+      - name: sov_avg
+        type: number
+      - name: sov_openai
+        type: number
+      - name: sov_anthropic
+        type: number
+      - name: sov_gemini
+        type: number
+      - name: mention_rate
+        type: number
+      - name: avg_position
+        type: number
+      - name: sentiment
+        type: number
+      - name: prev_sov
+        type: number
+      - name: alert
+        type: select
+        options:
+        - 'yes'
+        - 'no'
+      - name: members
+        type: array
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+      - role: viewer
+        where:
+          members: '{user.email}'
+    - name: citations
+      ownedBy: user
+      retentionDays: 365
+      fields:
+      - name: brand
+        type: text
+      - name: date
+        type: date
+      - name: model
+        type: text
+      - name: domain
+        type: text
+      - name: url
+        type: url
+      - name: members
+        type: array
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+      - role: viewer
+        where:
+          members: '{user.email}'
+    - name: tasks
+      ownedBy: user
+      description: Approved content and PR actions
+      fields:
+      - name: title
+        type: text
+      - name: type
+        type: select
+        options:
+        - content
+        - pr
+      - name: rationale
+        type: textarea
+      - name: brand
+        type: text
+      - name: status
+        type: select
+        options:
+        - todo
+        - done
+      - name: members
+        type: array
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: viewer
+        where:
+          members: '{user.email}'
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Mirrorly
+    sections:
+    - type: hero
+      title: See how AI models talk about **your brand**
+      text: Every night Mirrorly asks your buyer questions to the leading AI models through their official APIs and tells
+        you whether you are mentioned, where, how, and who beats you.
+      actions:
+      - label: Start monitoring
+        href: /login
+        style: primary
+      - label: Pricing
+        href: '#pricing'
+        style: ghost
+      band: true
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Connect your keys
+        text: Add your own API keys for the model providers. Official APIs only, never chat interfaces.
+        badge: 🔑
+      - title: Write your prompt set
+        text: Brand, competitors, markets and up to 200 buyer questions in English, French or German.
+        badge: 📝
+      - title: Read the dashboard
+        text: Share of voice per model, trends, questions you lose and the sources models cite.
+        badge: 📈
+      - title: Act
+        text: Get alerts, a Monday report and suggested content and PR actions you approve.
+        badge: ✅
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: Starter · £99/month
+        text: One brand.
+      - title: Growth · £399/month
+        text: Five brands.
+      - title: Agency · £999/month
+        text: Unlimited brands with client workspaces.
+    - type: note
+      content: Model usage is billed by each provider to your own API account. Mirrorly suggests actions; the content work
+        itself is outside the app.
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - owner
+    - analyst
+    - viewer
+    - admin
+    sections:
+    - type: data
+      title: Latest share of voice by model
+      source: collection:metrics
+      display: kpi
+      sort:
+        field: date
+        dir: asc
+      kpis:
+      - label: All models
+        agg: last
+        field: sov_avg
+        format: percent
+      - label: OpenAI
+        agg: last
+        field: sov_openai
+        format: percent
+      - label: Anthropic
+        agg: last
+        field: sov_anthropic
+        format: percent
+      - label: Gemini
+        agg: last
+        field: sov_gemini
+        format: percent
+      - label: Mention rate
+        agg: last
+        field: mention_rate
+        format: percent
+    - type: data
+      title: Share of voice trend
+      source: collection:metrics
+      display: chart
+      chart: line
+      fields:
+      - key: date
+        label: Date
+      - key: sov_openai
+        label: OpenAI
+      - key: sov_anthropic
+        label: Anthropic
+      - key: sov_gemini
+        label: Gemini
+      sort:
+        field: date
+        dir: asc
+      limit: 90
+    - type: data
+      title: Questions where a competitor wins
+      source: collection:answers
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: question
+        label: Question
+      - key: model
+        label: Model
+      - key: competitors
+        label: Competitors named
+      filters:
+      - field: mentioned
+        op: '='
+        value: 'no'
+      - field: competitors
+        op: '!='
+        value: ''
+      sort:
+        field: date
+        dir: desc
+      limit: 50
+      empty: No lost questions yet.
+    - type: data
+      title: Most cited sources
+      source: collection:citations
+      display: bar
+      fields:
+      - key: domain
+        label: Domain
+      - key: count
+        label: Citations
+      groupBy:
+        field: domain
+        aggs:
+        - key: n
+          agg: count
+      sort:
+        field: count
+        dir: desc
+      limit: 15
+  - key: brand_form
+    type: form
+    title: Prompt set
+    collection: prompt_sets
+    edit: true
+    roles:
+    - owner
+    - analyst
+    - admin
+    submit:
+      label: Save prompt set
+      message: Saved.
+      redirect: brands
+    nav: false
+  - key: brands
+    type: table
+    title: Prompt sets
+    source: collection:prompt_sets
+    columns:
+    - brand
+    - client
+    - language
+    - markets
+    export: true
+    roles:
+    - owner
+    - analyst
+    - viewer
+    - admin
+  - key: monitors
+    type: instances
+    template: nightly_monitor
+    title: Nightly monitors
+    roles:
+    - owner
+    - admin
+  - key: weekly
+    type: instances
+    template: weekly_report
+    title: Monday summaries
+    roles:
+    - owner
+    - admin
+  - key: approve
+    type: approvals
+    title: Suggested actions
+    approvals:
+    - action_plan
+    roles:
+    - owner
+    - analyst
+    - admin
+  - key: task_list
+    type: table
+    title: Task list
+    source: collection:tasks
+    columns:
+    - title
+    - type
+    - brand
+    - status
+    roles:
+    - owner
+    - analyst
+    - viewer
+    - admin
+  - key: reports
+    type: history
+    title: Reports
+    source: run
+    roles:
+    - owner
+    - analyst
+    - viewer
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: account
+    type: account
+    title: Keys and billing
+    roles:
+    - owner
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: starter
+      price: 99
+      interval: month
+      label: Starter
+      includes:
+      - 1 brand
+      - nightly monitoring
+      - weekly report
+      roles:
+      - owner
+    - key: growth
+      price: 399
+      interval: month
+      label: Growth
+      includes:
+      - 5 brands
+      - nightly monitoring
+      - weekly report
+      roles:
+      - owner
+    - key: agency
+      price: 999
+      interval: month
+      label: Agency
+      includes:
+      - unlimited brands
+      - client workspaces
+      - nightly monitoring
+      - weekly report
+      roles:
+      - owner
+  extensions:
+  - key: client_workspaces
+    description: Agency client workspaces are modelled with the client field and member emails per prompt set; a separate
+      workspace switcher is not available yet.
+  - key: batching
+    description: 200 questions across 3 models means about 600 API calls per night per brand; a single run may need batching
+      or a higher budget.

@@ -1,0 +1,1312 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: packnest
+  displayName: Packnest
+  tagline: The client portal for outsourced e-commerce fulfilment.
+  description: Brands connect their store or upload orders, register products, book inbound deliveries and follow stock, orders,
+    returns and invoices. Partner warehouses confirm deliveries and ship orders. An AI agent routes every order to the best
+    warehouse.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/Amsterdam
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12355b'
+      accent: '#f08a24'
+      background: '#f7f8fa'
+      foreground: '#17212b'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Pack
+      color: primary
+    - text: nest
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: For brands
+      href: '#brands'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: Brand
+      assignedBy: signup
+    - key: warehouse
+      label: Warehouse staff
+      assignedBy: derived
+      from: collection:warehouses.staff_email
+    - key: operator
+      label: Operator
+      assignedBy: invite
+    - key: finance
+      label: Finance
+      assignedBy: invite
+  limits:
+  - action: agent:importer
+    per: user
+    max: 20
+    window: day
+    roles:
+    - user
+  egress:
+    hosts:
+    - '*.myshopify.com'
+    - nominatim.openstreetmap.org
+    notes: '*.myshopify.com: each brand''s own Shopify store, read with the brand''s own API key. nominatim.openstreetmap.org:
+      geocoding of delivery addresses, ODbL, within the usage policy (max 1 request/second).'
+  agents:
+  - key: importer
+    role: main
+    description: Imports a brand's orders from a CSV file or from its Shopify store.
+    profile:
+      inline:
+        display_name: Packnest order importer
+        crews:
+        - id: importer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You import e-commerce orders for one brand into Packnest. Source is either a CSV file (its text
+            is in the goal) or the brand''s Shopify store (use the shop_orders tool with query like status=open&limit=100;
+            the key is added by the platform; if the tool says the brand has not connected Shopify, tell them to open the
+            Account page and paste their API key and shop host). For each order call orders_append once with: order_ref, source
+            (csv|shopify), customer_name, customer_email, address, city, country, items (one line per SKU as ''SKU x qty''),
+            promised_date (YYYY-MM-DD, if present) and status "new". Skip rows that lack order_ref, address or items and list
+            them. Never invent data. For uploaded files without text, call read_upload with the file id. Finish with a report
+            starting with a level-1 title "# Order import — <date>", then sections ## Imported (count), ## Skipped (with reasons),
+            ## Next steps (routing starts automatically).'
+    appTools:
+    - name: orders_append
+      description: Create an order record for the brand
+      action: append
+      collection: orders
+      scope: user
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
+    - name: shop_orders
+      description: Read the brand's Shopify orders
+      action: http
+      http:
+        method: GET
+        url: https://{host}/admin/api/2025-01/orders.json
+        allowPath: false
+        credential:
+          provider: shopify
+          header: X-Shopify-Access-Token
+          format: '{secret}'
+    goalTemplate: 'Import orders from: {source_label}.
+
+      {?orders_file}Uploaded file: {orders_file}
+
+      {/orders_file}{?orders_file_text}File contents:
+
+      {orders_file_text}
+
+      {/orders_file_text}{?notes}Notes: {notes}
+
+      {/notes}Today is {date}. Write the report in the language with ISO code {lang}.'
+    output: markdown
+  - key: dispatcher
+    role: helper
+    description: Routes new orders to the best warehouse, assigns inbound deliveries and returns to a site, and books received
+      pallets into stock.
+    profile:
+      inline:
+        display_name: Packnest dispatcher
+        crews:
+        - id: dispatcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the dispatcher of a fulfilment network run by partner warehouses. You handle one event per
+            run; the goal says which.
+
+
+            ROUTE AN ORDER: read the order (orders_search by order_ref), its SKUs'' products (products_search: storage needs,
+            weight, dimensions), stock per warehouse (stock_search) and the warehouses (warehouses_read: lat, lon, cost_per_order,
+            storage_types). If the order has no lat/lon, geocode the address with the geocode tool (query q=<address, city,
+            country>&format=json&limit=1) and save lat/lon. Candidate warehouses must hold enough stock of EVERY line (or
+            all lines in one site) and support the product''s storage type. Pick the best by this order of weight: stock availability,
+            shortest distance to the customer, lowest cost_per_order. Then call orders_write with status "routed", warehouse
+            (name), warehouse_email (the site''s staff_email) and routing_note (one sentence why). If NO warehouse qualifies
+            (stock missing, unsupported storage, address that cannot be located, ambiguous SKU), call orders_write with status
+            "unroutable" and a routing_note stating exactly what is missing so a human operator can act. Never guess stock.
+
+
+            ASSIGN AN INBOUND DELIVERY or a RETURN: find the warehouse by the name the brand chose (warehouses_read) and write
+            its staff_email in warehouse_email (inbound_write / returns_write). For a return, use the warehouse_email of the
+            original order (orders_search).
+
+
+            BOOK RECEIVED PALLETS: for a delivery marked received, add a stock record or update the existing one (stock_search,
+            stock_write) with sku, warehouse, warehouse_email and quantity as stated in the goal. If the goal gives no SKU
+            quantities, do nothing and say so.
+
+
+            Answer with a short level-1 title "# Dispatch — <what>" and 2-3 lines of what you did.'
+    appTools:
+    - name: warehouses_read
+      description: List the partner warehouses
+      action: read
+      collection: warehouses
+      scope: all
+    - name: orders_search
+      description: Search the brand's orders
+      action: search
+      collection: orders
+      scope: user
+    - name: orders_write
+      description: Update an order of the brand
+      action: write
+      collection: orders
+      scope: user
+    - name: products_search
+      description: Search the brand's products
+      action: search
+      collection: products
+      scope: user
+    - name: stock_search
+      description: Search the brand's stock
+      action: search
+      collection: stock
+      scope: user
+    - name: stock_write
+      description: Create or update a stock record
+      action: write
+      collection: stock
+      scope: user
+    - name: inbound_write
+      description: Update an inbound delivery of the brand
+      action: write
+      collection: inbound_deliveries
+      scope: user
+    - name: returns_write
+      description: Update a return of the brand
+      action: write
+      collection: returns
+      scope: user
+    - name: geocode
+      description: Find the coordinates of an address (OpenStreetMap Nominatim)
+      action: http
+      http:
+        method: GET
+        url: https://nominatim.openstreetmap.org/search
+        attribution: © OpenStreetMap contributors, ODbL
+        maxBytes: 20000
+    output: markdown
+    limits:
+      maxTurns: 20
+      maxBudgetUsd: 0.5
+  - key: monitor
+    role: scheduled
+    description: 'Daily check of one brand: stock days left, late shipments, on-time flags.'
+    profile:
+      inline:
+        display_name: Packnest monitor
+        crews:
+        - id: monitor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You monitor one brand''s fulfilment. 1) For each stock record, compute days_left = quantity / daily_sales
+            (daily_sales = units shipped per day over the last 30 days from shipped orders (orders_search); if there is no
+            history keep the existing value) and save it with stock_write. 2) Low stock: list SKUs whose days_left is below
+            the brand''s threshold (in the goal) or below the product''s min_days_cover (products_search). 3) Late shipments:
+            orders not shipped whose promised_date is before today, and orders unroutable. 4) For shipped orders without on_time,
+            set on_time to 1 if shipped_at <= promised_date else 0 (orders_write). Never invent figures. Write a plain, short
+            email-style report starting with "# Packnest daily check — <date>" with sections ## Low stock, ## Late shipments,
+            ## Needs attention. If nothing is wrong write exactly one line under the title: All clear.'
+    appTools:
+    - name: orders_search
+      description: Search the brand's orders
+      action: search
+      collection: orders
+      scope: user
+    - name: orders_write
+      description: Update an order of the brand
+      action: write
+      collection: orders
+      scope: user
+    - name: products_search
+      description: Search the brand's products
+      action: search
+      collection: products
+      scope: user
+    - name: stock_search
+      description: Search the brand's stock
+      action: search
+      collection: stock
+      scope: user
+    - name: stock_write
+      description: Create or update a stock record
+      action: write
+      collection: stock
+      scope: user
+    output: markdown
+  - key: biller
+    role: helper
+    description: Calculates a brand's monthly invoice (per order, per pallet stored, per return) and asks finance to approve
+      it.
+    awaits:
+    - invoice_ok
+    profile:
+      inline:
+        display_name: Packnest biller
+        crews:
+        - id: biller
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare the monthly invoice of one brand for the previous calendar month. Read the rates (rates_read:
+            fee_per_order, fee_per_pallet_month, fee_per_return, currency). Count shipped orders of the month (orders_search,
+            by shipped_at), pallets stored (stock_search: sum of pallets, use the month''s average if the records say so)
+            and returns received in the month (returns_search). Compute order_fees, storage_fees, return_fees and total exactly;
+            show your arithmetic. Save the invoice with invoices_write (period YYYY-MM, counts, fees, total, currency, status
+            "pending_approval"), then call request_invoice_ok so finance reviews it. If a figure cannot be established, say
+            so instead of guessing. When the goal says the invoice was approved, update its status to "approved" with invoices_write.
+            Report: "# Invoice <period>", a table of lines, and a note on status.'
+    appTools:
+    - name: orders_search
+      description: Search the brand's orders
+      action: search
+      collection: orders
+      scope: user
+    - name: stock_search
+      description: Search the brand's stock
+      action: search
+      collection: stock
+      scope: user
+    - name: returns_search
+      description: Search the brand's returns
+      action: search
+      collection: returns
+      scope: user
+    - name: rates_read
+      description: Read the rate card
+      action: read
+      collection: rate_card
+      scope: all
+    - name: invoices_write
+      description: Create or update the brand's invoice
+      action: write
+      collection: invoices
+      scope: user
+    output: markdown
+  inputForm:
+    title: Import orders
+    fields:
+    - name: source
+      type: select
+      required: true
+      label: Source
+      options:
+      - value: csv
+        label: CSV file
+      - value: shopify
+        label: Shopify store
+    - name: orders_file
+      type: file
+      label: Orders CSV
+      accept:
+      - csv
+      - xlsx
+      maxMb: 10
+      help: 'Columns: order_ref, customer_name, customer_email, address, city, country, items (SKU x qty), promised_date'
+    - name: notes
+      type: textarea
+      maxLength: 400
+      label: Notes (optional)
+  data:
+    credentials:
+    - provider: shopify
+      kind: api_key
+      scope: user
+      label: Shopify
+      help: 'In Shopify admin: Settings > Apps > Develop apps > create a custom app with read access to orders, then paste
+        the Admin API access token.'
+      hostLabel: your-store.myshopify.com
+    collections:
+    - name: warehouses
+      ownedBy: shared
+      description: Partner warehouses, kept by the admins
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: city
+        type: text
+      - name: country
+        type: country
+      - name: lat
+        type: number
+      - name: lon
+        type: number
+      - name: cost_per_order
+        type: number
+      - name: capacity_pallets
+        type: number
+      - name: storage_types
+        type: multiselect
+        options:
+        - ambient
+        - chilled
+        - frozen
+        - hazmat
+        - fragile
+      - name: staff_email
+        type: email
+        required: true
+    - name: rate_card
+      ownedBy: shared
+      description: Invoice rates, kept by the admins
+      fields:
+      - name: fee_per_order
+        type: number
+      - name: fee_per_pallet_month
+        type: number
+      - name: fee_per_return
+        type: number
+      - name: currency
+        type: text
+        default: EUR
+    - name: products
+      ownedBy: user
+      description: The brand's catalogue
+      fields:
+      - name: sku
+        type: text
+        required: true
+      - name: name
+        type: text
+        required: true
+      - name: barcode
+        type: barcode
+      - name: length_cm
+        type: number
+      - name: width_cm
+        type: number
+      - name: height_cm
+        type: number
+      - name: weight_kg
+        type: number
+      - name: storage
+        type: select
+        options:
+        - ambient
+        - chilled
+        - frozen
+        - hazmat
+        - fragile
+        default: ambient
+      - name: min_days_cover
+        type: number
+        default: 14
+    - name: stock
+      ownedBy: user
+      description: Stock per SKU and warehouse
+      fields:
+      - name: sku
+        type: text
+        required: true
+      - name: warehouse
+        type: text
+      - name: warehouse_email
+        type: email
+      - name: quantity
+        type: number
+      - name: pallets
+        type: number
+      - name: daily_sales
+        type: number
+      - name: days_left
+        type: number
+      access:
+      - role: warehouse
+        where:
+          warehouse_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: operator
+        can:
+        - read
+        - write
+    - name: orders
+      ownedBy: user
+      description: The brand's orders
+      retentionDays: 730
+      fields:
+      - name: order_ref
+        type: text
+        required: true
+      - name: source
+        type: select
+        options:
+        - csv
+        - shopify
+      - name: customer_name
+        type: text
+      - name: customer_email
+        type: email
+      - name: address
+        type: text
+      - name: city
+        type: text
+      - name: country
+        type: country
+      - name: lat
+        type: number
+      - name: lon
+        type: number
+      - name: items
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - new
+        - routed
+        - picked
+        - shipped
+        - unroutable
+        - delivered
+        default: new
+      - name: warehouse
+        type: text
+      - name: warehouse_email
+        type: email
+      - name: routing_note
+        type: textarea
+      - name: promised_date
+        type: date
+      - name: carrier
+        type: text
+      - name: tracking_no
+        type: text
+      - name: scanned_barcode
+        type: barcode
+      - name: picked_at
+        type: date
+      - name: shipped_at
+        type: date
+      - name: on_time
+        type: number
+      access:
+      - role: warehouse
+        where:
+          warehouse_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: operator
+        can:
+        - read
+        - write
+    - name: inbound_deliveries
+      ownedBy: user
+      description: Inbound deliveries booked by brands
+      fields:
+      - name: reference
+        type: text
+        required: true
+      - name: warehouse
+        type: select
+        required: true
+        optionsFrom: collection:warehouses
+      - name: warehouse_email
+        type: email
+      - name: carrier
+        type: text
+        required: true
+      - name: pallets
+        type: number
+        required: true
+      - name: expected_date
+        type: date
+        required: true
+      - name: notes
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - booked
+        - confirmed
+        - received
+        - rejected
+        default: booked
+      - name: received_pallets
+        type: number
+      access:
+      - role: warehouse
+        where:
+          warehouse_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: operator
+        can:
+        - read
+        - write
+    - name: returns
+      ownedBy: user
+      description: Customer returns
+      fields:
+      - name: order_ref
+        type: text
+        required: true
+      - name: sku
+        type: text
+        required: true
+      - name: quantity
+        type: number
+        required: true
+      - name: reason
+        type: select
+        options:
+        - damaged
+        - wrong_item
+        - not_wanted
+        - other
+      - name: status
+        type: select
+        options:
+        - requested
+        - received
+        - restocked
+        - disposed
+        default: requested
+      - name: warehouse_email
+        type: email
+      - name: notes
+        type: textarea
+      access:
+      - role: warehouse
+        where:
+          warehouse_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: operator
+        can:
+        - read
+        - write
+    - name: invoices
+      ownedBy: user
+      description: Monthly invoices per brand
+      fields:
+      - name: period
+        type: text
+        required: true
+      - name: orders_count
+        type: number
+      - name: order_fees
+        type: number
+      - name: pallets_stored
+        type: number
+      - name: storage_fees
+        type: number
+      - name: returns_count
+        type: number
+      - name: return_fees
+        type: number
+      - name: total
+        type: number
+      - name: currency
+        type: text
+        default: EUR
+      - name: status
+        type: select
+        options:
+        - draft
+        - pending_approval
+        - approved
+        - paid
+        default: draft
+      access:
+      - role: finance
+        can:
+        - read
+        - write
+  views:
+  - key: home
+    type: page
+    title: Packnest
+    nav: false
+    sections:
+    - type: hero
+      title: Your **fulfilment**, one portal.
+      text: Connect your store, register your products, book deliveries and follow stock, orders, returns and invoices. Partner
+        warehouses do the picking and shipping; an AI agent routes every order to the best site.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      eyebrow: Outsourced e-commerce fulfilment
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Connect
+        text: Paste your Shopify API key or upload your orders as CSV, then register your products.
+      - title: Send stock
+        text: Book an inbound delivery; the warehouse confirms it.
+      - title: We route and ship
+        text: Each order goes to the best warehouse by stock, distance and cost. Orders that cannot be routed go to a human
+          operator.
+      - title: Follow and pay
+        text: Dashboards, daily alerts and a monthly invoice approved by finance.
+    - type: cards
+      id: brands
+      title: For brands
+      items:
+      - title: Only your data
+        text: You see your own stock, orders, returns and invoices.
+      - title: Daily alerts
+        text: Email warnings for low stock and late shipments.
+      - title: Phone scanning
+        text: Warehouse staff scan barcodes with the phone app.
+    - type: note
+      content: Packnest is the software around the network; picking, packing and shipping are done by contracted partner warehouses.
+  - key: import
+    type: new_run
+    title: Import orders
+    roles:
+    - user
+    - admin
+  - key: imports
+    type: history
+    title: Imports
+    source: run
+    roles:
+    - user
+    - admin
+  - key: import_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - user
+    - warehouse
+    - operator
+    - admin
+    sections:
+    - type: data
+      title: Orders shipped
+      source: collection:orders
+      display: kpi
+      filters:
+      - field: status
+        op: '='
+        value: shipped
+      kpis:
+      - label: Orders shipped
+        agg: count
+      - label: On-time rate
+        agg: avg
+        field: on_time
+        format: percent
+    - type: data
+      title: Shipped per week
+      source: collection:orders
+      display: chart
+      chart: line
+      filters:
+      - field: status
+        op: '='
+        value: shipped
+      groupBy:
+        field: shipped_at
+        bucket: week
+        aggs:
+        - key: on_time_rate
+          agg: avg
+          field: on_time
+      fields:
+      - key: shipped_at
+        label: Week
+      - key: count
+        label: Shipped
+    - type: data
+      title: Stock days left
+      source: collection:stock
+      display: bar
+      fields:
+      - key: sku
+        label: SKU
+      - key: days_left
+        label: Days left
+        format: number
+      sort:
+        field: days_left
+        dir: asc
+      limit: 20
+      empty: No stock yet.
+  - key: product_new
+    type: form
+    title: Add product
+    collection: products
+    submit:
+      label: Save product
+      message: Product saved.
+      redirect: products
+    roles:
+    - user
+  - key: products
+    type: table
+    title: Products
+    source: collection:products
+    export: true
+    roles:
+    - user
+    - admin
+  - key: stock
+    type: table
+    title: Stock
+    source: collection:stock
+    export: true
+    data:
+      display: table
+      fields:
+      - key: sku
+        label: SKU
+      - key: warehouse
+        label: Warehouse
+      - key: quantity
+        label: Qty
+        format: number
+      - key: pallets
+        label: Pallets
+        format: number
+      - key: days_left
+        label: Days left
+        format: number
+      sort:
+        field: days_left
+        dir: asc
+    roles:
+    - user
+    - admin
+  - key: orders
+    type: table
+    title: Orders
+    source: collection:orders
+    export: true
+    data:
+      display: table
+      fields:
+      - key: order_ref
+        label: Order
+      - key: customer_name
+        label: Customer
+      - key: city
+        label: City
+      - key: status
+        label: Status
+        format: badge
+      - key: warehouse
+        label: Warehouse
+      - key: tracking_no
+        label: Tracking
+      - key: promised_date
+        label: Promised
+        format: date
+      sort:
+        field: promised_date
+        dir: asc
+    roles:
+    - user
+    - admin
+  - key: inbound_new
+    type: form
+    title: Book inbound delivery
+    collection: inbound_deliveries
+    fields:
+    - reference
+    - warehouse
+    - carrier
+    - pallets
+    - expected_date
+    - notes
+    submit:
+      label: Book delivery
+      message: Booked. The warehouse will confirm.
+      redirect: inbound
+    roles:
+    - user
+  - key: inbound
+    type: table
+    title: Inbound deliveries
+    source: collection:inbound_deliveries
+    data:
+      display: table
+      fields:
+      - key: reference
+        label: Reference
+      - key: warehouse
+        label: Warehouse
+      - key: carrier
+        label: Carrier
+      - key: pallets
+        label: Pallets
+        format: number
+      - key: expected_date
+        label: Expected
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: expected_date
+        dir: desc
+    roles:
+    - user
+    - warehouse
+    - operator
+    - admin
+  - key: return_new
+    type: form
+    title: Register return
+    collection: returns
+    fields:
+    - order_ref
+    - sku
+    - quantity
+    - reason
+    - notes
+    submit:
+      label: Send
+      message: Return registered.
+      redirect: returns
+    roles:
+    - user
+  - key: returns
+    type: table
+    title: Returns
+    source: collection:returns
+    roles:
+    - user
+    - warehouse
+    - operator
+    - admin
+  - key: invoices
+    type: table
+    title: Invoices
+    source: collection:invoices
+    export: true
+    data:
+      display: table
+      fields:
+      - key: period
+        label: Period
+      - key: orders_count
+        label: Orders
+        format: number
+      - key: pallets_stored
+        label: Pallets
+        format: number
+      - key: returns_count
+        label: Returns
+        format: number
+      - key: total
+        label: Total
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: period
+        dir: desc
+    roles:
+    - user
+    - finance
+    - admin
+  - key: site_orders
+    type: table
+    title: Site orders
+    source: collection:orders
+    data:
+      display: table
+      fields:
+      - key: order_ref
+        label: Order
+      - key: items
+        label: Items
+      - key: city
+        label: City
+      - key: status
+        label: Status
+        format: badge
+      - key: tracking_no
+        label: Tracking
+      - key: promised_date
+        label: Promised
+        format: date
+      filters:
+      - field: status
+        op: '!='
+        value: shipped
+      sort:
+        field: promised_date
+        dir: asc
+    roles:
+    - warehouse
+    - operator
+    - admin
+  - key: fulfil
+    type: form
+    title: Pick and ship
+    collection: orders
+    fields:
+    - status
+    - scanned_barcode
+    - carrier
+    - tracking_no
+    - picked_at
+    - shipped_at
+    edit: true
+    submit:
+      label: Save
+      message: Order updated.
+      redirect: site_orders
+    roles:
+    - warehouse
+    - operator
+    - admin
+    nav: false
+  - key: inbound_confirm
+    type: form
+    title: Confirm delivery
+    collection: inbound_deliveries
+    fields:
+    - status
+    - received_pallets
+    - notes
+    edit: true
+    submit:
+      label: Save
+      message: Delivery updated.
+      redirect: inbound
+    roles:
+    - warehouse
+    - operator
+    - admin
+    nav: false
+  - key: unroutable
+    type: table
+    title: Orders to route by hand
+    source: collection:orders
+    data:
+      display: table
+      fields:
+      - key: order_ref
+        label: Order
+      - key: city
+        label: City
+      - key: routing_note
+        label: Why
+      - key: warehouse
+        label: Warehouse
+      filters:
+      - field: status
+        op: '='
+        value: unroutable
+    roles:
+    - operator
+    - admin
+  - key: approvals
+    type: approvals
+    title: Invoice approvals
+    approvals:
+    - invoice_ok
+    roles:
+    - finance
+    - admin
+  - key: watches
+    type: instances
+    template: brand_monitor
+    title: Daily alerts
+    roles:
+    - user
+  - key: billing_runs
+    type: instances
+    template: monthly_billing
+    title: Monthly invoicing
+    roles:
+    - user
+  - key: account
+    type: account
+    title: Account
+    roles:
+    - user
+  templates:
+  - key: brand_monitor
+    title: Daily stock and shipment check
+    description: Emails you about low stock and late shipments.
+    agent: monitor
+    params:
+    - name: low_stock_days
+      type: number
+      required: true
+      default: 7
+      label: Warn when days of stock left is below
+    goal: Check the brand "{instance}". Warn when days of stock left is below {low_stock_days}. Today is {date}. Write in
+      the language with ISO code {lang}.
+    schedule:
+      cron: 0 6 * * *
+      userCanChange: false
+    maxPerUser: 1
+    cost:
+      perRun: 1
+    deliver:
+      to: owner
+      subject: Packnest daily check — {date}
+      onlyIfNew: true
+  - key: monthly_billing
+    title: Monthly invoice
+    description: Prepares your invoice on the 1st of each month; finance approves it.
+    agent: biller
+    params:
+    - name: invoice_note
+      type: text
+      label: Reference for the invoice (optional)
+    goal: 'Prepare the invoice of the brand "{instance}" for the previous month. Today is {date}.{?invoice_note} Customer
+      reference: {invoice_note}{/invoice_note}'
+    schedule:
+      cron: 0 5 1 * *
+      userCanChange: false
+    maxPerUser: 1
+  approvals:
+  - key: invoice_ok
+    title: Approve monthly invoice
+    role: finance
+    fields:
+    - period
+    - total
+    decidedBy: role
+  triggers:
+  - key: order_new
+    'on':
+      collection: orders
+      op: insert
+      where:
+        status: new
+    start:
+      agent: dispatcher
+    goal: 'ROUTE AN ORDER: order_ref {record.order_ref}, address {record.address}, {record.city}, {record.country}, items
+      {record.items}. Pick the best warehouse or flag it unroutable.'
+    asUser: true
+  - key: order_unroutable
+    'on':
+      collection: orders
+      op: update
+      where:
+        status: unroutable
+    notify:
+      to:
+      - role:operator
+      - admins
+      subject: Order {record.order_ref} needs manual routing
+      body: 'The order {record.order_ref} could not be routed automatically. Reason: {record.routing_note}'
+      link: unroutable
+  - key: order_shipped
+    'on':
+      collection: orders
+      op: update
+      where:
+        status: shipped
+    notify:
+      to:
+      - record.customer_email
+      subject: Your order {record.order_ref} has shipped
+      body: 'Your order {record.order_ref} is on its way. Carrier: {record.carrier}. Tracking number: {record.tracking_no}.'
+  - key: inbound_new
+    'on':
+      collection: inbound_deliveries
+      op: insert
+      where:
+        status: booked
+    start:
+      agent: dispatcher
+    goal: 'ASSIGN AN INBOUND DELIVERY: reference {record.reference}, warehouse chosen {record.warehouse}. Write the site''s
+      staff_email in warehouse_email.'
+    asUser: true
+  - key: inbound_confirmed
+    'on':
+      collection: inbound_deliveries
+      op: update
+      where:
+        status: confirmed
+    notify:
+      to: owner
+      subject: Delivery {record.reference} confirmed
+      body: '{record.warehouse} confirmed your delivery {record.reference} expected on {record.expected_date}.'
+      link: inbound
+  - key: inbound_received
+    'on':
+      collection: inbound_deliveries
+      op: update
+      where:
+        status: received
+    start:
+      agent: dispatcher
+    goal: 'BOOK RECEIVED PALLETS: delivery {record.reference} at {record.warehouse} was received with {record.received_pallets}
+      pallets. Notes from the warehouse: {record.notes}. Update the stock records only if the notes list SKU quantities; otherwise
+      just record pallets on the existing stock of that warehouse.'
+    asUser: true
+  - key: inbound_reminder
+    'on':
+      date:
+        collection: inbound_deliveries
+        field: expected_date
+        offsetDays: -1
+        hour: 7
+      where:
+        status: confirmed
+    notify:
+      to:
+      - record.warehouse_email
+      subject: Delivery {record.reference} arrives tomorrow
+      body: '{record.pallets} pallets by {record.carrier} are expected tomorrow ({record.expected_date}).'
+      link: inbound
+  - key: return_new
+    'on':
+      collection: returns
+      op: insert
+      where:
+        status: requested
+    start:
+      agent: dispatcher
+    goal: 'ASSIGN A RETURN: order {record.order_ref}, sku {record.sku}. Set warehouse_email from the original order''s warehouse_email.'
+    asUser: true
+  - key: invoice_resume
+    'on':
+      approval: invoice_ok
+      decision: approved
+    start:
+      agent: biller
+    goal: The invoice was approved by finance. Set its status to approved.
+    asUser: true
+  - key: invoice_approved
+    'on':
+      approval: invoice_ok
+      decision: approved
+    notify:
+      to: owner
+      subject: Your Packnest invoice is approved
+      body: Your monthly invoice has been approved by finance. You can see it in the portal.
+      link: invoices
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - credits
+    currency: eur
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:importer:
+        estimate: 10
+        metered: true
+    packs:
+    - key: small
+      credits: 500
+      price: 5
+      label: Small
+    - key: large
+      credits: 3000
+      price: 25
+      label: Large
+  mobile:
+    appId: com.packnest.portal
+    appName: Packnest
+    capabilities:
+    - name: barcode
+      reason: To scan product barcodes when picking and shipping orders
+    - name: push
+  extensions:
+  - key: shopify_oauth
+    description: 'Shopify OAuth sign-in is not available yet: brands paste a Shopify Admin API access token on the Account
+      page instead (or upload CSV).'
+  - key: invoice_payment
+    description: Paying each monthly invoice by card or direct debit is not available as a per-invoice payment yet; invoices
+      are calculated and approved here, and the credits packs only cover agent usage. Payment links or SEPA mandates need
+      a later step.
+  - key: warehouse_systems
+    description: Picking, packing and shipping happen in the partner warehouses; staff report progress in this portal. No
+      direct integration with warehouse systems or carriers' label APIs.

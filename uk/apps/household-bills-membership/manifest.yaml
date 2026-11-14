@@ -1,0 +1,1122 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: billwise
+  displayName: Billwise
+  tagline:
+    en: One membership. Cheaper energy, mobile, broadband and insurance.
+  description:
+    en: Billwise members add their household and bills, an AI agent shows the saving on each service, and a member services
+      team checks every switch before it is submitted.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0f3d3e'
+      accent: '#e8832a'
+      background: '#f7faf9'
+      foreground: '#16231f'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Bill
+      color: primary
+    - text: wise
+      color: accent
+    buttonShape: rounded
+  header:
+    links:
+    - label:
+        en: How it works
+      href: '#how-it-works'
+    - label:
+        en: What you save on
+      href: '#services'
+    cta:
+      label:
+        en: Join Billwise
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label:
+        en: Member
+      assignedBy: signup
+    - key: staff
+      label:
+        en: Member services
+      assignedBy: derived
+      from: collection:households.consultant_email
+  limits:
+  - action: agent:advisor
+    per: user
+    max: 5
+    window: day
+    roles:
+    - user
+  agents:
+  - key: advisor
+    role: main
+    description: Reads the household and its bills, compares with Billwise tariffs and the Ofgem price cap, and records the
+      saving for each service.
+    profile:
+      inline:
+        display_name: Billwise savings advisor
+        crews:
+        - id: advisor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are the Billwise savings advisor for UK households. Steps: 1) call read_household to get the
+            member''s household (address, usage, current providers, costs, end dates, uploaded bills). 2) For each bill file
+            id listed, call read_upload to read it (PDFs and photos, OCR included) and extract provider, unit rate, standing
+            charge, usage and total cost; prefer bill figures over typed figures and say which you used. 3) Call read_tariffs
+            to get Billwise''s wholesale tariffs (the product) and read_price_cap for the Ofgem price cap figures; if the
+            price cap collection is empty or out of date you may check the Ofgem price cap page with the webrobot tools, citing
+            the source and period. 4) For each requested service (energy, mobile, broadband, insurance) compare the member''s
+            current annual cost with the best matching Billwise tariff and, for energy, with the price cap for the member''s
+            region at their usage. Never invent prices or tariffs: if there is no matching tariff or the data is missing,
+            say so and list what the member should add. Mention exit fees or contract end dates when the member is still in
+            contract. 5) For every service where a Billwise tariff is cheaper, call save_saving once with service, current_provider,
+            current_annual_cost, offer_provider, offer_plan, offer_annual_cost, annual_saving, basis (one sentence on how
+            you computed it), confidence (high|medium|low), status ''offered'' and consultant_email copied from the household.
+            Insurance is only a comparison of premium for like-for-like cover; do not give regulated financial or insurance
+            advice, and tell the member that the switch is arranged by Billwise''s authorised partners and checked by member
+            services. Report format: start with ''# Your Billwise savings — <date>''. Then ''## Summary'' with a table (service,
+            you pay now, Billwise offer, yearly saving). Then one ''## '' section per service with the figures used and the
+            source of each. Then ''## Next steps'' telling the member to open Switch requests to choose a switch. Add a chart
+            block for the yearly savings:
+
+            ```chart
+
+            {"type":"bar","title":"Yearly saving by service","labels":["Energy"],"series":[{"name":"Saving","values":[0]}],"unit":"GBP"}
+
+            ```
+
+            with real figures only. Write in the language with ISO code given in the goal.'
+    goalTemplate: 'Find savings for this member. Services to check: {service_label}.
+
+      {?notes}Member notes: {notes}{/notes}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    output: markdown
+    appTools:
+    - name: read_household
+      description: Read the member's household record (address, usage, providers, costs, end dates, bill file ids)
+      action: read
+      collection: households
+      scope: user
+    - name: read_tariffs
+      description: Read Billwise's wholesale tariffs for energy, mobile, broadband and insurance
+      action: search
+      collection: tariffs
+      scope: all
+    - name: read_price_cap
+      description: Read the Ofgem price cap figures kept by the admins
+      action: search
+      collection: price_cap
+      scope: all
+    - name: save_saving
+      description: Record one computed saving for the member
+      action: append
+      collection: savings
+      scope: user
+    - name: read_upload
+      description: Read a bill file the member uploaded (PDF or photo, with OCR)
+      action: read_file
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 1.0
+  - key: reviewer
+    role: helper
+    description: 'Prepares each switch request for member services: checks the household and the saving, then asks for the
+      staff decision.'
+    awaits:
+    - switch_review
+    profile:
+      inline:
+        display_name: Billwise switch reviewer
+        crews:
+        - id: reviewer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare a member''s switch request for a human member services colleague. Steps: 1) call read_savings
+            and find the saving the member selected (given in the goal). 2) call read_household and check the household: address
+            and postcode present, the current contract end date (flag early-exit risk if the end date is in the future), and
+            for insurance that the renewal date is known. 3) call update_switch for this switch with service, new_provider,
+            annual_saving, consultant_email (from the household), status ''in_review'' and review_note: a short checklist
+            of what you verified and any risk. Never change anything else. 4) call request_switch_review so a person decides.
+            You never submit a switch yourself and never give legal, financial or insurance advice. Finish with a short plain-text
+            summary under a ''# Switch review'' title.'
+    output: markdown
+    appTools:
+    - name: read_household
+      description: Read the member's household record (address, usage, providers, costs, end dates, bill file ids)
+      action: read
+      collection: households
+      scope: user
+    - name: read_savings
+      description: Read the member's computed savings
+      action: read
+      collection: savings
+      scope: user
+    - name: update_switch
+      description: Update the member's switch request with the review details
+      action: write
+      collection: switches
+      scope: user
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.4
+  inputForm:
+    title:
+      en: Find my savings
+    fields:
+    - name: service
+      type: select
+      required: true
+      default: all
+      label:
+        en: Which services?
+      options:
+      - value: all
+        label:
+          en: All my services
+      - value: energy
+        label:
+          en: Energy
+      - value: mobile
+        label:
+          en: Mobile
+      - value: broadband
+        label:
+          en: Broadband
+      - value: insurance
+        label:
+          en: Insurance
+    - name: notes
+      type: textarea
+      maxLength: 400
+      label:
+        en: Anything we should know? (optional)
+      help:
+        en: e.g. I want to stay with a 24-month fixed price
+  data:
+    collections:
+    - name: households
+      ownedBy: user
+      description: 'Each member''s household: address, energy usage, current contracts and bills. consultant_email = the member
+        services colleague handling them (set by admins); membership_status and cancelled_on are kept by admins.'
+      fields:
+      - name: address
+        type: textarea
+        required: true
+        label:
+          en: Home address
+      - name: postcode
+        type: text
+        required: true
+        label:
+          en: Postcode
+      - name: home_type
+        type: select
+        label:
+          en: Home type
+        options:
+        - flat
+        - terraced
+        - semi-detached
+        - detached
+      - name: occupants
+        type: number
+        label:
+          en: People in the household
+      - name: energy_supplier
+        type: text
+        label:
+          en: Current energy supplier
+      - name: electricity_kwh_year
+        type: number
+        label:
+          en: Electricity use (kWh per year)
+      - name: gas_kwh_year
+        type: number
+        label:
+          en: Gas use (kWh per year)
+      - name: energy_annual_cost
+        type: number
+        label:
+          en: Energy cost per year (GBP)
+      - name: energy_end_date
+        type: date
+        label:
+          en: Energy contract end date
+      - name: mobile_provider
+        type: text
+        label:
+          en: Current mobile provider
+      - name: mobile_monthly_cost
+        type: number
+        label:
+          en: Mobile cost per month (GBP)
+      - name: mobile_end_date
+        type: date
+        label:
+          en: Mobile contract end date
+      - name: broadband_provider
+        type: text
+        label:
+          en: Current broadband provider
+      - name: broadband_monthly_cost
+        type: number
+        label:
+          en: Broadband cost per month (GBP)
+      - name: broadband_end_date
+        type: date
+        label:
+          en: Broadband contract end date
+      - name: insurance_type
+        type: select
+        label:
+          en: Insurance
+        options:
+        - home
+        - car
+        - home-and-car
+        - life
+        - pet
+      - name: insurance_insurer
+        type: text
+        label:
+          en: Current insurer
+      - name: insurance_premium
+        type: number
+        label:
+          en: Insurance premium per year (GBP)
+      - name: insurance_renewal_date
+        type: date
+        label:
+          en: Insurance renewal date
+      - name: bills
+        type: file
+        accept:
+        - pdf
+        - jpg
+        - jpeg
+        - png
+        maxMb: 10
+        multiple: true
+        capture: true
+        label:
+          en: Bills (PDF or photo)
+        help:
+          en: Energy, mobile, broadband or insurance bills
+      - name: consultant_email
+        type: email
+        label:
+          en: Handled by (member services email)
+      - name: membership_status
+        type: select
+        default: active
+        options:
+        - active
+        - cancelled
+        label:
+          en: Membership status
+      - name: cancelled_on
+        type: date
+        label:
+          en: Cancelled on
+      access:
+      - role: staff
+        where:
+          consultant_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: savings
+      ownedBy: user
+      description: Savings the advisor computed for each service of a household
+      fields:
+      - name: service
+        type: select
+        options:
+        - energy
+        - mobile
+        - broadband
+        - insurance
+        label:
+          en: Service
+      - name: current_provider
+        type: text
+        label:
+          en: Current provider
+      - name: current_annual_cost
+        type: number
+        label:
+          en: You pay now (GBP/year)
+      - name: offer_provider
+        type: text
+        label:
+          en: Billwise provider
+      - name: offer_plan
+        type: text
+        label:
+          en: Plan
+      - name: offer_annual_cost
+        type: number
+        label:
+          en: Billwise price (GBP/year)
+      - name: annual_saving
+        type: number
+        label:
+          en: Yearly saving (GBP)
+      - name: basis
+        type: textarea
+        label:
+          en: How it was computed
+      - name: confidence
+        type: select
+        options:
+        - high
+        - medium
+        - low
+        label:
+          en: Confidence
+      - name: status
+        type: select
+        default: offered
+        options:
+        - offered
+        - switching
+        - switched
+        label:
+          en: Status
+      - name: consultant_email
+        type: email
+      access:
+      - role: staff
+        where:
+          consultant_email: '{user.email}'
+        can:
+        - read
+    - name: switches
+      ownedBy: user
+      description: Switch requests made by members, reviewed by member services before submission
+      fields:
+      - name: saving
+        type: select
+        required: true
+        optionsFrom: collection:savings
+        label:
+          en: Saving to switch to
+      - name: member_note
+        type: textarea
+        maxLength: 400
+        label:
+          en: Note for member services (optional)
+      - name: service
+        type: select
+        options:
+        - energy
+        - mobile
+        - broadband
+        - insurance
+        label:
+          en: Service
+      - name: new_provider
+        type: text
+        label:
+          en: New provider
+      - name: annual_saving
+        type: number
+        label:
+          en: Yearly saving (GBP)
+      - name: status
+        type: select
+        default: requested
+        options:
+        - requested
+        - in_review
+        - approved
+        - submitted
+        - completed
+        - rejected
+        - cancelled
+        label:
+          en: Status
+      - name: review_note
+        type: textarea
+        label:
+          en: Review note
+      - name: consultant_email
+        type: email
+      access:
+      - role: staff
+        where:
+          consultant_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: tariffs
+      ownedBy: shared
+      description: Billwise wholesale tariffs supplied by contract. Admins load them on the data page (CSV).
+      fields:
+      - name: service
+        type: select
+        options:
+        - energy
+        - mobile
+        - broadband
+        - insurance
+      - name: provider
+        type: text
+      - name: plan
+        type: text
+      - name: unit_rate_p_kwh
+        type: number
+      - name: standing_charge_p_day
+        type: number
+      - name: monthly_price
+        type: number
+      - name: annual_price
+        type: number
+      - name: min_term_months
+        type: number
+      - name: valid_to
+        type: date
+      - name: notes
+        type: textarea
+    - name: price_cap
+      ownedBy: shared
+      description: Ofgem price cap public figures per region and period. Admins update it each quarter.
+      fields:
+      - name: period
+        type: text
+      - name: region
+        type: text
+      - name: fuel
+        type: select
+        options:
+        - electricity
+        - gas
+      - name: unit_rate_p_kwh
+        type: number
+      - name: standing_charge_p_day
+        type: number
+      - name: source_url
+        type: url
+  views:
+  - key: home
+    type: page
+    title: Billwise
+    nav: false
+    sections:
+    - type: hero
+      band: true
+      eyebrow:
+        en: Household membership
+      title:
+        en: One membership. **Cheaper** energy, mobile, broadband and insurance.
+      text:
+        en: Add your household and your bills. Billwise shows what you would save on each service with our wholesale deals,
+          and our member services team checks every switch before it goes through.
+      actions:
+      - label:
+          en: Join Billwise
+        href: /login
+        style: primary
+      - label:
+          en: How it works
+        href: '#how-it-works'
+        style: ghost
+    - type: steps
+      id: how-it-works
+      title:
+        en: How it works
+      items:
+      - title:
+          en: Add your household
+        text:
+          en: Address, energy usage, current mobile and broadband contracts, insurance renewal dates. Upload bills as PDF
+            or take a photo.
+      - title:
+          en: See your savings
+        text:
+          en: An agent reads your bills and compares them with our tariffs and the Ofgem price cap, service by service.
+      - title:
+          en: Switch with a check
+        text:
+          en: You choose what to switch. A member services colleague reviews each switch before it is submitted.
+      - title:
+          en: Never miss a date
+        text:
+          en: We email you before contracts end and insurance renews.
+    - type: cards
+      id: services
+      title:
+        en: What you save on
+      items:
+      - title:
+          en: Energy
+        badge: ⚡
+        text:
+          en: Compared with your bill and the Ofgem price cap for your region.
+      - title:
+          en: Mobile
+        badge: 📱
+        text:
+          en: Like-for-like plans against what you pay now.
+      - title:
+          en: Broadband
+        badge: 🌐
+        text:
+          en: Speed and term compared, with exit dates flagged.
+      - title:
+          en: Insurance
+        badge: 🛡️
+        text:
+          en: Renewal reminders and premium comparison.
+    - type: note
+      content:
+        en: Billwise membership is paid monthly by card. Savings are estimates based on your bills and current tariffs. Energy,
+          telecoms and insurance are supplied or arranged by authorised partners (regulated by Ofgem, Ofcom and the FCA as
+          applicable); Billwise is not itself the regulated supplier. This is not financial advice.
+  - key: household
+    type: form
+    title:
+      en: My household
+    collection: households
+    fields:
+    - address
+    - postcode
+    - home_type
+    - occupants
+    - energy_supplier
+    - electricity_kwh_year
+    - gas_kwh_year
+    - energy_annual_cost
+    - energy_end_date
+    - mobile_provider
+    - mobile_monthly_cost
+    - mobile_end_date
+    - broadband_provider
+    - broadband_monthly_cost
+    - broadband_end_date
+    - insurance_type
+    - insurance_insurer
+    - insurance_premium
+    - insurance_renewal_date
+    - bills
+    edit: true
+    submit:
+      label:
+        en: Save household
+      message:
+        en: Saved. Now find your savings.
+      redirect: new_run
+    roles:
+    - user
+    - admin
+  - key: my_household
+    type: table
+    title:
+      en: Households
+    source: collection:households
+    data:
+      display: table
+      fields:
+      - key: address
+        label:
+          en: Address
+      - key: postcode
+        label:
+          en: Postcode
+      - key: energy_end_date
+        label:
+          en: Energy ends
+        format: date
+      - key: mobile_end_date
+        label:
+          en: Mobile ends
+        format: date
+      - key: broadband_end_date
+        label:
+          en: Broadband ends
+        format: date
+      - key: insurance_renewal_date
+        label:
+          en: Insurance renews
+        format: date
+      empty:
+        en: No household yet. Add yours first.
+    roles:
+    - user
+    - staff
+    - admin
+  - key: new_run
+    type: new_run
+    title:
+      en: Find my savings
+    roles:
+    - user
+    - admin
+  - key: reports
+    type: history
+    title:
+      en: My reports
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    title:
+      en: Savings report
+    source: run
+    printable: true
+    nav: false
+  - key: savings
+    type: table
+    title:
+      en: My savings
+    source: collection:savings
+    data:
+      display: table
+      fields:
+      - key: service
+        label:
+          en: Service
+        format: badge
+      - key: current_provider
+        label:
+          en: Now with
+      - key: offer_provider
+        label:
+          en: Billwise provider
+      - key: offer_plan
+        label:
+          en: Plan
+      - key: current_annual_cost
+        label:
+          en: You pay
+        format: money
+      - key: offer_annual_cost
+        label:
+          en: Billwise price
+        format: money
+      - key: annual_saving
+        label:
+          en: Saving a year
+        format: money
+      - key: confidence
+        label:
+          en: Confidence
+        format: badge
+      sort:
+        field: annual_saving
+        dir: desc
+      empty:
+        en: No savings yet. Run Find my savings.
+    roles:
+    - user
+    - staff
+    - admin
+  - key: switch_request
+    type: form
+    title:
+      en: Request a switch
+    collection: switches
+    fields:
+    - saving
+    - member_note
+    submit:
+      label:
+        en: Request switch
+      message:
+        en: Request sent. Member services will review it before it is submitted.
+      redirect: switches
+    roles:
+    - user
+  - key: switches
+    type: table
+    title:
+      en: Switches
+    source: collection:switches
+    data:
+      display: table
+      fields:
+      - key: service
+        label:
+          en: Service
+        format: badge
+      - key: new_provider
+        label:
+          en: New provider
+      - key: annual_saving
+        label:
+          en: Saving a year
+        format: money
+      - key: status
+        label:
+          en: Status
+        format: badge
+      - key: review_note
+        label:
+          en: Review note
+      sort:
+        field: status
+        dir: asc
+      empty:
+        en: No switches yet.
+    roles:
+    - user
+    - staff
+    - admin
+  - key: switch_edit
+    type: form
+    title:
+      en: Update switch
+    collection: switches
+    fields:
+    - status
+    - review_note
+    edit: true
+    submit:
+      label:
+        en: Save
+      message:
+        en: Switch updated.
+      redirect: switches
+    nav: false
+    roles:
+    - staff
+    - admin
+  - key: reviews
+    type: approvals
+    title:
+      en: Switches to review
+    approvals:
+    - switch_review
+    roles:
+    - staff
+    - admin
+  - key: account
+    type: account
+    title:
+      en: Membership
+    roles:
+    - user
+  - key: admin_dashboard
+    type: page
+    title:
+      en: Dashboard
+    roles:
+    - admin
+    sections:
+    - type: data
+      id: members
+      title:
+        en: Members
+      source: collection:households
+      display: kpi
+      kpis:
+      - label:
+          en: Households
+        agg: count
+      filters:
+      - field: membership_status
+        op: '='
+        value: active
+    - type: data
+      title:
+        en: Switches by status
+      source: collection:switches
+      display: chart
+      chart: bar
+      fields:
+      - key: status
+      - key: count
+      groupBy:
+        field: status
+        aggs: []
+    - type: data
+      title:
+        en: Savings delivered
+      source: collection:switches
+      display: kpi
+      kpis:
+      - label:
+          en: Yearly savings delivered (GBP)
+        agg: sum
+        field: annual_saving
+        format: money
+      - label:
+          en: Completed switches
+        agg: count
+      filters:
+      - field: status
+        op: '='
+        value: completed
+    - type: data
+      title:
+        en: Savings delivered by service
+      source: collection:switches
+      display: chart
+      chart: bar
+      fields:
+      - key: service
+      - key: total
+      filters:
+      - field: status
+        op: '='
+        value: completed
+      groupBy:
+        field: service
+        aggs:
+        - key: total
+          agg: sum
+          field: annual_saving
+    - type: data
+      title:
+        en: 'Churn: cancellations per month'
+      source: collection:households
+      display: chart
+      chart: line
+      fields:
+      - key: cancelled_on
+      - key: count
+      filters:
+      - field: membership_status
+        op: '='
+        value: cancelled
+      groupBy:
+        field: cancelled_on
+        bucket: month
+        aggs: []
+    - type: data
+      title:
+        en: Latest switches
+      source: collection:switches
+      display: table
+      fields:
+      - key: service
+        format: badge
+      - key: new_provider
+      - key: annual_saving
+        format: money
+      - key: status
+        format: badge
+      limit: 20
+  approvals:
+  - key: switch_review
+    title:
+      en: Review a member's switch
+    description: Member services checks the household, the saving and any exit fees before the switch is submitted to the
+      provider.
+    role: staff
+    fields:
+    - service
+    - new_provider
+    - annual_saving
+    - review_note
+    timeoutMinutes: 4320
+    onTimeout: reject
+  triggers:
+  - key: review_new_switch
+    description: 'A member asks to switch: the reviewer prepares it for member services'
+    'on':
+      collection: switches
+      op: insert
+      where:
+        status: requested
+    start:
+      agent: reviewer
+    goal: 'A member requested a switch. The selected saving id is {record.saving}. Member note: {?record.member_note}{record.member_note}{/record.member_note}.
+      Review it and ask for the member services decision.'
+  - key: switch_approved
+    'on':
+      approval: switch_review
+      decision: approved
+    notify:
+      to:
+      - owner
+      subject:
+        en: Your Billwise switch was approved
+      body:
+        en: 'Good news: member services checked your switch and it is being submitted. We will email you when it is complete.
+
+
+          You can follow it in the app.'
+      link: switches
+  - key: switch_rejected
+    'on':
+      approval: switch_review
+      decision: rejected
+    notify:
+      to:
+      - owner
+      subject:
+        en: About your Billwise switch request
+      body:
+        en: Member services could not submit this switch as requested. Open the app to read the note and the alternatives.
+      link: switches
+  - key: switch_completed
+    'on':
+      collection: switches
+      op: update
+      where:
+        status: completed
+    notify:
+      to:
+      - owner
+      subject:
+        en: Your switch is complete
+      body:
+        en: Your {record.service} switch to {record.new_provider} is complete. Your expected saving is about {record.annual_saving}
+          GBP a year.
+      link: savings
+  - key: energy_end_reminder
+    'on':
+      date:
+        collection: households
+        field: energy_end_date
+        offsetDays: -30
+        hour: 8
+    notify:
+      to:
+      - owner
+      subject:
+        en: Your energy contract ends in 30 days
+      body:
+        en: Your energy contract with {record.energy_supplier} ends on {record.energy_end_date}. Run a new comparison now
+          so you can switch without being moved to a standard tariff.
+      link: new_run
+  - key: mobile_end_reminder
+    'on':
+      date:
+        collection: households
+        field: mobile_end_date
+        offsetDays: -30
+        hour: 8
+    notify:
+      to:
+      - owner
+      subject:
+        en: Your mobile contract ends in 30 days
+      body:
+        en: Your mobile contract with {record.mobile_provider} ends on {record.mobile_end_date}. Check what you could save
+          before it rolls over.
+      link: new_run
+  - key: broadband_end_reminder
+    'on':
+      date:
+        collection: households
+        field: broadband_end_date
+        offsetDays: -30
+        hour: 8
+    notify:
+      to:
+      - owner
+      subject:
+        en: Your broadband contract ends in 30 days
+      body:
+        en: Your broadband contract with {record.broadband_provider} ends on {record.broadband_end_date}. Check what you could
+          save before the price goes up.
+      link: new_run
+  - key: insurance_renewal_reminder
+    'on':
+      date:
+        collection: households
+        field: insurance_renewal_date
+        offsetDays: -21
+        hour: 8
+    notify:
+      to:
+      - owner
+      subject:
+        en: Your insurance renews in 3 weeks
+      body:
+        en: Your {record.insurance_type} insurance with {record.insurance_insurer} renews on {record.insurance_renewal_date}.
+          Compare before you auto-renew.
+      link: new_run
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    costs:
+      agent:advisor:
+        requiresPlan: member
+    plans:
+    - key: member
+      price: 9.99
+      interval: month
+      label:
+        en: Billwise membership
+      includes:
+      - Savings reports for energy, mobile, broadband and insurance
+      - Switches checked by member services
+      - Renewal and contract-end reminders
+  notifications:
+    emailOnRunDone: true
+  mobile:
+    appId: com.billwise.app
+    appName: Billwise
+    capabilities:
+    - name: camera
+      reason:
+        en: To photograph your bills
+    - name: push
+  extensions:
+  - key: membership_status_sync
+    description: membership_status and cancelled_on are kept by admins on the data page; they are not synced automatically
+      from Stripe cancellations, so the churn chart depends on them.
+  - key: provider_submission
+    description: Approved switches are submitted to the supplier by the member services team outside the app, who then mark
+      the switch completed; there is no automatic provider API integration.
+  - key: staff_assignment
+    description: Admins assign each household to a member services colleague by setting consultant_email on the data page
+      (/admin/data).

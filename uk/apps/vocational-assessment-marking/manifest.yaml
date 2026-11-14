@@ -1,0 +1,771 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: markwell
+  displayName: Markwell
+  tagline: AI-assisted marking for apprenticeship and vocational assessment.
+  description: Markwell marks apprenticeship evidence against your rubric, cites criteria met and missed, and proposes a grade.
+    An independent assessor approves every grade before release, and a moderator samples a share of them.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f3a5f'
+      accent: '#d9822b'
+      background: '#f7f8fa'
+      foreground: '#1b2430'
+    fonts:
+      body: Inter
+      display: Source Serif 4
+    wordmark:
+    - text: Mark
+      color: primary
+    - text: well
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Safeguards
+      href: '#safeguards'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Organisation admin
+      assignedBy: admin_emails
+    - key: assessor
+      label: Assessor
+      assignedBy: derived
+      from: collection:marks.assessor_email
+    - key: moderator
+      label: Moderator
+      assignedBy: invite
+    - key: apprentice
+      label: Apprentice
+      assignedBy: signup
+  agents:
+  - key: marker
+    role: main
+    description: Marks one submission against the rubric of its standard and proposes a grade. It never releases anything.
+    profile:
+      inline:
+        display_name: Markwell marker
+        crews:
+        - id: marker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a careful first marker for apprenticeship end-point assessment and vocational assessment
+            in England. You receive a submission event (JSON with the submission id, standard code, assessment method, candidate
+            email, assessor email, answer text and evidence file ids).
+
+
+            Steps:
+
+            1. Call read_standard to get the standard''s record: its rubric, grade bands and moderation_pct. Mark ONLY against
+            that rubric; never invent criteria.
+
+            2. Read the written answer. For each evidence file id call read_upload (it reads PDFs, Word files, photos and
+            scanned handwriting, OCR included). If a script is illegible or a file cannot be read, say so and lower your confidence;
+            do not guess.
+
+            3. For every rubric criterion decide met, partly met or not met, and quote or point to the evidence. Cite the
+            criterion codes met and missed.
+
+            4. Propose a grade from the grade bands only, using the grading rules in the rubric. State your confidence (high,
+            medium, low).
+
+            5. Write feedback for the apprentice: constructive, specific, plain English, no more than 200 words, without revealing
+            this is only a proposal.
+
+            6. Decide moderation sampling: take the last character of the submission id; sample if it falls in the first moderation_pct
+            percent of the characters 0-9a-f in order (e.g. 10 percent -> 0 or 1 only when moderation_pct>=13; always sample
+            when confidence is low).
+
+            7. Call save_mark once with: submission_id, candidate_email, assessor_email, standard, method, criteria_met, criteria_missed,
+            ai_grade, ai_confidence, ai_feedback, moderation_sample (true/false), status "awaiting_review".
+
+
+            Your final message is a short level-1 Markdown note: "# Marked: <standard> — <proposed grade>", then the criteria
+            met and missed in two bullet lists. Never release a result, never state the grade is final, never invent evidence.
+            Marking is decision support for a human assessor.'
+          mcp_servers: []
+    appTools:
+    - name: read_standard
+      description: Read the standards with their assessment methods, rubrics and grade bands
+      action: read
+      collection: standards
+      scope: all
+    - name: read_upload
+      description: Read a file the user uploaded (PDF, Word, photo or scanned handwriting, OCR included)
+      action: read_file
+    - name: save_mark
+      description: Save the proposed mark for the submission
+      action: write
+      collection: marks
+      scope: all
+    output: markdown
+  data:
+    collections:
+    - name: standards
+      ownedBy: shared
+      description: Apprenticeship standards, assessment methods and grading rubrics, entered by the organisation admins from
+        the IfATE standards and assessment plans
+      fields:
+      - name: code
+        type: text
+        required: true
+        label: IfATE reference (e.g. ST0116)
+      - name: title
+        type: text
+        required: true
+        label: Standard title
+      - name: level
+        type: number
+        label: Level
+      - name: method
+        type: text
+        required: true
+        label: Assessment method
+      - name: rubric
+        type: textarea
+        required: true
+        label: 'Rubric: criteria with codes and what meets each'
+      - name: grade_bands
+        type: text
+        required: true
+        label: Grade bands (e.g. Fail, Pass, Merit, Distinction)
+      - name: moderation_pct
+        type: number
+        label: Moderation sample %
+        default: 10
+    - name: assessors
+      ownedBy: shared
+      description: Assessors who can be allocated submissions
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: email
+        type: email
+        required: true
+    - name: submissions
+      ownedBy: user
+      description: Evidence uploaded by apprentices or assessors
+      retentionDays: 1095
+      fields:
+      - name: standard
+        type: select
+        required: true
+        label: Standard
+        optionsFrom: collection:standards
+      - name: method
+        type: text
+        required: true
+        label: Assessment method
+      - name: candidate_email
+        type: email
+        required: true
+        label: Apprentice email
+      - name: assessor_email
+        type: select
+        required: true
+        label: Allocated assessor
+        optionsFrom: collection:assessors
+      - name: answer
+        type: textarea
+        label: Written answer
+      - name: evidence
+        type: file
+        label: Evidence (reports, portfolios, scanned scripts)
+        accept:
+        - pdf
+        - docx
+        - jpg
+        - jpeg
+        - png
+        maxMb: 15
+        multiple: true
+        capture: true
+    - name: marks
+      ownedBy: org
+      description: AI proposed marks and the assessor's decisions. Apprentices see only their own released results.
+      retentionDays: 1825
+      fields:
+      - name: submission_id
+        type: text
+      - name: candidate_email
+        type: email
+      - name: assessor_email
+        type: email
+      - name: standard
+        type: text
+      - name: method
+        type: text
+      - name: criteria_met
+        type: textarea
+        label: Criteria met
+      - name: criteria_missed
+        type: textarea
+        label: Criteria missed
+      - name: ai_grade
+        type: text
+        label: AI proposed grade
+      - name: ai_confidence
+        type: select
+        options:
+        - high
+        - medium
+        - low
+      - name: ai_feedback
+        type: textarea
+        label: AI draft feedback
+      - name: moderation_sample
+        type: boolean
+        label: In moderation sample
+      - name: status
+        type: select
+        label: Status
+        options:
+        - awaiting_review
+        - released
+        default: awaiting_review
+      - name: final_grade
+        type: text
+        label: Final grade
+      - name: final_feedback
+        type: textarea
+        label: Feedback to apprentice
+      - name: agreement
+        type: select
+        label: AI proposal
+        options:
+        - agreed
+        - changed
+      - name: released_date
+        type: date
+        label: Release date
+      - name: mod_outcome
+        type: select
+        label: Moderation outcome
+        options:
+        - confirmed
+        - adjusted
+        - referred
+      - name: mod_grade
+        type: text
+        label: Moderator grade
+      - name: mod_notes
+        type: textarea
+        label: Moderator notes
+      access:
+      - role: assessor
+        where:
+          assessor_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: moderator
+        can:
+        - read
+        - write
+      - role: apprentice
+        where:
+          candidate_email: '{user.email}'
+          status: released
+        can:
+        - read
+    - name: appeals
+      ownedBy: user
+      description: Appeals by apprentices against released results
+      fields:
+      - name: mark
+        type: select
+        required: true
+        label: Result
+        optionsFrom: collection:marks
+      - name: reason
+        type: textarea
+        required: true
+        label: Reason for appeal
+        maxLength: 2000
+      - name: status
+        type: select
+        label: Status
+        options:
+        - open
+        - upheld
+        - rejected
+        default: open
+      - name: moderator_response
+        type: textarea
+        label: Moderator response
+      access:
+      - role: moderator
+        can:
+        - read
+        - write
+  views:
+  - key: home
+    type: page
+    title: Markwell
+    nav: false
+    sections:
+    - type: hero
+      title: Faster marking, **human-approved** grades.
+      text: Markwell marks apprenticeship evidence against your rubric, cites the criteria met and missed, and proposes a
+        grade. An assessor approves every grade before the apprentice sees anything.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      note: For end-point assessment organisations and training providers.
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Set up standards
+        text: Enter each IfATE standard, its assessment method, rubric and grade bands.
+        badge: 📋
+      - title: Upload evidence
+        text: Written answers, portfolios, reports and scanned handwritten scripts (OCR included).
+        badge: 📎
+      - title: AI marks
+        text: Each criterion met or missed is cited, with a proposed grade and draft feedback.
+        badge: 🤖
+      - title: Assessor decides
+        text: An independent assessor approves or changes the grade, then releases it.
+        badge: ✅
+    - type: cards
+      id: safeguards
+      title: Safeguards
+      items:
+      - title: Nothing released unreviewed
+        text: Apprentices see results and feedback only after assessor release.
+      - title: Moderation sampling
+        text: A share of marks goes to a second assessor, the moderator.
+      - title: Allocated access only
+        text: Assessors see only the submissions allocated to them.
+      - title: Appeals
+        text: Apprentices can appeal; appeals go to the moderator.
+    - type: note
+      content: Markwell is decision support. The assessor remains responsible for every grade. About £3 per submission marked.
+  - key: submit
+    type: form
+    title: Upload evidence
+    collection: submissions
+    fields:
+    - standard
+    - method
+    - candidate_email
+    - assessor_email
+    - answer
+    - evidence
+    submit:
+      label: Submit for marking
+      message: Submitted. Your evidence will be marked and reviewed by an assessor.
+      redirect: my_submissions
+    roles:
+    - apprentice
+    - assessor
+    - admin
+  - key: my_submissions
+    type: table
+    title: My submissions
+    source: collection:submissions
+    data:
+      display: table
+      fields:
+      - key: standard
+        label: Standard
+      - key: method
+        label: Method
+      - key: candidate_email
+        label: Apprentice
+      - key: assessor_email
+        label: Assessor
+      sort:
+        field: createdAt
+        dir: desc
+    roles:
+    - apprentice
+    - assessor
+    - admin
+  - key: queue
+    type: table
+    title: Review queue
+    source: collection:marks
+    data:
+      display: table
+      fields:
+      - key: id
+        label: Open
+        format: link
+      - key: standard
+        label: Standard
+      - key: candidate_email
+        label: Apprentice
+      - key: ai_grade
+        label: AI grade
+        format: badge
+      - key: ai_confidence
+        label: Confidence
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+      - key: moderation_sample
+        label: Sampled
+      filters:
+      - field: status
+        op: '='
+        value: awaiting_review
+    roles:
+    - assessor
+    - admin
+  - key: review
+    type: form
+    title: Review and release
+    collection: marks
+    fields:
+    - criteria_met
+    - criteria_missed
+    - ai_grade
+    - ai_feedback
+    - final_grade
+    - final_feedback
+    - agreement
+    - status
+    - released_date
+    edit: true
+    submit:
+      label: Save decision
+      message: Decision saved. If released, the apprentice has been emailed.
+      redirect: queue
+    roles:
+    - assessor
+    - admin
+    nav: false
+  - key: moderation
+    type: table
+    title: Moderation sample
+    source: collection:marks
+    data:
+      display: table
+      fields:
+      - key: id
+        label: Open
+        format: link
+      - key: standard
+        label: Standard
+      - key: ai_grade
+        label: AI grade
+      - key: final_grade
+        label: Assessor grade
+      - key: mod_outcome
+        label: Outcome
+        format: badge
+      filters:
+      - field: moderation_sample
+        op: '='
+        value: true
+    roles:
+    - moderator
+    - admin
+  - key: moderate
+    type: form
+    title: Moderate
+    collection: marks
+    fields:
+    - criteria_met
+    - criteria_missed
+    - final_grade
+    - final_feedback
+    - mod_outcome
+    - mod_grade
+    - mod_notes
+    edit: true
+    submit:
+      label: Save moderation
+      message: Moderation saved.
+      redirect: moderation
+    roles:
+    - moderator
+    - admin
+    nav: false
+  - key: results
+    type: table
+    title: My results
+    source: collection:marks
+    data:
+      display: cards
+      fields:
+      - key: standard
+        label: Standard
+      - key: final_grade
+        label: Grade
+        format: badge
+      - key: final_feedback
+        label: Feedback
+      - key: released_date
+        label: Released
+        format: date
+      sort:
+        field: released_date
+        dir: desc
+    roles:
+    - apprentice
+  - key: appeal
+    type: form
+    title: Appeal a result
+    collection: appeals
+    fields:
+    - mark
+    - reason
+    submit:
+      label: Send appeal
+      message: Your appeal has been sent to the moderator.
+    roles:
+    - apprentice
+  - key: appeals
+    type: table
+    title: Appeals
+    source: collection:appeals
+    data:
+      display: table
+      fields:
+      - key: id
+        label: Open
+        format: link
+      - key: mark
+        label: Result
+      - key: reason
+        label: Reason
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: createdAt
+        dir: desc
+    roles:
+    - moderator
+    - admin
+  - key: resolve_appeal
+    type: form
+    title: Resolve appeal
+    collection: appeals
+    fields:
+    - status
+    - moderator_response
+    edit: true
+    submit:
+      label: Save outcome
+      message: Outcome saved.
+      redirect: appeals
+    roles:
+    - moderator
+    - admin
+    nav: false
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - admin
+    - moderator
+    sections:
+    - type: data
+      title: Grade distribution
+      source: collection:marks
+      display: chart
+      chart: bar
+      fields:
+      - key: final_grade
+        label: Grade
+      - key: count
+        label: Submissions
+      groupBy:
+        field: final_grade
+        aggs: []
+      filters:
+      - field: status
+        op: '='
+        value: released
+    - type: data
+      title: Agreement between AI and assessor
+      source: collection:marks
+      display: chart
+      chart: pie
+      fields:
+      - key: agreement
+        label: AI proposal
+      - key: count
+        label: Marks
+      groupBy:
+        field: agreement
+        aggs: []
+    - type: data
+      title: Results released per week
+      intro: A proxy for turnaround.
+      source: collection:marks
+      display: chart
+      chart: line
+      fields:
+      - key: released_date
+        label: Week
+      - key: count
+        label: Released
+      groupBy:
+        field: released_date
+        bucket: week
+        aggs: []
+    - type: data
+      title: Moderation outcomes
+      source: collection:marks
+      display: chart
+      chart: bar
+      fields:
+      - key: mod_outcome
+        label: Outcome
+      - key: count
+        label: Marks
+      groupBy:
+        field: mod_outcome
+        aggs: []
+  - key: returns
+    type: table
+    title: Returns export (Ofqual / IfATE)
+    source: collection:marks
+    export: true
+    data:
+      display: table
+      fields:
+      - key: standard
+        label: Standard
+      - key: method
+        label: Method
+      - key: candidate_email
+        label: Apprentice
+      - key: assessor_email
+        label: Assessor
+      - key: ai_grade
+        label: AI grade
+      - key: final_grade
+        label: Final grade
+      - key: agreement
+        label: Agreement
+      - key: moderation_sample
+        label: Sampled
+      - key: mod_outcome
+        label: Moderation
+      - key: released_date
+        label: Released
+        format: date
+      sort:
+        field: released_date
+        dir: desc
+    roles:
+    - admin
+    - moderator
+  - key: account
+    type: account
+    title: Credits
+    roles:
+    - admin
+  triggers:
+  - key: mark_submission
+    description: Start the marker for each new submission
+    'on':
+      collection: submissions
+      op: insert
+    start:
+      agent: marker
+    asUser: true
+    goal: 'Mark this submission. Submission id: {record.id}. Standard: {record.standard}. Method: {record.method}. Apprentice:
+      {record.candidate_email}. Allocated assessor: {record.assessor_email}. Written answer: {record.answer}. Evidence file
+      ids: {record.evidence}. Event: {event}'
+  - key: result_released
+    description: Email the apprentice when the result is released
+    'on':
+      collection: marks
+      op: update
+      where:
+        status: released
+    notify:
+      to:
+      - record.candidate_email
+      subject: Your result for {record.standard} is ready
+      body: Your assessor has reviewed and released your result. Sign in to Markwell to read your grade and feedback. If you
+        disagree, you can submit an appeal from the same page.
+      link: results
+  - key: appeal_received
+    'on':
+      collection: appeals
+      op: insert
+    notify:
+      to:
+      - role:moderator
+      subject: New appeal received
+      body: An apprentice has appealed a released result. Please review it in Markwell.
+      link: appeals
+  - key: appeal_decided
+    'on':
+      collection: appeals
+      op: update
+    notify:
+      to:
+      - owner
+      subject: Update on your appeal
+      body: 'The moderator has recorded an outcome on your appeal: {record.status}. {record.moderator_response}'
+      link: appeal
+  notifications:
+    emailOnRunDone: false
+  billing:
+    modes:
+    - credits
+    currency: gbp
+    signupCredits: 600
+    costs:
+      agent:marker: 300
+    packs:
+    - key: pack_100
+      credits: 30000
+      price: 300
+      label: 100 submissions
+    - key: pack_20
+      credits: 6000
+      price: 60
+      label: 20 submissions
+  extensions:
+  - key: turnaround_average
+    description: Average turnaround (upload to release) needs a computed duration; the dashboard shows results released per
+      week instead.
+  - key: ifate_live_data
+    description: Standards and assessment plans are entered by the admins from the IfATE website (or a CSV on /admin/data);
+      there is no live IfATE API connection.
+  - key: assessor_open_links
+    description: Assessors open a mark from the queue through the Open link; allocation is set by the uploader choosing an
+      assessor from the assessors list.

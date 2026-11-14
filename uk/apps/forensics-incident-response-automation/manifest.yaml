@@ -1,0 +1,900 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: casefile
+  displayName: Casefile
+  tagline: Case management, chain of custody and incident reporting for DFIR teams.
+  description: 'Casefile runs the case side of digital forensics and incident response: cases, evidence register, chain-of-custody
+    log, forensic engine results, an AI-drafted attack narrative and incident report, lead-investigator sign-off, and a client
+    portal with milestone emails.'
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0f1f33'
+      accent: '#1f7a8c'
+      background: '#f4f6f8'
+      foreground: '#16202b'
+    fonts:
+      body: Inter
+      display: IBM Plex Sans
+    wordmark:
+    - text: Case
+      color: primary
+    - text: file
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: lead_investigator
+      label: Lead investigator
+      assignedBy: invite
+    - key: analyst
+      label: Analyst
+      assignedBy: invite
+    - key: client_viewer
+      label: Client viewer
+      assignedBy: derived
+      from: collection:cases.client_email
+  limits:
+  - action: agent:correlator
+    per: user
+    max: 20
+    window: day
+  agents:
+  - key: correlator
+    role: main
+    description: Correlates timeline events, IOCs and artefacts of a case into an attack narrative, drafts the incident report
+      and asks the lead investigator for sign-off.
+    awaits:
+    - report_signoff
+    profile:
+      inline:
+        display_name: Casefile report drafter
+        crews:
+        - id: correlator
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: "You are a senior digital forensics and incident response report writer. You work ONLY from the case\
+            \ records you can read with your tools: the case (read_case), evidence items (read_evidence), the chain-of-custody\
+            \ log (read_custody), and the analysis results delivered by the forensic engine (read_findings: timeline events,\
+            \ indicators of compromise, artefacts). You do not collect or analyse evidence yourself and you never invent events,\
+            \ hashes, times, hosts, attribution or impact. If something is not in the records, say it is not established.\n\
+            \nProcess: 1) read the case by its reference; 2) read its evidence, custody entries and findings; 3) check evidence\
+            \ integrity and custody: list every item with a missing hash, missing collector, missing storage location, or\
+            \ a gap/break in handling steps (unexplained time gap, missing transfer, missing return); 4) correlate findings\
+            \ by time and by evidence source into an attack narrative (initial access, execution, persistence, lateral movement,\
+            \ collection/exfiltration, impact), marking each statement with the evidence item and finding ids that support\
+            \ it and a confidence (high/medium/low); 5) draft the report; 6) call save_report once with case_ref, title, body\
+            \ (the full Markdown), client_email from the case, version, status \"draft\"; 7) call request_report_signoff so\
+            \ the lead investigator can review. \n\nReport structure (the output): start with a level-1 title \"# Incident\
+            \ Report — <client> — <case reference>\". Then ## Document status (DRAFT, pending lead investigator sign-off,\
+            \ report type, date), ## Executive summary (non-technical, under 150 words), ## Scope and instructions, ## Evidence\
+            \ and chain of custody (table: item, source, hash, collector, collected at, storage, custody status; then integrity\
+            \ gaps), ## Attack narrative (chronological, with references), ## Timeline of key events (table), ## Indicators\
+            \ of compromise (table: type, value, evidence source, confidence), ## Artefacts of note, ## Impact assessment\
+            \ (only what the records support), ## Findings (numbered, with severity), ## Recommendations (containment, remediation,\
+            \ hardening, prioritised), ## Limitations and assumptions. Where figures compare, you may add one ```chart block\
+            \ (bar) with real counts only.\n\nStyle: precise, neutral, factual; distinguish fact, inference and opinion. Write\
+            \ in British English. The structure follows good practice for UK digital evidence handling (the principles in\
+            \ the NPCC Good Practice Guide for Digital Evidence and ISO/IEC 27037) but you must never state that the work\
+            \ is accredited, court-ready or compliant: that is the lead investigator's decision. This is a draft, not an expert\
+            \ witness statement and not legal advice."
+    appTools:
+    - name: read_case
+      description: Find a case by its reference
+      action: search
+      collection: cases
+      scope: all
+    - name: read_evidence
+      description: List the evidence items of a case
+      action: search
+      collection: evidence
+      scope: all
+    - name: read_custody
+      description: List the chain-of-custody entries of a case or evidence item
+      action: search
+      collection: custody_log
+      scope: all
+    - name: read_findings
+      description: List timeline events, IOCs and artefacts of a case
+      action: search
+      collection: findings
+      scope: all
+    - name: save_report
+      description: Save the drafted report as a draft record for sign-off
+      action: append
+      collection: reports
+      scope: all
+    goalTemplate: 'Draft the {report_type_label} incident report for case reference {case_ref}. Today is {date}.
+
+      {?notes}Lead investigator''s instructions: {notes}{/notes}
+
+      Write in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 1.5
+  inputForm:
+    title: Draft an incident report
+    fields:
+    - name: case_ref
+      type: text
+      required: true
+      label: Case reference
+      help: Exactly as on the case, e.g. CF-2026-014
+    - name: report_type
+      type: select
+      required: true
+      label: Report type
+      options:
+      - value: interim
+        label: Interim report
+      - value: final
+        label: Final report
+    - name: notes
+      type: textarea
+      maxLength: 800
+      label: Instructions (optional)
+      help: Focus areas, audience, anything to emphasise
+  data:
+    collections:
+    - name: cases
+      ownedBy: org
+      description: Cases opened by the firm for its clients
+      fields:
+      - name: reference
+        type: text
+        required: true
+        label: Case reference
+      - name: client_name
+        type: text
+        required: true
+        label: Client
+      - name: client_email
+        type: email
+        required: true
+        label: Client contact email
+      - name: incident_type
+        type: select
+        required: true
+        label: Incident type
+        options:
+        - value: ransomware
+          label: Ransomware
+        - value: bec
+          label: Business email compromise
+        - value: data_breach
+          label: Data breach / exfiltration
+        - value: insider
+          label: Insider threat
+        - value: malware
+          label: Malware / intrusion
+        - value: other
+          label: Other
+      - name: scope
+        type: textarea
+        required: true
+        label: Scope
+        help: Hosts, accounts, systems and questions to answer
+      - name: start_time
+        type: date
+        required: true
+        label: Incident start
+      - name: lead_email
+        type: email
+        required: true
+        label: Lead investigator
+      - name: status
+        type: select
+        required: true
+        label: Status
+        default: open
+        options:
+        - value: open
+          label: Open
+        - value: collection
+          label: Evidence collection
+        - value: analysis
+          label: Analysis
+        - value: reporting
+          label: Reporting
+        - value: closed
+          label: Closed
+      access:
+      - role: lead_investigator
+        can:
+        - read
+        - write
+      - role: analyst
+        can:
+        - read
+        - write
+      - role: client_viewer
+        where:
+          client_email: '{user.email}'
+        can:
+        - read
+    - name: evidence
+      ownedBy: org
+      description: Evidence register
+      fields:
+      - name: case_ref
+        type: text
+        required: true
+        label: Case reference
+      - name: item_ref
+        type: text
+        required: true
+        label: Evidence item reference
+      - name: description
+        type: text
+        required: true
+        label: Description
+      - name: source
+        type: text
+        required: true
+        label: Source (host, image, device)
+      - name: hash_algorithm
+        type: select
+        label: Hash algorithm
+        options:
+        - SHA-256
+        - SHA-1
+        - MD5
+      - name: hash
+        type: text
+        required: true
+        label: Hash value
+      - name: collector
+        type: text
+        required: true
+        label: Collected by
+      - name: collected_at
+        type: date
+        required: true
+        label: Collected at
+      - name: storage_location
+        type: text
+        required: true
+        label: Storage location
+      - name: photo
+        type: file
+        label: Photo or label
+        accept:
+        - jpg
+        - png
+        - pdf
+        maxMb: 10
+        capture: true
+      access:
+      - role: lead_investigator
+        can:
+        - read
+        - write
+      - role: analyst
+        can:
+        - read
+        - write
+    - name: custody_log
+      ownedBy: org
+      description: Every handling step of every evidence item (append-only by convention)
+      fields:
+      - name: case_ref
+        type: text
+        required: true
+        label: Case reference
+      - name: item_ref
+        type: text
+        required: true
+        label: Evidence item reference
+      - name: action
+        type: select
+        required: true
+        label: Handling step
+        options:
+        - value: collected
+          label: Collected
+        - value: transferred
+          label: Transferred
+        - value: accessed
+          label: Accessed / examined
+        - value: imaged
+          label: Imaged / copied
+        - value: stored
+          label: Stored
+        - value: returned
+          label: Returned
+        - value: destroyed
+          label: Destroyed
+      - name: handled_by
+        type: text
+        required: true
+        label: Handled by
+      - name: handed_to
+        type: text
+        label: Handed to
+      - name: event_time
+        type: date
+        required: true
+        label: Date and time
+      - name: location
+        type: text
+        required: true
+        label: Location
+      - name: hash_verified
+        type: boolean
+        label: Hash re-verified
+      - name: notes
+        type: textarea
+        label: Notes
+      access:
+      - role: lead_investigator
+        can:
+        - read
+        - write
+      - role: analyst
+        can:
+        - read
+        - write
+    - name: findings
+      ownedBy: org
+      description: 'Results from the forensic engine: timeline events, indicators of compromise, artefacts'
+      fields:
+      - name: event_id
+        type: text
+        label: Engine result id
+      - name: case_ref
+        type: text
+        required: true
+        label: Case reference
+      - name: kind
+        type: select
+        required: true
+        label: Kind
+        options:
+        - value: timeline_event
+          label: Timeline event
+        - value: ioc
+          label: Indicator of compromise
+        - value: artefact
+          label: Artefact
+      - name: event_time
+        type: text
+        label: Event time
+      - name: description
+        type: textarea
+        label: Description
+      - name: indicator
+        type: text
+        label: Indicator / artefact value
+      - name: evidence_ref
+        type: text
+        label: Source evidence item
+      - name: severity
+        type: select
+        label: Severity
+        options:
+        - info
+        - low
+        - medium
+        - high
+        - critical
+      access:
+      - role: lead_investigator
+        can:
+        - read
+        - write
+      - role: analyst
+        can:
+        - read
+        - write
+    - name: reports
+      ownedBy: org
+      description: 'Incident reports: draft, signed off, released to the client'
+      fields:
+      - name: case_ref
+        type: text
+        required: true
+        label: Case reference
+      - name: title
+        type: text
+        required: true
+        label: Title
+      - name: version
+        type: text
+        label: Version
+      - name: client_email
+        type: email
+        label: Client contact email
+      - name: status
+        type: select
+        required: true
+        label: Status
+        default: draft
+        options:
+        - value: draft
+          label: Draft
+        - value: signed_off
+          label: Signed off
+        - value: released
+          label: Released to client
+      - name: body
+        type: textarea
+        label: Report
+      access:
+      - role: lead_investigator
+        can:
+        - read
+        - write
+      - role: analyst
+        can:
+        - read
+      - role: client_viewer
+        where:
+          client_email: '{user.email}'
+          status: released
+        can:
+        - read
+  approvals:
+  - key: report_signoff
+    title: Lead investigator sign-off
+    description: The lead investigator reviews the drafted report and signs it off before it can be released to the client.
+    role: lead_investigator
+    decidedBy: role
+    fields:
+    - case_ref
+    - title
+  triggers:
+  - key: engine_results
+    description: Forensic engine posts a result (timeline event, IOC or artefact)
+    'on':
+      webhook: true
+    write:
+      collection: findings
+      fields:
+        event_id: id
+        case_ref: case_ref
+        kind: kind
+        event_time: event_time
+        description: description
+        indicator: indicator
+        evidence_ref: evidence_ref
+        severity: severity
+      keyBy: event_id
+  - key: case_opened
+    'on':
+      collection: cases
+      op: insert
+    notify:
+      to:
+      - record.client_email
+      subject: Case {record.reference} opened
+      body: Your case {record.reference} has been opened. You can follow its status in the client portal.
+      link: portal_cases
+  - key: case_analysis
+    'on':
+      collection: cases
+      op: update
+      where:
+        status: analysis
+    notify:
+      to:
+      - record.client_email
+      subject: 'Case {record.reference}: analysis under way'
+      body: Evidence collection for case {record.reference} is complete and analysis has started.
+      link: portal_cases
+  - key: report_released
+    'on':
+      collection: reports
+      op: update
+      where:
+        status: released
+    notify:
+      to:
+      - record.client_email
+      subject: 'Report available: {record.title}'
+      body: A signed-off report for case {record.case_ref} is now available in the client portal.
+      link: portal_reports
+  - key: case_closed
+    'on':
+      collection: cases
+      op: update
+      where:
+        status: closed
+    notify:
+      to:
+      - record.client_email
+      subject: Case {record.reference} closed
+      body: Case {record.reference} has been closed. Your reports remain available in the portal.
+      link: portal_reports
+  views:
+  - key: home
+    type: page
+    title: Casefile
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: Digital forensics and incident response
+      title: Run every case with a **clean evidential trail**.
+      text: Casefile keeps your cases, evidence register and chain of custody in one place, takes in results from your forensic
+        engine, drafts the attack narrative and incident report with AI, and gives your clients a portal with milestone updates.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: See how it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Open a case
+        text: Client, incident type, scope, start time and lead investigator.
+      - title: Register evidence
+        text: Hash, source, collector, time and storage location, with every handling step logged.
+      - title: Receive engine results
+        text: Timelines, IOCs and artefacts from your forensic tooling arrive on a webhook.
+      - title: Draft and sign off
+        text: An agent correlates results into an attack narrative and drafts the report; the lead investigator signs it off.
+      - title: Client portal
+        text: Clients see case status and released reports, with email updates at key milestones.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: Per case
+        text: From £2,000 per case.
+        badge: 💼
+      - title: Annual retainer
+        text: A yearly retainer for teams with a steady caseload.
+        badge: 📅
+    - type: note
+      content: Casefile manages cases and reporting. Evidence collection and analysis are done by your own forensic tooling
+        and examiners; Casefile does not certify evidence or accreditation. Drafts are for review by the lead investigator
+        and are not expert witness statements or legal advice.
+  - key: new_report
+    type: new_run
+    title: Draft report
+    roles:
+    - lead_investigator
+    - admin
+  - key: reports_history
+    type: history
+    title: Report runs
+    source: run
+    roles:
+    - lead_investigator
+    - admin
+  - key: report_run
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: signoff
+    type: approvals
+    title: Sign-off
+    approvals:
+    - report_signoff
+    roles:
+    - lead_investigator
+    - admin
+  - key: case_new
+    type: form
+    title: Open / edit case
+    collection: cases
+    edit: true
+    submit:
+      label: Save case
+      message: Case saved.
+      redirect: cases
+    roles:
+    - lead_investigator
+    - admin
+  - key: cases
+    type: table
+    title: Cases
+    source: collection:cases
+    export: true
+    data:
+      display: table
+      fields:
+      - key: reference
+        label: Case
+      - key: client_name
+        label: Client
+      - key: incident_type
+        label: Type
+        format: badge
+      - key: start_time
+        label: Start
+        format: date
+      - key: lead_email
+        label: Lead
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: start_time
+        dir: desc
+    roles:
+    - lead_investigator
+    - analyst
+    - admin
+  - key: evidence_new
+    type: form
+    title: Add evidence
+    collection: evidence
+    submit:
+      label: Register evidence
+      message: Evidence registered. Log its handling steps in the custody log.
+      redirect: evidence_list
+    roles:
+    - lead_investigator
+    - analyst
+    - admin
+  - key: evidence_list
+    type: table
+    title: Evidence register
+    source: collection:evidence
+    export: true
+    data:
+      display: table
+      fields:
+      - key: case_ref
+        label: Case
+      - key: item_ref
+        label: Item
+      - key: description
+        label: Description
+      - key: source
+        label: Source
+      - key: hash
+        label: Hash
+      - key: collector
+        label: Collector
+      - key: collected_at
+        label: Collected
+        format: date
+      - key: storage_location
+        label: Storage
+    roles:
+    - lead_investigator
+    - analyst
+    - admin
+  - key: custody_new
+    type: form
+    title: Log handling step
+    collection: custody_log
+    submit:
+      label: Add to chain of custody
+      message: Handling step logged.
+      redirect: custody_list
+    roles:
+    - lead_investigator
+    - analyst
+    - admin
+  - key: custody_list
+    type: table
+    title: Chain of custody
+    source: collection:custody_log
+    export: true
+    data:
+      display: table
+      fields:
+      - key: case_ref
+        label: Case
+      - key: item_ref
+        label: Item
+      - key: action
+        label: Step
+        format: badge
+      - key: handled_by
+        label: By
+      - key: handed_to
+        label: To
+      - key: event_time
+        label: When
+        format: date
+      - key: location
+        label: Location
+      - key: hash_verified
+        label: Hash verified
+      sort:
+        field: event_time
+        dir: asc
+    roles:
+    - lead_investigator
+    - analyst
+    - admin
+  - key: findings_list
+    type: table
+    title: Engine results
+    source: collection:findings
+    export: true
+    data:
+      display: table
+      fields:
+      - key: case_ref
+        label: Case
+      - key: kind
+        label: Kind
+        format: badge
+      - key: event_time
+        label: Time
+      - key: description
+        label: Description
+      - key: indicator
+        label: Indicator
+      - key: evidence_ref
+        label: Evidence
+      - key: severity
+        label: Severity
+        format: badge
+      sort:
+        field: event_time
+        dir: asc
+    roles:
+    - lead_investigator
+    - analyst
+    - admin
+  - key: reports_list
+    type: table
+    title: Reports
+    source: collection:reports
+    data:
+      display: table
+      fields:
+      - key: case_ref
+        label: Case
+      - key: title
+        label: Title
+      - key: version
+        label: Version
+      - key: status
+        label: Status
+        format: badge
+    roles:
+    - lead_investigator
+    - analyst
+    - admin
+  - key: report_release
+    type: form
+    title: Release report
+    collection: reports
+    edit: true
+    fields:
+    - status
+    submit:
+      label: Update report status
+      message: Report status updated.
+      redirect: reports_list
+    nav: false
+    roles:
+    - lead_investigator
+    - admin
+  - key: portal_cases
+    type: table
+    title: My cases
+    source: collection:cases
+    data:
+      display: table
+      fields:
+      - key: reference
+        label: Case
+      - key: incident_type
+        label: Type
+        format: badge
+      - key: start_time
+        label: Start
+        format: date
+      - key: status
+        label: Status
+        format: badge
+    roles:
+    - client_viewer
+  - key: portal_reports
+    type: table
+    title: Reports
+    source: collection:reports
+    data:
+      display: table
+      fields:
+      - key: case_ref
+        label: Case
+      - key: title
+        label: Title
+      - key: version
+        label: Version
+      - key: body
+        label: Report
+    roles:
+    - client_viewer
+  - key: account
+    type: account
+    title: Billing
+    roles:
+    - admin
+    - lead_investigator
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - credits
+    - subscription
+    currency: gbp
+    signupCredits: 0
+    metering:
+      creditEur: 0.05
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:correlator:
+        estimate: 20
+        metered: true
+    packs:
+    - key: single_case
+      credits: 2000
+      price: 2000
+      label: Single case (from £2,000)
+    plans:
+    - key: retainer
+      price: 18000
+      interval: year
+      label: Annual retainer
+      credits: 20000
+      creditsReset: never
+      roles:
+      - admin
+  extensions:
+  - key: forensic_engine
+    description: Collection and analysis from hosts, disk images and memory images happen in the firm's own forensic tooling.
+      It must post each timeline event, IOC and artefact to POST /api/hooks/engine_results (with the app's hook secret); Casefile
+      does not run or validate that analysis.
+  - key: evidential_integrity
+    description: Casefile records hashes and handling steps but does not itself verify hashes, give tamper-evident (WORM/signed)
+      storage of the custody log, or provide ISO 17025 accreditation. Court-readiness under UK forensic standards depends
+      on the firm's own procedures; entries should be exported (CSV) for the case file.
+  - key: pricing_note
+    description: Pricing 'from £2,000 per case' and the annual retainer are modelled as a credit pack and a yearly plan with
+      indicative amounts; the owner must set final prices and connect Stripe. Client-facing milestone updates are email only
+      (no SMS/WhatsApp).

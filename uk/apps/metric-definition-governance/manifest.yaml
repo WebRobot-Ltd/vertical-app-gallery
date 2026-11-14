@@ -1,0 +1,860 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: metrica
+  displayName: Metrica
+  tagline: One definition for every business metric, in every dashboard and every AI tool.
+  description: Metrica builds a governed metric catalogue from your warehouse, dbt and BI reports. It finds metrics calculated
+    differently in different places, proposes one canonical definition, routes changes through approval with a full audit
+    trail, and answers business questions using only approved definitions, always showing the SQL.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#12304a'
+      accent: '#0e8f83'
+      background: '#f6f8fa'
+      foreground: '#16222e'
+    fonts:
+      body: Inter
+      display: Inter
+    wordmark:
+    - text: Metr
+      color: primary
+    - text: ica
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin / Head of data
+      assignedBy: admin_emails
+    - key: data_engineer
+      label: Data engineer
+      assignedBy: invite
+    - key: metric_owner
+      label: Metric owner
+      assignedBy: invite
+    - key: business_viewer
+      label: Business viewer
+      assignedBy: signup
+  limits:
+  - action: chat
+    per: user
+    max: 200
+    window: day
+  egress:
+    hosts:
+    - cloud.getdbt.com
+    - '*.snowflakecomputing.com'
+    - '*.looker.com'
+    notes: 'Calls go to the customer''s own accounts with a key the customer pastes: dbt Cloud Administrative/Discovery API,
+      Snowflake SQL API (queries run in the customer''s warehouse; results are not stored by Metrica), Looker API 4.0.'
+  agents:
+  - key: scanner
+    role: scheduled
+    description: Reads warehouse schemas, dbt models and Looker reports; builds draft catalogue entries; finds conflicting
+      definitions; proposes canonical ones for approval.
+    memory: instance
+    awaits:
+    - owner_signoff
+    - head_signoff
+    profile:
+      inline:
+        display_name: Metrica scanner
+        crews:
+        - id: scanner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the Metrica scanner, a careful analytics engineer. Each run: (1) read the current catalogue
+            with read_metrics; (2) list dbt models/metrics with dbt_api, list Looker looks and dashboards with looker_api,
+            and inspect warehouse schemas and view definitions with warehouse_sql (read-only SELECT or SHOW/DESCRIBE statements
+            only, never DDL/DML, never pull row-level personal data); (3) for each metric you find that is missing from the
+            catalogue, save it with write_metric as status ''draft'' (name, business definition in plain words, sql, grain,
+            filters, synonyms, source); never overwrite an approved metric; (4) compare definitions of the same concept found
+            in different places (for example two versions of active customers with different windows, filters or joins) and
+            record each disagreement with append_conflict: metric_name, variants (where each lives and its SQL), difference
+            in plain words, proposed canonical definition and SQL, explanation, severity; (5) for each conflict you propose
+            to resolve, create a change request with append_change_request (status ''pending'') and then call request_owner_signoff
+            and request_head_signoff. Your memory holds what you reported last time: only report new or changed conflicts
+            and say so. If a source is not connected (the tool says so), say which one and continue with the others. Never
+            invent SQL, tables or figures; say plainly when unsure. Finish with a report: a level-1 title ''# Metrica scan
+            — <date>'', then ## New metrics, ## Conflicts found, ## Pending approvals, ## Sources not connected. Under 400
+            words. Call remember at the end with the list of conflicts already reported.'
+          mcp_servers: []
+    appTools:
+    - name: read_metrics
+      description: Read the metric catalogue
+      action: read
+      collection: metrics
+      scope: user
+    - name: write_metric
+      description: Create or update a draft metric in the catalogue
+      action: write
+      collection: metrics
+      scope: user
+    - name: append_conflict
+      description: Record a conflict between metric definitions
+      action: append
+      collection: conflicts
+      scope: all
+    - name: append_change_request
+      description: Create a change request for a metric definition
+      action: append
+      collection: change_requests
+      scope: user
+    - name: warehouse_sql
+      description: 'Run a read-only SQL statement in the customer''s Snowflake warehouse. POST body JSON: {"statement":"...","warehouse":"...","database":"...","schema":"...","timeout":60}'
+      action: http
+      http:
+        method: POST
+        url: https://{host}/api/v2/statements
+        headers:
+          X-Snowflake-Authorization-Token-Type: PROGRAMMATIC_ACCESS_TOKEN
+          Accept: application/json
+        allowPath: false
+        credential:
+          provider: snowflake
+          header: Authorization
+          format: Bearer {secret}
+        attribution: Customer's own Snowflake account
+    - name: dbt_api
+      description: Call the dbt Cloud Administrative API (GET), e.g. /api/v2/accounts/{id}/projects/ or /api/v2/accounts/{id}/jobs/
+      action: http
+      http:
+        method: GET
+        url: https://cloud.getdbt.com/api/v2/accounts
+        allowPath: true
+        credential:
+          provider: dbt_cloud
+          header: Authorization
+          format: Token {secret}
+        attribution: Customer's own dbt Cloud account
+    - name: looker_api
+      description: Call the Looker API 4.0 (GET), e.g. /looks, /dashboards, /lookml_models
+      action: http
+      http:
+        method: GET
+        url: https://{host}/api/4.0
+        allowPath: true
+        credential:
+          provider: looker
+          header: Authorization
+          format: token {secret}
+        attribution: Customer's own Looker instance
+    goalTemplate: 'Scan the workspace. Focus: {?focus}{focus}{/focus}{!focus}all connected sources{/focus}. Today is {date}.'
+    output: markdown
+    writesTo:
+      collection: scan_reports
+      parse: whole
+  - key: publisher
+    role: helper
+    description: Applies an approved change to a metric definition and writes the version history.
+    profile:
+      inline:
+        display_name: Metrica publisher
+        crews:
+        - id: publisher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You apply governance decisions to the metric catalogue. You are given a task: either record that
+            the metric owner approved a change request (set its status to ''owner_approved'' with write_change_request), or
+            apply a change request after the head of data approved it. To apply: first read_change_requests and check the
+            request''s status is ''owner_approved''; if not, set its status to ''awaiting_owner'' and stop. Otherwise read
+            the current metric with read_metrics, append a row to metric_versions with the metric name, new version number
+            (previous + 1), previous and new definition, previous and new SQL, rationale, approvers and the date (the audit
+            trail), then update the metric with write_metric (new definition, sql, version, status ''approved''), and set
+            the change request status to ''applied''. Never apply anything that is not approved by both. Never invent content:
+            copy the proposed definition and SQL exactly. Reply with a two-line summary starting with ''# Change applied''
+            or ''# No change''.'
+          mcp_servers: []
+    appTools:
+    - name: read_change_requests
+      description: Read change requests
+      action: read
+      collection: change_requests
+      scope: user
+    - name: write_change_request
+      description: Update a change request status
+      action: write
+      collection: change_requests
+      scope: user
+    - name: read_metrics
+      description: Read the metric catalogue
+      action: read
+      collection: metrics
+      scope: user
+    - name: write_metric
+      description: Create or update a draft metric in the catalogue
+      action: write
+      collection: metrics
+      scope: user
+    - name: append_version
+      description: Append an audit/version record
+      action: append
+      collection: metric_versions
+      scope: user
+    goalTemplate: '{task} Change request: {event}. Today is {date}.'
+    output: markdown
+  - key: answerer
+    role: main
+    description: Answers business questions in plain English using only approved metric definitions, and shows the SQL.
+    profile:
+      inline:
+        display_name: Metrica answerer
+        crews:
+        - id: answerer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You answer business questions about company metrics. Always: (1) search the catalogue with search_metrics,
+            matching names and synonyms; (2) use ONLY metrics with status ''approved''. If the only match is draft, pending
+            or conflicting, say so and do not answer with it as fact; (3) show the metric name, version and owner, its business
+            definition in one line, and the exact SQL in a fenced sql block, adapting only filters/date ranges the user asked
+            for and saying what you changed; (4) if the user wants the number and the warehouse is connected, run the SQL
+            with warehouse_sql (read-only SELECT only) and report the figure with the date range; if it is not connected,
+            say you cannot run it and show the SQL. Never invent a metric, table or number. If no approved definition exists,
+            say so and suggest asking a data engineer to add one. Be concise. Answer in English.'
+          mcp_servers: []
+    appTools:
+    - name: search_metrics
+      description: Search the metric catalogue by name, synonym or definition
+      action: search
+      collection: metrics
+      scope: user
+    - name: warehouse_sql
+      description: 'Run a read-only SQL statement in the customer''s Snowflake warehouse. POST body JSON: {"statement":"...","warehouse":"...","database":"...","schema":"...","timeout":60}'
+      action: http
+      http:
+        method: POST
+        url: https://{host}/api/v2/statements
+        headers:
+          X-Snowflake-Authorization-Token-Type: PROGRAMMATIC_ACCESS_TOKEN
+          Accept: application/json
+        allowPath: false
+        credential:
+          provider: snowflake
+          header: Authorization
+          format: Bearer {secret}
+        attribution: Customer's own Snowflake account
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New question from {user}: {message}
+
+      Today is {date}.'
+    output: markdown
+  templates:
+  - key: workspace_scan
+    title: Workspace scan
+    description: Scans your connected sources every week, updates the catalogue and lists conflicts and pending approvals
+      by email.
+    agent: scanner
+    params:
+    - name: focus
+      type: text
+      label: Focus (optional)
+      help: e.g. customer and revenue metrics
+    goal: 'Scan the workspace "{instance}". Focus: {?focus}{focus}{/focus}{!focus}all connected sources{/focus}. Today is
+      {date}. Include pending approvals in the report.'
+    schedule:
+      cron: 0 7 * * 1
+      userCanChange: true
+    maxPerUser: 3
+    deliver:
+      to: owner
+      subject: 'Metrica weekly: conflicts and pending approvals'
+  approvals:
+  - key: owner_signoff
+    title: Metric owner sign-off
+    description: The owner of the metric approves the change to its definition.
+    role: metric_owner
+    fields:
+    - metric_name
+    - proposed_definition
+    - proposed_sql
+    - rationale
+    timeoutMinutes: 10080
+  - key: head_signoff
+    title: Head of data sign-off
+    description: The head of data approves the change after the metric owner.
+    role: admin
+    fields:
+    - metric_name
+    - proposed_definition
+    - proposed_sql
+    - rationale
+    timeoutMinutes: 10080
+  triggers:
+  - key: owner_approved
+    'on':
+      approval: owner_signoff
+      decision: approved
+    start:
+      agent: publisher
+    goal: Record that the metric owner approved this change request (set status owner_approved).
+    asUser: true
+  - key: head_approved
+    'on':
+      approval: head_signoff
+      decision: approved
+    start:
+      agent: publisher
+    goal: 'The head of data approved this change request: apply it if the owner has approved too, and write the version history.'
+    asUser: true
+  - key: new_change_request
+    'on':
+      collection: change_requests
+      op: insert
+    notify:
+      to:
+      - admins
+      - record.owner_email
+      subject: 'Metrica: approval needed for {record.metric_name}'
+      body: 'A change to the definition of {record.metric_name} was proposed and needs approval from the metric owner and
+        the head of data.
+
+
+        Reason: {record.rationale}'
+      link: approvals
+  data:
+    credentials:
+    - provider: snowflake
+      kind: api_key
+      scope: user
+      label: Snowflake (programmatic access token)
+      help: In Snowflake create a programmatic access token for a read-only role. Use a service account with SELECT and metadata
+        access only.
+      hostLabel: your-account.snowflakecomputing.com
+    - provider: dbt_cloud
+      kind: api_key
+      scope: user
+      label: dbt Cloud (service token)
+      help: 'dbt Cloud: Account settings, Service tokens, read-only permission.'
+    - provider: looker
+      kind: api_key
+      scope: user
+      label: Looker (access token)
+      help: A Looker API access token for a read-only service user.
+      hostLabel: your-company.cloud.looker.com
+    collections:
+    - name: metrics
+      description: 'The metric catalogue: one record per metric, current version'
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Name
+      - name: definition
+        type: textarea
+        required: true
+        label: Business definition
+      - name: sql
+        type: textarea
+        required: true
+        label: SQL
+      - name: owner_email
+        type: email
+        required: true
+        label: Owner
+      - name: grain
+        type: text
+        label: Grain
+      - name: filters
+        type: textarea
+        label: Filters
+      - name: synonyms
+        type: text
+        label: Synonyms
+      - name: source
+        type: text
+        label: Found in
+      - name: status
+        type: select
+        label: Status
+        default: draft
+        options:
+        - draft
+        - approved
+        - deprecated
+      - name: version
+        type: number
+        label: Version
+        default: 1
+      - name: members
+        type: array
+        label: Workspace members (emails)
+        fields:
+        - name: email
+          type: email
+      searchable: true
+      access:
+      - role: data_engineer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: metric_owner
+        where:
+          owner_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: business_viewer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: metric_versions
+      description: Version history and audit trail of every definition change
+      ownedBy: user
+      fields:
+      - name: metric_name
+        type: text
+        label: Metric
+      - name: version
+        type: number
+        label: Version
+      - name: previous_definition
+        type: textarea
+        label: Previous definition
+      - name: new_definition
+        type: textarea
+        label: New definition
+      - name: previous_sql
+        type: textarea
+        label: Previous SQL
+      - name: new_sql
+        type: textarea
+        label: New SQL
+      - name: rationale
+        type: textarea
+        label: Reason
+      - name: approvers
+        type: text
+        label: Approved by
+      - name: applied_on
+        type: date
+        label: Date
+      - name: members
+        type: array
+        label: Members
+        fields:
+        - name: email
+          type: email
+      retentionDays: 3650
+      access:
+      - role: data_engineer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: metric_owner
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: change_requests
+      description: Proposed changes to a metric definition awaiting approval
+      ownedBy: user
+      fields:
+      - name: metric_name
+        type: text
+        required: true
+        label: Metric
+      - name: owner_email
+        type: email
+        label: Metric owner
+      - name: current_definition
+        type: textarea
+        label: Current definition
+      - name: proposed_definition
+        type: textarea
+        label: Proposed definition
+      - name: proposed_sql
+        type: textarea
+        label: Proposed SQL
+      - name: rationale
+        type: textarea
+        label: Explanation
+      - name: status
+        type: select
+        label: Status
+        default: pending
+        options:
+        - pending
+        - owner_approved
+        - awaiting_owner
+        - applied
+        - rejected
+      - name: members
+        type: array
+        label: Members
+        fields:
+        - name: email
+          type: email
+      access:
+      - role: metric_owner
+        where:
+          owner_email: '{user.email}'
+        can:
+        - read
+      - role: data_engineer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: conflicts
+      description: Metrics calculated differently in different places
+      ownedBy: instance
+      fields:
+      - name: metric_name
+        type: text
+        label: Metric
+      - name: variants
+        type: textarea
+        label: Variants found
+      - name: difference
+        type: textarea
+        label: What differs
+      - name: proposed_definition
+        type: textarea
+        label: Proposed canonical definition
+      - name: proposed_sql
+        type: textarea
+        label: Proposed SQL
+      - name: explanation
+        type: textarea
+        label: Explanation
+      - name: severity
+        type: select
+        label: Severity
+        options:
+        - low
+        - medium
+        - high
+    - name: scan_reports
+      description: Weekly scan reports
+      ownedBy: instance
+  views:
+  - key: home
+    type: page
+    title: Metrica
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: Governed metrics for data teams
+      title: One definition of every **business metric**, everywhere.
+      text: Metrica reads your warehouse, dbt and BI reports, builds a metric catalogue, finds metrics that are calculated
+        differently in different places, and makes sure dashboards and AI tools answer from the same approved definitions.
+        Your data stays in your own warehouse.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Connect
+        text: Add read-only keys for Snowflake, dbt Cloud and Looker. Queries run in your warehouse.
+        badge: 🔌
+      - title: Catalogue
+        text: 'An agent scans schemas, models and reports and drafts each metric: definition, SQL, owner, grain, filters,
+          synonyms.'
+        badge: 📚
+      - title: Resolve conflicts
+        text: Two versions of active customers? The agent proposes one canonical definition and explains why.
+        badge: ⚖️
+      - title: Approve
+        text: Changes need the metric owner and the head of data, with full audit trail and version history.
+        badge: ✅
+      - title: Ask
+        text: Business users ask in plain English, in the chat or through the API your LLM tools call. Answers use approved
+          definitions and show the SQL.
+        badge: 💬
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: Workspace
+        text: £600 a month per workspace, up to 25 users.
+        badge: £600
+      - title: Enterprise
+        text: 'More users, SSO and custom connectors: contact us.'
+        badge: 🏢
+    - type: note
+      content: 'Metrica reads metadata and runs only read-only queries you approve through your own keys. Metric definitions
+        are decision support: verify before relying on them for regulatory reporting.'
+  - key: ask
+    type: chat
+    title: Ask
+    source: agent:answerer
+    examples:
+    - What was active customers last month?
+    - How do we define net revenue retention?
+    - Show the SQL for monthly recurring revenue
+    placeholder: Ask about a business metric…
+    roles:
+    - admin
+    - data_engineer
+    - metric_owner
+    - business_viewer
+  - key: catalogue
+    type: table
+    title: Metric catalogue
+    source: collection:metrics
+    export: true
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Metric
+      - key: status
+        label: Status
+        format: badge
+      - key: owner_email
+        label: Owner
+      - key: grain
+        label: Grain
+      - key: synonyms
+        label: Synonyms
+      - key: version
+        label: Version
+        format: number
+      - key: sql
+        label: SQL
+      sort:
+        field: name
+        dir: asc
+    roles:
+    - admin
+    - data_engineer
+    - metric_owner
+    - business_viewer
+  - key: add_metric
+    type: form
+    title: Add or edit a metric
+    collection: metrics
+    edit: true
+    submit:
+      label: Save metric
+      message: Metric saved as a draft until it is approved.
+      redirect: catalogue
+    roles:
+    - admin
+    - data_engineer
+  - key: conflicts_view
+    type: table
+    title: Conflicts
+    source: collection:conflicts
+    data:
+      display: table
+      fields:
+      - key: metric_name
+        label: Metric
+      - key: severity
+        label: Severity
+        format: badge
+      - key: difference
+        label: What differs
+      - key: proposed_definition
+        label: Proposed definition
+      - key: explanation
+        label: Why
+    roles:
+    - admin
+    - data_engineer
+    - metric_owner
+  - key: changes
+    type: table
+    title: Change requests
+    source: collection:change_requests
+    data:
+      display: table
+      fields:
+      - key: metric_name
+        label: Metric
+      - key: status
+        label: Status
+        format: badge
+      - key: proposed_definition
+        label: Proposed definition
+      - key: rationale
+        label: Explanation
+    roles:
+    - admin
+    - data_engineer
+    - metric_owner
+  - key: approvals
+    type: approvals
+    title: Approvals
+    approvals:
+    - owner_signoff
+    - head_signoff
+    roles:
+    - admin
+    - metric_owner
+  - key: audit
+    type: table
+    title: Audit trail and versions
+    source: collection:metric_versions
+    export: true
+    data:
+      display: table
+      fields:
+      - key: metric_name
+        label: Metric
+      - key: version
+        label: Version
+        format: number
+      - key: applied_on
+        label: Date
+        format: date
+      - key: approvers
+        label: Approved by
+      - key: previous_definition
+        label: Before
+      - key: new_definition
+        label: After
+      - key: rationale
+        label: Reason
+      sort:
+        field: applied_on
+        dir: desc
+    roles:
+    - admin
+    - data_engineer
+    - metric_owner
+  - key: scans
+    type: instances
+    title: Scans
+    template: workspace_scan
+    roles:
+    - admin
+    - data_engineer
+  - key: connections
+    type: account
+    title: Connections and plan
+    roles:
+    - admin
+    - data_engineer
+  - key: admin
+    type: tabs
+    title: Admin
+    children:
+    - admin_users
+    - admin_data
+    roles:
+    - admin
+  - key: admin_users
+    type: admin
+    title: Users
+    roles:
+    - admin
+    nav: false
+  - key: admin_data
+    type: admin
+    title: Data
+    roles:
+    - admin
+    nav: false
+  exports:
+  - path: /api/metrics
+    source: collection:metrics
+    format: json
+    access: token
+  notifications:
+    emailOnRunDone: false
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: workspace
+      price: 600
+      interval: month
+      label: Workspace (up to 25 users)
+      includes:
+      - Metric catalogue
+      - Weekly conflict scans
+      - Approval workflow with audit trail
+      - Chat and API for approved answers
+      - Up to 25 users
+  extensions:
+  - key: oauth_connections
+    description: 'OAuth sign-in to Looker, dbt Cloud, BigQuery and Google/Snowflake is not available yet: connections use
+      pasted API keys or tokens (service-account fallback). BigQuery, Redshift and Postgres need a connector that is not available
+      yet; Snowflake is the supported warehouse for now.'
+  - key: workspace_user_cap
+    description: The cap of 25 users per workspace and the enterprise tier on request are not enforced by the manifest; handled
+      commercially. Enterprise is contact-only.
+  - key: question_api
+    description: The API for other LLM tools currently exposes the approved catalogue at /api/metrics (token access) and the
+      app's built-in MCP endpoint; a dedicated natural-language question endpoint is not available yet.

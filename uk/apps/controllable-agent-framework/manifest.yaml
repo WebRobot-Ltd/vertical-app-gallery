@@ -1,0 +1,654 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: plancraft
+  displayName: Plancraft
+  tagline:
+    en: Hosted dashboard for agents that plan first, ask humans, then act.
+  description:
+    en: Plancraft Cloud collects every run of your Plancraft agents (plan, steps, tool calls, outputs), shows pending human
+      clarifications, applies approval policies and tracks failures and token costs. The Plancraft library itself is free
+      and open source.
+  langs:
+  - en
+  defaultLang: en
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#16213e'
+      accent: '#e8590c'
+      background: '#f8f9fb'
+      foreground: '#1a1d26'
+    fonts:
+      body: Inter
+      display: Space Grotesk
+      mono: JetBrains Mono
+    wordmark:
+    - text: Plan
+      color: primary
+    - text: craft
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Open dashboard
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      assignedBy: signup
+  limits:
+  - action: agent:triage
+    per: user
+    max: 20
+    window: day
+    roles:
+    - user
+  - action: create:projects
+    max: 1
+    window: total
+    plans:
+      pro: 10
+      team: -1
+  agents:
+  - key: triage
+    role: main
+    description: Reads a run's plan and steps and explains what went wrong, or compares it with another run.
+    profile:
+      inline:
+        display_name: Plancraft run triage
+        crews:
+        - id: triage
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a debugging assistant for developers using the Plancraft agent library. You receive the
+            plan, the steps and the status of one agent run, and optionally a question. Start with a level-1 Markdown title
+            "# Run <run id> — <diagnosis in 5 words>". Sections with ## headings: Summary, What the plan intended, Where it
+            diverged or failed, Clarifications and approvals involved, Suggested fixes (concrete changes to the plan, tool
+            definitions or policies). You may call read_runs to fetch other runs of the same user for comparison. Quote only
+            what is in the data; never invent steps, tool calls or token figures. If data is missing, say so.'
+    appTools:
+    - name: read_runs
+      description: Read runs of the user's projects
+      action: read
+      collection: agent_runs
+      scope: user
+    context:
+    - key: plan
+      from: collection:agent_runs.plan
+    - key: steps
+      from: collection:agent_runs.steps
+    - key: run_status
+      from: collection:agent_runs.status
+    goalTemplate: 'Run: {run}
+
+      Status: {run_status}
+
+      Plan: {plan}
+
+      Steps and tool calls: {steps}
+
+      {?question}Question from the developer: {question}{/question}{!question}Explain what happened and how to improve it.{/question}
+
+      Write in the language with ISO code {lang}.'
+    output: markdown
+  inputForm:
+    title:
+      en: Analyse a run
+    fields:
+    - name: run
+      type: select
+      required: true
+      label:
+        en: Run
+      optionsFrom: collection:agent_runs
+    - name: question
+      type: textarea
+      maxLength: 500
+      label:
+        en: Question (optional)
+  data:
+    collections:
+    - name: projects
+      description: Projects of a team; members hold their emails
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Project name
+      - name: description
+        type: textarea
+        label: Description
+      - name: members
+        type: array
+        label: Teammate emails
+        help: Emails of the teammates who can see this project's runs
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: agent_runs
+      description: Agent runs sent by the Plancraft library
+      ownedBy: user
+      fields:
+      - name: run_id
+        type: text
+        required: true
+      - name: project
+        type: text
+        required: true
+      - name: agent_version
+        type: text
+      - name: status
+        type: select
+        options:
+        - planned
+        - awaiting_human
+        - running
+        - succeeded
+        - failed
+      - name: plan
+        type: json
+      - name: steps
+        type: json
+      - name: tool_calls
+        type: json
+      - name: output
+        type: textarea
+      - name: tokens
+        type: number
+      - name: cost_usd
+        type: number
+      - name: started_at
+        type: date
+      - name: members
+        type: array
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      retentionDays: 90
+    - name: clarifications
+      description: Questions an agent asks a human before acting
+      ownedBy: user
+      fields:
+      - name: run_id
+        type: text
+        required: true
+      - name: project
+        type: text
+      - name: kind
+        type: select
+        options:
+        - approve_payment
+        - confirm_recipient
+        - missing_input
+        - other
+      - name: question
+        type: textarea
+        required: true
+      - name: assignee_email
+        type: email
+        required: true
+      - name: status
+        type: select
+        options:
+        - pending
+        - answered
+        - rejected
+        default: pending
+      - name: answer
+        type: textarea
+      - name: members
+        type: array
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: user
+        where:
+          assignee_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: policies
+      description: Tools that always need human approval
+      ownedBy: user
+      fields:
+      - name: project
+        type: text
+        required: true
+      - name: tool
+        type: text
+        required: true
+        label: Tool name
+      - name: rule
+        type: select
+        options:
+        - always_approve
+        - approve_above_amount
+        - never_allow
+        default: always_approve
+      - name: approver_email
+        type: email
+        label: Designated approver
+      - name: members
+        type: array
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+  triggers:
+  - key: run_ingest
+    description: The library posts each run event
+    'on':
+      webhook: true
+    write:
+      collection: agent_runs
+      fields:
+        run_id: run_id
+        project: project
+        agent_version: agent_version
+        status: status
+        plan: plan
+        steps: steps
+        tool_calls: tool_calls
+        output: output
+        tokens: tokens
+        cost_usd: cost_usd
+        started_at: started_at
+        members: members
+      keyBy: run_id
+  - key: clarification_ingest
+    description: The library posts a clarification request
+    'on':
+      webhook: true
+    write:
+      collection: clarifications
+      fields:
+        run_id: run_id
+        project: project
+        kind: kind
+        question: question
+        assignee_email: assignee_email
+        status: status
+        members: members
+      keyBy: run_id
+  - key: clarification_email
+    'on':
+      collection: clarifications
+      op: insert
+      where:
+        status: pending
+    notify:
+      to:
+      - record.assignee_email
+      subject: 'Plancraft: your decision is needed on run {record.run_id}'
+      body: 'An agent is waiting for you.
+
+
+        {record.question}
+
+
+        Open the dashboard to answer.'
+      link: answer
+  - key: clarification_answered
+    'on':
+      collection: clarifications
+      op: update
+      where:
+        status: answered
+    notify:
+      to:
+      - owner
+      subject: Clarification answered for run {record.run_id}
+      body: 'The answer was: {record.answer}'
+      link: clarifications
+  views:
+  - key: home
+    type: page
+    nav: false
+    sections:
+    - type: hero
+      eyebrow: Open source library + hosted dashboard
+      title: Agents that **plan first**, ask a human, then act.
+      text: Plancraft is a free open-source library with plan objects, tool definitions, clarification requests and execution
+        hooks. Plancraft Cloud shows every run, collects human answers and keeps agents under your policies.
+      actions:
+      - label: Open the dashboard
+        href: /login
+        style: primary
+      - label: Library on GitHub
+        href: https://github.com/plancraft
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Install the library
+        text: Add Plancraft to your code, define tools and let the agent produce a plan.
+        badge: '1'
+      - title: Send runs to the cloud
+        text: Execution hooks post plans, steps, tool calls and outputs to your project.
+        badge: '2'
+      - title: Humans decide
+        text: Clarifications reach the designated person in the dashboard and by email.
+        badge: '3'
+      - title: Inspect and improve
+        text: Review runs, failures, costs, and ask the assistant to explain or compare runs.
+        badge: '4'
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: Library
+        text: Free and open source.
+        badge: Free
+      - title: Dashboard free tier
+        text: One project and a small monthly number of runs.
+      - title: Pro and Team
+        text: More projects and runs, teammates and longer history.
+    - type: note
+      content: Plancraft Cloud stores run data for 90 days. Never send secrets in plans or outputs.
+  - key: overview
+    type: page
+    title: Overview
+    roles:
+    - user
+    - admin
+    sections:
+    - type: data
+      title: Runs, failures and costs
+      source: collection:agent_runs
+      display: kpi
+      kpis:
+      - label: Runs
+        agg: count
+      - label: Tokens
+        agg: sum
+        field: tokens
+        format: number
+      - label: Cost (USD)
+        agg: sum
+        field: cost_usd
+        format: money
+    - type: data
+      title: Failed runs
+      source: collection:agent_runs
+      display: table
+      fields:
+      - key: run_id
+      - key: project
+      - key: agent_version
+      - key: started_at
+        format: date
+      - key: cost_usd
+        format: money
+      filters:
+      - field: status
+        op: '='
+        value: failed
+      sort:
+        field: started_at
+        dir: desc
+      limit: 20
+      empty: No failures.
+    - type: data
+      title: Clarifications pending
+      source: collection:clarifications
+      display: table
+      fields:
+      - key: run_id
+      - key: kind
+        format: badge
+      - key: question
+      - key: assignee_email
+      filters:
+      - field: status
+        op: '='
+        value: pending
+      limit: 20
+      empty: Nothing is waiting for a human.
+    - type: data
+      title: Cost by day
+      source: collection:agent_runs
+      display: chart
+      chart: bar
+      fields:
+      - key: date
+      - key: total
+      groupBy:
+        field: started_at
+        bucket: day
+        aggs:
+        - key: total
+          agg: sum
+          field: cost_usd
+  - key: run_list
+    type: table
+    title: Runs
+    source: collection:agent_runs
+    columns:
+    - run_id
+    - project
+    - agent_version
+    - status
+    - tokens
+    - cost_usd
+    - started_at
+    data:
+      display: table
+      fields:
+      - key: run_id
+      - key: project
+      - key: agent_version
+      - key: status
+        format: badge
+      - key: tokens
+        format: number
+      - key: cost_usd
+        format: money
+      - key: started_at
+        format: date
+      sort:
+        field: started_at
+        dir: desc
+      limit: 100
+    export: true
+    roles:
+    - user
+    - admin
+  - key: clarifications
+    type: table
+    title: Clarifications
+    source: collection:clarifications
+    data:
+      display: table
+      fields:
+      - key: run_id
+      - key: kind
+        format: badge
+      - key: question
+      - key: assignee_email
+      - key: status
+        format: badge
+      - key: answer
+      limit: 100
+    roles:
+    - user
+    - admin
+  - key: answer
+    type: form
+    title: Answer a clarification
+    collection: clarifications
+    fields:
+    - answer
+    - status
+    edit: true
+    submit:
+      label: Send answer
+      message: Answer sent to the agent.
+      redirect: clarifications
+    nav: false
+    roles:
+    - user
+    - admin
+  - key: new_project
+    type: form
+    title: New project
+    collection: projects
+    fields:
+    - name
+    - description
+    - members
+    submit:
+      label: Create project
+      message: Project created.
+      redirect: projects
+    roles:
+    - user
+    - admin
+  - key: projects
+    type: table
+    title: Projects
+    source: collection:projects
+    data:
+      display: table
+      fields:
+      - key: name
+      - key: description
+      - key: members
+    roles:
+    - user
+    - admin
+  - key: new_policy
+    type: form
+    title: New policy
+    collection: policies
+    fields:
+    - project
+    - tool
+    - rule
+    - approver_email
+    - members
+    submit:
+      label: Save policy
+      message: Policy saved.
+      redirect: policies
+    roles:
+    - user
+    - admin
+  - key: policies
+    type: table
+    title: Policies
+    source: collection:policies
+    data:
+      display: table
+      fields:
+      - key: project
+      - key: tool
+      - key: rule
+        format: badge
+      - key: approver_email
+    roles:
+    - user
+    - admin
+  - key: new_triage
+    type: new_run
+    title: Analyse a run
+    roles:
+    - user
+    - admin
+  - key: analyses
+    type: history
+    title: My analyses
+    source: run
+    roles:
+    - user
+    - admin
+  - key: analysis
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: account
+    type: account
+    title: Plan
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: pro
+      price: 29
+      interval: month
+      label: Pro
+      includes:
+      - 10 projects
+      - 50,000 runs per month
+      - 90 days history
+    - key: team
+      price: 99
+      interval: month
+      label: Team
+      includes:
+      - Unlimited projects
+      - 500,000 runs per month
+      - Teammates and policies
+  notifications:
+    emailOnRunDone: true
+  extensions:
+  - key: api_keys
+    description: 'Per-project API keys, generated and revoked by developers, are not available yet: the library authenticates
+      with the app''s single webhook secret, so runs are attributed through the project and members fields it sends.'
+  - key: run_quota
+    description: Free-tier and paid limits on runs ingested per month cannot be enforced on webhook writes yet; only project
+      counts are limited.
+  - key: replay_compare
+    description: Replaying a run and diffing versions side by side is not available; the triage assistant compares runs in
+      words.
+  - key: end_user_credentials
+    description: 'Per-end-user tool credentials for the developers'' agents are not available: app credentials cover only
+      the app''s own users.'
+  - key: approval_enforcement
+    description: Policies are stored and visible; enforcing them happens in the Plancraft library hooks, which read them.

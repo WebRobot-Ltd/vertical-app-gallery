@@ -1,0 +1,1046 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: movara
+  displayName: Movara
+  tagline: Digital physiotherapy for musculoskeletal pain and pelvic health.
+  description: Movara is a CQC-registered digital physiotherapy clinic. Patients complete an assessment, and an AI physio
+    drafts an exercise programme from protocols signed off by our clinicians. A physiotherapist reviews every programme before
+    it starts. Patients get daily reminders and weekly check-ins, and a physio steps in if pain gets worse.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0f5f5a'
+      accent: '#e8743b'
+      background: '#f6faf9'
+      foreground: '#12201f'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Mov
+      color: primary
+    - text: ara
+      color: accent
+    buttonShape: rounded
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Safety
+      href: '#safety'
+    cta:
+      label: Start assessment
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: patient
+      label: Patient
+      assignedBy: signup
+    - key: physio
+      label: Physiotherapist
+      assignedBy: invite
+    - key: clinical_lead
+      label: Clinical lead
+      assignedBy: invite
+    - key: commissioner
+      label: NHS commissioner
+      assignedBy: invite
+  agents:
+  - key: drafter
+    role: main
+    description: Drafts an exercise programme from a clinician-signed-off protocol. A physiotherapist reviews it before it
+      starts. It never diagnoses.
+    profile:
+      inline:
+        display_name: Movara AI physio (programme drafter)
+        crews:
+        - id: drafter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the AI physio assistant of Movara, a CQC-registered UK physiotherapy clinic. You draft exercise
+            programmes for a human physiotherapist to review. You NEVER diagnose, never name a condition as the cause of the
+            patient''s symptoms, and never promise outcomes. You only use protocols returned by the tool read_protocols whose
+            status is signed_off. Pick the protocol that matches the pain area. If none matches, or the case is unusual, say
+            so and draft nothing beyond a short note for the physio. Never invent exercises outside the protocol.
+
+            Steps: 1) read the assessment given in the goal. 2) Call read_protocols. 3) Call save_programme ONCE with these
+            fields: patient_email, title, summary (plain-language, 3-5 sentences, no diagnosis), exercises (a numbered list
+            with sets, reps, frequency and safety stops for each exercise), protocol_used (the protocol name and version),
+            status "pending_review", weeks (a number). 4) Reply with a short report that starts with a level-1 title "# Draft
+            programme for review — <pain area>". Then add ## Why this protocol, ## Points for the physiotherapist to check,
+            ## Not covered. State clearly that the programme does not start until a physiotherapist approves it. Write in
+            English, with a warm and plain tone.'
+    goalTemplate: 'New assessment (record): {event}
+
+      Today is {date}. Draft the programme from the signed-off protocols, then save it for physiotherapist review. Write in
+      English.'
+    appTools:
+    - name: read_protocols
+      description: Read the clinic's clinician-written protocols (use only those with status signed_off)
+      action: read
+      collection: protocols
+      scope: all
+    - name: save_programme
+      description: Save a draft programme for the patient (status pending_review)
+      action: append
+      collection: programmes
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.4
+  - key: form_coach
+    role: helper
+    description: Looks at the patient's exercise photos and gives feedback on form, within the programme. It never diagnoses.
+    profile:
+      inline:
+        display_name: Movara movement check coach
+        crews:
+        - id: form_coach
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You give feedback on exercise form from photos the patient took, for a Movara physiotherapy programme.
+            First call read_programme to see the patient''s programme. Then call read_upload with each file id to look at
+            the photos. Comment only on posture and alignment that you can actually see: joint position, back and pelvis position,
+            range of movement. Offer simple cues to try. If the photos are unclear, say so and ask for a better angle. NEVER
+            diagnose, never say what is wrong with the patient''s body, and never tell them to push through pain. If the patient
+            mentions pain, new symptoms, or you see something worrying, tell them to stop the exercise and message their physiotherapist.
+            Then call save_feedback ONCE with the fields exercise and feedback (plain text, at most 150 words). Reply with
+            a short level-1 titled report "# Form feedback — <exercise>" in English.'
+    goalTemplate: 'New movement check: {event}
+
+      Open the photos with read_upload, give feedback on form, and save it. Today is {date}.'
+    appTools:
+    - name: read_programme
+      description: Read the patient's own programmes
+      action: read
+      collection: programmes
+      scope: user
+    - name: read_upload
+      description: Read a photo the patient uploaded
+      action: read_file
+    - name: save_feedback
+      description: Save the form feedback for the patient
+      action: append
+      collection: form_feedback
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.4
+  - key: daily_coach
+    role: scheduled
+    description: The patient's daily exercise reminder, with encouragement and the weekly check-in prompt.
+    memory: instance
+    profile:
+      inline:
+        display_name: Movara daily coach
+        crews:
+        - id: daily_coach
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You send one patient a short daily exercise reminder. The patient''s programmes and recent check-ins
+            are in the goal. Use only programmes with status active. If there is none, say the programme is still being reviewed
+            by a physiotherapist. Start with "# Today''s exercises". Then list today''s exercises from the programme, briefly.
+            Add one encouraging line. If today is a Monday, ask the patient to complete the weekly check-in and pain score
+            in the app (Check-in page). If the latest check-in shows pain worse or new symptoms, do not push the exercises:
+            tell the patient a physiotherapist has been alerted. For red-flag symptoms (loss of bladder or bowel control,
+            numbness between the legs, chest pain, sudden weakness), tell them to call 999 or NHS 111 now. Never diagnose
+            and never invent exercises. Under 120 words. At the end call remember once with one line about adherence so far.'
+    output: markdown
+    limits:
+      maxTurns: 4
+      maxBudgetUsd: 0.2
+    context:
+    - key: programme
+      from: collection:programmes
+    - key: recent_checkins
+      from: collection:checkins
+    goalTemplate: 'Today is {date}. Patient programmes: {programme}
+
+      Recent check-ins: {recent_checkins}
+
+      Write today''s reminder in English.'
+  templates:
+  - key: daily_plan
+    title: My daily exercise reminders
+    description: A reminder every morning with your exercises, plus a weekly check-in prompt.
+    agent: daily_coach
+    params:
+    - name: note
+      type: text
+      label: Anything the coach should keep in mind (optional)
+      maxLength: 200
+    goal: 'Daily reminder for "{instance}". Today is {date}. Note from the patient: {note}. Write in English.'
+    schedule:
+      cron: 0 7 * * *
+      userCanChange: true
+    maxPerUser: 1
+    deliver:
+      to: owner
+  data:
+    collections:
+    - name: assessments
+      ownedBy: user
+      description: The patient's initial assessment, self-referred or NHS referral
+      fields:
+      - name: patient_name
+        type: text
+        required: true
+        label: Full name
+      - name: patient_email
+        type: email
+        required: true
+        label: Email
+      - name: referral_source
+        type: select
+        required: true
+        label: How are you joining?
+        options:
+        - value: self
+          label: Self-referral (private)
+        - value: nhs
+          label: NHS referral
+      - name: nhs_reference
+        type: text
+        label: NHS referral reference
+        visibleWhen: referral_source == 'nhs'
+      - name: service_line
+        type: select
+        required: true
+        label: What is it about?
+        options:
+        - value: msk
+          label: Muscle, joint or back pain
+        - value: pelvic
+          label: Pelvic health
+      - name: pain_area
+        type: select
+        required: true
+        label: Main area of pain
+        options:
+        - neck
+        - shoulder
+        - lower_back
+        - hip
+        - knee
+        - ankle_foot
+        - pelvic_floor
+        - other
+      - name: duration
+        type: select
+        required: true
+        label: How long?
+        options:
+        - value: under_6w
+          label: Under 6 weeks
+        - value: 6w_3m
+          label: 6 weeks to 3 months
+        - value: over_3m
+          label: Over 3 months
+      - name: severity
+        type: number
+        required: true
+        label: Pain now (0 = none, 10 = worst)
+      - name: red_flag_answer
+        type: select
+        required: true
+        label: 'Do you have ANY of these: loss of bladder or bowel control, numbness between the legs, unexplained weight
+          loss, fever, chest pain, a recent serious injury or fall, constant night pain, or weakness that is getting worse?'
+        options:
+        - value: 'no'
+          label: 'No'
+        - value: 'yes'
+          label: 'Yes'
+      - name: red_flag_details
+        type: textarea
+        label: If yes, tell us more
+        maxLength: 600
+      - name: activity_level
+        type: select
+        required: true
+        label: Activity level
+        options:
+        - low
+        - moderate
+        - high
+      - name: goals
+        type: textarea
+        required: true
+        label: What do you want to be able to do?
+        maxLength: 600
+      - name: consent
+        type: boolean
+        required: true
+        label: I agree that Movara clinicians can see my information to provide my care
+      access:
+      - role: physio
+        can:
+        - read
+        - write
+      - role: clinical_lead
+        can:
+        - read
+    - name: programmes
+      ownedBy: user
+      description: Exercise programmes drafted by the AI physio and reviewed by a physiotherapist
+      fields:
+      - name: patient_email
+        type: email
+        label: Patient
+      - name: title
+        type: text
+        required: true
+        label: Programme
+      - name: summary
+        type: textarea
+        label: Summary
+      - name: exercises
+        type: textarea
+        label: Exercises
+      - name: protocol_used
+        type: text
+        label: Protocol (signed off)
+      - name: weeks
+        type: number
+        label: Weeks
+      - name: status
+        type: select
+        label: Status
+        options:
+        - value: pending_review
+          label: Waiting for physio review
+        - value: active
+          label: Active
+        - value: changes_requested
+          label: Being changed
+        - value: completed
+          label: Completed
+      - name: physio_notes
+        type: textarea
+        label: Physiotherapist notes
+      access:
+      - role: physio
+        can:
+        - read
+        - write
+      - role: clinical_lead
+        can:
+        - read
+        - write
+    - name: movement_checks
+      ownedBy: user
+      description: Photos of an exercise taken with the phone camera
+      fields:
+      - name: exercise
+        type: text
+        required: true
+        label: Which exercise?
+      - name: photos
+        type: file
+        required: true
+        label: Photos of the exercise (start and end position)
+        accept:
+        - jpg
+        - jpeg
+        - png
+        - webp
+        maxMb: 10
+        multiple: true
+        capture: true
+      - name: notes
+        type: textarea
+        label: Anything that hurt or felt wrong?
+        maxLength: 400
+      access:
+      - role: physio
+        can:
+        - read
+    - name: form_feedback
+      ownedBy: user
+      description: AI form feedback on movement checks
+      fields:
+      - name: exercise
+        type: text
+        label: Exercise
+      - name: feedback
+        type: textarea
+        label: Feedback
+      access:
+      - role: physio
+        can:
+        - read
+    - name: checkins
+      ownedBy: user
+      description: Weekly progress check-ins with pain scores
+      fields:
+      - name: date
+        type: date
+        required: true
+        label: Date
+      - name: pain_score
+        type: number
+        required: true
+        label: Pain this week (0-10)
+      - name: pain_trend
+        type: select
+        required: true
+        label: Compared with last week, your pain is
+        options:
+        - value: better
+          label: Better
+        - value: same
+          label: The same
+        - value: worse
+          label: Worse
+      - name: exercises_done
+        type: select
+        required: true
+        label: Exercises done
+        options:
+        - all
+        - most
+        - some
+        - none
+      - name: new_symptoms
+        type: select
+        required: true
+        label: Any new symptoms (numbness, weakness, loss of bladder/bowel control)?
+        options:
+        - value: 'no'
+          label: 'No'
+        - value: 'yes'
+          label: 'Yes'
+      - name: comments
+        type: textarea
+        label: Comments
+        maxLength: 500
+      access:
+      - role: physio
+        can:
+        - read
+        - write
+      - role: clinical_lead
+        can:
+        - read
+    - name: protocols
+      ownedBy: shared
+      description: Clinical protocols written and signed off by the clinicians. The admins keep them on the data page.
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Protocol
+      - name: version
+        type: text
+        label: Version
+      - name: pain_area
+        type: text
+        label: Pain area
+      - name: content
+        type: textarea
+        label: 'Protocol: exercises, progressions, safety stops'
+      - name: signed_off_by
+        type: text
+        label: Signed off by
+      - name: status
+        type: select
+        label: Status
+        options:
+        - draft
+        - signed_off
+        - retired
+  views:
+  - key: home
+    type: page
+    title: Movara
+    nav: false
+    sections:
+    - type: hero
+      eyebrow: CQC-registered digital physiotherapy
+      title: Physio that fits your day, **led by real physiotherapists**.
+      text: Tell us about your pain, get an exercise programme reviewed by one of our physiotherapists, and follow it on your
+        phone with daily reminders and weekly check-ins.
+      actions:
+      - label: Start your assessment
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+      band: true
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Assess
+        text: Answer a short questionnaire about your pain, activity and goals.
+      - title: Review
+        text: An AI assistant drafts a programme from protocols signed off by our clinicians. A physiotherapist checks and
+          can change every programme before you start.
+      - title: Move
+        text: Daily push reminders, photo form checks, weekly pain scores. If your pain gets worse, a physio is alerted.
+    - type: cards
+      id: safety
+      title: Safety first
+      items:
+      - title: Red-flag answers
+        text: If your answers suggest something urgent, a clinician is alerted straight away and we tell you to seek urgent
+          care. Call 999 or NHS 111 in an emergency.
+      - title: No diagnosis from AI
+        text: The AI never diagnoses. Our physiotherapists are responsible for your care.
+      - title: NHS and private
+        text: NHS-referred patients are covered by the NHS contract. Self-pay is £60 per programme.
+    - type: note
+      content: Movara is not an emergency service. If you have loss of bladder or bowel control, numbness between your legs,
+        chest pain or sudden weakness, call 999 or NHS 111 now.
+  - key: assessment
+    type: form
+    title: Assessment
+    collection: assessments
+    fields:
+    - patient_name
+    - patient_email
+    - referral_source
+    - nhs_reference
+    - service_line
+    - pain_area
+    - duration
+    - severity
+    - red_flag_answer
+    - red_flag_details
+    - activity_level
+    - goals
+    - consent
+    submit:
+      label: Send assessment
+      message: Thank you. If you answered yes to the red-flag question, a clinician has been alerted. Please call NHS 111
+        or 999 if you need urgent care. Otherwise your programme is being prepared for physiotherapist review.
+      redirect: my_programme
+    roles:
+    - patient
+    - admin
+  - key: my_programme
+    type: cards
+    title: My programme
+    source: collection:programmes
+    data:
+      display: cards
+      fields:
+      - key: title
+        label: Programme
+      - key: status
+        label: Status
+        format: badge
+      - key: summary
+        label: Summary
+      - key: exercises
+        label: Exercises
+      - key: physio_notes
+        label: Physio notes
+      sort:
+        field: created_at
+        dir: desc
+      empty: Your programme will appear here once your assessment has been reviewed.
+    roles:
+    - patient
+  - key: movement_check
+    type: form
+    title: Movement check
+    collection: movement_checks
+    fields:
+    - exercise
+    - photos
+    - notes
+    submit:
+      label: Send for feedback
+      message: Thanks. Your form feedback will appear on the Feedback page in a few minutes.
+      redirect: feedback
+    roles:
+    - patient
+  - key: feedback
+    type: list
+    title: Form feedback
+    source: collection:form_feedback
+    data:
+      display: list
+      fields:
+      - key: exercise
+        label: Exercise
+      - key: feedback
+        label: Feedback
+      empty: No feedback yet.
+    roles:
+    - patient
+    - physio
+  - key: checkin
+    type: form
+    title: Weekly check-in
+    collection: checkins
+    fields:
+    - date
+    - pain_score
+    - pain_trend
+    - exercises_done
+    - new_symptoms
+    - comments
+    submit:
+      label: Save check-in
+      message: Thanks. If your pain is worse or you have new symptoms, a physiotherapist has been alerted.
+      redirect: progress
+    roles:
+    - patient
+  - key: progress
+    type: page
+    title: My progress
+    sections:
+    - type: data
+      title: Pain score over time
+      source: collection:checkins
+      display: chart
+      chart: line
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: pain_score
+        label: Pain (0-10)
+      sort:
+        field: date
+        dir: asc
+      limit: 60
+      empty: Complete your first weekly check-in to see your progress.
+    - type: view
+      title: Reminders
+      view: reminders
+    roles:
+    - patient
+  - key: reminders
+    type: instances
+    title: Daily reminders
+    template: daily_plan
+    nav: false
+    roles:
+    - patient
+  - key: review_queue
+    type: table
+    title: Programmes to review
+    source: collection:programmes
+    export: false
+    data:
+      display: table
+      fields:
+      - key: patient_email
+        label: Patient
+      - key: title
+        label: Programme
+      - key: status
+        label: Status
+        format: badge
+      - key: protocol_used
+        label: Protocol
+      - key: exercises
+        label: Exercises
+      filters:
+      - field: status
+        op: '='
+        value: pending_review
+      sort:
+        field: created_at
+        dir: asc
+      empty: No programmes waiting for review.
+    roles:
+    - physio
+    - clinical_lead
+    - admin
+  - key: review_programme
+    type: form
+    title: Review and edit a programme
+    collection: programmes
+    fields:
+    - title
+    - summary
+    - exercises
+    - weeks
+    - status
+    - physio_notes
+    edit: true
+    submit:
+      label: Save review
+      message: Saved. Set the status to Active to start the programme and notify the patient.
+      redirect: review_queue
+    nav: false
+    roles:
+    - physio
+    - clinical_lead
+    - admin
+  - key: red_flags
+    type: table
+    title: Red-flag assessments
+    source: collection:assessments
+    data:
+      display: table
+      fields:
+      - key: patient_name
+        label: Patient
+      - key: patient_email
+        label: Email
+      - key: pain_area
+        label: Area
+      - key: severity
+        label: Pain
+      - key: red_flag_details
+        label: Details
+      - key: referral_source
+        label: Source
+        format: badge
+      filters:
+      - field: red_flag_answer
+        op: '='
+        value: 'yes'
+      sort:
+        field: created_at
+        dir: desc
+      empty: No red-flag assessments.
+    roles:
+    - physio
+    - clinical_lead
+    - admin
+  - key: escalations
+    type: table
+    title: Patients whose pain is worse
+    source: collection:checkins
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: pain_score
+        label: Pain
+      - key: pain_trend
+        label: Trend
+        format: badge
+      - key: new_symptoms
+        label: New symptoms
+        format: badge
+      - key: comments
+        label: Comments
+      filters:
+      - field: pain_trend
+        op: '='
+        value: worse
+      sort:
+        field: date
+        dir: desc
+      empty: No escalations.
+    roles:
+    - physio
+    - clinical_lead
+    - admin
+  - key: protocol_list
+    type: table
+    title: Clinical protocols
+    source: collection:protocols
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Protocol
+      - key: version
+        label: Version
+      - key: pain_area
+        label: Area
+      - key: signed_off_by
+        label: Signed off by
+      - key: status
+        label: Status
+        format: badge
+      empty: No protocols yet. Admins add them on the data page.
+    roles:
+    - clinical_lead
+    - physio
+    - admin
+  - key: outcomes
+    type: page
+    title: Outcomes
+    sections:
+    - type: text
+      title: Anonymised outcomes
+      content: Aggregated across patients. Groups with fewer than 5 patients are hidden. No individual record is shown.
+    - type: data
+      title: Average weekly pain score by month
+      source: collection:checkins
+      display: chart
+      chart: line
+      fields:
+      - key: date
+        label: Month
+      - key: avg_pain
+        label: Average pain (0-10)
+      groupBy:
+        field: date
+        bucket: month
+        aggs:
+        - key: avg_pain
+          agg: avg
+          field: pain_score
+        minCount: 5
+        acrossUsers: true
+      empty: Not enough data yet.
+    - type: data
+      title: Starting pain by area
+      source: collection:assessments
+      display: bar
+      fields:
+      - key: pain_area
+        label: Area
+      - key: avg_severity
+        label: Average pain at start
+      - key: count
+        label: Patients
+      groupBy:
+        field: pain_area
+        aggs:
+        - key: avg_severity
+          agg: avg
+          field: severity
+        minCount: 5
+        acrossUsers: true
+      empty: Not enough data yet.
+    roles:
+    - commissioner
+    - clinical_lead
+    - admin
+  - key: account
+    type: account
+    title: Credits and payment
+    roles:
+    - patient
+  billing:
+    modes:
+    - credits
+    currency: gbp
+    signupCredits: 0
+    costs:
+      agent:drafter: 100
+    packs:
+    - key: programme
+      credits: 100
+      price: 60
+      label: One programme (£60)
+  notifications:
+    emailOnRunDone: false
+  triggers:
+  - key: red_flag_clinicians
+    description: A red-flag answer alerts the clinicians at once
+    'on':
+      collection: assessments
+      op: insert
+      where:
+        red_flag_answer: 'yes'
+    notify:
+      to:
+      - role:physio
+      - role:clinical_lead
+      subject: 'URGENT: red-flag assessment from {record.patient_name}'
+      body: 'A patient answered yes to the red-flag question.
+
+        Patient: {record.patient_name} ({record.patient_email})
+
+        Area: {record.pain_area}, pain {record.severity}/10
+
+        Details: {record.red_flag_details}
+
+        Please contact the patient now. No programme has been drafted.'
+      link: red_flags
+  - key: red_flag_patient
+    description: Tell the patient to seek urgent care
+    'on':
+      collection: assessments
+      op: insert
+      where:
+        red_flag_answer: 'yes'
+    notify:
+      to: owner
+      subject: 'Movara: please seek urgent medical advice'
+      body: Thank you for your assessment. Some of your answers need urgent attention. Please call NHS 111 now, or 999 in
+        an emergency, or go to A&E. A Movara clinician has been alerted and will contact you. We will not start an exercise
+        programme until a clinician has spoken with you.
+  - key: assessment_clear
+    description: 'No red flags: the AI physio drafts a programme for review'
+    'on':
+      collection: assessments
+      op: insert
+      where:
+        red_flag_answer: 'no'
+    start:
+      agent: drafter
+    goal: 'New assessment. Patient email: {record.patient_email}. Service line: {record.service_line}. Pain area: {record.pain_area}.
+      Duration: {record.duration}. Pain now: {record.severity}/10. Activity level: {record.activity_level}. Goals: {record.goals}.
+      Referral: {record.referral_source}. Draft the programme from signed-off protocols and save it for physiotherapist review.
+      Write in English.'
+    asUser: true
+  - key: programme_to_review
+    'on':
+      collection: programmes
+      op: insert
+      where:
+        status: pending_review
+    notify:
+      to: role:physio
+      subject: New programme to review
+      body: A new draft programme ({record.title}) is waiting for your review. It does not start until you set it to Active.
+      link: review_queue
+  - key: programme_active
+    'on':
+      collection: programmes
+      op: update
+      where:
+        status: active
+    notify:
+      to: owner
+      subject: Your Movara programme is ready
+      body: A physiotherapist has reviewed your programme ({record.title}). Open the app to see your exercises, and switch
+        on your daily reminders.
+      link: my_programme
+  - key: movement_check_submitted
+    'on':
+      collection: movement_checks
+      op: insert
+    start:
+      agent: form_coach
+    goal: 'Movement check. Exercise: {record.exercise}. Photo file ids: {record.photos}. Patient notes: {record.notes}. Give
+      feedback on form and save it. Write in English.'
+    asUser: true
+  - key: pain_worse_clinician
+    'on':
+      collection: checkins
+      op: insert
+      where:
+        pain_trend: worse
+    notify:
+      to:
+      - role:physio
+      subject: 'Pain getting worse: check-in escalation'
+      body: 'A patient reports worse pain. Pain score {record.pain_score}/10, exercises done: {record.exercises_done}. Comments:
+        {record.comments}. Please review and contact the patient.'
+      link: escalations
+  - key: pain_worse_patient
+    'on':
+      collection: checkins
+      op: insert
+      where:
+        pain_trend: worse
+    notify:
+      to: owner
+      subject: We are sorry your pain is worse
+      body: A physiotherapist has been told that your pain is worse and will review your programme. If the pain is severe
+        or sudden, or you have new numbness, weakness or loss of bladder or bowel control, call NHS 111 or 999 now.
+  - key: new_symptoms_clinician
+    'on':
+      collection: checkins
+      op: insert
+      where:
+        new_symptoms: 'yes'
+    notify:
+      to:
+      - role:physio
+      - role:clinical_lead
+      subject: 'URGENT: new symptoms reported in check-in'
+      body: 'A patient reports new symptoms. Pain {record.pain_score}/10. Comments: {record.comments}. Please contact the
+        patient now.'
+      link: escalations
+  - key: new_symptoms_patient
+    'on':
+      collection: checkins
+      op: insert
+      where:
+        new_symptoms: 'yes'
+    notify:
+      to: owner
+      subject: Please seek urgent advice about new symptoms
+      body: New numbness, weakness, or loss of bladder or bowel control can need urgent care. Please call NHS 111 now, or
+        999 in an emergency. A Movara clinician has been alerted.
+  limits:
+  - action: agent:drafter
+    per: user
+    max: 3
+    window: day
+    roles:
+    - patient
+  mobile:
+    appId: com.movara.app
+    appName: Movara
+    orientation: portrait
+    lock: biometric
+    capabilities:
+    - name: push
+    - name: camera
+      reason: To take photos of your exercises so we can check your form
+    - name: biometrics
+      reason: To keep your health information private with Face ID or fingerprint
+  extensions:
+  - key: video_motion_analysis
+    description: Video upload and automatic motion analysis from the phone camera are not available yet. The movement check
+      uses photos (start and end position) read by the AI, and a physiotherapist can see them.
+  - key: nhs_contract_billing
+    description: NHS contracts per patient are invoiced outside the app. Admins give NHS-referred patients credits so the
+      programme is free to them. Self-pay is £60 per programme through Stripe.
+  - key: clinical_governance
+    description: CQC and clinical safety (DCB0129/DCB0160) documents, a DPIA, and record retention rules must be completed
+      by the clinic. Protocols are entered by admins on the data page, with the clinical lead's sign-off recorded in the signed_off_by
+      field.

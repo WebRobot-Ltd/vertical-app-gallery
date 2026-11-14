@@ -1,0 +1,1073 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: ridepool
+  displayName: Ridepool
+  tagline: Shared electric transport for NHS staff and patients.
+  description: Ridepool lets organisations, including NHS trusts, arrange shared electric transport. Staff book trips from
+    their phones, or on behalf of patients, and an AI agent groups the bookings into routes and vehicle schedules. It respects
+    wheelchair needs and appointment times. Partner operators run dispatch and the licensed fleet.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#005eb8'
+      accent: '#00a499'
+      background: '#f4f8fb'
+      foreground: '#1a2733'
+    fonts:
+      body: Inter
+      display: Source Sans 3
+    wordmark:
+    - text: Ride
+      color: primary
+    - text: pool
+      color: accent
+    byline: shared electric transport
+    buttonShape: rounded
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Who it is for
+      href: '#roles'
+    cta:
+      label: Book a trip
+      href: /v/book
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: rider
+      label: Rider
+      assignedBy: signup
+    - key: coordinator
+      label: Organisation coordinator
+      assignedBy: derived
+      from: collection:organisations.coordinator_email
+    - key: partner_operator
+      label: Partner operator
+      assignedBy: derived
+      from: collection:operators.contact_email
+  limits:
+  - action: login
+    per: ip
+    max: 20
+    window: hour
+  agents:
+  - key: planner
+    role: helper
+    description: Groups approved bookings into shared routes and assigns vehicles, respecting wheelchair needs, capacity,
+      time windows and appointment times.
+    profile:
+      inline:
+        display_name: Ridepool route planner
+        crews:
+        - id: planner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the route planner of Ridepool, shared electric transport for NHS trusts and other organisations.
+            Partner operators run dispatch and hold the private-hire licences; you only propose routes and schedules, you
+            never dispatch.
+
+
+            Process:
+
+            1. Call read_trips and keep trips with status requested within the planning horizon. A trip with recurring=true
+            is eligible only if approval is approved. Trips with approval pending or rejected are never planned.
+
+            2. Call list_vehicles, list_operators and list_areas. Use only vehicles with status available and operators of
+            the chosen service area.
+
+            3. Group trips whose pickups, drop-offs and time windows are compatible. Hard rules: never exceed vehicle capacity;
+            a trip with wheelchair=true needs a vehicle with enough wheelchair_spaces; a trip with an appointment_time must
+            arrive at the drop-off at least 15 minutes before it and never be delayed past it; respect window_from and window_to.
+            If a trip cannot be placed safely, leave it as requested and list it under Unplaced with the reason.
+
+            4. Optionally call bods_datasets to check local bus services (DfT Bus Open Data) for context, e.g. whether a trip
+            duplicates a frequent bus. Cite it as DfT Bus Open Data, OGL v3.0. Never invent timetable data.
+
+            5. For each route call write_routes with route_date, vehicle_reg, operator_email, depart_time, stops (ordered,
+            one per line, with pickup/drop-off and time), trip_ids, passengers, capacity, wheelchair_count, utilisation_pct,
+            distance_km (estimate, say it is an estimate), status planned, cost_gbp, co2_saved_kg.
+
+            6. For each trip placed call update_trips with status planned, route_id, operator_email, cost_gbp (the organisation''s
+            cost_per_trip from the organisations tool), distance_km and co2_saved_kg. Estimate emissions saved as the avoided
+            separate car-km times 0.17 kgCO2e per km and state this factor; do not present estimates as measured.
+
+
+            Privacy: patients are identified only by patient_ref; never ask for or write names or clinical details. Accessibility
+            needs are used only to plan safely.
+
+
+            Finish with a report that starts with a level-1 title "# Route plan — <date>", then sections ## Routes created,
+            ## Unplaced trips, ## Notes. Under 400 words; no invented figures.'
+          mcp_servers: []
+    appTools:
+    - name: read_trips
+      description: Read the bookings the user may see (their organisation's bookings for a coordinator)
+      action: read
+      collection: trips
+      scope: user
+    - name: update_trips
+      description: Update a booking (status, route, operator, cost, distance, emissions)
+      action: write
+      collection: trips
+      scope: user
+    - name: write_routes
+      description: Create a planned route
+      action: append
+      collection: routes
+      scope: user
+    - name: list_vehicles
+      description: List the vehicles with capacity, wheelchair spaces and status
+      action: read
+      collection: vehicles
+      scope: all
+    - name: list_operators
+      description: List the partner operators
+      action: read
+      collection: operators
+      scope: all
+    - name: list_areas
+      description: List the service areas
+      action: read
+      collection: service_areas
+      scope: all
+    - name: read_orgs
+      description: Read the organisations with their cost per trip
+      action: read
+      collection: organisations
+      scope: all
+    - name: bods_datasets
+      description: Search DfT Bus Open Data datasets (bus timetables and operators) for local context
+      action: http
+      http:
+        method: GET
+        url: https://data.bus-odata.org.uk/api/v1/dataset/
+        attribution: Bus Open Data Service, Department for Transport, Open Government Licence v3.0
+        credential:
+          provider: bods
+          query: api_key
+    writesTo:
+      collection: plan_runs
+      parse: whole
+    output: markdown
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 1.5
+  - key: reporter
+    role: helper
+    description: Writes the monthly report of trips, cost and emissions saved for an organisation.
+    profile:
+      inline:
+        display_name: Ridepool monthly reporter
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the monthly Ridepool report for an organisation coordinator. Call read_trips and read_orgs,
+            and use only trips of the previous calendar month. Start with "# Ridepool monthly report — <month year>". Sections:
+            ## Summary (trips completed, cancelled, passengers, wheelchair trips), ## Cost (trips times the organisation''s
+            cost per trip, a line for the monthly invoice basis in GBP), ## Emissions saved (sum of co2_saved_kg, naming the
+            0.17 kgCO2e per avoided car-km factor and that it is an estimate), ## Recurring bookings, ## Observations. Add
+            one chart as a fenced block:
+
+            ```chart
+
+            {"type":"bar","title":"Trips per week","labels":["W1"],"series":[{"name":"Trips","values":[1]}]}
+
+            ```
+
+            with real figures only. Never include patient identifiers beyond counts. If there is no data, say so plainly.
+            Under 350 words; never invent figures.'
+          mcp_servers: []
+    appTools:
+    - name: read_trips
+      description: Read the bookings the user may see (their organisation's bookings for a coordinator)
+      action: read
+      collection: trips
+      scope: user
+    - name: read_orgs
+      description: Read the organisations with their cost per trip
+      action: read
+      collection: organisations
+      scope: all
+    writesTo:
+      collection: monthly_reports
+      parse: whole
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.5
+  templates:
+  - key: org_planner
+    title: Route planning
+    description: A coordinator sets up a daily plan that groups the organisation's approved bookings into shared routes.
+    agent: planner
+    params:
+    - name: service_area
+      type: select
+      required: true
+      label: Service area
+      optionsFrom: collection:service_areas
+    - name: horizon_days
+      type: number
+      required: true
+      default: 2
+      label: Days ahead to plan
+    goal: 'Plan shared routes for "{instance}". Service area: {service_area}. Plan bookings for the next {horizon_days} days
+      from {date}. Write the plan in English.'
+    schedule:
+      cron: 0 17 * * *
+      userCanChange: true
+    maxPerUser: 3
+    roles:
+    - coordinator
+    - admin
+  - key: monthly_report
+    title: Monthly report
+    description: Trips, cost and emissions saved for your organisation, emailed on the 1st of each month.
+    agent: reporter
+    params:
+    - name: label
+      type: text
+      label: Report name
+    goal: Write the monthly report "{instance}" for the previous calendar month. Today is {date}. Write in English.
+    schedule:
+      cron: 0 7 1 * *
+      userCanChange: false
+    maxPerUser: 1
+    roles:
+    - coordinator
+    - admin
+    deliver:
+      to: owner
+      subject: Ridepool monthly report
+      onlyIfNew: true
+  data:
+    credentials:
+    - provider: bods
+      kind: api_key
+      scope: org
+      label: DfT Bus Open Data API key
+      help: Register at data.bus-odata.org.uk and copy the API key from your account settings.
+    collections:
+    - name: organisations
+      ownedBy: shared
+      description: Customer organisations (NHS trusts and others), maintained by admins
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Organisation
+      - name: ods_code
+        type: text
+        label: NHS ODS code
+      - name: coordinator_email
+        type: email
+        required: true
+        label: Coordinator email
+      - name: billing_email
+        type: email
+        label: Billing email
+      - name: cost_per_trip
+        type: number
+        label: Cost per trip (GBP)
+    - name: operators
+      ownedBy: shared
+      description: Partner operators who hold the private-hire licences and run dispatch
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Operator
+      - name: contact_email
+        type: email
+        required: true
+        label: Contact email
+      - name: phone
+        type: text
+        label: Dispatch phone
+      - name: licence_ref
+        type: text
+        label: Licence reference
+      - name: service_area
+        type: text
+        label: Service area
+    - name: vehicles
+      ownedBy: shared
+      description: Electric vehicles with their live position, updated by the operators' telematics webhook
+      fields:
+      - name: reg
+        type: text
+        required: true
+        label: Registration
+      - name: name
+        type: text
+        label: Name
+      - name: operator
+        type: text
+        label: Operator
+      - name: capacity
+        type: number
+        required: true
+        label: Seats
+      - name: wheelchair_spaces
+        type: number
+        label: Wheelchair spaces
+      - name: status
+        type: select
+        label: Status
+        default: available
+        options:
+        - available
+        - in_service
+        - maintenance
+      - name: lat
+        type: number
+        label: Latitude
+      - name: lon
+        type: number
+        label: Longitude
+      - name: speed_kmh
+        type: number
+        label: Speed km/h
+      - name: updated_at
+        type: text
+        label: Position updated
+    - name: service_areas
+      ownedBy: shared
+      description: Areas where the service runs
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Area
+      - name: description
+        type: textarea
+        label: Description
+      - name: operator
+        type: text
+        label: Operator
+    - name: trips
+      ownedBy: user
+      retentionDays: 730
+      description: Bookings; patients are identified only by a reference
+      fields:
+      - name: pickup
+        type: text
+        required: true
+        label: Pickup address
+      - name: pickup_loc
+        type: location
+        label: Pickup position
+      - name: dropoff
+        type: text
+        required: true
+        label: Drop-off address
+      - name: dropoff_loc
+        type: location
+        label: Drop-off position
+      - name: trip_date
+        type: date
+        required: true
+        label: Date
+      - name: window_from
+        type: text
+        required: true
+        label: Earliest pickup (HH:MM)
+      - name: window_to
+        type: text
+        required: true
+        label: Latest pickup (HH:MM)
+      - name: passengers
+        type: number
+        required: true
+        default: 1
+        label: Passengers
+      - name: wheelchair
+        type: boolean
+        label: Wheelchair user
+      - name: accessibility_needs
+        type: textarea
+        maxLength: 500
+        label: Accessibility needs
+      - name: on_behalf
+        type: boolean
+        label: Booking for a patient
+      - name: patient_ref
+        type: text
+        visibleWhen: on_behalf == true
+        label: Patient reference (no names)
+        help: Use the internal reference, not the patient's name.
+      - name: appointment_time
+        type: text
+        label: Appointment time (HH:MM)
+      - name: organisation
+        type: select
+        required: true
+        optionsFrom: collection:organisations
+        label: Organisation
+      - name: coordinator_email
+        type: email
+        required: true
+        label: Your coordinator's email
+      - name: recurring
+        type: boolean
+        label: Recurring booking
+      - name: recurrence_rule
+        type: select
+        visibleWhen: recurring == true
+        label: Repeats
+        options:
+        - value: weekdays
+          label: Every weekday
+        - value: weekly
+          label: Weekly
+        - value: monthly
+          label: Monthly
+      - name: status
+        type: select
+        default: requested
+        label: Status
+        options:
+        - requested
+        - planned
+        - completed
+        - cancelled
+      - name: approval
+        type: select
+        default: pending
+        label: Approval
+        options:
+        - pending
+        - approved
+        - rejected
+      - name: coordinator_note
+        type: textarea
+        label: Coordinator note
+      - name: route_id
+        type: text
+        label: Route
+      - name: operator_email
+        type: email
+        label: Operator
+      - name: cost_gbp
+        type: number
+        label: Cost (GBP)
+      - name: distance_km
+        type: number
+        label: Distance (km)
+      - name: co2_saved_kg
+        type: number
+        label: CO2e saved (kg, estimate)
+      access:
+      - role: coordinator
+        where:
+          coordinator_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: partner_operator
+        where:
+          operator_email: '{user.email}'
+        can:
+        - read
+    - name: routes
+      ownedBy: user
+      retentionDays: 730
+      description: Routes proposed by the planner and run by partner operators
+      fields:
+      - name: route_date
+        type: date
+        label: Date
+      - name: vehicle_reg
+        type: text
+        label: Vehicle
+      - name: operator_email
+        type: email
+        label: Operator
+      - name: depart_time
+        type: text
+        label: Departs
+      - name: stops
+        type: textarea
+        label: Stops
+      - name: trip_ids
+        type: text
+        label: Trips
+      - name: passengers
+        type: number
+        label: Passengers
+      - name: capacity
+        type: number
+        label: Seats
+      - name: wheelchair_count
+        type: number
+        label: Wheelchair users
+      - name: utilisation_pct
+        type: number
+        label: Utilisation %
+      - name: distance_km
+        type: number
+        label: Distance (km)
+      - name: status
+        type: select
+        default: planned
+        label: Status
+        options:
+        - planned
+        - in_progress
+        - completed
+        - cancelled
+      - name: delay_minutes
+        type: number
+        label: Delay (min)
+      - name: on_time
+        type: number
+        label: On time (1 or 0)
+      - name: cost_gbp
+        type: number
+        label: Cost (GBP)
+      - name: co2_saved_kg
+        type: number
+        label: CO2e saved (kg)
+      access:
+      - role: partner_operator
+        where:
+          operator_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: plan_runs
+      ownedBy: instance
+      retentionDays: 365
+      description: The planner's summary of each run
+      fields:
+      - name: title
+        type: text
+        label: Title
+      - name: content
+        type: textarea
+        label: Plan
+    - name: monthly_reports
+      ownedBy: instance
+      retentionDays: 1095
+      description: Monthly reports of trips, cost and emissions
+      fields:
+      - name: title
+        type: text
+        label: Title
+      - name: content
+        type: textarea
+        label: Report
+  views:
+  - key: home
+    type: page
+    title: Ridepool
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: Shared electric transport
+      title: Get staff and patients to work and appointments, **together**.
+      text: Book a trip in the app. Ridepool groups bookings into shared electric routes that respect wheelchair needs and
+        appointment times, and licensed partner operators drive them.
+      actions:
+      - label: Book a trip
+        href: /v/book
+        style: primary
+      - label: Sign in
+        href: /login
+        style: ghost
+      aside: <div style="padding:16px"><strong>Example route</strong><br>07:40 Ward block pickup, 07:55 Station, 08:20 Clinic
+        (appointment 08:45)<br>1 wheelchair space, 5 of 6 seats used</div>
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Book
+        text: Pickup, drop-off, time window, passengers and accessibility needs. NHS staff can book for a patient.
+        badge: 📍
+      - title: Group
+        text: An AI agent plans shared routes and vehicle schedules, respecting wheelchair spaces and appointment times.
+        badge: 🧩
+      - title: Ride
+        text: Partner operators dispatch licensed vehicles. You get a reminder and see the vehicle live on the map.
+        badge: 🚐
+      - title: Report
+        text: Coordinators approve recurring bookings and receive monthly reports of trips, cost and emissions saved.
+        badge: 📊
+    - type: cards
+      id: roles
+      title: Who it is for
+      items:
+      - title: Riders
+        text: See and manage your own trips and get push reminders.
+      - title: Organisation coordinators
+        text: Approve recurring bookings and follow your organisation's trips, cost and emissions.
+      - title: Partner operators
+        text: See the routes and passengers assigned to you and report delays.
+      - title: Admins
+        text: Manage vehicles, operators and service areas, and watch utilisation and on-time performance.
+    - type: note
+      content: 'Ridepool plans and schedules. Dispatch, telephony and private-hire licensing are provided by partner operators.
+        Bus context: DfT Bus Open Data, Open Government Licence v3.0. Patients are identified only by a reference.'
+  - key: book
+    type: form
+    title: Book a trip
+    collection: trips
+    fields:
+    - pickup
+    - pickup_loc
+    - dropoff
+    - dropoff_loc
+    - trip_date
+    - window_from
+    - window_to
+    - passengers
+    - wheelchair
+    - accessibility_needs
+    - on_behalf
+    - patient_ref
+    - appointment_time
+    - organisation
+    - coordinator_email
+    - recurring
+    - recurrence_rule
+    submit:
+      label: Request trip
+      message: Your trip is requested. Recurring bookings need your coordinator's approval.
+      redirect: trips
+    edit: false
+    roles:
+    - rider
+    - coordinator
+    - admin
+  - key: trips
+    type: table
+    title: Trips
+    source: collection:trips
+    export: true
+    roles:
+    - rider
+    - coordinator
+    - partner_operator
+    - admin
+    data:
+      display: table
+      fields:
+      - key: trip_date
+        label: Date
+        format: date
+      - key: window_from
+        label: From
+      - key: pickup
+        label: Pickup
+      - key: dropoff
+        label: Drop-off
+      - key: passengers
+        label: Pax
+        format: number
+      - key: wheelchair
+        label: Wheelchair
+      - key: status
+        label: Status
+        format: badge
+      - key: approval
+        label: Approval
+        format: badge
+      sort:
+        field: trip_date
+        dir: desc
+      actions:
+      - type: directions
+        label: Directions
+        field: pickup_loc
+      - type: calendar
+        label: Add to calendar
+        title: dropoff
+        start: trip_date
+        location: pickup
+  - key: approvals_queue
+    type: table
+    title: Recurring bookings to approve
+    source: collection:trips
+    roles:
+    - coordinator
+    - admin
+    data:
+      display: table
+      fields:
+      - key: trip_date
+        label: Start
+        format: date
+      - key: recurrence_rule
+        label: Repeats
+      - key: pickup
+        label: Pickup
+      - key: dropoff
+        label: Drop-off
+      - key: wheelchair
+        label: Wheelchair
+      - key: approval
+        label: Approval
+        format: badge
+      filters:
+      - field: recurring
+        op: '='
+        value: true
+      - field: approval
+        op: '='
+        value: pending
+      sort:
+        field: trip_date
+        dir: asc
+  - key: review_trip
+    type: form
+    title: Approve or reject a booking
+    collection: trips
+    fields:
+    - approval
+    - coordinator_note
+    edit: true
+    submit:
+      label: Save decision
+      message: Decision saved.
+      redirect: approvals_queue
+    roles:
+    - coordinator
+    - admin
+    nav: false
+  - key: live_map
+    type: map
+    title: Live vehicles
+    source: collection:vehicles
+    map:
+      lat: lat
+      lon: lon
+      title: reg
+      popup:
+      - operator
+      - status
+      - speed_kmh
+      - updated_at
+    roles:
+    - rider
+    - coordinator
+    - partner_operator
+    - admin
+  - key: routes
+    type: table
+    title: Routes
+    source: collection:routes
+    export: true
+    roles:
+    - coordinator
+    - partner_operator
+    - admin
+    data:
+      display: table
+      fields:
+      - key: route_date
+        label: Date
+        format: date
+      - key: depart_time
+        label: Departs
+      - key: vehicle_reg
+        label: Vehicle
+      - key: passengers
+        label: Pax
+        format: number
+      - key: wheelchair_count
+        label: Wheelchair
+        format: number
+      - key: stops
+        label: Stops
+      - key: status
+        label: Status
+        format: badge
+      - key: delay_minutes
+        label: Delay (min)
+        format: number
+      sort:
+        field: route_date
+        dir: desc
+  - key: route_update
+    type: form
+    title: Update a route
+    collection: routes
+    fields:
+    - status
+    - delay_minutes
+    - on_time
+    edit: true
+    submit:
+      label: Save
+      message: Route updated.
+    roles:
+    - partner_operator
+    - admin
+    nav: false
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - coordinator
+    - admin
+    sections:
+    - type: data
+      title: At a glance
+      source: collection:routes
+      display: kpi
+      kpis:
+      - label: Routes
+        agg: count
+      - label: Passengers carried
+        agg: sum
+        field: passengers
+        format: number
+      - label: Average utilisation %
+        agg: avg
+        field: utilisation_pct
+        format: number
+      - label: Average delay (min)
+        agg: avg
+        field: delay_minutes
+        format: number
+      - label: CO2e saved (kg)
+        agg: sum
+        field: co2_saved_kg
+        format: number
+      - label: Cost (GBP)
+        agg: sum
+        field: cost_gbp
+        format: money
+    - type: data
+      title: Utilisation by month
+      source: collection:routes
+      display: chart
+      chart: line
+      groupBy:
+        field: route_date
+        bucket: month
+        aggs:
+        - key: utilisation
+          agg: avg
+          field: utilisation_pct
+      fields:
+      - key: route_date
+        label: Month
+      - key: utilisation
+        label: Utilisation %
+    - type: data
+      title: On-time performance by month
+      source: collection:routes
+      display: chart
+      chart: bar
+      groupBy:
+        field: route_date
+        bucket: month
+        aggs:
+        - key: on_time_rate
+          agg: avg
+          field: on_time
+        - key: avg_delay
+          agg: avg
+          field: delay_minutes
+      fields:
+      - key: route_date
+        label: Month
+      - key: avg_delay
+        label: Average delay (min)
+    - type: data
+      title: Trips by status
+      source: collection:trips
+      display: chart
+      chart: pie
+      groupBy:
+        field: status
+        aggs: []
+      fields:
+      - key: status
+        label: Status
+      - key: count
+        label: Trips
+  - key: planning
+    type: instances
+    title: Route planning
+    template: org_planner
+    roles:
+    - coordinator
+    - admin
+  - key: plans
+    type: table
+    title: Plan history
+    source: collection:plan_runs
+    roles:
+    - coordinator
+    - admin
+    data:
+      display: list
+      fields:
+      - key: title
+        label: Plan
+      - key: content
+        label: Details
+      limit: 30
+  - key: report_setup
+    type: instances
+    title: Monthly report
+    template: monthly_report
+    roles:
+    - coordinator
+    - admin
+  - key: reports
+    type: table
+    title: Past reports
+    source: collection:monthly_reports
+    roles:
+    - coordinator
+    - admin
+    data:
+      display: list
+      fields:
+      - key: title
+        label: Report
+      - key: content
+        label: Contents
+      limit: 24
+  - key: account
+    type: account
+    title: Account and data sources
+    roles:
+    - admin
+  triggers:
+  - key: vehicle_position
+    description: Telematics from partner operators updates the vehicle's live position
+    'on':
+      webhook: true
+    write:
+      collection: vehicles
+      fields:
+        reg: reg
+        lat: lat
+        lon: lon
+        speed_kmh: speed_kmh
+        updated_at: time
+      keyBy: reg
+  - key: recurring_pending
+    'on':
+      collection: trips
+      op: insert
+      where:
+        recurring: true
+    notify:
+      to:
+      - record.coordinator_email
+      subject: Recurring booking awaiting your approval
+      body: A recurring booking from {record.pickup} to {record.dropoff} starting {record.trip_date} needs your approval.
+      link: approvals_queue
+  - key: booking_decided
+    'on':
+      collection: trips
+      op: update
+      where:
+        approval: approved
+    notify:
+      to: owner
+      subject: Your booking has been approved
+      body: Your booking from {record.pickup} to {record.dropoff} on {record.trip_date} was approved.
+      link: trips
+  - key: ride_reminder
+    description: Push reminder the day before a planned trip
+    'on':
+      date:
+        collection: trips
+        field: trip_date
+        offsetDays: -1
+        hour: 16
+    notify:
+      to: owner
+      subject: Trip tomorrow
+      body: 'Reminder: your trip from {record.pickup} to {record.dropoff} is tomorrow, pickup between {record.window_from}
+        and {record.window_to}.'
+      link: live_map
+  - key: route_assigned
+    'on':
+      collection: routes
+      op: insert
+    notify:
+      to:
+      - record.operator_email
+      subject: New Ridepool route assigned
+      body: A route on {record.route_date} departing {record.depart_time} with {record.passengers} passengers has been assigned
+        to you.
+      link: routes
+  egress:
+    hosts:
+    - data.bus-odata.org.uk
+    notes: DfT Bus Open Data Service, reuse under Open Government Licence v3.0; used only for local bus context.
+  mobile:
+    appId: com.ridepool.app
+    appName: Ridepool
+    capabilities:
+    - name: location
+      reason: To fill in your pickup position
+    - name: calendar
+      reason: To add your trip to your calendar
+    - name: push
+  billing:
+    modes:
+    - free
+  extensions:
+  - key: monthly_invoicing
+    description: Per-trip invoicing of organisations is not available. The monthly report gives trips and cost as the invoice
+      basis, and invoices are issued outside the app.
+  - key: partner_dispatch
+    description: Driver dispatch, telephony and private-hire licensing stay with partner operators. Operators see assigned
+      routes, report delays and send vehicle positions to the telematics webhook. No dispatch or phone integration is built.
+  - key: cross_organisation_pooling
+    description: Each coordinator's planner groups that organisation's bookings, because agents may not read all customers'
+      records. Pooling across organisations needs a separate design.
+  - key: sms_notifications
+    description: SMS and WhatsApp reminders are not available. Riders get push and email.

@@ -1,0 +1,1273 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: hobplate
+  displayName: Hobplate
+  tagline:
+    en: Ready meals cooked by independent chefs, delivered chilled.
+  description:
+    en: Hobplate is a storefront for chilled ready meals from independent chefs. Browse by cuisine and diet, check full allergen
+      labelling, order before the cut-off and get it delivered on the day.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#2f4a3a'
+      accent: '#d9622b'
+      background: '#fbf7f0'
+      foreground: '#22251f'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Hob
+      color: primary
+    - text: plate
+      color: accent
+    byline: home cooking, chef made
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: For chefs
+      href: '#chefs'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+      - apply
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: customer
+      label: Customer
+      assignedBy: signup
+    - key: chef
+      label: Chef
+      assignedBy: invite
+    - key: buyer
+      label: Retail buyer
+      assignedBy: invite
+  agents:
+  - key: allergen_checker
+    role: helper
+    description: Checks every new or edited dish listing for missing or inconsistent allergen information and queues it for
+      admin review.
+    context:
+    - key: chef_email
+      from: user.email
+    appTools:
+    - name: write_menu
+      description: Create or update the review copy of a dish in the menu, keyed by dish_id
+      action: write
+      collection: menu
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.2
+    profile:
+      inline:
+        display_name: Hobplate allergen checker
+        crews:
+        - id: allergen_checker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You check ready-meal dish listings for a UK food marketplace before they can go live. For each listing
+            you receive, compare the ingredients text with the declared allergens against the 14 major allergens: celery,
+            cereals containing gluten, crustaceans, eggs, fish, lupin, milk, molluscs, mustard, tree nuts, peanuts, sesame,
+            soya, sulphites (10mg/kg or more). Flag the listing (status "flagged") if: the allergen_info_complete box is not
+            ticked; the allergens list is empty without an explicit ''none''; an ingredient implies an allergen that is not
+            declared (soy sauce -> soya and gluten, butter/cream/cheese -> milk, pesto -> nuts and milk, etc.); the ingredients
+            are missing or are not a full list in descending weight order; or nutrition, portion size or price are missing.
+            Otherwise set status "pending_review". Either way an admin makes the final decision; you never set status "live".
+            Call write_menu once with dish_id = the listing''s record id, copying all listing fields (name, chef_name, chef_email,
+            cuisine, diet, description, ingredients, allergens, may_contain, energy_kcal, fat_g, saturates_g, carbs_g, sugars_g,
+            fibre_g, protein_g, salt_g, portion_g, price, available_days) plus status and check_notes (short bullet list of
+            what is missing or inconsistent, or ''No issues found''). Set chef_share_pct to 70. This is a screening aid, not
+            legal advice: never invent allergen or nutrition data and never edit the chef''s declared values. Finish with
+            a one-paragraph summary.'
+  - key: order_finalizer
+    role: helper
+    description: Validates each new order (live dish, delivery day, two-day cut-off) and fills in the chef, prices and shares.
+    context:
+    - key: postcode
+      from: collection:customer_profiles.postcode
+    appTools:
+    - name: read_menu
+      description: Read dishes of the menu
+      action: read
+      collection: menu
+      scope: all
+    - name: update_order
+      description: Update the customer's order record
+      action: write
+      collection: orders
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.1
+    profile:
+      inline:
+        display_name: Hobplate order finalizer
+        crews:
+        - id: order_finalizer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You finalize one new customer order. Look up the ordered dish with read_menu. Rules: the dish must
+            have status live; the delivery_date must be at least 2 full days after today (orders close two days before each
+            delivery day); the weekday of delivery_date must be in the dish''s available_days; quantity must be a positive
+            whole number. If all rules hold, call update_order on the order with status confirmed, dish_name, chef_name, chef_email,
+            unit_price (dish price), total = unit_price x quantity, chef_share = total x chef_share_pct/100 (70 if absent),
+            margin = total - chef_share, postcode (the customer''s delivery postcode) and postcode_district (the outward part,
+            e.g. ''M14''). If a rule fails, set status cutoff_missed (for date or availability problems) or cancelled (dish
+            not live) and fill in reason. Round money to 2 decimals. Never change anything else. Reply with one line.'
+  data:
+    collections:
+    - name: chef_applications
+      ownedBy: org
+      description: Chef applications, reviewed by admins
+      retentionDays: 730
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Your name
+      - name: email
+        type: email
+        required: true
+        label: Email
+      - name: phone
+        type: text
+        label: Phone
+      - name: kitchen_address
+        type: textarea
+        required: true
+        label: Kitchen address
+      - name: fsa_number
+        type: text
+        required: true
+        label: FSA food business registration number
+      - name: hygiene_rating
+        type: select
+        required: true
+        label: Food hygiene rating
+        options:
+        - '5'
+        - '4'
+        - '3'
+        - '2'
+        - '1'
+        - '0'
+        - Awaiting inspection
+      - name: cuisine
+        type: text
+        required: true
+        label: Cuisine
+      - name: sample_menu
+        type: textarea
+        required: true
+        label: Sample menu
+      - name: photo_links
+        type: urls
+        label: Links to photos of your kitchen and dishes
+      - name: status
+        type: select
+        label: Status
+        default: new
+        options:
+        - new
+        - approved
+        - rejected
+    - name: dishes
+      ownedBy: user
+      description: A chef's own dish listings
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Dish name
+      - name: chef_name
+        type: text
+        required: true
+        label: Chef / kitchen name
+      - name: cuisine
+        type: select
+        required: true
+        label: Cuisine
+        options:
+        - British
+        - Indian
+        - Italian
+        - Chinese
+        - Thai
+        - Middle Eastern
+        - Caribbean
+        - West African
+        - Mexican
+        - Japanese
+        - Other
+      - name: diet
+        type: multiselect
+        label: Diet
+        options:
+        - vegan
+        - vegetarian
+        - pescatarian
+        - halal
+        - kosher
+        - dairy free
+        - gluten free
+      - name: description
+        type: textarea
+        label: Description
+      - name: ingredients
+        type: textarea
+        required: true
+        label: Full ingredients list (descending weight, allergens in CAPITALS)
+      - name: allergens
+        type: multiselect
+        required: true
+        label: Allergens present
+        options:
+        - none
+        - celery
+        - cereals containing gluten
+        - crustaceans
+        - eggs
+        - fish
+        - lupin
+        - milk
+        - molluscs
+        - mustard
+        - tree nuts
+        - peanuts
+        - sesame
+        - soya
+        - sulphites
+      - name: allergen_info_complete
+        type: boolean
+        required: true
+        label: I confirm the allergen labelling is complete and accurate
+      - name: may_contain
+        type: text
+        label: Cross-contamination warning (may contain)
+      - name: energy_kcal
+        type: number
+        required: true
+        label: Energy per portion (kcal)
+      - name: fat_g
+        type: number
+        label: Fat (g)
+      - name: saturates_g
+        type: number
+        label: Saturates (g)
+      - name: carbs_g
+        type: number
+        label: Carbohydrate (g)
+      - name: sugars_g
+        type: number
+        label: Sugars (g)
+      - name: fibre_g
+        type: number
+        label: Fibre (g)
+      - name: protein_g
+        type: number
+        label: Protein (g)
+      - name: salt_g
+        type: number
+        label: Salt (g)
+      - name: portion_g
+        type: number
+        required: true
+        label: Portion size (g)
+      - name: price
+        type: number
+        required: true
+        label: Price per portion (GBP)
+      - name: available_days
+        type: multiselect
+        required: true
+        label: Weekly availability (delivery days)
+        options:
+        - Mon
+        - Tue
+        - Wed
+        - Thu
+        - Fri
+        - Sat
+        - Sun
+    - name: menu
+      ownedBy: app
+      description: Reviewed dish listings; only status live is shown to customers
+      fields:
+      - name: dish_id
+        type: text
+        label: Dish id
+      - name: name
+        type: text
+        label: Dish
+      - name: chef_name
+        type: text
+        label: Chef
+      - name: chef_email
+        type: email
+        label: Chef email
+      - name: cuisine
+        type: text
+        label: Cuisine
+      - name: diet
+        type: multiselect
+        label: Diet
+        options:
+        - vegan
+        - vegetarian
+        - pescatarian
+        - halal
+        - kosher
+        - dairy free
+        - gluten free
+      - name: description
+        type: textarea
+        label: Description
+      - name: ingredients
+        type: textarea
+        label: Ingredients
+      - name: allergens
+        type: multiselect
+        label: Allergens
+        options:
+        - none
+        - celery
+        - cereals containing gluten
+        - crustaceans
+        - eggs
+        - fish
+        - lupin
+        - milk
+        - molluscs
+        - mustard
+        - tree nuts
+        - peanuts
+        - sesame
+        - soya
+        - sulphites
+      - name: may_contain
+        type: text
+        label: May contain
+      - name: energy_kcal
+        type: number
+        label: kcal
+      - name: fat_g
+        type: number
+        label: Fat (g)
+      - name: saturates_g
+        type: number
+        label: Saturates (g)
+      - name: carbs_g
+        type: number
+        label: Carbs (g)
+      - name: sugars_g
+        type: number
+        label: Sugars (g)
+      - name: fibre_g
+        type: number
+        label: Fibre (g)
+      - name: protein_g
+        type: number
+        label: Protein (g)
+      - name: salt_g
+        type: number
+        label: Salt (g)
+      - name: portion_g
+        type: number
+        label: Portion (g)
+      - name: price
+        type: number
+        label: Price (GBP)
+      - name: available_days
+        type: multiselect
+        label: Delivery days
+        options:
+        - Mon
+        - Tue
+        - Wed
+        - Thu
+        - Fri
+        - Sat
+        - Sun
+      - name: chef_share_pct
+        type: number
+        label: Chef share %
+        default: 70
+      - name: status
+        type: select
+        label: Status
+        options:
+        - pending_review
+        - flagged
+        - live
+        - withdrawn
+      - name: check_notes
+        type: textarea
+        label: Allergen check notes
+    - name: customer_profiles
+      ownedBy: user
+      description: Customer delivery details
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Name
+      - name: postcode
+        type: text
+        required: true
+        label: Delivery postcode
+      - name: address
+        type: textarea
+        label: Delivery address
+      - name: phone
+        type: text
+        label: Phone
+      - name: allergy_notes
+        type: textarea
+        label: Allergies or dietary needs
+    - name: orders
+      ownedBy: user
+      description: Customer orders; chefs see the orders for their own dishes
+      access:
+      - role: chef
+        where:
+          chef_email: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: dish
+        type: select
+        required: true
+        label: Dish
+        optionsFrom: collection:menu
+      - name: quantity
+        type: number
+        required: true
+        label: Portions
+      - name: delivery_date
+        type: date
+        required: true
+        label: Delivery day
+      - name: notes
+        type: textarea
+        label: Notes
+      - name: status
+        type: select
+        label: Status
+        default: placed
+        options:
+        - placed
+        - confirmed
+        - cutoff_missed
+        - cancelled
+      - name: dish_name
+        type: text
+        label: Dish
+      - name: chef_name
+        type: text
+        label: Chef
+      - name: chef_email
+        type: email
+        label: Chef email
+      - name: postcode
+        type: text
+        label: Postcode
+      - name: postcode_district
+        type: text
+        label: Postcode district
+      - name: unit_price
+        type: number
+        label: Unit price
+      - name: total
+        type: number
+        label: Total
+      - name: chef_share
+        type: number
+        label: Chef share
+      - name: margin
+        type: number
+        label: Margin
+      - name: reason
+        type: text
+        label: Reason
+    - name: reviews
+      ownedBy: user
+      description: Customer reviews after delivery
+      fields:
+      - name: order
+        type: select
+        required: true
+        label: Which order?
+        optionsFrom: collection:orders
+      - name: rating
+        type: select
+        required: true
+        label: Rating
+        options:
+        - '5'
+        - '4'
+        - '3'
+        - '2'
+        - '1'
+      - name: comment
+        type: textarea
+        label: Comment
+    - name: wholesale_orders
+      ownedBy: user
+      description: Wholesale orders placed by retail buyers
+      fields:
+      - name: store
+        type: text
+        required: true
+        label: Store / outlet
+      - name: dish
+        type: select
+        required: true
+        label: Dish
+        optionsFrom: collection:menu
+      - name: cases
+        type: number
+        required: true
+        label: Cases
+      - name: delivery_date
+        type: date
+        required: true
+        label: Delivery date
+      - name: po_number
+        type: text
+        label: PO number
+      - name: notes
+        type: textarea
+        label: Notes
+      - name: status
+        type: select
+        label: Status
+        default: requested
+        options:
+        - requested
+        - confirmed
+        - delivered
+        - cancelled
+    - name: payouts
+      ownedBy: org
+      description: Weekly chef payouts recorded by admins
+      access:
+      - role: chef
+        where:
+          chef_email: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: chef_email
+        type: email
+        required: true
+        label: Chef email
+      - name: week_start
+        type: date
+        required: true
+        label: Week starting
+      - name: amount
+        type: number
+        required: true
+        label: Amount (GBP)
+      - name: status
+        type: select
+        label: Status
+        options:
+        - due
+        - paid
+  views:
+  - key: home
+    type: page
+    title: Hobplate
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: Chilled ready meals
+      title: Real **chef-cooked** meals, ready when you are.
+      text: Independent chefs cook, we deliver chilled to your door. Every dish carries full allergen labelling and nutrition.
+      actions:
+      - label: Sign up and browse
+        href: /login
+        style: primary
+      - label: Cook with us
+        href: /v/apply
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Browse
+        text: Filter by cuisine and diet, check allergens and nutrition.
+      - title: Order
+        text: Choose a delivery day. Orders close two days before.
+      - title: Enjoy
+        text: We email you on delivery day and ask for your review.
+    - type: cards
+      id: chefs
+      title: For chefs
+      items:
+      - title: Apply
+        text: Tell us about your FSA-registered kitchen.
+      - title: Publish dishes
+        text: Add dishes with allergens, nutrition and weekly availability.
+      - title: Get paid weekly
+        text: See your orders and earnings; we pay your share every week.
+    - type: note
+      content: Hobplate dishes are made in FSA-registered kitchens. Allergen information is declared by the chef and screened
+        before listing; always read the label.
+  - key: apply
+    type: form
+    title: Cook with Hobplate
+    collection: chef_applications
+    fields:
+    - name
+    - email
+    - phone
+    - kitchen_address
+    - fsa_number
+    - hygiene_rating
+    - cuisine
+    - sample_menu
+    - photo_links
+    submit:
+      label: Send application
+      message: Thanks. We review applications and will email you.
+    nav: false
+  - key: profile
+    type: form
+    title: My delivery details
+    collection: customer_profiles
+    edit: true
+    submit:
+      label: Save
+      message: Saved.
+      redirect: menu
+    roles:
+    - customer
+  - key: menu
+    type: cards
+    title: Menu
+    source: collection:menu
+    roles:
+    - customer
+    - buyer
+    - admin
+    data:
+      display: cards
+      fields:
+      - key: name
+        label: Dish
+      - key: chef_name
+        label: Chef
+      - key: cuisine
+        label: Cuisine
+      - key: diet
+        label: Diet
+      - key: price
+        label: Price
+        format: money
+      - key: allergens
+        label: Allergens
+      - key: energy_kcal
+        label: kcal
+        format: number
+      - key: portion_g
+        label: Portion (g)
+        format: number
+      - key: available_days
+        label: Delivery days
+      filters:
+      - field: status
+        op: '='
+        value: live
+      sort:
+        field: cuisine
+        dir: asc
+      limit: 100
+      empty: No dishes are live yet.
+  - key: order
+    type: form
+    title: Place an order
+    collection: orders
+    fields:
+    - dish
+    - quantity
+    - delivery_date
+    - notes
+    submit:
+      label: Place order
+      message: Order received. You will get a confirmation email.
+      redirect: my_orders
+    roles:
+    - customer
+  - key: my_orders
+    type: table
+    title: My orders
+    source: collection:orders
+    roles:
+    - customer
+    data:
+      display: table
+      fields:
+      - key: dish_name
+        label: Dish
+      - key: quantity
+        label: Qty
+        format: number
+      - key: delivery_date
+        label: Delivery
+        format: date
+      - key: total
+        label: Total
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: delivery_date
+        dir: desc
+  - key: review
+    type: form
+    title: Review your order
+    collection: reviews
+    submit:
+      label: Send review
+      message: Thank you for your review.
+    roles:
+    - customer
+  - key: new_dish
+    type: form
+    title: Add a dish
+    collection: dishes
+    edit: true
+    submit:
+      label: Submit for review
+      message: Saved. We check allergen information before the dish goes live.
+      redirect: my_dishes
+    roles:
+    - chef
+  - key: my_dishes
+    type: table
+    title: My dishes
+    source: collection:dishes
+    roles:
+    - chef
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Dish
+      - key: cuisine
+        label: Cuisine
+      - key: price
+        label: Price
+        format: money
+      - key: available_days
+        label: Days
+  - key: chef_orders
+    type: table
+    title: Orders for my dishes
+    source: collection:orders
+    roles:
+    - chef
+    export: true
+    data:
+      display: table
+      fields:
+      - key: delivery_date
+        label: Delivery
+        format: date
+      - key: dish_name
+        label: Dish
+      - key: quantity
+        label: Qty
+        format: number
+      - key: postcode_district
+        label: Area
+      - key: chef_share
+        label: My share
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      filters:
+      - field: status
+        op: '='
+        value: confirmed
+      sort:
+        field: delivery_date
+        dir: asc
+  - key: chef_earnings
+    type: page
+    title: My earnings
+    roles:
+    - chef
+    sections:
+    - type: data
+      source: collection:orders
+      display: kpi
+      kpis:
+      - label: Orders
+        agg: count
+      - label: Earnings (GBP)
+        agg: sum
+        field: chef_share
+        format: money
+      filters:
+      - field: status
+        op: '='
+        value: confirmed
+    - type: data
+      title: Earnings by week
+      source: collection:orders
+      display: chart
+      chart: bar
+      fields:
+      - key: delivery_date
+        label: Week
+      - key: earned
+        label: Earned
+      groupBy:
+        field: delivery_date
+        bucket: week
+        aggs:
+        - key: earned
+          agg: sum
+          field: chef_share
+      filters:
+      - field: status
+        op: '='
+        value: confirmed
+    - type: data
+      title: Payouts
+      source: collection:payouts
+      display: table
+      fields:
+      - key: week_start
+        label: Week
+        format: date
+      - key: amount
+        label: Amount
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: week_start
+        dir: desc
+      empty: No payouts yet.
+  - key: wholesale
+    type: form
+    title: Wholesale order
+    collection: wholesale_orders
+    fields:
+    - store
+    - dish
+    - cases
+    - delivery_date
+    - po_number
+    - notes
+    submit:
+      label: Send order
+      message: Wholesale order sent. We will confirm shortly.
+      redirect: wholesale_history
+    roles:
+    - buyer
+  - key: wholesale_history
+    type: table
+    title: My wholesale orders
+    source: collection:wholesale_orders
+    roles:
+    - buyer
+    data:
+      display: table
+      fields:
+      - key: store
+        label: Store
+      - key: cases
+        label: Cases
+        format: number
+      - key: delivery_date
+        label: Delivery
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: delivery_date
+        dir: desc
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - admin
+    sections:
+    - type: data
+      source: collection:orders
+      display: kpi
+      kpis:
+      - label: Orders
+        agg: count
+      - label: Revenue (GBP)
+        agg: sum
+        field: total
+        format: money
+      - label: Margin (GBP)
+        agg: sum
+        field: margin
+        format: money
+      filters:
+      - field: status
+        op: '='
+        value: confirmed
+    - type: data
+      title: Revenue and margin by week
+      source: collection:orders
+      display: chart
+      chart: line
+      fields:
+      - key: delivery_date
+        label: Week
+      - key: revenue
+        label: Revenue
+      - key: margin
+        label: Margin
+      groupBy:
+        field: delivery_date
+        bucket: week
+        aggs:
+        - key: revenue
+          agg: sum
+          field: total
+        - key: margin
+          agg: sum
+          field: margin
+      filters:
+      - field: status
+        op: '='
+        value: confirmed
+    - type: data
+      title: Orders by chef
+      source: collection:orders
+      display: table
+      fields:
+      - key: chef_name
+        label: Chef
+      - key: count
+        label: Orders
+        format: number
+      - key: revenue
+        label: Revenue
+        format: money
+      - key: chef_share
+        label: Chef share
+        format: money
+      - key: margin
+        label: Margin
+        format: money
+      groupBy:
+        field: chef_name
+        aggs:
+        - key: revenue
+          agg: sum
+          field: total
+        - key: chef_share
+          agg: sum
+          field: chef_share
+        - key: margin
+          agg: sum
+          field: margin
+      filters:
+      - field: status
+        op: '='
+        value: confirmed
+    - type: data
+      title: Orders by dish
+      source: collection:orders
+      display: bar
+      fields:
+      - key: dish_name
+        label: Dish
+      - key: count
+        label: Orders
+      groupBy:
+        field: dish_name
+        aggs:
+        - key: revenue
+          agg: sum
+          field: total
+      filters:
+      - field: status
+        op: '='
+        value: confirmed
+    - type: data
+      title: Orders by postcode district
+      source: collection:orders
+      display: table
+      fields:
+      - key: postcode_district
+        label: District
+      - key: count
+        label: Orders
+        format: number
+      - key: revenue
+        label: Revenue
+        format: money
+      groupBy:
+        field: postcode_district
+        aggs:
+        - key: revenue
+          agg: sum
+          field: total
+      filters:
+      - field: status
+        op: '='
+        value: confirmed
+  - key: applications
+    type: table
+    title: Chef applications
+    source: collection:chef_applications
+    roles:
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Name
+      - key: kitchen_address
+        label: Kitchen
+      - key: fsa_number
+        label: FSA no.
+      - key: hygiene_rating
+        label: Hygiene
+      - key: cuisine
+        label: Cuisine
+      - key: status
+        label: Status
+        format: badge
+  - key: review_queue
+    type: table
+    title: Dishes to review
+    source: collection:menu
+    roles:
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Dish
+      - key: chef_name
+        label: Chef
+      - key: allergens
+        label: Allergens
+      - key: status
+        label: Status
+        format: badge
+      - key: check_notes
+        label: Check notes
+      filters:
+      - field: status
+        op: '!='
+        value: live
+      - field: status
+        op: '!='
+        value: withdrawn
+  - key: wholesale_all
+    type: table
+    title: Wholesale orders (all)
+    source: collection:wholesale_orders
+    roles:
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: store
+        label: Store
+      - key: cases
+        label: Cases
+        format: number
+      - key: delivery_date
+        label: Delivery
+        format: date
+      - key: status
+        label: Status
+        format: badge
+  triggers:
+  - key: new_application
+    'on':
+      collection: chef_applications
+      op: insert
+    notify:
+      to: admins
+      subject: 'New chef application: {record.name}'
+      body: '{record.name} applied to cook for Hobplate (FSA {record.fsa_number}, hygiene rating {record.hygiene_rating}).
+        Review it in the app.'
+      link: applications
+  - key: application_approved
+    'on':
+      collection: chef_applications
+      op: update
+      where:
+        status: approved
+    notify:
+      to:
+      - record.email
+      subject: Welcome to Hobplate, {record.name}
+      body: Your application has been approved. You will receive an invitation to sign in and publish your dishes.
+  - key: check_dish
+    'on':
+      collection: dishes
+      op: any
+    start:
+      agent: allergen_checker
+    goal: 'Check this dish listing. Chef email: {chef_email}. Listing as JSON: {event}. Today is {date}.'
+  - key: dish_flagged
+    'on':
+      collection: menu
+      op: any
+      where:
+        status: flagged
+    notify:
+      to: admins
+      subject: 'Dish flagged: {record.name}'
+      body: 'The allergen check flagged {record.name} by {record.chef_name}: {record.check_notes}'
+      link: review_queue
+  - key: dish_ready
+    'on':
+      collection: menu
+      op: any
+      where:
+        status: pending_review
+    notify:
+      to: admins
+      subject: 'Dish ready for review: {record.name}'
+      body: '{record.name} by {record.chef_name} passed the allergen screening and awaits your approval.'
+      link: review_queue
+  - key: finalize_order
+    'on':
+      collection: orders
+      op: insert
+    start:
+      agent: order_finalizer
+    goal: 'Finalize this new order: {event}. Customer postcode: {postcode}. Today is {date}.'
+  - key: order_confirmed
+    'on':
+      collection: orders
+      op: update
+      where:
+        status: confirmed
+    notify:
+      to: owner
+      subject: 'Order confirmed: {record.dish_name}'
+      body: 'Your order of {record.quantity} x {record.dish_name} is confirmed for delivery on {record.delivery_date}. Total:
+        GBP {record.total}.'
+      link: my_orders
+  - key: order_rejected
+    'on':
+      collection: orders
+      op: update
+      where:
+        status: cutoff_missed
+    notify:
+      to: owner
+      subject: We could not take your order
+      body: 'Your order for {record.delivery_date} could not be accepted: {record.reason}. Orders close two days before each
+        delivery day.'
+      link: menu
+  - key: delivery_day
+    'on':
+      date:
+        collection: orders
+        field: delivery_date
+        offsetDays: 0
+        hour: 7
+      where:
+        status: confirmed
+    notify:
+      to: owner
+      subject: Your Hobplate delivery is today
+      body: Today we deliver {record.quantity} x {record.dish_name}. Keep it chilled and enjoy.
+      link: my_orders
+  - key: review_request
+    'on':
+      date:
+        collection: orders
+        field: delivery_date
+        offsetDays: 1
+        hour: 10
+      where:
+        status: confirmed
+    notify:
+      to: owner
+      subject: How was your {record.dish_name}?
+      body: Thanks for ordering from Hobplate. Please tell us what you thought.
+      link: review
+  - key: payout_reminder
+    'on':
+      cron: 0 8 * * 1
+    notify:
+      to: admins
+      subject: Weekly chef payouts are due
+      body: A new week has started. Check chef earnings on the dashboard and record the payouts.
+      link: dashboard
+  extensions:
+  - key: card_checkout
+    description: 'Card payment of each order at checkout (per-dish prices, collected by Hobplate and paid out to chefs) is
+      not available yet: the app records orders with their totals, and payment must be taken outside the app.'
+  - key: order_cutoff
+    description: The two-day order cut-off is enforced after the order is placed by the order agent (late orders become cutoff_missed
+      and the customer is emailed), not by blocking the form.
+  - key: chef_payouts
+    description: Weekly chef payouts are calculated on the dashboard from confirmed orders and recorded by admins in the payouts
+      collection; the transfer itself is made outside the app. Chef invitations and approval decisions are made by admins
+      (applications table, then invite).
+  - key: wholesale_pricing
+    description: Wholesale orders are recorded and confirmed by admins; wholesale price lists and invoicing are not modelled.

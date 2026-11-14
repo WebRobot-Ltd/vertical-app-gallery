@@ -1,0 +1,685 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: groundcheck
+  displayName: Groundcheck
+  tagline:
+    en: Environmental risk reports for conveyancing, reviewed by a qualified person.
+  description:
+    en: Solicitors enter a property address and order an environmental risk report covering flooding, subsidence, ground stability,
+      contaminated land, radon, energy infrastructure and nearby planning. Every report is approved by a qualified reviewer
+      before delivery and ends in a clear pass or further-action result.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f3b2d'
+      accent: '#b4561f'
+      background: '#f6f5f0'
+      foreground: '#1c2420'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Ground
+      color: primary
+    - text: check
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how-it-works'
+    - label: What is covered
+      href: '#coverage'
+    - label: Standards
+      href: '#standards'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Groundcheck admin
+      assignedBy: admin_emails
+    - key: user
+      label: Solicitor
+      assignedBy: signup
+    - key: firm_admin
+      label: Firm admin
+      assignedBy: derived
+      from: collection:firm_profile.firm_admin_email
+    - key: reviewer
+      label: Qualified reviewer
+      assignedBy: invite
+  limits:
+  - action: agent:analyst
+    per: user
+    max: 30
+    window: day
+    roles:
+    - user
+  - action: chat
+    per: user
+    max: 60
+    window: day
+    roles:
+    - user
+  egress:
+    hosts:
+    - environment.data.gov.uk
+    - api.postcodes.io
+    - www.planning.data.gov.uk
+    - ogcapi.bgs.ac.uk
+    notes: 'environment.data.gov.uk: Environment Agency flood data, Open Government Licence v3.0. api.postcodes.io: postcode
+      lookup from open data (Ordnance Survey/ONS, OGL). www.planning.data.gov.uk: Planning Data, OGL v3.0. ogcapi.bgs.ac.uk:
+      British Geological Survey geology, radon and contaminated-land related data, used ONLY with the app''s BGS licence key
+      (org credential); without it the agent marks those sections as not assessed.'
+  agents:
+  - key: analyst
+    role: main
+    description: Gathers flood, geology, planning and infrastructure evidence for an address, drafts the report, asks the
+      qualified reviewer for approval, then delivers the final report.
+    awaits:
+    - report_review
+    context:
+    - key: firm_name
+      from: collection:firm_profile.firm_name
+    - key: firm_admin_email
+      from: collection:firm_profile.firm_admin_email
+    goalTemplate: 'Order an environmental risk report.
+
+      Property address: {address}
+
+      Postcode: {postcode}
+
+      {?client_ref}Firm''s matter reference: {client_ref}{/client_ref}
+
+      Purpose: {purpose_label}
+
+      {?previous_order}This is an UPDATE of an earlier report (order {previous_order}): load it with read_orders, say what
+      has changed since, and keep the same structure.{/previous_order}
+
+      {?notes}Notes from the solicitor: {notes}{/notes}
+
+      Ordering firm: {firm_name} (firm admin: {firm_admin_email}).
+
+      Today is {date}. Write the report in English (language code {lang}).'
+    profile:
+      inline:
+        display_name: Groundcheck analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are the Groundcheck analyst: you produce environmental risk search reports on a single property
+            for conveyancing solicitors in England and Wales. Your reader is the solicitor, never the buyer.
+
+
+            PROCESS
+
+            1. Resolve the address: call postcode_lookup with the postcode path (e.g. /SW1A1AA) to get latitude, longitude,
+            local authority. If the postcode does not match the address, stop and say so.
+
+            2. Flooding: call ea_flood_warnings and ea_flood_areas (query e.g. lat, long, dist=5 in km) for Environment Agency
+            flood warning areas and current/historic warnings near the property. Be explicit that this is evidence about warnings
+            and areas, not a full flood-zone map; if you can obtain Flood Zone 2/3, surface water and reservoir flooding information
+            through the webrobot MCP from official public sources, cite them. Otherwise say which flood sources were not assessed.
+
+            3. Geology (subsidence/shrink-swell, ground stability, contaminated land, radon): use bgs_data ONLY if the tool
+            works. If the system tells you the BGS key is not connected or the tool returns an authorisation error, do NOT
+            guess: mark those sections ''Not assessed — BGS data unavailable'' and make the overall result ''Further action''.
+
+            4. Energy infrastructure: look for nearby major infrastructure (high-voltage lines, pipelines, wind/solar farms,
+            HS2 or other schemes) from public sources via the webrobot MCP. Cite each source and date.
+
+            5. Planning nearby: call planning_search (e.g. query ''longitude=..&latitude=..&dataset=planning-application&geometry_relation=intersects''
+            style filters per the Planning Data API, entity.json) for applications and designations within about 250 m; list
+            only what the data returns.
+
+            6. Rate each of the seven topics Low / Medium / High / Not assessed, and give an overall risk rating (Low, Medium,
+            High). Overall result: ''PASS'' only if every topic was assessed and none is Medium or High-requiring-action;
+            otherwise ''FURTHER ACTION'' with the specific actions (e.g. specialist flood risk assessment, Phase 1 contaminated
+            land desk study, radon test, mining search, enquiry to the local authority).
+
+
+            REPORT STRUCTURE (Markdown, level-1 title first): ''# Environmental Risk Report — <address>''. Then: ## Result
+            (PASS or FURTHER ACTION, overall rating, one-paragraph reason), ## Property and scope (address, postcode, matter
+            reference, date, firm, data sources and their dates, limitations), ## Findings (one subsection per topic: Flooding,
+            Subsidence, Ground stability, Contaminated land, Radon, Energy infrastructure, Planning nearby — each with rating,
+            evidence, source, and recommended action), ## Summary table of ratings, ## Recommended further action, ## Limitations
+            and standards (the report is a desk-based search product based on the sources listed; it is not legal advice;
+            it should be read with the solicitor''s own enquiries; state data licences and attribution: Environment Agency
+            data under OGL v3.0, Contains British Geological Survey materials © UKRI only where used, Planning Data OGL).
+            Add a chart block of topic ratings where useful: ```chart {"type":"bar","title":"Risk by topic (0 none, 1 low,
+            2 medium, 3 high)","labels":[...],"series":[{"name":"Risk","values":[...]}]} ``` with real values only.
+
+
+            RULES
+
+            - Never invent data, distances, dates or figures. Every finding needs a named source. If a source failed, say
+            so.
+
+            - Never give legal advice, never advise the buyer or tell anyone whether to proceed with a purchase. Findings
+            are factual information for the solicitor to interpret.
+
+            - Draft in line with the expectations of the Law Society and the CLC for search products: clear scope, sources,
+            limitations, unambiguous result, and a clear recommendation for further action.
+
+            - BEFORE approval: do not output the report text as your final answer. Call request_report_review with address,
+            risk_rating, result and the full draft report. Wait for the decision. If approved (optionally with reviewer comments
+            to incorporate), call save_order with address, postcode, client_ref, result, risk_rating, a two-sentence summary,
+            report_md (the full final report), firm_name, firm_admin_email, reviewed_by and report_date, and then output the
+            final report as your answer. If rejected, output only a short ''# Report not issued'' note stating that the report
+            was returned for rework and that the firm will be contacted; do not include findings.'
+          chat_mode: false
+    appTools:
+    - name: postcode_lookup
+      description: Look up a UK postcode (latitude, longitude, local authority). Append /<POSTCODE> as path.
+      action: http
+      http:
+        method: GET
+        url: https://api.postcodes.io/postcodes
+        allowPath: true
+        attribution: postcodes.io, Contains OS data and ONS data, OGL v3.0
+    - name: ea_flood_warnings
+      description: 'Environment Agency flood warnings and alerts near a point (query: lat, long, dist in km).'
+      action: http
+      http:
+        method: GET
+        url: https://environment.data.gov.uk/flood-monitoring/id/floods
+        attribution: Environment Agency, Open Government Licence v3.0
+    - name: ea_flood_areas
+      description: 'Environment Agency flood warning and alert areas near a point (query: lat, long, dist in km).'
+      action: http
+      http:
+        method: GET
+        url: https://environment.data.gov.uk/flood-monitoring/id/floodAreas
+        attribution: Environment Agency, Open Government Licence v3.0
+    - name: planning_search
+      description: Search planning applications and designations from Planning Data by location/dataset (entity.json query
+        parameters).
+      action: http
+      http:
+        method: GET
+        url: https://www.planning.data.gov.uk/entity.json
+        attribution: Planning Data, Open Government Licence v3.0
+    - name: bgs_data
+      description: British Geological Survey licensed data (geology, shrink-swell, ground stability, radon, contaminated-land
+        indicators). Works only if the BGS licence key is connected.
+      action: http
+      http:
+        method: GET
+        url: https://ogcapi.bgs.ac.uk/collections
+        allowPath: true
+        attribution: Contains British Geological Survey materials © UKRI, used under licence
+        credential:
+          provider: bgs
+          header: Authorization
+          format: Bearer {secret}
+    - name: read_orders
+      description: Read the signed-in user's earlier report orders.
+      action: read
+      collection: orders
+      scope: user
+    - name: save_order
+      description: Save the approved report as an order record.
+      action: write
+      collection: orders
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+      timeoutSeconds: 1800
+  - key: explainer
+    role: helper
+    description: Explains the findings of a delivered report to the solicitor in chat. No legal advice, nothing for the buyer.
+    profile:
+      inline:
+        display_name: Groundcheck report assistant
+        chat_mode: true
+        crews:
+        - id: explainer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the Groundcheck report assistant. You help a SOLICITOR understand the findings of Groundcheck
+            environmental risk reports they ordered. Use read_orders to load their reports and answer from the report text
+            only. Explain what each rating means, what the sources show, what the recommended further action involves (e.g.
+            what a Phase 1 desk study or a radon test is) and the limitations of the data. Rules: you do not give legal advice;
+            you never advise the buyer or the solicitor''s client, and you never say whether a purchase should proceed, whether
+            to renegotiate, or what the legal consequences are — say that is a matter for the solicitor''s own professional
+            judgement. Never invent findings that are not in the report; if a report is not found, say so and ask for the
+            address. Keep answers short and plain, in English.'
+    appTools:
+    - name: read_orders
+      description: Read the signed-in user's earlier report orders.
+      action: read
+      collection: orders
+      scope: user
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      Solicitor''s new message: {message}
+
+      Answer in English.'
+    output: markdown
+  approvals:
+  - key: report_review
+    title: Reviewer sign-off before delivery
+    description: A qualified reviewer checks the draft environmental risk report, its sources and its result before it is
+      delivered to the solicitor.
+    role: reviewer
+    fields:
+    - address
+    - risk_rating
+    - result
+    - draft
+    timeoutMinutes: 2880
+    onTimeout: reject
+    decidedBy: role
+  triggers:
+  - key: report_approved
+    description: Tell the solicitor their report is ready.
+    'on':
+      approval: report_review
+      decision: approved
+    notify:
+      to: owner
+      subject: Your Groundcheck report is ready
+      body: Your environmental risk report has been reviewed and approved. You can open and print it as a PDF from your orders.
+      link: orders
+  - key: report_rejected
+    description: Alert the Groundcheck team when a reviewer returns a report.
+    'on':
+      approval: report_review
+      decision: rejected
+    notify:
+      to: admins
+      subject: A Groundcheck report was returned by the reviewer
+      body: A reviewer rejected a draft report. Please check the approvals page and contact the firm if needed.
+      link: approvals
+  inputForm:
+    title: Order a report
+    fields:
+    - name: address
+      type: text
+      required: true
+      maxLength: 200
+      label: Property address
+    - name: postcode
+      type: text
+      required: true
+      maxLength: 10
+      label: Postcode
+      help: e.g. SW1A 1AA
+    - name: client_ref
+      type: text
+      maxLength: 60
+      label: Your matter reference (optional)
+    - name: purpose
+      type: select
+      required: true
+      label: Transaction
+      default: purchase
+      options:
+      - value: purchase
+        label: Purchase
+      - value: sale
+        label: Sale
+      - value: remortgage
+        label: Remortgage
+      - value: other
+        label: Other
+    - name: previous_order
+      type: select
+      label: Update an earlier report (optional)
+      optionsFrom: collection:orders
+      help: Pick an earlier report of yours to reorder it as an update.
+    - name: notes
+      type: textarea
+      maxLength: 500
+      label: Notes for the analyst (optional)
+  data:
+    collections:
+    - name: firm_profile
+      ownedBy: user
+      description: Each solicitor's firm details; the firm admin email gives that person the firm admin role.
+      fields:
+      - name: firm_name
+        type: text
+        required: true
+        label: Firm name
+      - name: regulator
+        type: select
+        required: true
+        label: Regulator
+        options:
+        - value: sra
+          label: SRA
+        - value: clc
+          label: CLC
+        - value: other
+          label: Other
+      - name: regulator_number
+        type: text
+        label: SRA / CLC number
+      - name: firm_admin_email
+        type: email
+        required: true
+        label: Firm admin email
+      - name: billing_email
+        type: email
+        label: Accounts email
+      retentionDays: 2555
+    - name: orders
+      ownedBy: user
+      description: Delivered reports, one per order, saved by the analyst after reviewer approval.
+      fields:
+      - name: address
+        type: text
+        label: Address
+      - name: postcode
+        type: text
+        label: Postcode
+      - name: client_ref
+        type: text
+        label: Matter reference
+      - name: result
+        type: select
+        label: Result
+        options:
+        - value: pass
+          label: Pass
+        - value: further_action
+          label: Further action
+      - name: risk_rating
+        type: select
+        label: Risk rating
+        options:
+        - low
+        - medium
+        - high
+      - name: summary
+        type: textarea
+        label: Summary
+      - name: report_md
+        type: textarea
+        label: Report
+      - name: firm_name
+        type: text
+        label: Firm
+      - name: firm_admin_email
+        type: email
+        label: Firm admin
+      - name: reviewed_by
+        type: text
+        label: Reviewed by
+      - name: report_date
+        type: date
+        label: Report date
+      access:
+      - role: firm_admin
+        where:
+          firm_admin_email: '{user.email}'
+        can:
+        - read
+      - role: reviewer
+        can:
+        - read
+      retentionDays: 2555
+    credentials:
+    - provider: bgs
+      kind: api_key
+      scope: org
+      required: false
+      label: BGS data licence key
+      help: Set by the Groundcheck admins only once the BGS data licence is in place. Without it, geology, ground stability,
+        radon and contaminated-land sections are marked not assessed.
+  views:
+  - key: home
+    type: page
+    title: Groundcheck
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: For conveyancing solicitors
+      title: Environmental risk reports, **reviewed** before they reach you.
+      text: Enter a property address and get a clear PASS or FURTHER ACTION result across flooding, subsidence, ground stability,
+        contaminated land, radon, energy infrastructure and nearby planning. About £40 per report.
+      actions:
+      - label: Order a report
+        href: /v/new_order
+        style: primary
+      - label: Sign in
+        href: /login
+        style: ghost
+      note: Every report is approved by a qualified reviewer before delivery.
+      aside: '<div style="padding:16px"><strong>Example result</strong><p>14 Mill Lane, Bristol<br>Overall rating: <b>Medium</b><br>Result:
+        <b>FURTHER ACTION</b></p><p>Flooding: Medium · Subsidence: Low · Radon: Low</p></div>'
+    - type: steps
+      id: how-it-works
+      title: How it works
+      items:
+      - title: Order
+        text: Enter the address, postcode and your matter reference.
+        badge: '1'
+      - title: Analyse
+        text: Our agent gathers Environment Agency, geological, planning and infrastructure evidence.
+        badge: '2'
+      - title: Review
+        text: A qualified reviewer checks the draft and approves it.
+        badge: '3'
+      - title: Deliver
+        text: You get an email and a printable PDF report with a clear result.
+        badge: '4'
+    - type: cards
+      id: coverage
+      title: What is covered
+      items:
+      - title: Flooding
+        text: Rivers, sea, surface water and warnings near the property.
+        badge: 🌊
+      - title: Subsidence and ground stability
+        text: Shrink-swell clay, natural ground hazards.
+        badge: 🪨
+      - title: Contaminated land
+        text: Indicators of past contaminative uses.
+        badge: 🏭
+      - title: Radon
+        text: Radon potential for the area.
+        badge: ☢️
+      - title: Energy infrastructure
+        text: Nearby pylons, pipelines, wind and solar, major schemes.
+        badge: ⚡
+      - title: Planning nearby
+        text: Applications and designations around the property.
+        badge: 🏗️
+    - type: cards
+      id: standards
+      title: Standards and support
+      items:
+      - title: Built for search-product expectations
+        text: Reports state scope, sources, limitations, a clear result and recommended further action, in line with Law Society
+          and CLC expectations for search products.
+      - title: Explained to you, not to the buyer
+        text: A chat assistant helps you interpret findings. It never gives legal advice or advises the buyer.
+      - title: Firm-level control
+        text: Each firm sees only its own orders. Reorder any report as an update.
+    - type: note
+      content: 'Groundcheck reports are desk-based information products, not legal advice. Data: Environment Agency and Planning
+        Data under the Open Government Licence v3.0; BGS data only where licensed.'
+  - key: firm
+    type: form
+    title: My firm
+    collection: firm_profile
+    fields:
+    - firm_name
+    - regulator
+    - regulator_number
+    - firm_admin_email
+    - billing_email
+    submit:
+      label: Save firm details
+      message: Firm details saved.
+      redirect: new_order
+    edit: false
+    roles:
+    - user
+    - admin
+  - key: new_order
+    type: new_run
+    title: Order a report
+    roles:
+    - user
+    - admin
+  - key: orders
+    type: history
+    title: My reports
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    title: Report
+    source: run
+    printable: true
+    nav: false
+  - key: explain
+    type: chat
+    title: Ask about a report
+    source: agent:explainer
+    placeholder: Ask about the findings of one of your reports
+    examples:
+    - What does a Medium flooding rating mean here?
+    - Why is the result Further Action?
+    - What does a radon test involve?
+    roles:
+    - user
+    - admin
+  - key: firm_orders
+    type: table
+    title: Firm orders
+    source: collection:orders
+    export: true
+    data:
+      display: table
+      fields:
+      - key: report_date
+        label: Date
+        format: date
+      - key: address
+        label: Address
+      - key: client_ref
+        label: Matter ref
+      - key: result
+        label: Result
+        format: badge
+      - key: risk_rating
+        label: Rating
+        format: badge
+      - key: firm_name
+        label: Firm
+      sort:
+        field: report_date
+        dir: desc
+      limit: 200
+      empty: No orders yet.
+    roles:
+    - firm_admin
+    - admin
+  - key: approvals
+    type: approvals
+    title: Reviews waiting
+    approvals:
+    - report_review
+    roles:
+    - reviewer
+    - admin
+  - key: account
+    type: account
+    title: Credits and billing
+    roles:
+    - user
+    - admin
+  billing:
+    modes:
+    - credits
+    currency: gbp
+    signupCredits: 0
+    costs:
+      agent:analyst: 40
+    packs:
+    - key: single
+      credits: 40
+      price: 40
+      label: 1 report
+    - key: bundle10
+      credits: 400
+      price: 360
+      label: 10 reports
+    - key: bundle50
+      credits: 2000
+      price: 1700
+      label: 50 reports
+  extensions:
+  - key: bgs_licence
+    description: BGS geology, radon and contaminated-land data require a licence. Until the admins obtain it and set the BGS
+      key, those sections are reported as not assessed and the result is FURTHER ACTION. The exact BGS endpoint must be confirmed
+      against the licence terms.
+  - key: monthly_invoicing
+    description: Monthly invoices per firm for volume are not available yet; firms pay per report by Stripe (credit packs).
+      Invoicing needs to be handled outside the app, using the firm orders export.
+  - key: reorder_discount
+    description: Reorders as updates are supported as a new order linked to the earlier one, at the normal price; a reduced
+      update price is not available.
+  - key: reviewer_queue_alert
+    description: Reviewers are not emailed when a draft awaits approval (no trigger exists for approval requests yet); they
+      use the Reviews waiting page.
+  - key: compliance_and_insurance
+    description: Law Society / CLC search-product accreditation, qualified-reviewer competence, and PI insurance are the owner's
+      responsibility and are not verified by the app; the report structure is designed to support them.

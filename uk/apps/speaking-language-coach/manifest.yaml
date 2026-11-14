@@ -1,0 +1,884 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: parlavo
+  displayName: Parlavo
+  tagline:
+    en: Speak it out loud. Your AI language coach talks back.
+  description:
+    en: Parlavo is a speech-to-speech language coach. Hold spoken role-play lessons in Spanish, French, German, Italian or
+      English, get short corrections after every turn, and follow your progress. Teachers see only their own students.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/Rome
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#0f4c5c'
+      accent: '#e36414'
+      background: '#fffaf3'
+      foreground: '#1d2a30'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Parla
+      color: primary
+    - text: vo
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: For schools
+      href: '#schools'
+    cta:
+      label: Start free
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: teacher
+      label: Teacher
+      assignedBy: invite
+    - key: user
+      label: Learner
+      assignedBy: signup
+  limits:
+  - action: agent:coach
+    per: user
+    max: 40
+    window: day
+    plans:
+      plus: 400
+      school_seat: 400
+  agents:
+  - key: coach
+    role: main
+    description: 'Spoken-lesson coach: converses in the target language, plays roles, corrects briefly and logs every turn.'
+    profile:
+      inline:
+        display_name: Parlavo coach
+        crews:
+        - id: coach
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Parlavo, a warm, patient spoken-language coach. Your replies are read aloud, so keep them
+            short (1-3 sentences), natural and free of Markdown, lists or emoji.
+
+            Each lesson is a role-play (waiter, interviewer, hotel receptionist, exam examiner...) chosen from the learner''s
+            goals or from an assignment (use read_assignments when the learner mentions their class or homework). Speak in
+            the learner''s target language at their level (A1-C1); simplify for low levels. Open a new conversation by greeting,
+            naming the role and asking the first question.
+
+            Use search_corpus to take vocabulary, phrases and exercises from Parlavo''s own corpus for the language and level;
+            prefer it to your own material.
+
+            After each learner message: 1) reply in character; 2) if there is an error, add ONE short correction on a separate
+            line starting with ''Tip:'' (in simple target language, or English for A1-A2); 3) call log_turn once with the
+            learner''s text, an estimated fluency 0-100 from the text (hesitations, fragments, length, grammar), a pronunciation
+            score 0-100 only if the message carries a speech-recognition confidence or per-word scores, otherwise leave it
+            empty, the weak words, the correction and the role. Call add_vocab for each new useful word or phrase the learner
+            met (max 3 per turn).
+
+            Never invent that you heard the audio: you only see the transcript. Never give scores that look precise without
+            data. Today''s date is {date}. Keep the lesson near the learner''s daily minutes: after about that many exchanges,
+            wrap up with a one-line summary and encouragement.'
+          mcp_servers: []
+        chat_mode: true
+    goalTemplate: 'Learner: {user} ({email}). Target language: {target_language}. Level: {level}. Goals: {goals}. Daily minutes:
+      {daily_minutes}. Teacher email (copy into every record you write): {teacher_email}.
+
+      Conversation so far:
+
+      {history}
+
+      New learner message: {message}
+
+      Today: {date}.'
+    context:
+    - key: target_language
+      from: collection:learner_profiles.target_language
+    - key: level
+      from: collection:learner_profiles.level
+    - key: goals
+      from: collection:learner_profiles.goals
+    - key: daily_minutes
+      from: collection:learner_profiles.daily_minutes
+    - key: teacher_email
+      from: collection:learner_profiles.teacher_email
+    - key: email
+      from: user.email
+    appTools:
+    - name: search_corpus
+      description: Search Parlavo's own corpus of dialogues, vocabulary and exercises by language, level and topic
+      action: search
+      collection: corpus
+      scope: all
+    - name: read_assignments
+      description: Read the class assignments given to this learner by their teacher
+      action: read
+      collection: classes
+      scope: user
+    - name: log_turn
+      description: Save the scored turn (text, fluency, pronunciation, weak words, correction)
+      action: append
+      collection: turns
+      scope: user
+    - name: add_vocab
+      description: Save a new word or phrase the learner met
+      action: append
+      collection: vocabulary
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.3
+  - key: planner
+    role: helper
+    description: 'Daily per-learner planner: reads recent turns and vocabulary, updates streak and next lesson date, plans
+      lessons from weak points.'
+    memory: instance
+    profile:
+      inline:
+        display_name: Parlavo planner
+        crews:
+        - id: planner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.25
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You plan next lessons for one language learner. Start with ''# Plan for <date>''.
+
+            Steps: 1) read_profile; 2) read_turns (recent practice) and read_vocab; 3) work out the current streak of consecutive
+            days with at least one turn (up to today) and the weak points: words with low pronunciation scores, recurring
+            corrections, low fluency, vocabulary with low strength; 4) use search_corpus to choose topics and role-plays that
+            fit their language, level and goals; 5) call add_plan for 3 upcoming lessons (date, topic, role_play, focus, language,
+            status ''planned''); 6) call update_profile with the streak and next_lesson_date (tomorrow, YYYY-MM-DD). If there
+            is no practice yet, plan gentle starter lessons and streak 0.
+
+            Then write a short summary (under 150 words) of weak points and what the next lessons train. Never invent scores
+            or data.'
+          mcp_servers: []
+    goalTemplate: Plan lessons for {user} ({email}). Target language {target_language}, level {level}, goals {goals}, daily
+      minutes {daily_minutes}. Today is {date}.
+    context:
+    - key: target_language
+      from: collection:learner_profiles.target_language
+    - key: level
+      from: collection:learner_profiles.level
+    - key: goals
+      from: collection:learner_profiles.goals
+    - key: daily_minutes
+      from: collection:learner_profiles.daily_minutes
+    - key: email
+      from: user.email
+    appTools:
+    - name: read_profile
+      description: Read the learner's profile
+      action: read
+      collection: learner_profiles
+      scope: user
+    - name: read_turns
+      description: Read the learner's scored turns
+      action: read
+      collection: turns
+      scope: user
+    - name: read_vocab
+      description: Read the learner's vocabulary
+      action: read
+      collection: vocabulary
+      scope: user
+    - name: search_corpus
+      description: Search Parlavo's own corpus of dialogues, vocabulary and exercises by language, level and topic
+      action: search
+      collection: corpus
+      scope: all
+    - name: add_plan
+      description: Add a planned lesson
+      action: append
+      collection: lesson_plan
+      scope: user
+    - name: update_profile
+      description: Update streak and next lesson date on the learner's profile
+      action: write
+      collection: learner_profiles
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.25
+  templates:
+  - key: daily_plan
+    title: My lesson planner
+    description: Every morning Parlavo looks at your weak points, updates your streak and plans your next lessons.
+    agent: planner
+    params:
+    - name: note
+      type: text
+      label: Anything to focus on? (optional)
+    goal: 'Plan for "{instance}". {?note}Learner note: {note}{/note} Today is {date}.'
+    schedule:
+      cron: 0 5 * * *
+      userCanChange: false
+    maxPerUser: 1
+    cost:
+      perRun: 1
+  data:
+    collections:
+    - name: learner_profiles
+      description: Each learner's target language, level, goals and reminder settings
+      ownedBy: user
+      fields:
+      - name: target_language
+        type: select
+        required: true
+        label: Language to learn
+        options:
+        - value: spanish
+          label: Spanish
+        - value: french
+          label: French
+        - value: german
+          label: German
+        - value: italian
+          label: Italian
+        - value: english
+          label: English
+      - name: level
+        type: select
+        required: true
+        label: Level
+        options:
+        - value: A1
+          label: A1 Beginner
+        - value: A2
+          label: A2 Elementary
+        - value: B1
+          label: B1 Intermediate
+        - value: B2
+          label: B2 Upper intermediate
+        - value: C1
+          label: C1 Advanced
+      - name: goals
+        type: multiselect
+        required: true
+        label: Goals
+        options:
+        - value: travel
+          label: Travel
+        - value: work
+          label: Work
+        - value: exams
+          label: Exams
+      - name: daily_minutes
+        type: number
+        required: true
+        label: Daily minutes
+        default: 10
+      - name: reminder_time
+        type: text
+        label: Preferred reminder time (HH:MM)
+        help: Reminders go out in the morning; your preference is stored for when custom times are available.
+      - name: teacher_email
+        type: email
+        label: Teacher's email (optional)
+        help: Fill in only if your school asked you to. Your teacher will see your progress.
+      - name: streak
+        type: number
+        label: Streak (days)
+        default: 0
+      - name: next_lesson_date
+        type: date
+        label: Next lesson
+      access:
+      - role: teacher
+        where:
+          teacher_email: '{user.email}'
+        can:
+        - read
+    - name: turns
+      description: Every spoken turn with fluency and pronunciation scores and the coach's correction
+      ownedBy: user
+      fields:
+      - name: session_date
+        type: date
+        label: Date
+      - name: learner_email
+        type: email
+        label: Learner
+      - name: teacher_email
+        type: email
+        label: Teacher
+      - name: language
+        type: text
+        label: Language
+      - name: role_play
+        type: text
+        label: Role
+      - name: learner_text
+        type: textarea
+        label: What you said
+      - name: fluency
+        type: number
+        label: Fluency
+      - name: pronunciation
+        type: number
+        label: Pronunciation
+      - name: weak_words
+        type: text
+        label: Words to practise
+      - name: correction
+        type: textarea
+        label: Correction
+      retentionDays: 365
+      access:
+      - role: teacher
+        where:
+          teacher_email: '{user.email}'
+        can:
+        - read
+    - name: vocabulary
+      description: Words and phrases the learner has met
+      ownedBy: user
+      fields:
+      - name: word
+        type: text
+        label: Word
+      - name: translation
+        type: text
+        label: Meaning
+      - name: language
+        type: text
+        label: Language
+      - name: learned_on
+        type: date
+        label: Learned on
+      - name: strength
+        type: number
+        label: Strength
+      - name: learner_email
+        type: email
+        label: Learner
+      - name: teacher_email
+        type: email
+        label: Teacher
+      access:
+      - role: teacher
+        where:
+          teacher_email: '{user.email}'
+        can:
+        - read
+    - name: lesson_plan
+      description: Next lessons planned from weak points
+      ownedBy: user
+      fields:
+      - name: date
+        type: date
+        label: Date
+      - name: topic
+        type: text
+        label: Topic
+      - name: role_play
+        type: text
+        label: Role-play
+      - name: focus
+        type: text
+        label: Focus
+      - name: language
+        type: text
+        label: Language
+      - name: status
+        type: text
+        label: Status
+    - name: corpus
+      description: 'Parlavo''s own content: dialogues, vocabulary and exercises per language and level (filled by admins on
+        /admin/data)'
+      ownedBy: shared
+      searchable: true
+      fields:
+      - name: language
+        type: text
+        label: Language
+      - name: level
+        type: text
+        label: Level
+      - name: topic
+        type: text
+        label: Topic
+      - name: kind
+        type: text
+        label: Kind
+      - name: content
+        type: textarea
+        label: Content
+    - name: classes
+      description: 'A teacher''s class: assigned topic and the students'' emails'
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Class name
+      - name: language
+        type: select
+        required: true
+        label: Language
+        options:
+        - spanish
+        - french
+        - german
+        - italian
+        - english
+      - name: level
+        type: text
+        label: Level
+      - name: assigned_topic
+        type: text
+        required: true
+        label: Assigned topic
+      - name: due_date
+        type: date
+        label: Due date
+      - name: students
+        type: array
+        label: Students' emails
+        fields:
+        - name: email
+          type: email
+          label: Email
+      access:
+      - role: user
+        where:
+          students: '{user.email}'
+        can:
+        - read
+  views:
+  - key: home
+    type: page
+    title: Parlavo
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: Speech-to-speech language coach
+      title: Speak it out loud. Your AI coach **talks back**.
+      text: Real spoken conversations in Spanish, French, German, Italian and English. Play the waiter, the interviewer, the
+        traveller. Get short corrections after every turn and watch your progress grow.
+      actions:
+      - label: Start free trial
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+      aside: <div style="padding:16px"><b>Coach:</b> Buongiorno! Cosa desidera ordinare?<br><b>You:</b> Vorrei un caffè e
+        un cornetto.<br><b>Tip:</b> Perfetto! Di' «un cornetto» con la r più vibrata.</div>
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Tell us your goals
+        text: Language, level, goals and daily minutes.
+        badge: 🎯
+      - title: Talk
+        text: Hold a spoken role-play with the coach, in the browser or on your phone.
+        badge: 🎙️
+      - title: Improve
+        text: Corrections, pronunciation and fluency scores, streaks and lessons planned from your weak points.
+        badge: 📈
+    - type: cards
+      id: schools
+      title: For schools
+      intro: Teachers create classes, assign topics and see only their own students' progress.
+      items:
+      - title: Classes and topics
+        text: Assign a topic and due date to a class.
+        badge: 🏫
+      - title: Student progress
+        text: Fluency, pronunciation and vocabulary per student.
+        badge: 📊
+      - title: Per-seat plans
+        text: School plans priced per seat.
+        badge: 💺
+    - type: note
+      content: Parlavo · free trial included. Scores are estimates to guide your practice.
+  - key: onboarding
+    type: form
+    title: My learning setup
+    collection: learner_profiles
+    fields:
+    - target_language
+    - level
+    - goals
+    - daily_minutes
+    - reminder_time
+    - teacher_email
+    submit:
+      label: Save and start
+      message: Your setup is saved.
+      redirect: lesson
+    edit: true
+    roles:
+    - user
+    - teacher
+    - admin
+  - key: lesson
+    type: chat
+    title: Lesson
+    source: agent:coach
+    examples:
+    - Start a lesson for my level
+    - Let's practise ordering food at a restaurant
+    - I have a job interview, can you play the interviewer?
+    - Give me my class assignment
+    placeholder: Speak or type to your coach…
+    roles:
+    - user
+    - teacher
+    - admin
+  - key: progress
+    type: page
+    title: My progress
+    roles:
+    - user
+    - teacher
+    - admin
+    sections:
+    - type: data
+      title: At a glance
+      source: collection:turns
+      display: kpi
+      kpis:
+      - label: Turns practised
+        agg: count
+      - label: Avg fluency
+        agg: avg
+        field: fluency
+        format: number
+      - label: Avg pronunciation
+        agg: avg
+        field: pronunciation
+        format: number
+    - type: data
+      title: Current streak
+      source: collection:learner_profiles
+      display: kpi
+      kpis:
+      - label: Days in a row
+        agg: last
+        field: streak
+        format: number
+      - label: Next lesson
+        agg: last
+        field: next_lesson_date
+        format: date
+    - type: data
+      title: Scores over time
+      source: collection:turns
+      display: chart
+      chart: line
+      groupBy:
+        field: session_date
+        bucket: day
+        aggs:
+        - key: pronunciation
+          agg: avg
+          field: pronunciation
+        - key: fluency
+          agg: avg
+          field: fluency
+      fields:
+      - key: session_date
+        label: Day
+        format: date
+      - key: pronunciation
+        label: Pronunciation
+      - key: fluency
+        label: Fluency
+    - type: data
+      title: Words to practise
+      source: collection:turns
+      display: table
+      fields:
+      - key: session_date
+        label: Date
+        format: date
+      - key: weak_words
+        label: Words
+      - key: correction
+        label: Correction
+      sort:
+        field: session_date
+        dir: desc
+      limit: 20
+      empty: 'No corrections yet: start a lesson.'
+    - type: data
+      title: Vocabulary learned
+      source: collection:vocabulary
+      display: table
+      fields:
+      - key: word
+        label: Word
+      - key: translation
+        label: Meaning
+      - key: language
+        label: Language
+      - key: learned_on
+        label: Learned
+        format: date
+      - key: strength
+        label: Strength
+        format: number
+      sort:
+        field: learned_on
+        dir: desc
+      limit: 50
+    - type: data
+      title: Next lessons
+      source: collection:lesson_plan
+      display: cards
+      fields:
+      - key: date
+        label: When
+        format: date
+      - key: topic
+        label: Topic
+      - key: role_play
+        label: Role
+      - key: focus
+        label: Focus
+      sort:
+        field: date
+        dir: asc
+      limit: 6
+      empty: Your planner will propose lessons after your first practice.
+  - key: planner
+    type: instances
+    template: daily_plan
+    title: Lesson planner
+    roles:
+    - user
+    - teacher
+    - admin
+  - key: assignments
+    type: cards
+    title: Class assignments
+    source: collection:classes
+    data:
+      display: cards
+      fields:
+      - key: name
+        label: Class
+      - key: assigned_topic
+        label: Topic
+      - key: language
+        label: Language
+      - key: due_date
+        label: Due
+        format: date
+      sort:
+        field: due_date
+        dir: asc
+      limit: 20
+    roles:
+    - user
+  - key: class_new
+    type: form
+    title: New class
+    collection: classes
+    fields:
+    - name
+    - language
+    - level
+    - assigned_topic
+    - due_date
+    - students
+    submit:
+      label: Create class
+      message: Class saved.
+      redirect: classes
+    edit: true
+    roles:
+    - teacher
+    - admin
+  - key: classes
+    type: table
+    title: My classes
+    source: collection:classes
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Class
+      - key: language
+        label: Language
+      - key: assigned_topic
+        label: Topic
+      - key: due_date
+        label: Due
+        format: date
+      limit: 50
+    export: true
+    roles:
+    - teacher
+    - admin
+  - key: class_progress
+    type: table
+    title: Student progress
+    source: collection:turns
+    data:
+      display: table
+      groupBy:
+        field: learner_email
+        aggs:
+        - key: fluency
+          agg: avg
+          field: fluency
+        - key: pronunciation
+          agg: avg
+          field: pronunciation
+        - key: last_day
+          agg: max
+          field: session_date
+      fields:
+      - key: learner_email
+        label: Student
+      - key: count
+        label: Turns
+        format: number
+      - key: fluency
+        label: Avg fluency
+        format: number
+      - key: pronunciation
+        label: Avg pronunciation
+        format: number
+      - key: last_day
+        label: Last practice
+        format: date
+      limit: 200
+    export: true
+    roles:
+    - teacher
+    - admin
+  - key: account
+    type: account
+    title: Minutes and plan
+    roles:
+    - user
+    - teacher
+  notifications:
+    emailOnRunDone: false
+  triggers:
+  - key: lesson_reminder
+    description: Morning reminder on the day of the planned next lesson
+    'on':
+      date:
+        collection: learner_profiles
+        field: next_lesson_date
+        offsetDays: 0
+        hour: 8
+    notify:
+      to:
+      - owner
+      subject: Time for your Parlavo lesson
+      body: Your coach is ready. Just {record.daily_minutes} minutes of speaking today keeps your streak alive.
+      link: lesson
+  billing:
+    modes:
+    - credits
+    - subscription
+    currency: eur
+    signupCredits: 30
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:coach:
+        estimate: 3
+        metered: true
+    packs:
+    - key: minutes_200
+      credits: 200
+      price: 6
+      label: 200 minute credits
+    plans:
+    - key: plus
+      price: 14
+      interval: month
+      label: Parlavo Plus
+      credits: 600
+      creditsReset: monthly
+      includes:
+      - 600 minute credits every month
+      - Lesson planner
+      - Progress tracking
+    - key: school_seat
+      price: 6
+      interval: month
+      label: School seat (per student)
+      credits: 300
+      creditsReset: monthly
+      includes:
+      - 300 minute credits per seat
+      - Classes and assignments
+      - Teacher progress view
+  mobile:
+    appId: com.parlavo.coach
+    appName: Parlavo
+    capabilities:
+    - name: microphone
+      reason:
+        en: To speak with your language coach
+    - name: push
+  extensions:
+  - key: realtime_voice
+    description: 'Not yet available: low-latency streaming speech-to-speech (speech recognition and synthesized voice from
+      model APIs) in the lesson. The lesson chat takes voice input through the microphone and the coach replies as text; the
+      voice reply needs a speech integration.'
+  - key: pronunciation_scoring
+    description: 'Not yet available: per-word acoustic pronunciation scoring from audio. Until it is connected, the coach
+      logs fluency estimated from the transcript and pronunciation only when a recognition score is supplied.'
+  - key: custom_reminder_time
+    description: Reminders go out at a fixed morning hour on the planned lesson day (email and, with the phone app, push).
+      The learner's preferred time is stored in the profile but cannot yet schedule per-user times.
+  - key: school_seat_management
+    description: School plans are priced per seat through the school_seat plan; bulk seat assignment and class-code joining
+      are not available. Teachers list their students' emails in the class, and students name their teacher's email in their
+      setup.

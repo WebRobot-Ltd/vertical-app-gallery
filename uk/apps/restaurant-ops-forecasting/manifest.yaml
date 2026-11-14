@@ -1,0 +1,1540 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: kitchenly
+  displayName: Kitchenly
+  tagline: Stock, forecasts and orders for quick-service restaurant chains.
+  description: Kitchenly gives restaurant chains a phone-friendly daily stock count, AI demand forecasts with prep lists and
+    purchase orders that site managers approve before they are emailed to suppliers, daily monitors for waste, low stock,
+    sales drops and food-cost overruns, an analytics assistant, and dashboards per site, region and head office.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1d2b3a'
+      accent: '#e8590c'
+      background: '#fbf8f4'
+      foreground: '#1b1f24'
+    fonts:
+      body: Inter
+      display: Space Grotesk
+    wordmark:
+    - text: Kitchen
+      color: primary
+    - text: ly
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Who sees what
+      href: '#roles'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      label: Chain account
+      assignedBy: signup
+    - key: site_manager
+      label: Site manager
+      assignedBy: derived
+      from: collection:sites.manager_email
+    - key: area_manager
+      label: Area manager
+      assignedBy: derived
+      from: collection:sites.area_manager_email
+    - key: head_office
+      label: Head office
+      assignedBy: derived
+      from: collection:sites.head_office_email
+  limits:
+  - action: agent:forecaster
+    per: user
+    max: 5
+    window: day
+  - action: agent:importer
+    per: user
+    max: 10
+    window: day
+  - action: chat
+    per: user
+    max: 60
+    window: day
+  - action: create:sites
+    max: 1
+    window: total
+    plans:
+      site_pack_3: 3
+      site_pack_10: 10
+      site_pack_30: 30
+  agents:
+  - key: forecaster
+    role: main
+    description: Forecasts demand per item, site and day, proposes prep quantities and purchase orders, and asks the site
+      manager to approve each order.
+    when: task == 'forecast'
+    awaits:
+    - order_ok
+    goalTemplate: 'Site: {?site}{site}{/site}{!site}all the sites you can read{/site}.
+
+      Horizon: the next {horizon_days_label}.
+
+      Today is {date}.
+
+      {?notes}Notes from the manager: {notes}{/notes}
+
+      Write the report in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+    appTools:
+    - name: read_sites
+      description: Read the sites (name, region, manager emails)
+      action: read
+      collection: sites
+      scope: user
+    - name: read_sales
+      description: Read past sales rows (site, date, item, qty, revenue)
+      action: read
+      collection: sales
+      scope: user
+    - name: read_events
+      description: Read local events that may change demand
+      action: read
+      collection: local_events
+      scope: user
+    - name: read_stock
+      description: Read stock items with par level, cost, supplier and quantity
+      action: read
+      collection: stock
+      scope: user
+    - name: read_forecasts
+      description: Read earlier forecasts
+      action: read
+      collection: forecasts
+      scope: user
+    - name: append_forecast
+      description: Save one forecast row for an item and a day
+      action: append
+      collection: forecasts
+      scope: user
+    - name: append_order
+      description: Save a purchase order with status pending_approval
+      action: append
+      collection: purchase_orders
+      scope: user
+    profile:
+      inline:
+        display_name: Kitchenly forecaster
+        crews:
+        - id: forecaster
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the demand forecaster of a quick-service restaurant chain. Work in this order.
+
+            1) read_sites to find the site(s) and their manager_email, area_manager_email, head_office_email. read_sales for
+            the last 8 weeks, read_events for the horizon, read_stock, read_forecasts.
+
+            2) For each item and each day of the horizon forecast the quantity from the average of the same weekday, the recent
+            trend and the local events. If there are fewer than 14 days of sales say so and mark low confidence. Never invent
+            sales figures.
+
+            3) append_forecast once per item per day: site, date, item, predicted_qty, prep_qty (predicted rounded up plus
+            a 5% buffer), notes (the reason), and the three email fields copied from the site record.
+
+            4) Purchase orders: per supplier, list the items whose quantity is below the demand of the horizon or below par_level;
+            order up to par; total = quantity x cost. Call append_order with site, supplier, supplier_email, lines (one item
+            per line: item, quantity, unit, cost), total, ordered_for, status "pending_approval" and the three email fields.
+            Then call request_order_ok with site, supplier and total so the site manager decides. Never mark an order approved
+            and never contact a supplier: the platform emails it after approval.
+
+            5) Final report in Markdown starting with a level-1 title "# Forecast — <site> — <date>". Sections: ## Prep list
+            (table item, day, prep quantity), ## Proposed purchase orders (table supplier, total, status), ## Assumptions
+            and risks. Add one chart as a fenced block ```chart {"type":"bar","title":"...","labels":[...],"series":[{"name":"...","values":[...]}]}
+            ``` with real figures only. If data is missing, say what is missing instead of guessing.'
+  - key: importer
+    role: main
+    description: Imports a sales CSV exported from the point-of-sale system into the sales records.
+    when: task == 'import'
+    context:
+    - key: sites
+      from: collection:sites
+    goalTemplate: 'Import these sales rows. Default site: {?site}{site}{/site}{!site}none (the file must name the site){/site}.
+
+      Sites known:
+
+      {sites}
+
+      Today is {date}.
+
+      CSV content:
+
+      {?sales_file_text}{sales_file_text}{/sales_file_text}{!sales_file_text}No file was uploaded.{/sales_file_text}
+
+      Write the summary in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 60
+      maxBudgetUsd: 1.0
+    appTools:
+    - name: append_sales
+      description: Save one sales row
+      action: append
+      collection: sales
+      scope: user
+    profile:
+      inline:
+        display_name: Kitchenly sales importer
+        crews:
+        - id: importer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You import point-of-sale sales exports. Read the CSV text in the goal, work out the columns (date,
+            item, quantity, revenue and, if present, site), and call append_sales once per valid row with site, date (YYYY-MM-DD),
+            item, qty, revenue, source "csv" and the manager_email, area_manager_email and head_office_email copied from the
+            matching site in the list of known sites. Match site names case-insensitively; if a row has no site use the default
+            site. Skip rows that are invalid or whose site is unknown and list them. Never invent or alter figures. Final
+            report: a level-1 title "# Sales import — <date>", then how many rows were imported, skipped, the date range and
+            the skipped rows with the reason.'
+  - key: dispatcher
+    role: helper
+    description: After a site manager approves an order, marks it approved so the platform emails the supplier.
+    appTools:
+    - name: read_orders
+      description: Read purchase orders
+      action: read
+      collection: purchase_orders
+      scope: user
+    - name: write_order
+      description: Update the status of a purchase order
+      action: write
+      collection: purchase_orders
+      scope: user
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.2
+    profile:
+      inline:
+        display_name: Kitchenly order dispatcher
+        crews:
+        - id: dispatcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You finalise approved purchase orders. You get the approval event as JSON. Identify the purchase
+            order it refers to (site, supplier, total) with read_orders, taking only an order whose status is pending_approval,
+            and set its status to "approved" with write_order. Change nothing else. If you cannot identify exactly one order,
+            change nothing and say why. Answer in one short sentence.
+  - key: monitor
+    role: helper
+    description: 'Daily check of one chain''s sites: waste, stock below par, unusual sales drops, food-cost overruns. Writes
+      alerts and daily KPIs.'
+    appTools:
+    - name: read_sites
+      description: Read the sites (name, region, manager emails)
+      action: read
+      collection: sites
+      scope: user
+    - name: read_sales
+      description: Read past sales rows (site, date, item, qty, revenue)
+      action: read
+      collection: sales
+      scope: user
+    - name: read_stock
+      description: Read stock items with par level, cost, supplier and quantity
+      action: read
+      collection: stock
+      scope: user
+    - name: read_counts
+      description: Read the daily stock counts
+      action: read
+      collection: stock_counts
+      scope: user
+    - name: read_waste
+      description: Read the waste log
+      action: read
+      collection: waste_log
+      scope: user
+    - name: read_labour
+      description: Read labour hours and cost per site and day
+      action: read
+      collection: labour
+      scope: user
+    - name: read_forecasts
+      description: Read earlier forecasts
+      action: read
+      collection: forecasts
+      scope: user
+    - name: read_orders
+      description: Read purchase orders
+      action: read
+      collection: purchase_orders
+      scope: user
+    - name: read_alerts
+      description: Read the alerts already raised
+      action: read
+      collection: alerts
+      scope: user
+    - name: append_alert
+      description: Save one alert (the platform emails the managers)
+      action: append
+      collection: alerts
+      scope: user
+    - name: append_kpi
+      description: Save the daily KPI row of one site
+      action: append
+      collection: daily_kpis
+      scope: user
+    limits:
+      maxTurns: 50
+      maxBudgetUsd: 1.5
+    profile:
+      inline:
+        display_name: Kitchenly monitor
+        crews:
+        - id: monitor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 50
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the daily operations monitor of a restaurant chain. Use the thresholds given in the goal.
+            For each site (read_sites) and using the data of the last 28 days:
+
+            - WASTE: waste cost of the last 7 days (read_waste) divided by the sales revenue of the same days; alert when
+            above the waste threshold.
+
+            - LOW STOCK: items whose latest counted quantity (read_counts, else read_stock) is below par_level.
+
+            - SALES DROP: yesterday''s revenue against the average of the same weekday over the previous 4 weeks (and against
+            the forecast if one exists); alert when the drop exceeds the threshold.
+
+            - FOOD COST: estimate for the last 7 days = (opening stock value + approved orders - closing stock value from
+            the counts) / sales revenue; say it is an estimate; alert when above the target.
+
+            Before alerting, read_alerts: do not repeat an alert of the same site and kind from the last 3 days. For each
+            alert call append_alert with site, date, kind (waste | low_stock | sales_drop | food_cost), severity (info | warning
+            | critical), a clear message with the figures, and the manager_email, area_manager_email and head_office_email
+            of the site. Also call append_kpi once per site for yesterday (site, date, sales, forecast_sales, food_cost_pct,
+            waste_cost, labour_hours from read_labour, and the three emails) unless one exists for that date. Never invent
+            figures: if the data is missing, skip that check and say so. Final report: a level-1 title "# Daily check — <date>",
+            then a short list of alerts raised and checks skipped.'
+  - key: analyst
+    role: helper
+    description: Answers questions about sales, waste, stock, labour and forecasts, with charts.
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+      New question: {message}
+
+      Today is {date}. Answer in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 20
+      maxBudgetUsd: 0.6
+    appTools:
+    - name: read_sites
+      description: Read the sites (name, region, manager emails)
+      action: read
+      collection: sites
+      scope: user
+    - name: read_sales
+      description: Read past sales rows (site, date, item, qty, revenue)
+      action: read
+      collection: sales
+      scope: user
+    - name: read_stock
+      description: Read stock items with par level, cost, supplier and quantity
+      action: read
+      collection: stock
+      scope: user
+    - name: read_waste
+      description: Read the waste log
+      action: read
+      collection: waste_log
+      scope: user
+    - name: read_labour
+      description: Read labour hours and cost per site and day
+      action: read
+      collection: labour
+      scope: user
+    - name: read_forecasts
+      description: Read earlier forecasts
+      action: read
+      collection: forecasts
+      scope: user
+    - name: read_kpis
+      description: Read the daily KPI rows per site
+      action: read
+      collection: daily_kpis
+      scope: user
+    - name: read_alerts
+      description: Read the alerts already raised
+      action: read
+      collection: alerts
+      scope: user
+    profile:
+      inline:
+        display_name: Kitchenly analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You answer operations questions for restaurant managers (for example "which sites had the worst waste
+            last week?"). Read only the data you need with the read tools; you only see the sites the person is allowed to
+            see, so never claim to speak for the whole chain unless the data covers it. Answer in a few lines, then add a
+            chart as a fenced block ```chart {"type":"bar","title":"...","labels":["Site A","Site B"],"series":[{"name":"Waste
+            cost","values":[120,90]}],"unit":"EUR"} ``` (bar, line, stacked or pie; real figures only) and say which period
+            and which data the answer is based on. If the data is missing or too thin, say so plainly. You cannot change any
+            data.
+  inputForm:
+    title: Daily tasks
+    fields:
+    - name: task
+      type: select
+      required: true
+      label: What do you want to do?
+      default: forecast
+      options:
+      - value: forecast
+        label: Forecast demand, prep list and purchase orders
+      - value: import
+        label: Import sales from a CSV
+    - name: site
+      type: select
+      label: Site
+      optionsFrom: collection:sites
+      help: Leave empty for every site you can see
+    - name: horizon_days
+      type: select
+      label: Forecast horizon
+      default: '3'
+      visibleWhen: task == 'forecast'
+      options:
+      - value: '1'
+        label: tomorrow
+      - value: '3'
+        label: 3 days
+      - value: '7'
+        label: 7 days
+    - name: sales_file
+      type: file
+      accept:
+      - csv
+      maxMb: 10
+      label: Sales CSV from the POS
+      help: 'Columns: date, item, quantity, revenue (and site if the file covers several)'
+      visibleWhen: task == 'import'
+    - name: notes
+      type: textarea
+      maxLength: 400
+      label: Notes (optional)
+      help: A promotion, a closure, a delivery problem
+      visibleWhen: task == 'forecast'
+  data:
+    collections:
+    - name: sites
+      description: The chain's sites with the people who manage them. The emails decide who sees each site's data.
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Site name
+      - name: region
+        type: text
+        label: Region / area
+      - name: address
+        type: text
+        label: Address
+      - name: manager_email
+        type: email
+        required: true
+        label: Site manager email
+        help: 'Invited by being named here: they sign in with this email'
+      - name: area_manager_email
+        type: email
+        label: Area manager email
+      - name: head_office_email
+        type: email
+        label: Head office email
+      - name: pos_vendor
+        type: select
+        label: Sales source
+        options:
+        - value: csv
+          label: CSV import
+        - value: pos
+          label: POS integration (partner agreement needed)
+      access:
+      - role: site_manager
+        where:
+          manager_email: '{user.email}'
+      - role: area_manager
+        where:
+          area_manager_email: '{user.email}'
+      - role: head_office
+        where:
+          head_office_email: '{user.email}'
+    - name: stock
+      description: Stock items of each site
+      ownedBy: user
+      fields:
+      - name: site
+        type: select
+        required: true
+        optionsFrom: collection:sites
+        label: Site
+      - name: item
+        type: text
+        required: true
+        label: Item
+      - name: barcode
+        type: barcode
+        label: Barcode
+      - name: unit
+        type: select
+        label: Unit
+        options:
+        - kg
+        - g
+        - l
+        - ml
+        - pcs
+        - box
+        - tray
+      - name: supplier
+        type: text
+        label: Supplier
+      - name: supplier_email
+        type: email
+        label: Supplier email
+      - name: par_level
+        type: number
+        label: Par level
+      - name: cost
+        type: number
+        label: Cost per unit
+      - name: quantity
+        type: number
+        label: Current quantity
+      - name: manager_email
+        type: email
+        label: Site manager email
+      - name: area_manager_email
+        type: email
+        label: Area manager email
+      - name: head_office_email
+        type: email
+        label: Head office email
+      access:
+      - role: site_manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: area_manager
+        where:
+          area_manager_email: '{user.email}'
+      - role: head_office
+        where:
+          head_office_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: stock_counts
+      description: Daily stock counts, one row per item counted
+      ownedBy: user
+      retentionDays: 730
+      fields:
+      - name: site
+        type: select
+        required: true
+        optionsFrom: collection:sites
+        label: Site
+      - name: date
+        type: date
+        required: true
+        label: Date
+      - name: barcode
+        type: barcode
+        label: Scan the item
+      - name: item
+        type: text
+        label: Item
+      - name: counted_qty
+        type: number
+        required: true
+        label: Counted quantity
+      - name: manager_email
+        type: email
+        label: Site manager email
+      - name: area_manager_email
+        type: email
+        label: Area manager email
+      - name: head_office_email
+        type: email
+        label: Head office email
+      access:
+      - role: site_manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: area_manager
+        where:
+          area_manager_email: '{user.email}'
+      - role: head_office
+        where:
+          head_office_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: sales
+      description: Sales per site, day and item (CSV import until a POS integration exists)
+      ownedBy: user
+      retentionDays: 730
+      fields:
+      - name: site
+        type: text
+        label: Site
+      - name: date
+        type: date
+        label: Date
+      - name: item
+        type: text
+        label: Item
+      - name: qty
+        type: number
+        label: Quantity
+      - name: revenue
+        type: number
+        label: Revenue
+      - name: source
+        type: select
+        label: Source
+        options:
+        - csv
+        - pos
+      - name: manager_email
+        type: email
+        label: Site manager email
+      - name: area_manager_email
+        type: email
+        label: Area manager email
+      - name: head_office_email
+        type: email
+        label: Head office email
+      access:
+      - role: site_manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: area_manager
+        where:
+          area_manager_email: '{user.email}'
+      - role: head_office
+        where:
+          head_office_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: forecasts
+      description: Demand forecast and prep quantity per item, site and day, written by the forecasting agent
+      ownedBy: user
+      retentionDays: 365
+      fields:
+      - name: site
+        type: text
+        label: Site
+      - name: date
+        type: date
+        label: Date
+      - name: item
+        type: text
+        label: Item
+      - name: predicted_qty
+        type: number
+        label: Predicted quantity
+      - name: prep_qty
+        type: number
+        label: Prep quantity
+      - name: notes
+        type: text
+        label: Reason
+      - name: manager_email
+        type: email
+        label: Site manager email
+      - name: area_manager_email
+        type: email
+        label: Area manager email
+      - name: head_office_email
+        type: email
+        label: Head office email
+      access:
+      - role: site_manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: area_manager
+        where:
+          area_manager_email: '{user.email}'
+      - role: head_office
+        where:
+          head_office_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: local_events
+      description: Local events that change demand (match, concert, school holiday)
+      ownedBy: user
+      fields:
+      - name: site
+        type: select
+        required: true
+        optionsFrom: collection:sites
+        label: Site
+      - name: date
+        type: date
+        required: true
+        label: Date
+      - name: name
+        type: text
+        required: true
+        label: Event
+      - name: impact
+        type: select
+        label: Expected impact
+        options:
+        - low
+        - medium
+        - high
+      - name: manager_email
+        type: email
+        label: Site manager email
+      - name: area_manager_email
+        type: email
+        label: Area manager email
+      - name: head_office_email
+        type: email
+        label: Head office email
+      access:
+      - role: site_manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: area_manager
+        where:
+          area_manager_email: '{user.email}'
+      - role: head_office
+        where:
+          head_office_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: purchase_orders
+      description: Purchase orders proposed by the forecasting agent; emailed to the supplier once approved
+      ownedBy: user
+      fields:
+      - name: site
+        type: text
+        label: Site
+      - name: supplier
+        type: text
+        label: Supplier
+      - name: supplier_email
+        type: email
+        label: Supplier email
+      - name: lines
+        type: textarea
+        label: Order lines
+      - name: total
+        type: number
+        label: Total
+      - name: ordered_for
+        type: date
+        label: Delivery date
+      - name: status
+        type: select
+        label: Status
+        options:
+        - pending_approval
+        - approved
+      - name: manager_email
+        type: email
+        label: Site manager email
+      - name: area_manager_email
+        type: email
+        label: Area manager email
+      - name: head_office_email
+        type: email
+        label: Head office email
+      access:
+      - role: site_manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: area_manager
+        where:
+          area_manager_email: '{user.email}'
+      - role: head_office
+        where:
+          head_office_email: '{user.email}'
+    - name: waste_log
+      description: Waste recorded by the sites
+      ownedBy: user
+      retentionDays: 730
+      fields:
+      - name: site
+        type: select
+        required: true
+        optionsFrom: collection:sites
+        label: Site
+      - name: date
+        type: date
+        required: true
+        label: Date
+      - name: item
+        type: text
+        required: true
+        label: Item
+      - name: qty
+        type: number
+        required: true
+        label: Quantity wasted
+      - name: cost
+        type: number
+        label: Cost
+      - name: reason
+        type: select
+        label: Reason
+        options:
+        - expired
+        - overproduction
+        - dropped
+        - quality
+        - other
+      - name: manager_email
+        type: email
+        label: Site manager email
+      - name: area_manager_email
+        type: email
+        label: Area manager email
+      - name: head_office_email
+        type: email
+        label: Head office email
+      access:
+      - role: site_manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: area_manager
+        where:
+          area_manager_email: '{user.email}'
+      - role: head_office
+        where:
+          head_office_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: labour
+      description: Labour hours and cost per site and day
+      ownedBy: user
+      retentionDays: 730
+      fields:
+      - name: site
+        type: select
+        required: true
+        optionsFrom: collection:sites
+        label: Site
+      - name: date
+        type: date
+        required: true
+        label: Date
+      - name: hours
+        type: number
+        required: true
+        label: Labour hours
+      - name: cost
+        type: number
+        label: Labour cost
+      - name: manager_email
+        type: email
+        label: Site manager email
+      - name: area_manager_email
+        type: email
+        label: Area manager email
+      - name: head_office_email
+        type: email
+        label: Head office email
+      access:
+      - role: site_manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: area_manager
+        where:
+          area_manager_email: '{user.email}'
+      - role: head_office
+        where:
+          head_office_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: alerts
+      description: Alerts raised by the daily monitor
+      ownedBy: user
+      retentionDays: 180
+      fields:
+      - name: site
+        type: text
+        label: Site
+      - name: date
+        type: date
+        label: Date
+      - name: kind
+        type: select
+        label: Kind
+        options:
+        - waste
+        - low_stock
+        - sales_drop
+        - food_cost
+      - name: severity
+        type: select
+        label: Severity
+        options:
+        - info
+        - warning
+        - critical
+      - name: message
+        type: textarea
+        label: Message
+      - name: manager_email
+        type: email
+        label: Site manager email
+      - name: area_manager_email
+        type: email
+        label: Area manager email
+      - name: head_office_email
+        type: email
+        label: Head office email
+      access:
+      - role: site_manager
+        where:
+          manager_email: '{user.email}'
+      - role: area_manager
+        where:
+          area_manager_email: '{user.email}'
+      - role: head_office
+        where:
+          head_office_email: '{user.email}'
+    - name: daily_kpis
+      description: 'One row per site and day: sales, forecast, food cost %, waste cost, labour hours'
+      ownedBy: user
+      retentionDays: 730
+      fields:
+      - name: site
+        type: text
+        label: Site
+      - name: date
+        type: date
+        label: Date
+      - name: sales
+        type: number
+        label: Sales
+      - name: forecast_sales
+        type: number
+        label: Forecast sales
+      - name: food_cost_pct
+        type: number
+        label: Food cost %
+      - name: waste_cost
+        type: number
+        label: Waste cost
+      - name: labour_hours
+        type: number
+        label: Labour hours
+      - name: manager_email
+        type: email
+        label: Site manager email
+      - name: area_manager_email
+        type: email
+        label: Area manager email
+      - name: head_office_email
+        type: email
+        label: Head office email
+      access:
+      - role: site_manager
+        where:
+          manager_email: '{user.email}'
+      - role: area_manager
+        where:
+          area_manager_email: '{user.email}'
+      - role: head_office
+        where:
+          head_office_email: '{user.email}'
+  approvals:
+  - key: order_ok
+    title: Approve purchase order
+    description: The site manager approves each order before it is emailed to the supplier.
+    decidedBy: requester
+    fields:
+    - site
+    - supplier
+    - total
+  templates:
+  - key: ops_monitor
+    title: Daily operations monitor
+    description: Every morning checks waste, stock below par, sales drops and food cost for all your sites and emails the
+      managers.
+    agent: monitor
+    params:
+    - name: waste_pct
+      type: number
+      required: true
+      default: 4
+      label: Waste alert above (% of sales)
+    - name: drop_pct
+      type: number
+      required: true
+      default: 25
+      label: Sales drop alert above (%)
+    - name: food_cost_target
+      type: number
+      required: true
+      default: 30
+      label: Food cost target (% of sales)
+    goal: 'Run the daily check for "{instance}". Today is {date}. Thresholds: waste above {waste_pct}% of sales, sales drop
+      above {drop_pct}% against the same weekday, food cost above {food_cost_target}% of sales. Write in the language with
+      ISO code {lang}.'
+    schedule:
+      cron: 0 5 * * *
+      userCanChange: true
+    maxPerUser: 1
+  triggers:
+  - key: order_approved
+    description: Mark the order approved once the site manager decides
+    'on':
+      approval: order_ok
+      decision: approved
+    start:
+      agent: dispatcher
+    goal: 'The site manager approved a purchase order. Approval event: {event}. Mark that purchase order as approved.'
+  - key: order_to_supplier
+    description: Email the approved order to the supplier
+    'on':
+      collection: purchase_orders
+      op: update
+      where:
+        status: approved
+    notify:
+      to:
+      - record.supplier_email
+      - owner
+      subject: Purchase order from {record.site} for {record.supplier}
+      body: 'Hello,
+
+
+        Please find our purchase order for {record.site}, delivery on {record.ordered_for}:
+
+
+        {record.lines}
+
+
+        Total: {record.total}
+
+
+        Please confirm by replying to this email.
+
+
+        Sent through Kitchenly.'
+      link: orders
+  - key: alert_mail
+    description: Email the site and area managers when the monitor raises an alert
+    'on':
+      collection: alerts
+      op: insert
+    notify:
+      to:
+      - record.manager_email
+      - record.area_manager_email
+      subject: '[Kitchenly] {record.kind} alert at {record.site}'
+      body: '{record.message}
+
+
+        Severity: {record.severity}
+
+        Date: {record.date}'
+      link: alerts
+  notifications:
+    emailOnRunDone: true
+  views:
+  - key: home
+    type: page
+    title: Kitchenly
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: For quick-service restaurant chains
+      title: Know what to **prep**, what to **order** and where money leaks.
+      text: Daily counts on the phone, demand forecasts per item and site, orders approved by the site manager, and alerts
+        when waste, stock or sales go off track.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Add your sites
+        text: 'Name the site manager, area manager and head office for each site: they are invited by email.'
+        badge: '1'
+      - title: Count and import
+        text: Count stock on the phone by scanning barcodes, and import sales from your POS as CSV.
+        badge: '2'
+      - title: Forecast and approve
+        text: The agent proposes the prep list and purchase orders; the site manager approves each order before it goes to
+          the supplier.
+        badge: '3'
+      - title: Watch the numbers
+        text: Daily monitors email alerts; dashboards show sales vs forecast, food cost, waste and labour; ask questions in
+          plain words.
+        badge: '4'
+    - type: cards
+      id: roles
+      title: Who sees what
+      items:
+      - title: Site managers
+        text: 'Only their own site: counts, forecasts, orders, alerts.'
+      - title: Area managers
+        text: Every site in their region, read only.
+      - title: Head office
+        text: All the sites of the chain, with dashboards and the analytics assistant.
+    - type: cards
+      id: pricing
+      title: Pricing
+      intro: A monthly fee per site, in packs.
+      items:
+      - title: 3 sites
+        text: EUR 89 per month
+      - title: 10 sites
+        text: EUR 249 per month
+      - title: 30 sites
+        text: EUR 649 per month
+    - type: note
+      content: Forecasts and alerts support decisions; check them before ordering. Live POS sales need a partner agreement
+        with each vendor; until then import sales as CSV.
+  - key: plan
+    type: new_run
+    title: Forecast & import
+    roles:
+    - user
+    - admin
+    - site_manager
+    - area_manager
+    - head_office
+  - key: runs
+    type: history
+    title: My runs
+    source: run
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: orders_to_approve
+    type: approvals
+    title: Orders to approve
+    approvals:
+    - order_ok
+  - key: orders
+    type: table
+    title: Purchase orders
+    source: collection:purchase_orders
+    columns:
+    - site
+    - supplier
+    - ordered_for
+    - total
+    - status
+    export: true
+  - key: count
+    type: form
+    title: Daily count
+    collection: stock_counts
+    fields:
+    - site
+    - date
+    - barcode
+    - item
+    - counted_qty
+    - manager_email
+    - area_manager_email
+    - head_office_email
+    submit:
+      label: Save count
+      message: Count saved. Scan the next item.
+      redirect: count
+  - key: waste_entry
+    type: form
+    title: Log waste
+    collection: waste_log
+    fields:
+    - site
+    - date
+    - item
+    - qty
+    - cost
+    - reason
+    - manager_email
+    - area_manager_email
+    - head_office_email
+    submit:
+      label: Save waste
+      message: Waste logged.
+  - key: labour_entry
+    type: form
+    title: Labour hours
+    collection: labour
+    fields:
+    - site
+    - date
+    - hours
+    - cost
+    - manager_email
+    - area_manager_email
+    - head_office_email
+    submit:
+      label: Save hours
+      message: Hours saved.
+  - key: event_entry
+    type: form
+    title: Local event
+    collection: local_events
+    fields:
+    - site
+    - date
+    - name
+    - impact
+    - manager_email
+    - area_manager_email
+    - head_office_email
+    submit:
+      label: Save event
+      message: 'Event saved: the forecast will use it.'
+  - key: stock_item
+    type: form
+    title: Add or edit stock item
+    collection: stock
+    edit: true
+    submit:
+      label: Save item
+      message: Item saved.
+  - key: stock_list
+    type: table
+    title: Stock
+    source: collection:stock
+    columns:
+    - site
+    - item
+    - unit
+    - supplier
+    - par_level
+    - cost
+    - quantity
+    export: true
+  - key: site_form
+    type: form
+    title: Add or edit site
+    collection: sites
+    edit: true
+    roles:
+    - user
+    - admin
+    submit:
+      label: Save site
+      message: Site saved. The managers named here can now sign in.
+  - key: site_list
+    type: table
+    title: Sites
+    source: collection:sites
+    columns:
+    - name
+    - region
+    - manager_email
+    - area_manager_email
+    - pos_vendor
+  - key: alerts
+    type: table
+    title: Alerts
+    source: collection:alerts
+    columns:
+    - date
+    - site
+    - kind
+    - severity
+    - message
+  - key: dashboard
+    type: page
+    title: Dashboards
+    sections:
+    - type: data
+      id: sales-vs-forecast
+      title: Sales vs forecast
+      source: collection:daily_kpis
+      display: chart
+      chart: line
+      fields:
+      - key: date
+        label: Day
+        format: date
+      - key: sales
+        label: Sales
+        format: money
+      - key: forecast_sales
+        label: Forecast
+        format: money
+      groupBy:
+        field: date
+        bucket: day
+        aggs:
+        - key: sales
+          agg: sum
+          field: sales
+        - key: forecast_sales
+          agg: sum
+          field: forecast_sales
+      limit: 60
+      empty: 'No KPI rows yet: they appear after the first daily check.'
+    - type: data
+      id: food-cost
+      title: Food cost % per site
+      source: collection:daily_kpis
+      display: bar
+      fields:
+      - key: site
+        label: Site
+      - key: food_cost_pct
+        label: Food cost %
+        format: number
+      groupBy:
+        field: site
+        aggs:
+        - key: food_cost_pct
+          agg: avg
+          field: food_cost_pct
+      empty: No data yet.
+    - type: data
+      id: waste
+      title: Waste cost per site
+      source: collection:daily_kpis
+      display: bar
+      fields:
+      - key: site
+        label: Site
+      - key: waste_cost
+        label: Waste cost
+        format: money
+      groupBy:
+        field: site
+        aggs:
+        - key: waste_cost
+          agg: sum
+          field: waste_cost
+      empty: No data yet.
+    - type: data
+      id: labour
+      title: Labour hours per site
+      source: collection:daily_kpis
+      display: bar
+      fields:
+      - key: site
+        label: Site
+      - key: labour_hours
+        label: Labour hours
+        format: number
+      groupBy:
+        field: site
+        aggs:
+        - key: labour_hours
+          agg: sum
+          field: labour_hours
+      empty: No data yet.
+  - key: ask
+    type: chat
+    title: Ask
+    source: agent:analyst
+    examples:
+    - Which sites had the worst waste last week?
+    - Show sales vs forecast for the last 14 days
+    - Which items are below par today?
+    - Compare labour hours across my region
+    placeholder: Ask about sales, waste, stock or labour
+  - key: monitors
+    type: instances
+    template: ops_monitor
+    title: Daily monitor
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title: Plan
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: site_pack_3
+      price: 89
+      interval: month
+      label: Up to 3 sites
+      includes:
+      - 3 sites
+      - forecasts, orders and alerts
+      - analytics assistant
+      roles:
+      - user
+    - key: site_pack_10
+      price: 249
+      interval: month
+      label: Up to 10 sites
+      includes:
+      - 10 sites
+      - forecasts, orders and alerts
+      - analytics assistant
+      roles:
+      - user
+    - key: site_pack_30
+      price: 649
+      interval: month
+      label: Up to 30 sites
+      includes:
+      - 30 sites
+      - forecasts, orders and alerts
+      - analytics assistant
+      roles:
+      - user
+  mobile:
+    appId: com.kitchenly.ops
+    appName: Kitchenly
+    capabilities:
+    - name: barcode
+      reason:
+        en: To scan the barcode of each item during the daily count
+    - name: push
+    - name: microphone
+      reason:
+        en: To ask the assistant questions by voice
+  extensions:
+  - key: pos_live_sales
+    description: Live sales from POS vendor APIs need a partner agreement and OAuth sign-in with each vendor, which is not
+      available yet. Until then managers import sales as CSV. Enable per vendor once the agreement exists.
+  - key: per_site_billing
+    description: The fee is per site, sold as packs of 3, 10 and 30 sites with a cap on the number of sites. Exact per-site
+      metering (a quantity-based Stripe subscription) is not available yet.
+  - key: site_emails_on_records
+    description: Visibility per site, region and head office follows the manager emails stored on each record. Forms ask for
+      them; copying them automatically from the site record is not available yet.

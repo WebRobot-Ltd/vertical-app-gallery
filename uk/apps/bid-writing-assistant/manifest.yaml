@@ -1,0 +1,1142 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: bidcraft
+  displayName: Bidcraft
+  tagline: Tender responses drafted from your own library, reviewed and signed off by your team.
+  description: Bidcraft turns your past bids, policies and case studies into first-draft tender answers. It extracts questions,
+    word limits and scoring criteria, flags gaps, checks compliance against the tender and the Procurement Act 2023, and takes
+    each answer through review and sign-off.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12263f'
+      accent: '#b4472f'
+      background: '#f8f6f2'
+      foreground: '#18212b'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Bid
+      color: primary
+    - text: craft
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Company admin
+      assignedBy: admin_emails
+    - key: bid_manager
+      label: Bid manager
+      assignedBy: invite
+    - key: writer
+      label: Writer
+      assignedBy: invite
+    - key: reviewer
+      label: Reviewer
+      assignedBy: invite
+    - key: user
+      assignedBy: signup
+  limits:
+  - action: run
+    per: user
+    max: 30
+    window: day
+  agents:
+  - key: drafter
+    role: main
+    when: mode == 'draft'
+    description: Reads an invitation to tender, extracts questions, word limits and scoring criteria, drafts answers from
+      the company library and flags gaps.
+    memory: none
+    profile:
+      inline:
+        display_name: Bidcraft drafter
+        crews:
+        - id: drafter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a senior UK bid writer. You receive an invitation to tender (ITT) and draft answers using
+            ONLY the company''s library of past bids, policies and case studies.
+
+
+            Process:
+
+            1. Read the tender text (and, for scans or images, open the files with read_upload). Extract every question: reference,
+            question text, word limit, scoring criterion and weighting, mandatory/pass-fail requirements, deadline.
+
+            2. Call bid_create once with title, authority, deadline (YYYY-MM-DD), status ''drafting'', open true, members
+            (the team emails given) and the number of questions.
+
+            3. For each question call library_search with 2-3 focused queries; open library files with library_read_file when
+            only a file is attached. Optionally call find_tender to look at the buyer''s published notices (Find a Tender,
+            OCDS API: GET ocdsReleasePackages with query such as stages=tender&limit=20&updatedFrom=2026-01-01T00:00:00; read
+            buyer name, title, description, value, dates) to tailor wording to the buyer''s stated aims.
+
+            4. Draft each answer within its word limit, addressing the scoring criterion directly, with concrete evidence
+            from the library. Never invent facts, figures, certifications, client names or outcomes. If the library lacks
+            evidence write the best answer you can with clearly marked [GAP: what is needed] placeholders.
+
+            5. For each question call answer_add with: bid (the bid title), ref, question, word_limit, criterion, weight,
+            draft, word_count, sources (titles of the library documents actually used, one per line; ''none'' if none), gaps
+            (what evidence is missing, or empty), status ''draft'', members.
+
+
+            Finish with the report. Start with a level-1 title ''# Bid pack — <tender title>''. Then ## Tender summary (authority,
+            deadline, value if known), ## Questions extracted (table: ref, word limit, criterion, weight, coverage High/Medium/Low),
+            ## Mandatory requirements (list), ## Gaps to close (list ordered by weight), ## Next steps. Estimate hours saved
+            (about 1 hour per 250 words drafted) and state it as an estimate. Write in British English.'
+    goalTemplate: 'Draft a bid response.
+
+      Tender title: {title}
+
+      Contracting authority: {authority}
+
+      {?deadline}Deadline: {deadline}{/deadline}
+
+      {?team}Team emails (copy into members): {team}{/team}
+
+      {?notes}Notes from the bid manager: {notes}{/notes}
+
+      Tender documents: {tender}
+
+      {?tender_text}Tender text:
+
+      {tender_text}{/tender_text}
+
+      Today is {date}.'
+    appTools:
+    - name: library_search
+      description: Search the company library of past bids, policies and case studies
+      action: search
+      collection: library_docs
+      scope: user
+    - name: library_read_file
+      description: Open a file attached to the library or the tender (OCR included)
+      action: read_file
+    - name: read_upload
+      description: Read a file the user uploaded, scans and images included
+      action: read_file
+    - name: bid_create
+      description: Create the bid record
+      action: append
+      collection: bids
+      scope: user
+    - name: answer_add
+      description: Save one drafted answer
+      action: append
+      collection: answers
+      scope: user
+    - name: find_tender
+      description: Search tender notices on Find a Tender (OCDS API)
+      action: http
+      http:
+        method: GET
+        url: https://www.find-tender.service.gov.uk/api/1.0/ocdsReleasePackages
+        attribution: Find a Tender Service, Open Government Licence v3.0
+    output: markdown
+    writesTo:
+      collection: bid_packs
+      parse: whole
+  - key: reviser
+    role: main
+    when: mode == 'revise'
+    description: Shortens, strengthens or rewrites one answer for a scoring criterion, citing library sources.
+    profile:
+      inline:
+        display_name: Bidcraft reviser
+        crews:
+        - id: reviser
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You revise one tender answer for a writer. Follow the instruction exactly: shorten (keep the substance,
+            meet the word limit), strengthen (more evidence, outcomes, specifics, clearer link to the criterion), or rewrite
+            for the named scoring criterion. Use library_search to find supporting evidence and use only facts found there
+            or already in the draft; never invent figures or claims; mark missing evidence as [GAP: ...]. Stay within the
+            word limit. Then call answer_update with the answer id and the new draft, word_count, sources (library document
+            titles used, one per line) and gaps, and set status ''draft''. Reply with a level-1 title ''# Revised answer —
+            <ref>'', the new text, then ## What changed and ## Sources used. British English.'
+    context:
+    - key: current_draft
+      from: collection:answers.draft
+    - key: current_question
+      from: collection:answers.question
+    - key: current_limit
+      from: collection:answers.word_limit
+    - key: current_criterion
+      from: collection:answers.criterion
+    goalTemplate: 'Answer record id: {answer_ref}
+
+      Question: {current_question}
+
+      Word limit: {current_limit}
+
+      Original scoring criterion: {current_criterion}
+
+      Instruction: {instruction_label}
+
+      {?criterion}Criterion to target: {criterion}{/criterion}
+
+      Current draft:
+
+      {current_draft}'
+    appTools:
+    - name: library_search
+      description: Search the company library of past bids, policies and case studies
+      action: search
+      collection: library_docs
+      scope: user
+    - name: answer_update
+      description: Update an answer record with the revised draft
+      action: write
+      collection: answers
+      scope: user
+    output: markdown
+  - key: checker
+    role: main
+    when: mode == 'check'
+    description: Compares the final draft with the tender's mandatory requirements and the Procurement Act 2023, lists what
+      is missing and asks the bid manager to sign off.
+    awaits:
+    - bid_signoff
+    profile:
+      inline:
+        display_name: Bidcraft compliance checker
+        crews:
+        - id: checker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a bid compliance checker for UK public procurement. Given a bid, read all its answers with
+            answers_read and the bid record with bids_read. Compare the final draft with (1) the tender''s mandatory and pass/fail
+            requirements (from the tender documents, opened with tender_file if attached, and from the extraction stored with
+            the bid), (2) word limits, unanswered questions, leftover [GAP] placeholders and answers not yet approved, and
+            (3) the Procurement Act 2023 rules relevant to a supplier''s bid: exclusion and debarment grounds and the declarations
+            about them, the requirement to be on the supplier information platform, conflicts of interest, subcontractor and
+            associated-person disclosures, social value / key performance indicators and the requirement to treat the lowest
+            price as not the only factor (most advantageous tender), and any publication or transparency commitments. Use
+            legislation_lookup (legislation.gov.uk, Procurement Act 2023, e.g. path /section/57/data.xml) to verify section
+            text before citing a section number; if you cannot verify, describe the rule without a section number. Do not
+            give legal advice as fact; say what should be checked by counsel.
+
+            For each issue call finding_add with bid, severity (blocker|major|minor), area (tender requirement|word limit|Procurement
+            Act 2023|evidence|other), issue, where (question ref), fix. If everything passes, say so and add no findings.
+            When there are no blockers, call request_bid_signoff so the bid manager can sign off the whole bid.
+
+            Report: start with ''# Compliance check — <bid title>''. Then ## Verdict (Ready / Ready with fixes / Not ready),
+            ## Missing or non-compliant (table: severity, area, issue, question, fix), ## Mandatory requirements covered,
+            ## Procurement Act 2023 checks, ## Recommended actions. Never invent requirements.'
+    goalTemplate: Run the compliance check for bid record id {bid_ref}. Today is {date}.
+    appTools:
+    - name: bids_read
+      description: Read the bid record
+      action: read
+      collection: bids
+      scope: user
+    - name: answers_read
+      description: Read the answers of the bid
+      action: read
+      collection: answers
+      scope: user
+    - name: tender_file
+      description: Open a tender file attached to the bid
+      action: read_file
+    - name: finding_add
+      description: Record one compliance finding
+      action: append
+      collection: compliance_findings
+      scope: user
+    - name: legislation_lookup
+      description: Fetch text of the Procurement Act 2023 from legislation.gov.uk
+      action: http
+      http:
+        method: GET
+        url: https://www.legislation.gov.uk/ukpga/2023/54
+        allowPath: true
+        attribution: legislation.gov.uk, Open Government Licence v3.0
+    output: markdown
+    writesTo:
+      collection: compliance_reports
+      parse: whole
+  inputForm:
+    title: Bidcraft
+    fields:
+    - name: mode
+      type: select
+      required: true
+      label: What do you want to do?
+      default: draft
+      options:
+      - value: draft
+        label: Draft a new bid from an invitation to tender
+      - value: revise
+        label: Revise one answer
+      - value: check
+        label: Run the compliance check on a bid
+    - name: title
+      type: text
+      required: true
+      label: Tender title
+      visibleWhen: mode == 'draft'
+    - name: authority
+      type: text
+      label: Contracting authority
+      visibleWhen: mode == 'draft'
+    - name: deadline
+      type: date
+      required: true
+      label: Submission deadline
+      visibleWhen: mode == 'draft'
+    - name: tender
+      type: file
+      accept:
+      - pdf
+      - docx
+      - xlsx
+      - txt
+      maxMb: 15
+      multiple: true
+      label: Tender documents
+      visibleWhen: mode == 'draft'
+    - name: team
+      type: textarea
+      maxLength: 600
+      label: Team emails (comma separated)
+      help: Everyone who works on this bid; only they and your admins can see it.
+      visibleWhen: mode == 'draft'
+    - name: notes
+      type: textarea
+      maxLength: 600
+      label: Notes (optional)
+      visibleWhen: mode == 'draft'
+    - name: answer_ref
+      type: select
+      label: Answer
+      optionsFrom: collection:answers
+      visibleWhen: mode == 'revise'
+    - name: instruction
+      type: select
+      label: Instruction
+      visibleWhen: mode == 'revise'
+      options:
+      - value: shorten
+        label: Shorten to the word limit
+      - value: strengthen
+        label: Strengthen with evidence
+      - value: rewrite
+        label: Rewrite for a scoring criterion
+    - name: criterion
+      type: text
+      label: Scoring criterion to target
+      visibleWhen: mode == 'revise'
+    - name: bid_ref
+      type: select
+      label: Bid
+      optionsFrom: collection:bids
+      visibleWhen: mode == 'check'
+  data:
+    collections:
+    - name: library_docs
+      description: 'Company library: past bids, policies, case studies'
+      ownedBy: user
+      searchable: true
+      fields:
+      - name: title
+        type: text
+        required: true
+        label: Title
+      - name: kind
+        type: select
+        required: true
+        label: Type
+        options:
+        - value: past_bid
+          label: Past bid
+        - value: policy
+          label: Policy
+        - value: case_study
+          label: Case study
+        - value: cv
+          label: CV / team profile
+        - value: other
+          label: Other
+      - name: file
+        type: file
+        accept:
+        - pdf
+        - docx
+        - txt
+        - md
+        maxMb: 15
+        label: File
+      - name: content
+        type: textarea
+        label: Text (paste if no file)
+      - name: members
+        type: array
+        label: Company members' emails
+        help: Colleagues who may use this document.
+      access:
+      - role: bid_manager
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: writer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: reviewer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: bids
+      description: One record per tender
+      ownedBy: user
+      fields:
+      - name: title
+        type: text
+        required: true
+        label: Tender
+      - name: authority
+        type: text
+        label: Authority
+      - name: deadline
+        type: date
+        label: Deadline
+      - name: status
+        type: select
+        label: Status
+        default: drafting
+        options:
+        - drafting
+        - in_review
+        - signed_off
+        - submitted
+      - name: open
+        type: boolean
+        default: true
+        label: Still open (deadline reminders)
+      - name: questions
+        type: number
+        label: Questions
+      - name: submitted_date
+        type: date
+        label: Submitted on
+      - name: won
+        type: number
+        label: Outcome
+        help: 1 = won, 0 = lost; leave empty until known.
+      - name: hours_saved
+        type: number
+        label: Hours saved (estimate)
+      - name: members
+        type: array
+        label: Team emails
+      access:
+      - role: bid_manager
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: writer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: reviewer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: answers
+      description: Drafted answers, one per tender question
+      ownedBy: user
+      fields:
+      - name: bid
+        type: text
+        label: Bid
+      - name: ref
+        type: text
+        label: Ref
+      - name: question
+        type: textarea
+        label: Question
+      - name: word_limit
+        type: number
+        label: Word limit
+      - name: criterion
+        type: text
+        label: Scoring criterion
+      - name: weight
+        type: text
+        label: Weight
+      - name: draft
+        type: textarea
+        label: Answer
+      - name: word_count
+        type: number
+        label: Words
+      - name: sources
+        type: textarea
+        label: Library documents used
+      - name: gaps
+        type: textarea
+        label: Gaps flagged
+      - name: status
+        type: select
+        label: Status
+        default: draft
+        options:
+        - draft
+        - in_review
+        - approved
+        - changes_requested
+      - name: members
+        type: array
+        label: Team emails
+      access:
+      - role: bid_manager
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: writer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: reviewer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: comments
+      description: Inline reviewer comments on answers
+      ownedBy: user
+      fields:
+      - name: answer
+        type: text
+        required: true
+        label: Answer ref
+      - name: bid
+        type: text
+        label: Bid
+      - name: comment
+        type: textarea
+        required: true
+        label: Comment
+      - name: quote
+        type: text
+        label: Quoted passage
+      - name: members
+        type: array
+        label: Team emails
+      access:
+      - role: bid_manager
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: writer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: reviewer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: compliance_findings
+      description: Issues found by the compliance checker
+      ownedBy: user
+      fields:
+      - name: bid
+        type: text
+        label: Bid
+      - name: severity
+        type: select
+        label: Severity
+        options:
+        - blocker
+        - major
+        - minor
+      - name: area
+        type: text
+        label: Area
+      - name: issue
+        type: textarea
+        label: Issue
+      - name: where
+        type: text
+        label: Question
+      - name: fix
+        type: textarea
+        label: Suggested fix
+      - name: members
+        type: array
+        label: Team emails
+      access:
+      - role: bid_manager
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: writer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: reviewer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: bid_packs
+      description: Extraction reports of drafted bids
+      ownedBy: user
+    - name: compliance_reports
+      description: Compliance check reports
+      ownedBy: user
+  approvals:
+  - key: bid_signoff
+    title: Bid sign-off
+    description: The bid manager signs off the whole bid before export.
+    role: bid_manager
+    decidedBy: role
+    fields:
+    - bid
+    - verdict
+  triggers:
+  - key: reminder_7d
+    'on':
+      date:
+        collection: bids
+        field: deadline
+        offsetDays: -7
+        hour: 8
+      where:
+        open: true
+    notify:
+      to:
+      - role:bid_manager
+      - role:writer
+      subject: 'Bid deadline in 7 days: {record.title}'
+      body: The tender "{record.title}" ({record.authority}) is due on {record.deadline}. Check the open answers and gaps.
+      link: bids
+  - key: reminder_2d
+    'on':
+      date:
+        collection: bids
+        field: deadline
+        offsetDays: -2
+        hour: 8
+      where:
+        open: true
+    notify:
+      to:
+      - role:bid_manager
+      - role:writer
+      - role:reviewer
+      subject: 'Bid deadline in 2 days: {record.title}'
+      body: The tender "{record.title}" is due on {record.deadline}. Make sure every answer is approved and the bid is signed
+        off.
+      link: answers
+  - key: reminder_1d
+    'on':
+      date:
+        collection: bids
+        field: deadline
+        offsetDays: -1
+        hour: 8
+      where:
+        open: true
+    notify:
+      to:
+      - role:bid_manager
+      subject: 'Bid due tomorrow: {record.title}'
+      body: '"{record.title}" is due tomorrow ({record.deadline}). Sign-off and export are still open.'
+      link: signoff
+  - key: answer_for_review
+    'on':
+      collection: answers
+      op: update
+      where:
+        status: in_review
+    notify:
+      to:
+      - role:reviewer
+      subject: 'Answer ready for review: {record.ref}'
+      body: Answer {record.ref} of "{record.bid}" is ready for your review.
+      link: answers
+  - key: signed_off
+    'on':
+      approval: bid_signoff
+      decision: approved
+    notify:
+      to:
+      - admins
+      - role:bid_manager
+      - role:writer
+      subject: Bid signed off
+      body: The bid has been signed off and is ready for export.
+      link: bids
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Bidcraft
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: AI tender and bid writing
+      title: Win more tenders with **answers drafted from your own library**.
+      text: Upload your past bids, policies and case studies once. For every new invitation to tender, Bidcraft extracts the
+        questions, drafts answers with the sources shown, flags gaps and checks compliance before your bid manager signs off.
+      actions:
+      - label: Start free
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+      note: Your library is private to your company.
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Build your library
+        text: Upload past bids, policies and case studies.
+        badge: 📚
+      - title: Upload the tender
+        text: The agent extracts questions, word limits and scoring criteria.
+        badge: 📄
+      - title: Draft and review
+        text: Answers cite the library documents used. Writers shorten, strengthen or rewrite; reviewers comment and approve.
+        badge: ✍️
+      - title: Check and sign off
+        text: A compliance check against the tender and the Procurement Act 2023, then bid manager sign-off.
+        badge: ✅
+    - type: cards
+      title: Built for bid teams
+      items:
+      - title: Roles
+        text: Bid manager, writer and reviewer, each with their own view.
+      - title: Deadline reminders
+        text: Email reminders 7, 2 and 1 days before each deadline.
+      - title: Dashboards
+        text: Bids submitted, win rate and time saved.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: £150 per seat per month
+        text: Every bid manager, writer or reviewer is one seat.
+        badge: 💷
+    - type: note
+      content: 'Bidcraft supports bid writing and does not provide legal advice. Check final bids with your own legal and
+        procurement advisers. Tender notice data: Find a Tender, Open Government Licence v3.0.'
+  - key: new_run
+    type: new_run
+    title: Draft, revise or check
+    roles:
+    - admin
+    - bid_manager
+    - writer
+  - key: runs
+    type: history
+    title: Runs
+    source: run
+    roles:
+    - admin
+    - bid_manager
+    - writer
+    - reviewer
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: bids
+    type: table
+    title: Bids
+    source: collection:bids
+    export: true
+    roles:
+    - admin
+    - bid_manager
+    - writer
+    - reviewer
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Tender
+      - key: authority
+        label: Authority
+      - key: deadline
+        label: Deadline
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      - key: questions
+        label: Questions
+        format: number
+      sort:
+        field: deadline
+        dir: asc
+      actions:
+      - type: calendar
+        label: Add deadline to calendar
+        title: title
+        start: deadline
+  - key: answers
+    type: cards
+    title: Answers
+    source: collection:answers
+    export: true
+    roles:
+    - admin
+    - bid_manager
+    - writer
+    - reviewer
+    data:
+      display: cards
+      fields:
+      - key: ref
+        label: Ref
+      - key: question
+        label: Question
+      - key: draft
+        label: Answer
+      - key: word_count
+        label: Words
+        format: number
+      - key: word_limit
+        label: Limit
+        format: number
+      - key: criterion
+        label: Criterion
+      - key: sources
+        label: Library documents used
+      - key: gaps
+        label: Gaps
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: ref
+        dir: asc
+      actions:
+      - type: share
+        label: Share answer
+        field: draft
+  - key: edit_answer
+    type: form
+    title: Edit or approve an answer
+    collection: answers
+    fields:
+    - draft
+    - status
+    edit: true
+    submit:
+      label: Save
+      message: Answer saved.
+      redirect: answers
+    nav: false
+    roles:
+    - admin
+    - bid_manager
+    - writer
+    - reviewer
+  - key: add_comment
+    type: form
+    title: Add a review comment
+    collection: comments
+    fields:
+    - answer
+    - bid
+    - quote
+    - comment
+    - members
+    submit:
+      label: Post comment
+      message: Comment added.
+      redirect: comments
+    roles:
+    - admin
+    - bid_manager
+    - reviewer
+  - key: comments
+    type: list
+    title: Review comments
+    source: collection:comments
+    roles:
+    - admin
+    - bid_manager
+    - writer
+    - reviewer
+    data:
+      display: list
+      fields:
+      - key: answer
+        label: Answer
+      - key: quote
+        label: Passage
+      - key: comment
+        label: Comment
+  - key: update_bid
+    type: form
+    title: Update bid status or outcome
+    collection: bids
+    fields:
+    - status
+    - open
+    - submitted_date
+    - won
+    edit: true
+    submit:
+      label: Save
+      message: Bid updated.
+      redirect: bids
+    nav: false
+    roles:
+    - admin
+    - bid_manager
+  - key: findings
+    type: table
+    title: Compliance findings
+    source: collection:compliance_findings
+    export: true
+    roles:
+    - admin
+    - bid_manager
+    - writer
+    - reviewer
+    data:
+      display: table
+      fields:
+      - key: severity
+        label: Severity
+        format: badge
+      - key: area
+        label: Area
+      - key: issue
+        label: Issue
+      - key: where
+        label: Question
+      - key: fix
+        label: Fix
+  - key: signoff
+    type: approvals
+    title: Bid sign-off
+    approvals:
+    - bid_signoff
+    roles:
+    - admin
+    - bid_manager
+  - key: library
+    type: table
+    title: Library
+    source: collection:library_docs
+    roles:
+    - admin
+    - bid_manager
+    - writer
+    - reviewer
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Title
+      - key: kind
+        label: Type
+        format: badge
+  - key: add_doc
+    type: form
+    title: Add to library
+    collection: library_docs
+    submit:
+      label: Add to library
+      message: Document added to your company library.
+      redirect: library
+    roles:
+    - admin
+    - bid_manager
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - admin
+    - bid_manager
+    sections:
+    - type: data
+      title: Submitted bids
+      source: collection:bids
+      display: kpi
+      filters:
+      - field: status
+        op: '='
+        value: submitted
+      kpis:
+      - label: Bids submitted
+        agg: count
+      - label: Win rate
+        agg: avg
+        field: won
+        format: percent
+      - label: Hours saved
+        agg: sum
+        field: hours_saved
+        format: number
+    - type: data
+      title: Bids submitted per month
+      source: collection:bids
+      display: chart
+      chart: bar
+      filters:
+      - field: status
+        op: '='
+        value: submitted
+      groupBy:
+        field: submitted_date
+        bucket: month
+        aggs:
+        - key: hours
+          agg: sum
+          field: hours_saved
+      fields:
+      - key: submitted_date
+        label: Month
+      - key: count
+        label: Bids
+    - type: data
+      title: Time saved per month (hours)
+      source: collection:bids
+      display: chart
+      chart: line
+      groupBy:
+        field: submitted_date
+        bucket: month
+        aggs:
+        - key: hours
+          agg: sum
+          field: hours_saved
+      fields:
+      - key: submitted_date
+        label: Month
+      - key: hours
+        label: Hours saved
+  - key: account
+    type: account
+    title: Plan
+    roles:
+    - admin
+    - bid_manager
+  schedules: []
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: seat
+      price: 150
+      interval: month
+      label: Bidcraft seat
+      includes:
+      - Library and drafting
+      - Review and sign-off
+      - Compliance checks
+      - Dashboards
+  notifications:
+    emailOnRunDone: true
+  egress:
+    hosts:
+    - www.find-tender.service.gov.uk
+    - www.legislation.gov.uk
+    notes: 'Find a Tender OCDS API: notices published under the Open Government Licence v3.0. legislation.gov.uk: Procurement
+      Act 2023 text under the Open Government Licence v3.0.'
+  extensions:
+  - key: word_export
+    description: Export to Word (.docx) of the signed-off bid is not available yet. Use the printable report, save as PDF/copy
+      into Word, or the CSV export of the answers view.
+  - key: per_seat_billing
+    description: Billing is a £150 per month plan; automatic per-seat quantity pricing is not available yet, so seats are
+      charged by plan purchase per invited user.
+  - key: inline_comments
+    description: Comments are attached to an answer with an optional quoted passage; true highlighting inside the answer text
+      is not available yet.
+  - key: company_separation
+    description: Company privacy relies on each document, bid and answer listing the company members' emails; a company-wide
+      library shared automatically is not available yet.

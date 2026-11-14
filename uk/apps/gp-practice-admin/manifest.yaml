@@ -1,0 +1,818 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: surgiflow
+  displayName: Surgiflow
+  tagline:
+    en: Practice admin that files itself, with people deciding.
+  description:
+    en: 'Surgiflow automates GP practice admin: new patient registrations, hospital letter coding and filing, with clinician
+      sign-off and a daily backlog email for the practice manager.'
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: pipeline
+  branding:
+    theme: light
+    palette:
+      primary: '#0b4f6c'
+      accent: '#1a9c8b'
+      background: '#f6f9fb'
+      foreground: '#14232e'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Surgi
+      color: primary
+    - text: flow
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Safety
+      href: '#safety'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Surgiflow admin
+      assignedBy: admin_emails
+    - key: manager
+      label: Practice manager
+      assignedBy: derived
+      from: collection:practices.manager_email
+    - key: staff
+      label: Admin staff
+      assignedBy: invite
+    - key: gp
+      label: GP
+      assignedBy: invite
+    - key: patient
+      label: Patient
+      assignedBy: signup
+  agents:
+  - key: registration_checker
+    role: helper
+    description: Checks a new patient registration for completeness and prepares it for the practice. Never decides on clinical
+      matters.
+    profile:
+      inline:
+        display_name: Registration checker
+        crews:
+        - id: registration_checker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare new GP patient registrations for a practice administrator. Steps: 1) call read_practice
+            and find the practice named in the registration; copy its staff_emails list. 2) Open the ID document with read_upload
+            (file id given) and check that the name and date of birth plausibly match what the patient typed; never copy ID
+            numbers into your notes. 3) Check completeness: full name, date of birth, address, previous practice, medications,
+            allergies, carers. If an NHS number is given, check it has 10 digits and passes the modulus 11 check; say so if
+            not. NHS number is optional. 4) Call update_registration once with: staff_emails (the practice list), status (''ready_for_review''
+            if complete, otherwise ''needs_info''), completeness_notes (a short bullet list of what is missing or inconsistent,
+            plain English, addressed to staff), and match_result (what you could and could not verify; you have no access
+            to the practice clinical system, so say ''Not matched against clinical system''). Never invent data, never give
+            clinical advice, never judge medications or allergies. Finish with a 3 line summary.'
+    appTools:
+    - name: read_practice
+      description: Read the practices catalogue (code, name, manager, GPs, staff emails)
+      action: read
+      collection: practices
+      scope: all
+    - name: read_upload
+      description: Read a file the user uploaded (OCR included)
+      action: read_file
+    - name: update_registration
+      description: Update fields of the registration that started this run
+      action: write
+      collection: registrations
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.3
+  - key: letter_processor
+    role: helper
+    description: Reads an incoming hospital letter, proposes summary, codes and the clinician, and asks a human to approve.
+      Never decides clinical actions.
+    profile:
+      inline:
+        display_name: Letter processor
+        crews:
+        - id: letter_processor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You help GP practice staff process incoming hospital letters. Steps: 1) read the letter with read_letter_file
+            (file id given; OCR works on scans). 2) call read_practice and copy the practice''s staff_emails and gp_emails.
+            3) Produce: document_type (discharge summary, outpatient letter, test result, other), a summary of at most 80
+            words, proposed clinical codes (SNOMED CT concept names with IDs when you are confident; mark ''suggested, verify''
+            otherwise, never invent an ID), has_clinical_actions (true if the letter asks the GP or practice to do anything
+            clinical: start/stop/change a medication, order a test, refer, follow up, monitor, review), clinical_actions (verbatim
+            list), urgency (routine or urgent, only if the letter says so), and suggested_clinician (one of the practice''s
+            gp_emails, or the clinician named in the letter if they match; otherwise leave blank). 4) call update_letter once
+            with those fields plus staff_emails, received_date (today''s date), and status ''awaiting_gp'' if has_clinical_actions
+            is true, else ''awaiting_admin''. 5) If has_clinical_actions is true, call request_letter_gp_review; otherwise
+            call request_letter_admin_review. You never decide, file, or action anything clinical: a person approves every
+            letter and a GP always sees any letter with clinical actions. When unsure whether a letter has clinical actions,
+            treat it as having them. Do not put patient identifiers in your final message beyond initials.'
+    appTools:
+    - name: read_practice
+      description: Read the practices catalogue (code, name, manager, GPs, staff emails)
+      action: read
+      collection: practices
+      scope: all
+    - name: read_letter_file
+      description: Read an uploaded letter (PDF or scan)
+      action: read_file
+    - name: update_letter
+      description: Update fields of the letter record
+      action: write
+      collection: letters
+      scope: user
+    awaits:
+    - letter_admin_review
+    - letter_gp_review
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.4
+  - key: filer
+    role: helper
+    description: Marks a human-approved letter as filed and records the turnaround.
+    profile:
+      inline:
+        display_name: Letter filer
+        crews:
+        - id: filer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 5
+          max_budget_usd: 0.1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: A person has approved a letter proposal. Call update_letter once with status 'filed', filed_date
+            (today's date) and turnaround_hours (whole hours between received_date and now, from the record data you are given;
+            at least 0). Change nothing else. Reply with one line.
+    appTools:
+    - name: update_letter
+      description: Update fields of the letter record
+      action: write
+      collection: letters
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 5
+      maxBudgetUsd: 0.1
+  - key: digest_agent
+    role: scheduled
+    description: Daily backlog and exceptions email for one practice manager.
+    memory: none
+    writesTo:
+      collection: digests
+      parse: whole
+    profile:
+      inline:
+        display_name: Backlog digest
+        crews:
+        - id: digest_agent
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the daily backlog and exceptions note for a GP practice manager. Use list_letters and
+            list_registrations (only records the manager may see). Start with ''# Backlog for <practice> — <date>''. Sections:
+            ## Waiting on you (letters awaiting admin approval, registrations ready for review, with counts and oldest age),
+            ## Waiting on GPs (letters awaiting a GP, flag urgent ones and any older than 2 working days), ## Exceptions (registrations
+            needing info, letters without a suggested clinician), ## Yesterday (letters filed, average turnaround hours).
+            Use counts and short references (initials and received date), never full patient names or NHS numbers. Real figures
+            only; if there is nothing, say so in one line. Plain text, under 250 words.'
+    appTools:
+    - name: list_letters
+      description: Letters the manager may see
+      action: search
+      collection: letters
+      scope: user
+    - name: list_registrations
+      description: Registrations the manager may see
+      action: search
+      collection: registrations
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.2
+  data:
+    collections:
+    - name: practices
+      ownedBy: shared
+      description: Practices on Surgiflow. Filled by Surgiflow admins on the data page.
+      fields:
+      - name: code
+        type: text
+        required: true
+        label: ODS code
+      - name: name
+        type: text
+        required: true
+        label: Practice name
+      - name: list_size
+        type: number
+        label: Registered patients
+      - name: manager_email
+        type: email
+        required: true
+        label: Practice manager email
+      - name: gp_emails
+        type: array
+        label: GP emails
+      - name: staff_emails
+        type: array
+        label: All staff emails (manager, admin staff, GPs)
+    - name: registrations
+      ownedBy: user
+      retentionDays: 365
+      description: New patient registrations
+      fields:
+      - name: practice
+        type: select
+        required: true
+        optionsFrom: collection:practices
+        label: Practice
+      - name: full_name
+        type: text
+        required: true
+        label: Full name
+      - name: dob
+        type: date
+        required: true
+        label: Date of birth
+      - name: address
+        type: textarea
+        required: true
+        label: Home address
+      - name: previous_practice
+        type: text
+        label: Previous GP practice
+      - name: nhs_number
+        type: text
+        maxLength: 12
+        label: NHS number (if known)
+      - name: medications
+        type: textarea
+        label: Current medications
+      - name: allergies
+        type: textarea
+        label: Allergies
+      - name: carers
+        type: textarea
+        label: Carers or people who help you
+      - name: id_document
+        type: file
+        required: true
+        accept:
+        - pdf
+        - jpg
+        - jpeg
+        - png
+        maxMb: 10
+        capture: true
+        label: Photo ID
+      - name: status
+        type: select
+        options:
+        - submitted
+        - needs_info
+        - ready_for_review
+        - approved
+        - rejected
+        default: submitted
+      - name: completeness_notes
+        type: textarea
+      - name: match_result
+        type: textarea
+      - name: staff_emails
+        type: array
+      access:
+      - role: manager
+        where:
+          staff_emails: '{user.email}'
+        can:
+        - read
+        - write
+      - role: staff
+        where:
+          staff_emails: '{user.email}'
+        can:
+        - read
+        - write
+    - name: letters
+      ownedBy: user
+      retentionDays: 1095
+      description: Incoming clinical documents
+      fields:
+      - name: practice
+        type: select
+        required: true
+        optionsFrom: collection:practices
+        label: Practice
+      - name: document
+        type: file
+        required: true
+        accept:
+        - pdf
+        - jpg
+        - jpeg
+        - png
+        - docx
+        maxMb: 15
+        label: Letter
+      - name: source
+        type: text
+        label: Sender (hospital / department)
+      - name: document_type
+        type: text
+      - name: summary
+        type: textarea
+      - name: codes
+        type: textarea
+      - name: has_clinical_actions
+        type: boolean
+      - name: clinical_actions
+        type: textarea
+      - name: urgency
+        type: select
+        options:
+        - routine
+        - urgent
+      - name: suggested_clinician
+        type: email
+      - name: status
+        type: select
+        options:
+        - received
+        - awaiting_admin
+        - awaiting_gp
+        - filed
+        default: received
+      - name: received_date
+        type: date
+      - name: filed_date
+        type: date
+      - name: turnaround_hours
+        type: number
+      - name: staff_emails
+        type: array
+      access:
+      - role: manager
+        where:
+          staff_emails: '{user.email}'
+        can:
+        - read
+        - write
+      - role: staff
+        where:
+          staff_emails: '{user.email}'
+        can:
+        - read
+        - write
+      - role: gp
+        where:
+          staff_emails: '{user.email}'
+        can:
+        - read
+        - write
+    - name: digests
+      ownedBy: instance
+      description: Daily backlog notes of each practice digest
+  templates:
+  - key: practice_digest
+    title: Daily backlog email
+    description: A daily email of backlog and exceptions for your practice.
+    agent: digest_agent
+    params:
+    - name: practice
+      type: select
+      required: true
+      optionsFrom: collection:practices
+      label: Practice
+    goal: Write the backlog and exceptions note for practice {practice}. Today is {date}.
+    schedule:
+      cron: 0 6 * * 1-5
+      userCanChange: true
+    maxPerUser: 2
+    roles:
+    - manager
+    deliver:
+      to: owner
+      onlyIfNew: false
+  approvals:
+  - key: letter_admin_review
+    title: Approve letter proposal
+    description: Administrator checks summary, codes and clinician before filing. Letters without clinical actions only.
+    role: staff
+    fields:
+    - summary
+    - codes
+    - suggested_clinician
+    timeoutMinutes: 10080
+    onTimeout: reject
+  - key: letter_gp_review
+    title: GP review of letter with clinical actions
+    description: A GP reviews any letter with clinical actions.
+    role: gp
+    fields:
+    - summary
+    - clinical_actions
+    - codes
+    - urgency
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: reg_check
+    'on':
+      collection: registrations
+      op: insert
+      where:
+        status: submitted
+    start:
+      agent: registration_checker
+    goal: 'A patient submitted a registration. Practice: {record.practice}. Name: {record.full_name}. Date of birth: {record.dob}.
+      Address: {record.address}. Previous practice: {record.previous_practice}. NHS number: {record.nhs_number}. Medications:
+      {record.medications}. Allergies: {record.allergies}. Carers: {record.carers}. ID file id: {record.id_document}. Check
+      it and update the registration.'
+  - key: reg_needs_info
+    'on':
+      collection: registrations
+      op: update
+      where:
+        status: needs_info
+    notify:
+      to: owner
+      subject: We need a little more information for your registration
+      body: The practice needs more details to complete your registration. Please sign in to check and resubmit.
+      link: my_registrations
+  - key: letter_intake
+    'on':
+      collection: letters
+      op: insert
+      where:
+        status: received
+    start:
+      agent: letter_processor
+    goal: 'A letter was uploaded for practice {record.practice} from {record.source}. File id: {record.document}. Process
+      it and ask for human review. Today is {date}.'
+  - key: letter_filed_admin
+    'on':
+      approval: letter_admin_review
+      decision: approved
+    start:
+      agent: filer
+    goal: 'An administrator approved the letter proposal. Event: {event}. Mark the letter as filed.'
+  - key: letter_filed_gp
+    'on':
+      approval: letter_gp_review
+      decision: approved
+    start:
+      agent: filer
+    goal: 'A GP reviewed the letter. Event: {event}. Mark the letter as filed.'
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Surgiflow
+    sections:
+    - type: hero
+      band: true
+      eyebrow: For GP practices
+      title: Practice admin that **files itself**, with people deciding.
+      text: 'New patient registrations, hospital letters and a daily backlog email: prepared by AI agents, approved by your
+        team. Any letter with clinical actions goes to a GP.'
+      actions:
+      - label: Register as a patient
+        href: /login
+        style: primary
+      - label: Practice sign in
+        href: /login
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Patients register online
+        text: One form with photo ID. The agent checks it is complete and tells staff what is missing.
+        badge: 📝
+      - title: Letters are read for you
+        text: 'Upload a hospital letter: the agent proposes a summary, codes and the right clinician.'
+        badge: 📄
+      - title: A person approves
+        text: Admin staff approve routine letters. A GP reviews every letter with clinical actions.
+        badge: ✅
+      - title: The manager sees the backlog
+        text: A daily email and dashboards of volumes and turnaround.
+        badge: 📊
+    - type: cards
+      id: safety
+      title: Built for safety
+      items:
+      - title: Humans decide
+        text: The agent proposes, never decides or actions clinical content.
+      - title: Your practice only
+        text: Staff see only their own practice's records.
+      - title: Minimal retention
+        text: Records are deleted automatically after a set period.
+    - type: note
+      content: Surgiflow supports administrative work and is not a clinical decision tool. Writing into EMIS or SystmOne is
+        not yet available.
+  - key: register
+    type: form
+    title: Register with a practice
+    collection: registrations
+    fields:
+    - practice
+    - full_name
+    - dob
+    - address
+    - previous_practice
+    - nhs_number
+    - medications
+    - allergies
+    - carers
+    - id_document
+    submit:
+      label: Send registration
+      message: Thank you. The practice will review your registration and email you if anything is missing.
+      redirect: my_registrations
+    roles:
+    - patient
+  - key: my_registrations
+    type: table
+    title: My registration
+    source: collection:registrations
+    roles:
+    - patient
+    data:
+      display: table
+      fields:
+      - key: practice
+        label: Practice
+      - key: status
+        label: Status
+        format: badge
+  - key: registration_queue
+    type: table
+    title: Registrations
+    source: collection:registrations
+    roles:
+    - manager
+    - staff
+    export: true
+    data:
+      display: table
+      fields:
+      - key: full_name
+        label: Name
+      - key: dob
+        label: Date of birth
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      - key: completeness_notes
+        label: Check notes
+      - key: match_result
+        label: Matching
+      filters:
+      - field: status
+        op: '!='
+        value: approved
+  - key: letter_upload
+    type: form
+    title: Upload a letter
+    collection: letters
+    fields:
+    - practice
+    - document
+    - source
+    submit:
+      label: Process letter
+      message: Uploaded. A proposal will appear in the review queue shortly.
+      redirect: letters
+    roles:
+    - manager
+    - staff
+  - key: letters
+    type: table
+    title: Letters
+    source: collection:letters
+    roles:
+    - manager
+    - staff
+    - gp
+    export: true
+    data:
+      display: table
+      fields:
+      - key: received_date
+        label: Received
+        format: date
+      - key: document_type
+        label: Type
+      - key: urgency
+        label: Urgency
+        format: badge
+      - key: suggested_clinician
+        label: Clinician
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: received_date
+        dir: desc
+      limit: 100
+  - key: review
+    type: approvals
+    title: Review queue
+    roles:
+    - manager
+    - staff
+    - gp
+  - key: dashboard
+    type: dashboard
+    title: Dashboard
+    children:
+    - volumes
+    - turnaround
+    - backlog
+    roles:
+    - manager
+  - key: volumes
+    type: chart
+    title: Letters received per week
+    source: collection:letters
+    nav: false
+    data:
+      display: chart
+      chart: bar
+      fields:
+      - key: received_date
+        label: Week
+      - key: count
+        label: Letters
+      groupBy:
+        field: received_date
+        bucket: week
+        aggs: []
+  - key: turnaround
+    type: chart
+    title: Average turnaround (hours)
+    source: collection:letters
+    nav: false
+    data:
+      display: chart
+      chart: line
+      fields:
+      - key: received_date
+        label: Week
+      - key: avg_turnaround
+        label: Hours
+      groupBy:
+        field: received_date
+        bucket: week
+        aggs:
+        - key: avg_turnaround
+          agg: avg
+          field: turnaround_hours
+  - key: backlog
+    type: table
+    title: Backlog by status
+    source: collection:letters
+    nav: false
+    data:
+      display: table
+      fields:
+      - key: status
+        label: Status
+        format: badge
+      - key: count
+        label: Letters
+      groupBy:
+        field: status
+        aggs: []
+  - key: digest_setup
+    type: instances
+    template: practice_digest
+    title: Daily backlog email
+    roles:
+    - manager
+  - key: account
+    type: account
+    title: Subscription
+    roles:
+    - manager
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: list_5k
+      price: 5000
+      interval: year
+      label: Up to 5,000 patients
+      roles:
+      - manager
+      includes:
+      - Registrations
+      - Letter workflow
+      - Daily digest
+      - Dashboards
+    - key: list_8k
+      price: 8000
+      interval: year
+      label: Up to 8,000 patients
+      roles:
+      - manager
+      includes:
+      - Registrations
+      - Letter workflow
+      - Daily digest
+      - Dashboards
+    - key: list_12k
+      price: 12000
+      interval: year
+      label: Up to 12,000 patients
+      roles:
+      - manager
+      includes:
+      - Registrations
+      - Letter workflow
+      - Daily digest
+      - Dashboards
+  extensions:
+  - key: clinical_system_write_back
+    description: Writing registrations, codes and filed letters into EMIS or SystmOne, and matching registrations against
+      the practice's existing records (PDS / clinical system), needs supplier partnership; until then the agent prepares data
+      for manual entry.
+  - key: compliance
+    description: DSPT and DTAC compliance are the owner's to obtain; not expressible in the manifest.
+  - key: per_practice_isolation
+    description: 'Approvals are decided by role, not by practice: if several practices share one app, the approval queue is
+      not filtered per practice. Run one app per practice group or add per-practice approval roles.'
+  - key: exact_list_pricing
+    description: Pricing of about £1 per registered patient per year is approximated by yearly plans by list size; exact per-list
+      billing needs a custom invoice.

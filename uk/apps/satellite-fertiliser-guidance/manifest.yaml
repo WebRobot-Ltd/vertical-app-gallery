@@ -1,0 +1,804 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: nitrova
+  displayName: Nitrova
+  tagline: Hyperspectral nitrogen guidance, zone by zone.
+  description: Nitrova turns proprietary hyperspectral satellite imagery and AI into crop nitrogen status and variable-rate
+    fertiliser maps. The agronomist reviews each map before it goes to the machinery.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f3d2b'
+      accent: '#6b9c2f'
+      background: '#f6f8f2'
+      foreground: '#18211b'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Nit
+      color: primary
+    - text: rova
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Nitrova admin
+      assignedBy: admin_emails
+    - key: farmer
+      label: Farmer / farm business
+      assignedBy: signup
+    - key: agronomist
+      label: Agronomist
+      assignedBy: derived
+      from: collection:recommendations.agronomist_email
+  agents:
+  - key: field_agent
+    role: helper
+    description: 'For one field: checks for new Nitrogen-ready imagery, rates crop nitrogen status per zone and drafts a variable-rate
+      map for the agronomist.'
+    memory: instance
+    awaits:
+    - vra_review
+    writesTo:
+      collection: recommendations
+      parse: json_last
+      keyBy: scene_date
+    output: markdown+json
+    resultSchema:
+      type: object
+      properties:
+        field_name:
+          type: string
+        agronomist_email:
+          type: string
+        scene_date:
+          type: string
+        status:
+          type: string
+          enum:
+          - pending_review
+          - no_new_imagery
+        data_source:
+          type: string
+          enum:
+          - nitrova
+          - sentinel_fallback
+        mean_n_index:
+          type: number
+        recommended_rate:
+          type: number
+        area_ha:
+          type: number
+        report:
+          type: string
+    appTools:
+    - name: nitrova_scenes
+      description: 'List the Nitrova hyperspectral scenes and per-zone nitrogen indices for a field (query: field boundary/centroid,
+        since date).'
+      action: http
+      http:
+        method: GET
+        url: https://api.nitrova.com/v1/scenes
+        allowPath: false
+        attribution: Nitrova proprietary hyperspectral imagery
+        credential:
+          provider: nitrova_imagery
+          header: Authorization
+          format: Bearer {secret}
+    - name: sentinel_search
+      description: 'FALLBACK ONLY: search free Copernicus Sentinel-2 products over the field when no Nitrova scene exists.'
+      action: http
+      http:
+        method: GET
+        url: https://catalogue.dataspace.copernicus.eu/odata/v1/Products
+        allowPath: false
+        attribution: Contains Copernicus Sentinel data, free full and open licence
+    - name: save_zone
+      description: Save one management zone of the draft variable-rate map.
+      action: append
+      collection: vra_zones
+      scope: user
+    profile:
+      inline:
+        display_name: Nitrova field agent
+        crews:
+        - id: field_agent
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Nitrova''s crop nitrogen analyst for ONE field. You get the crop, variety, sowing date,
+            soil type, area, boundary and agronomist email as parameters, and your memory holds the last scene you processed.
+
+
+            Steps:
+
+            1. Call nitrova_scenes for this field (pass the centroid/boundary and the date of the last processed scene as
+            ''since''). Nitrova''s own hyperspectral imagery is the primary source. If it returns nothing newer than your
+            memory, you may call sentinel_search ONLY as a fallback and say clearly that Sentinel data is a lower-fidelity
+            substitute (data_source sentinel_fallback) and that confidence is reduced. If nothing new exists at all, answer
+            with a short note and the JSON with status no_new_imagery (scene_date = today) and do not request approval.
+
+            2. With a new scene: estimate crop nitrogen status per zone from the zone indices returned, taking crop, growth
+            stage (from sowing date and scene date), variety and soil type into account. Propose a nitrogen rate in kg N/ha
+            per zone. Use ONLY values returned by the tools; never invent indices or figures; state assumptions and uncertainty.
+
+            3. Call save_zone once per zone with field_name, zone_id, scene_date, n_index, rate_kg_ha, area_ha, agronomist_email
+            and geometry (as given by the scene).
+
+            4. Call request_vra_review so the agronomist reviews the map. Recommendations are ADVISORY: the agronomist decides
+            the final rate.
+
+            5. Call remember with the scene id/date processed.
+
+
+            Report format: start with ''# <Field> — nitrogen status <scene date>''. Sections ## Summary, ## Zone results (table:
+            zone, N index, status, proposed kg N/ha, area ha), ## Data source and confidence, ## For the agronomist. Add a
+            ```chart block (bar) of proposed rate per zone. Under 400 words.
+
+            Then finish with ONE final JSON object: field_name, agronomist_email, scene_date (YYYY-MM-DD), status pending_review,
+            data_source, mean_n_index, recommended_rate (area-weighted kg N/ha), area_ha, report (a 2-sentence summary).'
+  - key: summariser
+    role: main
+    description: 'Writes the end-of-season nitrogen summary of a field: applied versus recommended, yield where entered.'
+    goalTemplate: 'Field: {field_name}
+
+      Season: {season}
+
+      {?notes}Notes: {notes}{/notes}
+
+      Nitrogen applications entered by the user (JSON lines):
+
+      {applications}
+
+      Yields entered by the user (JSON lines):
+
+      {yields}
+
+      Today is {date}. Write the summary in the language with ISO code {lang}.'
+    context:
+    - key: applications
+      from: collection:applications
+    - key: yields
+      from: collection:yield_entries
+    appTools:
+    - name: read_recommendations
+      description: Read the nitrogen recommendations (scene date, status, recommended rate, report) of the user's fields.
+      action: read
+      collection: recommendations
+      scope: user
+    output: markdown
+    profile:
+      inline:
+        display_name: Nitrova season summariser
+        crews:
+        - id: summariser
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the end-of-season nitrogen summary for one field. Use read_recommendations plus the applications
+            and yields provided; consider only the rows of the named field and season. Start with ''# <Field> — <season> nitrogen
+            summary''. Sections: ## Applied vs recommended (table by date or total, kg N/ha, with the difference), ## Yield
+            (only if entered; otherwise say none was entered), ## What worked, ## Next season. Add a ```chart block comparing
+            applied and recommended kg N/ha when both exist. Never invent figures; say plainly when data is missing. Recommendations
+            were advisory and the agronomist decided the final rates; do not give agronomic guarantees. Under 400 words.'
+  templates:
+  - key: field_watch
+    title: Field
+    description: 'Register a field: Nitrova checks for new imagery twice a week and drafts a nitrogen recommendation when
+      a scene arrives.'
+    agent: field_agent
+    params:
+    - name: boundary
+      type: textarea
+      required: true
+      label: Field boundary (GeoJSON polygon)
+      help: Paste the polygon of the field boundary.
+    - name: centroid
+      type: location
+      label: Field position
+    - name: area_ha
+      type: number
+      required: true
+      label: Area (ha)
+    - name: crop
+      type: select
+      required: true
+      label: Crop
+      options:
+      - value: winter_wheat
+        label: Winter wheat
+      - value: spring_barley
+        label: Spring barley
+      - value: maize
+        label: Maize
+      - value: oilseed_rape
+        label: Oilseed rape
+      - value: other
+        label: Other
+    - name: variety
+      type: text
+      required: true
+      label: Variety
+    - name: sowing_date
+      type: date
+      required: true
+      label: Sowing date
+    - name: soil_type
+      type: select
+      required: true
+      label: Soil type
+      options:
+      - value: sand
+        label: Sand
+      - value: loam
+        label: Loam
+      - value: clay
+        label: Clay
+      - value: silt
+        label: Silt
+      - value: peat
+        label: Peat
+      - value: chalk
+        label: Chalk
+    - name: agronomist_email
+      type: email
+      label: Agronomist's email (invites them)
+      help: The agronomist will see this field's recommendations and approve the maps.
+    goal: 'Process field "{instance}": crop {crop}, variety {variety}, sowing date {sowing_date}, soil {soil_type}, area {area_ha}
+      ha, position {centroid}, agronomist {agronomist_email}.
+
+      Boundary: {boundary}
+
+      Today is {date}. Check for new imagery and write the nitrogen recommendation.'
+    schedule:
+      cron: 0 6 * * 1,4
+      userCanChange: false
+    maxPerUser: 50
+    roles:
+    - farmer
+    - admin
+    cost:
+      perRun: 2
+  inputForm:
+    title: Season summary
+    fields:
+    - name: field_name
+      type: text
+      required: true
+      label: Field name
+      help: As registered in My fields
+    - name: season
+      type: text
+      required: true
+      label: Season
+      default: '2026'
+    - name: notes
+      type: textarea
+      maxLength: 500
+      label: Notes (optional)
+  data:
+    collections:
+    - name: recommendations
+      ownedBy: instance
+      description: Nitrogen recommendation per scene, written by the field agent
+      retentionDays: 1825
+      fields:
+      - name: field_name
+        type: text
+        label: Field
+      - name: agronomist_email
+        type: email
+        label: Agronomist
+      - name: scene_date
+        type: date
+        label: Scene date
+      - name: status
+        type: select
+        label: Status
+        options:
+        - pending_review
+        - approved
+        - no_new_imagery
+      - name: data_source
+        type: select
+        label: Data source
+        options:
+        - nitrova
+        - sentinel_fallback
+      - name: mean_n_index
+        type: number
+        label: Mean N index
+      - name: recommended_rate
+        type: number
+        label: Recommended kg N/ha
+      - name: area_ha
+        type: number
+        label: Area (ha)
+      - name: report
+        type: textarea
+        label: Summary
+      access:
+      - role: agronomist
+        where:
+          agronomist_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: vra_zones
+      ownedBy: user
+      description: Zones of the draft variable-rate application map; the agronomist sets the final rate
+      fields:
+      - name: field_name
+        type: text
+        label: Field
+      - name: zone_id
+        type: text
+        label: Zone
+      - name: scene_date
+        type: date
+        label: Scene date
+      - name: n_index
+        type: number
+        label: N index
+      - name: rate_kg_ha
+        type: number
+        label: Proposed kg N/ha
+      - name: final_rate_kg_ha
+        type: number
+        label: Final kg N/ha (agronomist)
+      - name: area_ha
+        type: number
+        label: Area (ha)
+      - name: agronomist_email
+        type: email
+        label: Agronomist
+      - name: geometry
+        type: textarea
+        label: Zone geometry
+      - name: note
+        type: textarea
+        label: Agronomist note
+      access:
+      - role: agronomist
+        where:
+          agronomist_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: applications
+      ownedBy: user
+      description: Nitrogen applied, entered by the farmer
+      fields:
+      - name: field_name
+        type: text
+        required: true
+        label: Field
+      - name: date
+        type: date
+        required: true
+        label: Date
+      - name: product
+        type: text
+        label: Product
+      - name: n_kg_ha
+        type: number
+        required: true
+        label: N applied (kg/ha)
+    - name: yield_entries
+      ownedBy: user
+      description: Harvest yield, entered by the farmer
+      fields:
+      - name: field_name
+        type: text
+        required: true
+        label: Field
+      - name: season
+        type: text
+        required: true
+        label: Season
+      - name: yield_t_ha
+        type: number
+        required: true
+        label: Yield (t/ha)
+    credentials:
+    - provider: nitrova_imagery
+      kind: api_key
+      scope: org
+      label: Nitrova imagery API key
+      help: Key of the Nitrova imagery archive, set by the app admins.
+  egress:
+    hosts:
+    - api.nitrova.com
+    - catalogue.dataspace.copernicus.eu
+    notes: 'api.nitrova.com: Nitrova''s own proprietary imagery service (primary source). catalogue.dataspace.copernicus.eu:
+      free Copernicus Sentinel catalogue, used as fallback only (free, full and open licence, attribution required).'
+  approvals:
+  - key: vra_review
+    title: Variable-rate map review
+    description: The agronomist reviews the proposed zones and sets the final rates before export to machinery.
+    role: agronomist
+    decidedBy: role
+    fields:
+    - field_name
+    - scene_date
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: rec_ready
+    description: Tell the farmer and agronomist a new map awaits review
+    'on':
+      collection: recommendations
+      op: insert
+      where:
+        status: pending_review
+    notify:
+      to:
+      - owner
+      - record.agronomist_email
+      subject: New nitrogen recommendation for {record.field_name}
+      body: New Nitrova imagery of {record.field_name} ({record.scene_date}) has been analysed. A variable-rate map is waiting
+        for agronomist review. Recommendations are advisory; the agronomist decides the final rate.
+      link: recs
+  - key: vra_approved
+    description: Tell the farmer the map was approved
+    'on':
+      approval: vra_review
+      decision: approved
+    notify:
+      to: owner
+      subject: Your variable-rate map was approved
+      body: The agronomist approved the nitrogen map. It is ready to export for your machinery.
+      link: vra
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Nitrova
+    sections:
+    - type: hero
+      title: Nitrogen decisions guided from **orbit**.
+      text: Nitrova combines proprietary hyperspectral satellite imagery and AI to rate crop nitrogen status zone by zone,
+        and drafts a variable-rate map your agronomist reviews before it goes to the machinery.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Register your fields
+        text: Add boundary, crop, variety, sowing date and soil type, and invite your agronomist.
+      - title: New imagery, new analysis
+        text: When a new Nitrova scene arrives, the AI rates nitrogen status for each zone.
+      - title: Agronomist decides
+        text: The agronomist reviews the variable-rate map, sets the final rates, and approves it for export.
+      - title: Season dashboard
+        text: Compare nitrogen applied with recommended and with yield, and get an end-of-season summary.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: Per hectare, per season
+        text: Buy season hectare packs with Stripe and use them as you go.
+      - title: Estate plan
+        text: Annual subscription for larger estates with many fields.
+    - type: note
+      content: Recommendations are advisory. The agronomist decides the final application rate. Nitrova's own hyperspectral
+        imagery is the primary source; free Copernicus Sentinel data is used only as a lower-fidelity fallback and is always
+        flagged.
+  - key: fields
+    type: instances
+    template: field_watch
+    title: My fields
+    roles:
+    - farmer
+    - admin
+  - key: recs
+    type: table
+    title: Recommendations
+    source: collection:recommendations
+    data:
+      display: table
+      fields:
+      - key: field_name
+        label: Field
+      - key: scene_date
+        label: Scene
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      - key: data_source
+        label: Source
+        format: badge
+      - key: mean_n_index
+        label: N index
+        format: number
+      - key: recommended_rate
+        label: kg N/ha
+        format: number
+      - key: report
+        label: Summary
+      filters:
+      - field: status
+        op: '!='
+        value: no_new_imagery
+      sort:
+        field: scene_date
+        dir: desc
+      limit: 100
+    roles:
+    - farmer
+    - agronomist
+    - admin
+  - key: reviews
+    type: approvals
+    title: Maps to review
+    approvals:
+    - vra_review
+    roles:
+    - agronomist
+    - admin
+  - key: vra
+    type: table
+    title: Variable-rate maps
+    source: collection:vra_zones
+    export: true
+    data:
+      display: table
+      fields:
+      - key: field_name
+        label: Field
+      - key: scene_date
+        label: Scene
+        format: date
+      - key: zone_id
+        label: Zone
+      - key: n_index
+        label: N index
+        format: number
+      - key: rate_kg_ha
+        label: Proposed kg N/ha
+        format: number
+      - key: final_rate_kg_ha
+        label: Final kg N/ha
+        format: number
+      - key: area_ha
+        label: Area ha
+        format: number
+      sort:
+        field: scene_date
+        dir: desc
+      limit: 200
+    roles:
+    - farmer
+    - agronomist
+    - admin
+  - key: adjust_zone
+    type: form
+    title: Set final rate
+    collection: vra_zones
+    fields:
+    - final_rate_kg_ha
+    - note
+    edit: true
+    nav: false
+    submit:
+      label: Save final rate
+      message: Final rate saved.
+      redirect: vra
+    roles:
+    - agronomist
+    - admin
+  - key: add_application
+    type: form
+    title: Record nitrogen applied
+    collection: applications
+    submit:
+      label: Save
+      message: Application saved.
+      redirect: season
+    roles:
+    - farmer
+    - admin
+  - key: add_yield
+    type: form
+    title: Record yield
+    collection: yield_entries
+    submit:
+      label: Save
+      message: Yield saved.
+      redirect: season
+    roles:
+    - farmer
+    - admin
+  - key: season
+    type: page
+    title: Season dashboard
+    roles:
+    - farmer
+    - agronomist
+    - admin
+    sections:
+    - type: data
+      title: Nitrogen applied (kg N/ha) by field
+      source: collection:applications
+      display: chart
+      chart: bar
+      fields:
+      - key: field_name
+        label: Field
+      - key: total
+        label: Applied kg N/ha
+        format: number
+      groupBy:
+        field: field_name
+        aggs:
+        - key: total
+          agg: sum
+          field: n_kg_ha
+    - type: data
+      title: Approved recommendations
+      source: collection:recommendations
+      display: table
+      fields:
+      - key: field_name
+        label: Field
+      - key: scene_date
+        label: Scene
+        format: date
+      - key: recommended_rate
+        label: Recommended kg N/ha
+        format: number
+      filters:
+      - field: status
+        op: '='
+        value: approved
+      sort:
+        field: scene_date
+        dir: desc
+      limit: 50
+    - type: data
+      title: Yield (where entered)
+      source: collection:yield_entries
+      display: table
+      fields:
+      - key: field_name
+        label: Field
+      - key: season
+        label: Season
+      - key: yield_t_ha
+        label: t/ha
+        format: number
+      limit: 50
+      empty: No yield entered yet.
+    - type: view
+      title: Record applications
+      view: add_application
+    - type: view
+      title: Record yield
+      view: add_yield
+  - key: summary_new
+    type: new_run
+    title: End-of-season summary
+    roles:
+    - farmer
+    - admin
+  - key: summaries
+    type: history
+    title: My summaries
+    source: run
+    roles:
+    - farmer
+    - admin
+  - key: summary
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: account
+    type: account
+    title: Hectares & plan
+    roles:
+    - farmer
+    - admin
+  billing:
+    modes:
+    - credits
+    - subscription
+    currency: eur
+    signupCredits: 10
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:summariser:
+        estimate: 10
+        metered: true
+    packs:
+    - key: season_100ha
+      credits: 100
+      price: 450
+      label: Season pack — 100 ha
+    - key: season_500ha
+      credits: 500
+      price: 2000
+      label: Season pack — 500 ha
+    plans:
+    - key: estate_annual
+      price: 5000
+      interval: year
+      label: Estate — annual
+      credits: 2500
+      creditsReset: never
+      roles:
+      - farmer
+  notifications:
+    emailOnRunDone: true
+  extensions:
+  - key: boundary_drawing
+    description: 'Drawing field boundaries on a map is not available yet: users paste a GeoJSON polygon and a centroid position.'
+  - key: machinery_export
+    description: Export to machinery formats (ISOXML, shapefile) is not available; the approved variable-rate map exports
+      as CSV with zone geometry.
+  - key: farm_business_admin
+    description: A separate farm business admin role with team members is not modelled; the farmer account owns the fields
+      and invites agronomists by email.
+  - key: per_hectare_charge
+    description: Charging per hectare per season at field registration is approximated with hectare credit packs and an annual
+      estate plan; exact per-hectare season billing needs custom logic.
+  - key: imagery_api
+    description: api.nitrova.com is a placeholder for Nitrova's own imagery service; the real host and API key must be set
+      by the admins.

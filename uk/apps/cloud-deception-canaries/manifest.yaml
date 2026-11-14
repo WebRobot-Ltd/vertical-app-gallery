@@ -1,0 +1,865 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: decoyfield
+  displayName: Decoyfield
+  tagline:
+    en: Canaries in your cloud that tell you the moment an attacker touches them.
+  description:
+    en: 'Decoyfield is the console around cloud-native deception: prove ownership of your cloud and identity accounts, review
+      recommended canary placements, approve each deployment, and triage every alert with AI-enriched context.'
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: dark
+    palette:
+      primary: '#0b1f2a'
+      accent: '#f2a900'
+      background: '#0d1117'
+      foreground: '#e6edf3'
+    paletteDark:
+      primary: '#0b1f2a'
+      accent: '#f2a900'
+      background: '#0d1117'
+      foreground: '#e6edf3'
+    fonts:
+      body: Inter
+      display: Space Grotesk
+      mono: JetBrains Mono
+    wordmark:
+    - text: Decoy
+      color: foreground
+    - text: field
+      color: accent
+    buttonShape: rounded
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Coverage
+      href: '#scope'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: engineer
+      label: Engineer
+      assignedBy: invite
+    - key: analyst
+      label: Analyst
+      assignedBy: invite
+    - key: user
+      label: Member
+      assignedBy: signup
+  limits:
+  - action: agent:recommender
+    per: user
+    max: 10
+    window: day
+  agents:
+  - key: recommender
+    role: main
+    description: Recommends canary placements for a verified cloud account and asks an engineer to approve each deployment.
+    awaits:
+    - deploy_canary
+    context:
+    - key: email
+      from: user.email
+    - key: provider
+      from: collection:cloud_accounts.provider
+    - key: account_id
+      from: collection:cloud_accounts.account_id
+    appTools:
+    - name: read_accounts
+      description: List the user's connected cloud and identity accounts with their verification status
+      action: read
+      collection: cloud_accounts
+      scope: user
+    - name: add_canary
+      description: Record a proposed canary placement (status proposed)
+      action: append
+      collection: canaries
+      scope: user
+    profile:
+      inline:
+        display_name: Decoyfield placement advisor
+        crews:
+        - id: recommender
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a deception-engineering advisor. You recommend canary placements (decoy storage buckets,
+            decoy credentials, CI/CD secrets, identity-provider accounts) for ONE verified account of the user''s. First call
+            read_accounts and confirm the chosen account has status verified; if not, say so and stop. Propose 3 to 6 placements
+            that fit the provider (AWS, Azure, Google Cloud, GitHub, Okta) and the requested focus: believable names, a specific
+            location (bucket path, repository, secret store, directory group), why an attacker would touch it, and what event
+            reveals the touch. For each, call add_canary with fields name, type (storage_bucket | credential | cicd_secret
+            | idp_account), provider, account_id, location, status "proposed", rationale, members [the user''s email]. Then
+            call request_deploy_canary once, summarising the batch, so an engineer approves. You never deploy anything yourself
+            and never touch a customer system. Never invent account facts you were not given. Report format: a level-1 title
+            "# Canary placement plan — <provider> <account>", then ## Recommended placements (table: name, type, location,
+            rationale), ## Detection signals, ## Risks to the production environment (naming collisions, noisy triggers),
+            ## Next steps. Under 450 words.'
+    goalTemplate: 'Account record: {account} (provider {provider}, account id {account_id}).
+
+      Focus: {focus_label}.
+
+      {?notes}Notes from the team: {notes}{/notes}
+
+      User email: {email}. Today is {date}. Write in English.'
+    output: markdown
+  - key: enricher
+    role: helper
+    description: Enriches a new alert with context and suggests response steps.
+    appTools:
+    - name: read_canary
+      description: Look up the user's canaries (type, location, status, rationale)
+      action: read
+      collection: canaries
+      scope: user
+    - name: save_enrichment
+      description: Save the enrichment and suggested response steps on the alert record
+      action: write
+      collection: alerts
+      scope: user
+    profile:
+      inline:
+        display_name: Decoyfield alert enricher
+        crews:
+        - id: enricher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a SOC enrichment analyst. A canary was touched. Using the alert fields and read_canary,
+            explain what the canary was and what it exposes, what the action and identity suggest (reconnaissance, credential
+            use, exfiltration attempt, or a scheduled test), how confident you are, and what is unknown. Suggest ordered response
+            steps: contain (revoke or rotate the identity, block the IP), investigate (which logs to pull), and recover. Mark
+            clearly what is a fact from the alert and what is your inference. Never invent IP reputation or threat-actor attribution.
+            Then call save_enrichment with the alert id, enrichment (short paragraph) and response_steps (numbered list).
+            Report: "# Alert <canary> — enrichment", ## Assessment, ## Suggested response, ## Unknowns. Under 300 words. Suggestions
+            only: an analyst decides.'
+    goalTemplate: 'Enrich this alert. Alert id: {record.id}. Canary: {record.canary}. Provider: {record.provider}. Source
+      IP: {record.source_ip}. Identity used: {record.identity}. Action: {record.action}. Time: {record.event_time}. Write
+      in English.'
+    output: markdown
+  inputForm:
+    title: Plan canary placements
+    fields:
+    - name: account
+      type: select
+      required: true
+      label: Verified account
+      optionsFrom: collection:cloud_accounts
+    - name: focus
+      type: select
+      required: true
+      label: Focus
+      options:
+      - value: all
+        label: A balanced mix
+      - value: storage
+        label: Storage buckets and data stores
+      - value: credentials
+        label: Credentials and keys
+      - value: cicd
+        label: CI/CD secrets
+      - value: identity
+        label: Identity-provider accounts
+    - name: notes
+      type: textarea
+      maxLength: 500
+      label: Notes (optional)
+      help: Naming conventions, areas to avoid, crown-jewel systems
+  data:
+    collections:
+    - name: cloud_accounts
+      ownedBy: user
+      description: Cloud and identity accounts a team connects, with proof of ownership and written authorisation from an
+        account owner. Admins verify them.
+      fields:
+      - name: provider
+        type: select
+        required: true
+        label: Provider
+        options:
+        - value: aws
+          label: AWS
+        - value: azure
+          label: Azure
+        - value: gcp
+          label: Google Cloud
+        - value: github
+          label: GitHub
+        - value: okta
+          label: Okta
+      - name: account_id
+        type: text
+        required: true
+        label: Account / tenant / organisation ID
+      - name: label
+        type: text
+        label: Display name
+      - name: ownership_proof
+        type: textarea
+        required: true
+        label: Proof of ownership
+        help: For example the value of a DNS TXT record or a tag we ask you to place on the account
+      - name: authoriser_name
+        type: text
+        required: true
+        label: Account owner who authorises
+      - name: authoriser_email
+        type: email
+        required: true
+        label: Account owner email
+      - name: authorisation_letter
+        type: file
+        required: true
+        label: Written authorisation (signed)
+        accept:
+        - pdf
+        - jpg
+        - png
+        maxMb: 10
+      - name: status
+        type: select
+        label: Status
+        default: pending
+        options:
+        - value: pending
+          label: Pending verification
+        - value: verified
+          label: Verified
+        - value: rejected
+          label: Rejected
+      - name: members
+        type: array
+        label: Team member emails
+        fields:
+        - name: email
+          type: email
+      access:
+      - role: engineer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: canaries
+      ownedBy: user
+      description: 'Canary placements: proposed by the advisor, approved by an engineer, deployed outside the app by the Decoyfield
+        deployer.'
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Name
+      - name: type
+        type: select
+        required: true
+        label: Type
+        options:
+        - value: storage_bucket
+          label: Storage bucket
+        - value: credential
+          label: Credential
+        - value: cicd_secret
+          label: CI/CD secret
+        - value: idp_account
+          label: Identity account
+      - name: provider
+        type: select
+        label: Provider
+        options:
+        - value: aws
+          label: AWS
+        - value: azure
+          label: Azure
+        - value: gcp
+          label: Google Cloud
+        - value: github
+          label: GitHub
+        - value: okta
+          label: Okta
+      - name: account_id
+        type: text
+        label: Account
+      - name: location
+        type: text
+        label: Location
+      - name: rationale
+        type: textarea
+        label: Why here
+      - name: created_on
+        type: date
+        label: Created
+      - name: status
+        type: select
+        label: Status
+        default: proposed
+        options:
+        - value: proposed
+          label: Proposed
+        - value: approved
+          label: Approved
+        - value: deployed
+          label: Deployed
+        - value: triggered
+          label: Triggered
+        - value: retired
+          label: Retired
+      - name: members
+        type: array
+        label: Team member emails
+        fields:
+        - name: email
+          type: email
+      access:
+      - role: engineer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: alerts
+      ownedBy: user
+      description: Alerts opened when a canary is touched, posted by the detection layer to the hook.
+      retentionDays: 730
+      fields:
+      - name: canary
+        type: text
+        label: Canary
+      - name: provider
+        type: text
+        label: Provider
+      - name: source_ip
+        type: text
+        label: Source IP
+      - name: identity
+        type: text
+        label: Identity used
+      - name: action
+        type: text
+        label: Action
+      - name: event_time
+        type: date
+        label: Time of event
+      - name: enrichment
+        type: textarea
+        label: Enrichment
+      - name: response_steps
+        type: textarea
+        label: Suggested response
+      - name: triage
+        type: select
+        label: Triage
+        default: open
+        options:
+        - value: open
+          label: Open
+        - value: true_positive
+          label: True positive
+        - value: test
+          label: Test
+        - value: false_positive
+          label: False positive
+      - name: triaged_at
+        type: date
+        label: Triaged at
+      - name: triage_notes
+        type: textarea
+        label: Analyst notes
+      - name: members
+        type: array
+        label: Team member emails
+        fields:
+        - name: email
+          type: email
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: engineer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+  approvals:
+  - key: deploy_canary
+    title: Approve canary deployment
+    description: An engineer reviews the proposed placements before anything is deployed to the account.
+    role: engineer
+    decidedBy: role
+    fields:
+    - name
+    - type
+    - location
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: account_submitted
+    'on':
+      collection: cloud_accounts
+      op: insert
+    notify:
+      to: admins
+      subject: 'Decoyfield: account awaiting verification'
+      body: A cloud account {record.provider} {record.account_id} was submitted with an authorisation letter from {record.authoriser_name}.
+        Check the proof of ownership and the letter, then set the status.
+      link: accounts
+  - key: detection
+    'on':
+      webhook: true
+    description: The detection layer posts canary touches here
+    write:
+      collection: alerts
+      fields:
+        canary: canary
+        provider: provider
+        source_ip: source_ip
+        identity: identity
+        action: action
+        event_time: time
+      keyBy: event_id
+  - key: alert_email
+    'on':
+      collection: alerts
+      op: insert
+    notify:
+      to:
+      - role:analyst
+      - admins
+      subject: 'Canary touched: {record.canary}'
+      body: 'A canary was touched.
+
+        Canary: {record.canary}
+
+        Source IP: {record.source_ip}
+
+        Identity: {record.identity}
+
+        Action: {record.action}
+
+        Time: {record.event_time}
+
+        Open the alert to triage it.'
+      link: alerts
+  - key: alert_enrich
+    'on':
+      collection: alerts
+      op: insert
+      where:
+        triage: open
+    start:
+      agent: enricher
+    goal: 'Enrich this alert. Alert id: {record.id}. Canary: {record.canary}. Provider: {record.provider}. Source IP: {record.source_ip}.
+      Identity used: {record.identity}. Action: {record.action}. Time: {record.event_time}. Write in English.'
+  - key: deploy_approved
+    'on':
+      approval: deploy_canary
+      decision: approved
+    notify:
+      to: role:engineer
+      subject: Canary deployment approved
+      body: A canary deployment was approved. Deploy it with the Decoyfield deployer, then set the canary status to deployed.
+      link: canaries
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Decoyfield
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: Cloud deception
+      title: Plant **canaries** in your cloud. Know the moment one is touched.
+      text: Decoy buckets, credentials, CI/CD secrets and identity accounts across AWS, Azure, Google Cloud, GitHub and Okta.
+        An engineer approves every deployment, and every alert arrives enriched and ready to triage.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+      aside: '<div style="padding:16px"><b>ALERT</b> canary <code>payroll-backups-2019</code><br>Source IP 203.0.113.42<br>Identity
+        svc-build-old<br>Action GetObject<br><i>Suggested: rotate svc-build-old, pull CloudTrail</i></div>'
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Connect accounts you own
+        text: Prove ownership and attach written authorisation from an account owner. An admin verifies it.
+        badge: 🔐
+      - title: Approve placements
+        text: The advisor recommends canaries. An engineer approves each deployment.
+        badge: ✅
+      - title: Get alerted
+        text: Touches open an alert by email with source IP, identity, time and action.
+        badge: 🚨
+      - title: Triage fast
+        text: An agent adds context and response steps. An analyst marks it true positive, test or false positive.
+        badge: 🔎
+    - type: cards
+      id: scope
+      title: What we cover
+      items:
+      - title: Storage
+        text: Decoy buckets and containers.
+      - title: Credentials and CI/CD
+        text: Decoy keys and pipeline secrets.
+      - title: Identity
+        text: Decoy Okta and directory accounts.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: From £20,000 a year
+        text: Priced by the number of cloud accounts covered. Includes all canary types, alerts and dashboards.
+    - type: note
+      content: Decoyfield supports detection and response decisions. It never acts on accounts without the written authorisation
+        of an account owner.
+  - key: connect
+    type: form
+    title: Connect an account
+    collection: cloud_accounts
+    submit:
+      label: Submit for verification
+      message: Submitted. An admin will verify ownership and your authorisation letter.
+      redirect: accounts
+    roles:
+    - user
+    - engineer
+    - admin
+  - key: accounts
+    type: table
+    title: Connected accounts
+    source: collection:cloud_accounts
+    data:
+      display: table
+      fields:
+      - key: provider
+        label: Provider
+        format: badge
+      - key: account_id
+        label: Account
+      - key: label
+        label: Name
+      - key: authoriser_name
+        label: Authorised by
+      - key: status
+        label: Status
+        format: badge
+    export: true
+    roles:
+    - user
+    - engineer
+    - analyst
+    - admin
+  - key: new_plan
+    type: new_run
+    title: Plan placements
+    roles:
+    - engineer
+    - admin
+  - key: plans
+    type: history
+    title: Placement plans
+    source: run
+    roles:
+    - engineer
+    - admin
+  - key: plan
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: approve
+    type: approvals
+    title: Deployment approvals
+    approvals:
+    - deploy_canary
+    roles:
+    - engineer
+    - admin
+  - key: canaries
+    type: table
+    title: Canaries
+    source: collection:canaries
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Name
+      - key: type
+        label: Type
+        format: badge
+      - key: provider
+        label: Provider
+        format: badge
+      - key: location
+        label: Location
+      - key: created_on
+        label: Created
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: created_on
+        dir: desc
+    export: true
+    roles:
+    - engineer
+    - analyst
+    - admin
+  - key: canary_edit
+    type: form
+    title: Update canary
+    collection: canaries
+    fields:
+    - status
+    - location
+    - created_on
+    edit: true
+    submit:
+      label: Save
+      message: Canary updated.
+      redirect: canaries
+    roles:
+    - engineer
+    - admin
+    nav: false
+  - key: alerts
+    type: table
+    title: Alerts
+    source: collection:alerts
+    data:
+      display: table
+      fields:
+      - key: event_time
+        label: Time
+        format: date
+      - key: canary
+        label: Canary
+      - key: source_ip
+        label: Source IP
+      - key: identity
+        label: Identity
+      - key: action
+        label: Action
+      - key: triage
+        label: Triage
+        format: badge
+      sort:
+        field: event_time
+        dir: desc
+    export: true
+    roles:
+    - analyst
+    - engineer
+    - admin
+  - key: triage
+    type: form
+    title: Triage alert
+    collection: alerts
+    fields:
+    - triage
+    - triaged_at
+    - triage_notes
+    - enrichment
+    - response_steps
+    edit: true
+    submit:
+      label: Save triage
+      message: Triage saved.
+      redirect: alerts
+    roles:
+    - analyst
+    - admin
+    nav: false
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - analyst
+    - engineer
+    - admin
+    sections:
+    - type: data
+      title: Coverage by provider
+      source: collection:canaries
+      display: chart
+      chart: bar
+      groupBy:
+        field: provider
+        aggs: []
+      fields:
+      - key: provider
+        label: Provider
+      - key: count
+        label: Canaries
+    - type: data
+      title: Canaries by status
+      source: collection:canaries
+      display: chart
+      chart: pie
+      groupBy:
+        field: status
+        aggs: []
+      fields:
+      - key: status
+        label: Status
+      - key: count
+        label: Canaries
+    - type: data
+      title: Alert history
+      source: collection:alerts
+      display: chart
+      chart: line
+      groupBy:
+        field: event_time
+        bucket: week
+        aggs: []
+      fields:
+      - key: event_time
+        label: Week
+      - key: count
+        label: Alerts
+    - type: data
+      title: Outcome of triage
+      source: collection:alerts
+      display: chart
+      chart: bar
+      groupBy:
+        field: triage
+        aggs: []
+      fields:
+      - key: triage
+        label: Triage
+      - key: count
+        label: Alerts
+    - type: data
+      title: Time to triage
+      intro: Alert time against the moment it was triaged.
+      source: collection:alerts
+      display: table
+      fields:
+      - key: canary
+        label: Canary
+      - key: event_time
+        label: Alert
+        format: date
+      - key: triaged_at
+        label: Triaged
+        format: date
+      - key: triage
+        label: Outcome
+        format: badge
+      filters:
+      - field: triage
+        op: '!='
+        value: open
+      sort:
+        field: event_time
+        dir: desc
+      limit: 50
+  - key: account
+    type: account
+    title: Plan
+    roles:
+    - admin
+    - engineer
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: core
+      price: 20000
+      interval: year
+      label: Core — up to 5 cloud accounts
+      includes:
+      - All canary types
+      - Email alerts and enrichment
+      - Dashboards
+      roles:
+      - admin
+    - key: scale
+      price: 55000
+      interval: year
+      label: Scale — up to 20 cloud accounts
+      includes:
+      - Everything in Core
+      - Priority support
+      roles:
+      - admin
+  extensions:
+  - key: decoy_deployment
+    description: Deploying decoys into AWS, Azure, Google Cloud, GitHub and Okta, and detecting their use in real time, is
+      separate infrastructure that is not part of this app. It posts touches to the detection hook (/api/hooks/detection)
+      with an event_id, and engineers set canary status here after deployment.
+  - key: cloud_oauth
+    description: Connecting accounts by OAuth or cloud roles is not available yet. This version records ownership proof and
+      the signed authorisation letter for an admin to verify.
+  - key: slack_and_siem_delivery
+    description: Alerts go by email. Slack messages and outbound webhooks to a SIEM are not available yet.
+  - key: per_tenant_alert_routing
+    description: The hook writes alerts without a user. Routing each alert to the right customer team (the members list) is
+      done by the detection layer.
+  - key: account_quota_and_ttt
+    description: Pricing per cloud accounts covered is not enforced in the app. Time to triage is entered by the analyst,
+      not computed.

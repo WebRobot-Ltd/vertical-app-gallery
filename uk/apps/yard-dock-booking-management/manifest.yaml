@@ -1,0 +1,1268 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: yardline
+  displayName: Yardline
+  tagline:
+    en: Yard and dock management for FMCG warehouses and logistics hubs.
+    pl: Zarządzanie placem i rampami w magazynach FMCG i centrach logistycznych.
+  description:
+    en: Hauliers book delivery and collection slots, site managers approve them, yard staff track every trailer from gate
+      to departure on their phone, and managers get dock use, dwell time, late arrivals and detention costs.
+    pl: Przewoźnicy rezerwują sloty dostaw i odbiorów, kierownicy je zatwierdzają, a pracownicy placu śledzą każdą naczepę
+      od bramy do wyjazdu w telefonie. Kierownicy widzą wykorzystanie ramp, czas postoju, spóźnienia i koszty detention.
+  langs:
+  - en
+  - pl
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#12304a'
+      accent: '#f2a900'
+      background: '#f6f7f9'
+      foreground: '#17212b'
+    fonts:
+      body: Inter
+      display: Barlow Condensed
+    wordmark:
+    - text: Yard
+      color: primary
+    - text: line
+      color: accent
+    button: primary
+    width: wide
+  header:
+    links:
+    - label:
+        en: How it works
+        pl: Jak to działa
+      href: '#how'
+    - label:
+        en: Pricing
+        pl: Cennik
+      href: '#pricing'
+    cta:
+      label:
+        en: Sign in
+        pl: Zaloguj
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label:
+        en: Company admin
+        pl: Administrator firmy
+      assignedBy: admin_emails
+    - key: manager
+      label:
+        en: Site manager
+        pl: Kierownik obiektu
+      assignedBy: derived
+      from: collection:sites.manager_email
+    - key: operator
+      label:
+        en: Yard operator
+        pl: Operator placu
+      assignedBy: invite
+    - key: haulier
+      label:
+        en: Haulier
+        pl: Przewoźnik
+      assignedBy: signup
+  limits:
+  - action: login
+    per: ip
+    max: 20
+    window: hour
+  agents:
+  - key: dispatcher
+    role: helper
+    description: Checks a new booking against the site and stamps the site manager on it so only that site's manager sees
+      it.
+    profile:
+      inline:
+        display_name: Yardline dispatcher
+        crews:
+        - id: dispatcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You process one new dock booking. Look up the site named in the booking with read_sites (match on
+            the site name), then use stamp_booking to set manager_email on the booking to the site's manager_email. If the
+            booking date or time falls outside the site's opening hours, set status to refused and notes to a one-sentence
+            reason in the booking's language. Otherwise leave status as it is. Never invent data; if the site is not found,
+            do nothing. Answer with one short line of what you did.
+    goalTemplate: New booking {record.id} for site {record.site} on {record.date}, dock {record.resource}, status {record.status}.
+      Stamp the site manager on it.
+    appTools:
+    - name: read_sites
+      description: Read the sites with their opening hours and manager
+      action: read
+      collection: sites
+      scope: all
+    - name: stamp_booking
+      description: Update the user's booking (manager_email, status, notes)
+      action: write
+      collection: bookings
+      scope: user
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.1
+  - key: reporter
+    role: scheduled
+    description: 'Daily performance report for one site manager: dock use, dwell, late arrivals, detention.'
+    memory: instance
+    writesTo:
+      collection: daily_reports
+    profile:
+      inline:
+        display_name: Yardline reporter
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You report yesterday''s yard performance for ONE site to its manager. Use read_sites for the site''s
+            opening hours, detention_free_minutes and detention_rate_gbp; read_bookings for yesterday''s bookings of that
+            site; read_events for yard events of that site. Compute per haulier: visits, average dwell time (arrived to departed,
+            minutes), late arrivals (arrived more than 15 minutes after the booked start), and detention cost in GBP = max(0,
+            dwell - free minutes) / 60 * hourly rate. Also dock use: booked slots vs available slots per dock. For each haulier
+            visit call append_visit once with haulier, site, date, dwell_minutes, late_minutes, detention_gbp. Start the report
+            with a level-1 title ''# <Site> — yard report <date>''. Sections: ## Headlines, ## Dock use, ## Hauliers (table),
+            ## Late arrivals, ## Detention, ## Actions for today. Add one chart as a fenced block ```chart {"type":"bar","title":"Dwell
+            time by haulier","labels":[...],"series":[{"name":"Minutes","values":[...]}],"unit":"min"}```. Real figures only:
+            if there is no data, say so plainly and do not invent numbers. Write in the language with the ISO code given.
+            Under 400 words.'
+    goalTemplate: 'Site: {site}. Report on yesterday for the day before {date}. Write the report in the language with ISO
+      code {lang}.'
+    appTools:
+    - name: read_sites
+      description: Read the sites with their opening hours and detention terms
+      action: read
+      collection: sites
+      scope: all
+    - name: read_bookings
+      description: Read the bookings the manager may see
+      action: read
+      collection: bookings
+      scope: user
+    - name: read_events
+      description: Read the yard events the manager may see
+      action: read
+      collection: yard_events
+      scope: user
+    - name: append_visit
+      description: Record one haulier visit with dwell, lateness and detention
+      action: append
+      collection: visits
+      scope: instance
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  templates:
+  - key: daily_report
+    title:
+      en: Daily site report
+      pl: Dzienny raport obiektu
+    description:
+      en: Every morning, yesterday's performance for one site by email.
+      pl: Każdego ranka e-mail z wynikami obiektu z poprzedniego dnia.
+    agent: reporter
+    params:
+    - name: site
+      type: select
+      required: true
+      optionsFrom: collection:sites
+      label:
+        en: Site
+        pl: Obiekt
+    goal: 'Site: {site}. Report on yesterday for the day before {date}. Write the report in the language with ISO code {lang}.'
+    schedule:
+      cron: 0 6 * * *
+      userCanChange: true
+    maxPerUser: 5
+    roles:
+    - manager
+    - admin
+    deliver:
+      to: owner
+      onlyIfNew: true
+  data:
+    collections:
+    - name: sites
+      ownedBy: shared
+      description: Sites with opening hours, slot length and detention terms (filled by the company admin in the data page)
+      fields:
+      - name: name
+        type: text
+        required: true
+        label:
+          en: Site name
+          pl: Nazwa obiektu
+      - name: address
+        type: text
+        label:
+          en: Address
+          pl: Adres
+      - name: yard_zones
+        type: textarea
+        label:
+          en: Yard zones
+          pl: Strefy placu
+      - name: open_from
+        type: text
+        label:
+          en: Opens (HH:MM)
+          pl: Otwarcie (GG:MM)
+      - name: open_to
+        type: text
+        label:
+          en: Closes (HH:MM)
+          pl: Zamknięcie (GG:MM)
+      - name: slot_minutes
+        type: number
+        label:
+          en: Slot length (min)
+          pl: Długość slotu (min)
+      - name: manager_email
+        type: email
+        label:
+          en: Site manager email
+          pl: E-mail kierownika
+      - name: detention_free_minutes
+        type: number
+        label:
+          en: Free dwell minutes
+          pl: Darmowe minuty postoju
+      - name: detention_rate_gbp
+        type: number
+        label:
+          en: Detention £/hour
+          pl: Detention £/godz.
+    - name: docks
+      ownedBy: shared
+      description: Docks per site; the slots field can narrow a dock's days and hours
+      fields:
+      - name: name
+        type: text
+        required: true
+        label:
+          en: Dock
+          pl: Rampa
+      - name: site
+        type: text
+        required: true
+        label:
+          en: Site
+          pl: Obiekt
+      - name: dock_type
+        type: select
+        options:
+        - value: inbound
+          label:
+            en: Inbound
+            pl: Dostawy
+        - value: outbound
+          label:
+            en: Outbound
+            pl: Odbiory
+        - value: both
+          label:
+            en: Both
+            pl: Oba
+        label:
+          en: Type
+          pl: Typ
+      - name: slots
+        type: json
+        label:
+          en: Hours override
+          pl: Własne godziny
+    - name: bookings
+      ownedBy: user
+      description: Slot bookings by hauliers
+      fields:
+      - name: site
+        type: select
+        required: true
+        optionsFrom: collection:sites
+        label:
+          en: Site
+          pl: Obiekt
+      - name: direction
+        type: select
+        required: true
+        options:
+        - value: delivery
+          label:
+            en: Delivery
+            pl: Dostawa
+        - value: collection
+          label:
+            en: Collection
+            pl: Odbiór
+        label:
+          en: Type
+          pl: Rodzaj
+      - name: trailer
+        type: text
+        required: true
+        label:
+          en: Trailer number
+          pl: Numer naczepy
+      - name: vehicle_reg
+        type: text
+        required: true
+        label:
+          en: Vehicle registration
+          pl: Numer rejestracyjny
+      - name: load_type
+        type: select
+        required: true
+        options:
+        - value: ambient
+          label:
+            en: Ambient
+            pl: Suchy
+        - value: chilled
+          label:
+            en: Chilled
+            pl: Chłodzony
+        - value: frozen
+          label:
+            en: Frozen
+            pl: Mrożony
+        - value: pallets
+          label:
+            en: Mixed pallets
+            pl: Palety mieszane
+        label:
+          en: Load type
+          pl: Rodzaj ładunku
+      - name: reference
+        type: text
+        required: true
+        label:
+          en: PO / booking reference
+          pl: Numer referencyjny
+      - name: driver_phone
+        type: text
+        required: true
+        label:
+          en: Driver phone
+          pl: Telefon kierowcy
+      - name: haulier_email
+        type: email
+        required: true
+        label:
+          en: Confirmation email
+          pl: E-mail do potwierdzeń
+      - name: date
+        type: date
+        label:
+          en: Date
+          pl: Data
+      - name: start
+        type: text
+        label:
+          en: Start
+          pl: Początek
+      - name: status
+        type: select
+        options:
+        - value: booked
+          label:
+            en: Requested
+            pl: Zgłoszona
+        - value: approved
+          label:
+            en: Approved
+            pl: Zatwierdzona
+        - value: moved
+          label:
+            en: Moved
+            pl: Przesunięta
+        - value: refused
+          label:
+            en: Refused
+            pl: Odrzucona
+        - value: cancelled
+          label:
+            en: Cancelled
+            pl: Anulowana
+        label:
+          en: Status
+          pl: Status
+      - name: notes
+        type: textarea
+        label:
+          en: Notes
+          pl: Uwagi
+      - name: manager_email
+        type: email
+        label:
+          en: Site manager
+          pl: Kierownik
+      access:
+      - role: manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+        - write
+      retentionDays: 730
+    - name: yard_events
+      ownedBy: user
+      description: 'Status timeline of each trailer: arrived, parked, at dock, loading, departed'
+      fields:
+      - name: site
+        type: select
+        required: true
+        optionsFrom: collection:sites
+        label:
+          en: Site
+          pl: Obiekt
+      - name: trailer_code
+        type: barcode
+        label:
+          en: Trailer barcode
+          pl: Kod kreskowy naczepy
+      - name: plate_photo
+        type: file
+        capture: true
+        accept:
+        - jpg
+        - jpeg
+        - png
+        maxMb: 5
+        label:
+          en: Plate photo
+          pl: Zdjęcie tablicy
+      - name: vehicle_reg
+        type: text
+        label:
+          en: Registration
+          pl: Numer rejestracyjny
+      - name: event
+        type: select
+        required: true
+        options:
+        - value: arrived
+          label:
+            en: Arrived
+            pl: Przyjazd
+        - value: parked
+          label:
+            en: Parked
+            pl: Zaparkowana
+        - value: at_dock
+          label:
+            en: At dock
+            pl: Przy rampie
+        - value: loading
+          label:
+            en: Loading
+            pl: Załadunek/rozładunek
+        - value: departed
+          label:
+            en: Departed
+            pl: Wyjazd
+        label:
+          en: Status
+          pl: Status
+      - name: dock
+        type: text
+        label:
+          en: Dock
+          pl: Rampa
+      - name: position
+        type: location
+        label:
+          en: Parking position
+          pl: Pozycja parkowania
+      - name: haulier_email
+        type: email
+        label:
+          en: Haulier email
+          pl: E-mail przewoźnika
+      - name: manager_email
+        type: email
+        required: true
+        label:
+          en: Site manager email
+          pl: E-mail kierownika
+      access:
+      - role: manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+      - role: haulier
+        where:
+          haulier_email: '{user.email}'
+        can:
+        - read
+      retentionDays: 365
+    - name: yard_moves
+      ownedBy: user
+      description: Which trailer a yard driver must move next
+      fields:
+      - name: site
+        type: select
+        required: true
+        optionsFrom: collection:sites
+        label:
+          en: Site
+          pl: Obiekt
+      - name: trailer
+        type: text
+        required: true
+        label:
+          en: Trailer
+          pl: Naczepa
+      - name: from_zone
+        type: text
+        label:
+          en: From
+          pl: Z
+      - name: to_dock
+        type: text
+        required: true
+        label:
+          en: To dock / zone
+          pl: Do rampy / strefy
+      - name: assigned_to
+        type: email
+        required: true
+        label:
+          en: Yard driver email
+          pl: E-mail kierowcy placowego
+      - name: status
+        type: select
+        options:
+        - value: todo
+          label:
+            en: To do
+            pl: Do zrobienia
+        - value: done
+          label:
+            en: Done
+            pl: Zrobione
+        label:
+          en: Status
+          pl: Status
+      access:
+      - role: operator
+        where:
+          assigned_to: '{user.email}'
+        can:
+        - read
+        - write
+      retentionDays: 90
+    - name: visits
+      ownedBy: instance
+      description: One row per haulier visit, written by the daily reporter
+      fields:
+      - name: haulier
+        type: text
+        label:
+          en: Haulier
+          pl: Przewoźnik
+      - name: site
+        type: text
+        label:
+          en: Site
+          pl: Obiekt
+      - name: date
+        type: date
+        label:
+          en: Date
+          pl: Data
+      - name: dwell_minutes
+        type: number
+        label:
+          en: Dwell (min)
+          pl: Postój (min)
+      - name: late_minutes
+        type: number
+        label:
+          en: Late (min)
+          pl: Spóźnienie (min)
+      - name: detention_gbp
+        type: number
+        label:
+          en: Detention £
+          pl: Detention £
+      retentionDays: 730
+    - name: daily_reports
+      ownedBy: instance
+      description: Daily site reports
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Yardline
+    sections:
+    - type: hero
+      title:
+        en: Every trailer, **every dock**, under control.
+        pl: Każda naczepa, **każda rampa**, pod kontrolą.
+      text:
+        en: Hauliers book slots online, managers approve them, yard staff scan and track trailers from the gate to departure,
+          and you get dwell time and detention figures every morning.
+        pl: Przewoźnicy rezerwują sloty online, kierownicy je zatwierdzają, a pracownicy placu skanują i śledzą naczepy od
+          bramy do wyjazdu. Co rano dostajesz czas postoju i koszty detention.
+      actions:
+      - label:
+          en: Book a slot
+          pl: Zarezerwuj slot
+        href: /v/book
+        style: primary
+      - label:
+          en: Sign in
+          pl: Zaloguj
+        href: /login
+        style: ghost
+    - type: steps
+      id: how
+      title:
+        en: How it works
+        pl: Jak to działa
+      items:
+      - title:
+          en: Book
+          pl: Rezerwuj
+        text:
+          en: The haulier picks site, dock and time; clashes are rejected automatically.
+          pl: Przewoźnik wybiera obiekt, rampę i godzinę; kolizje są odrzucane automatycznie.
+        badge: 📅
+      - title:
+          en: Approve
+          pl: Zatwierdź
+        text:
+          en: The site manager approves, moves or refuses. The haulier gets an email, and a reminder the day before.
+          pl: Kierownik zatwierdza, przesuwa lub odrzuca. Przewoźnik dostaje e-mail i przypomnienie dzień wcześniej.
+        badge: ✅
+      - title:
+          en: Track
+          pl: Śledź
+        text:
+          en: Yard staff scan the barcode or plate, log GPS parking and dock, and get push alerts for the next move.
+          pl: Personel placu skanuje kod lub tablicę, zapisuje pozycję GPS i rampę, i dostaje powiadomienia o kolejnym ruchu.
+        badge: 📱
+      - title:
+          en: Measure
+          pl: Mierz
+        text:
+          en: Dock use, dwell time, late arrivals and detention per haulier, plus a daily email.
+          pl: Wykorzystanie ramp, czas postoju, spóźnienia i detention na przewoźnika oraz dzienny e-mail.
+        badge: 📊
+    - type: cards
+      id: pricing
+      title:
+        en: Pricing
+        pl: Cennik
+      items:
+      - title:
+          en: £400 per site / month
+          pl: 400 £ za obiekt / miesiąc
+        text:
+          en: Unlimited docks, bookings, hauliers, yard staff and reports.
+          pl: Bez limitu ramp, rezerwacji, przewoźników, personelu i raportów.
+    - type: note
+      content:
+        en: Yardline · decision support for yard operations.
+        pl: Yardline · wsparcie decyzji w zarządzaniu placem.
+  - key: book
+    type: booking
+    title:
+      en: Book a slot
+      pl: Zarezerwuj slot
+    collection: bookings
+    resources: collection:docks
+    fields:
+    - site
+    - direction
+    - trailer
+    - vehicle_reg
+    - load_type
+    - reference
+    - driver_phone
+    - haulier_email
+    slots:
+      days:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      from: 06:00
+      to: '20:00'
+      minutes: 60
+      tz: Europe/London
+      aheadDays: 21
+      minNoticeHours: 4
+      capacity: 1
+    roles:
+    - haulier
+    - admin
+  - key: my_bookings
+    type: table
+    title:
+      en: My bookings
+      pl: Moje rezerwacje
+    source: collection:bookings
+    roles:
+    - haulier
+    - admin
+    data:
+      display: table
+      fields:
+      - key: date
+        label:
+          en: Date
+          pl: Data
+        format: date
+      - key: start
+        label:
+          en: Time
+          pl: Godzina
+      - key: site
+        label:
+          en: Site
+          pl: Obiekt
+      - key: trailer
+        label:
+          en: Trailer
+          pl: Naczepa
+      - key: reference
+        label:
+          en: Reference
+          pl: Nr ref.
+      - key: status
+        label:
+          en: Status
+          pl: Status
+        format: badge
+      sort:
+        field: date
+        dir: desc
+      limit: 100
+      actions:
+      - type: calendar
+        label:
+          en: Add to calendar
+          pl: Dodaj do kalendarza
+        title: reference
+        start: date
+        location: site
+      - type: call
+        label:
+          en: Call driver
+          pl: Zadzwoń
+        field: driver_phone
+  - key: manage
+    type: table
+    title:
+      en: Bookings to manage
+      pl: Rezerwacje do obsługi
+    source: collection:bookings
+    roles:
+    - manager
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: date
+        label:
+          en: Date
+          pl: Data
+        format: date
+      - key: start
+        label:
+          en: Time
+          pl: Godzina
+      - key: site
+        label:
+          en: Site
+          pl: Obiekt
+      - key: resource
+        label:
+          en: Dock
+          pl: Rampa
+      - key: trailer
+        label:
+          en: Trailer
+          pl: Naczepa
+      - key: vehicle_reg
+        label:
+          en: Reg
+          pl: Rej.
+      - key: load_type
+        label:
+          en: Load
+          pl: Ładunek
+      - key: status
+        label:
+          en: Status
+          pl: Status
+        format: badge
+      sort:
+        field: date
+        dir: asc
+      limit: 200
+      actions:
+      - type: call
+        label:
+          en: Call driver
+          pl: Zadzwoń
+        field: driver_phone
+  - key: decide
+    type: form
+    title:
+      en: Approve, move or refuse
+      pl: Zatwierdź, przesuń lub odrzuć
+    collection: bookings
+    fields:
+    - status
+    - date
+    - start
+    - notes
+    edit: true
+    nav: false
+    roles:
+    - manager
+    - admin
+    submit:
+      label:
+        en: Save decision
+        pl: Zapisz decyzję
+      message:
+        en: Saved. The haulier is notified by email.
+        pl: Zapisano. Przewoźnik dostanie e-mail.
+      redirect: manage
+  - key: gate
+    type: form
+    title:
+      en: Gate / yard log
+      pl: Brama / dziennik placu
+    collection: yard_events
+    fields:
+    - site
+    - trailer_code
+    - plate_photo
+    - vehicle_reg
+    - event
+    - dock
+    - position
+    - haulier_email
+    - manager_email
+    roles:
+    - operator
+    - manager
+    - admin
+    submit:
+      label:
+        en: Log status
+        pl: Zapisz status
+      message:
+        en: Trailer status logged.
+        pl: Status naczepy zapisany.
+      redirect: timeline
+  - key: timeline
+    type: table
+    title:
+      en: Trailer timeline
+      pl: Oś czasu naczep
+    source: collection:yard_events
+    roles:
+    - operator
+    - manager
+    - admin
+    - haulier
+    data:
+      display: table
+      fields:
+      - key: trailer_code
+        label:
+          en: Trailer
+          pl: Naczepa
+      - key: vehicle_reg
+        label:
+          en: Reg
+          pl: Rej.
+      - key: event
+        label:
+          en: Status
+          pl: Status
+        format: badge
+      - key: dock
+        label:
+          en: Dock
+          pl: Rampa
+      - key: position
+        label:
+          en: Position
+          pl: Pozycja
+        format: location
+      - key: site
+        label:
+          en: Site
+          pl: Obiekt
+      limit: 200
+      actions:
+      - type: directions
+        label:
+          en: Directions
+          pl: Dojazd
+        field: position
+  - key: new_move
+    type: form
+    title:
+      en: Assign a move
+      pl: Zleć przemieszczenie
+    collection: yard_moves
+    roles:
+    - manager
+    - admin
+    submit:
+      label:
+        en: Send to yard driver
+        pl: Wyślij do kierowcy
+      message:
+        en: The yard driver has been notified.
+        pl: Kierowca placowy dostał powiadomienie.
+      redirect: moves
+  - key: moves
+    type: table
+    title:
+      en: Next moves
+      pl: Kolejne ruchy
+    source: collection:yard_moves
+    roles:
+    - operator
+    - manager
+    - admin
+    data:
+      display: table
+      fields:
+      - key: trailer
+        label:
+          en: Trailer
+          pl: Naczepa
+      - key: from_zone
+        label:
+          en: From
+          pl: Z
+      - key: to_dock
+        label:
+          en: To
+          pl: Do
+      - key: status
+        label:
+          en: Status
+          pl: Status
+        format: badge
+      limit: 100
+  - key: dashboard
+    type: page
+    title:
+      en: Dashboard
+      pl: Panel
+    roles:
+    - manager
+    - admin
+    sections:
+    - type: data
+      title:
+        en: Key figures
+        pl: Kluczowe wskaźniki
+      source: collection:visits
+      display: kpi
+      kpis:
+      - label:
+          en: Visits
+          pl: Wizyty
+        agg: count
+      - label:
+          en: Avg dwell (min)
+          pl: Śr. postój (min)
+        agg: avg
+        field: dwell_minutes
+        format: number
+      - label:
+          en: Late minutes
+          pl: Minuty spóźnień
+        agg: sum
+        field: late_minutes
+        format: number
+      - label:
+          en: Detention £
+          pl: Detention £
+        agg: sum
+        field: detention_gbp
+        format: money
+    - type: data
+      title:
+        en: Dwell and detention per haulier
+        pl: Postój i detention na przewoźnika
+      source: collection:visits
+      display: table
+      groupBy:
+        field: haulier
+        aggs:
+        - key: dwell
+          agg: avg
+          field: dwell_minutes
+        - key: late
+          agg: sum
+          field: late_minutes
+        - key: detention
+          agg: sum
+          field: detention_gbp
+      fields:
+      - key: haulier
+        label:
+          en: Haulier
+          pl: Przewoźnik
+      - key: count
+        label:
+          en: Visits
+          pl: Wizyty
+        format: number
+      - key: dwell
+        label:
+          en: Avg dwell (min)
+          pl: Śr. postój (min)
+        format: number
+      - key: late
+        label:
+          en: Late (min)
+          pl: Spóźnienia (min)
+        format: number
+      - key: detention
+        label:
+          en: Detention £
+          pl: Detention £
+        format: money
+      empty:
+        en: No visits yet — the first daily report fills this.
+        pl: Brak wizyt — wypełni się po pierwszym raporcie dziennym.
+    - type: data
+      title:
+        en: Dwell by day
+        pl: Postój wg dni
+      source: collection:visits
+      display: chart
+      chart: line
+      groupBy:
+        field: date
+        bucket: day
+        aggs:
+        - key: dwell
+          agg: avg
+          field: dwell_minutes
+      fields:
+      - key: date
+      - key: dwell
+        label:
+          en: Avg dwell (min)
+          pl: Śr. postój (min)
+    - type: data
+      title:
+        en: Dock use today
+        pl: Wykorzystanie ramp dziś
+      source: collection:bookings
+      display: chart
+      chart: bar
+      groupBy:
+        field: resource
+        aggs: []
+      fields:
+      - key: resource
+      - key: count
+        label:
+          en: Bookings
+          pl: Rezerwacje
+  - key: reports
+    type: instances
+    title:
+      en: Daily reports
+      pl: Raporty dzienne
+    template: daily_report
+    roles:
+    - manager
+    - admin
+  - key: account
+    type: account
+    title:
+      en: Subscription
+      pl: Subskrypcja
+    roles:
+    - admin
+  triggers:
+  - key: booking_new
+    'on':
+      collection: bookings
+      op: insert
+      where:
+        status: booked
+    start:
+      agent: dispatcher
+    goal: New booking {record.id} for site {record.site} on {record.date}, dock {record.resource}, status {record.status}.
+      Stamp the site manager on it.
+  - key: booking_approved
+    'on':
+      collection: bookings
+      op: update
+      where:
+        status: approved
+    notify:
+      to: record.haulier_email
+      subject:
+        en: 'Slot confirmed: {record.site} {record.date}'
+        pl: 'Slot potwierdzony: {record.site} {record.date}'
+      body:
+        en: Your slot at {record.site} on {record.date} {record.start} (trailer {record.trailer}, ref {record.reference})
+          is approved.
+        pl: Twój slot w {record.site} dnia {record.date} {record.start} (naczepa {record.trailer}, nr {record.reference})
+          został zatwierdzony.
+      link: my_bookings
+  - key: booking_moved
+    'on':
+      collection: bookings
+      op: update
+      where:
+        status: moved
+    notify:
+      to: record.haulier_email
+      subject:
+        en: 'Slot moved: {record.site}'
+        pl: 'Slot przesunięty: {record.site}'
+      body:
+        en: Your slot at {record.site} was moved to {record.date} {record.start}. {record.notes}
+        pl: Twój slot w {record.site} został przesunięty na {record.date} {record.start}. {record.notes}
+      link: my_bookings
+  - key: booking_refused
+    'on':
+      collection: bookings
+      op: update
+      where:
+        status: refused
+    notify:
+      to: record.haulier_email
+      subject:
+        en: 'Slot refused: {record.site}'
+        pl: 'Slot odrzucony: {record.site}'
+      body:
+        en: Your booking at {record.site} on {record.date} was refused. {record.notes}
+        pl: Twoja rezerwacja w {record.site} na {record.date} została odrzucona. {record.notes}
+      link: book
+  - key: booking_reminder
+    'on':
+      date:
+        collection: bookings
+        field: date
+        offsetDays: -1
+        hour: 7
+      where:
+        status: approved
+    notify:
+      to: record.haulier_email
+      subject:
+        en: 'Reminder: slot tomorrow at {record.site}'
+        pl: 'Przypomnienie: jutro slot w {record.site}'
+      body:
+        en: Tomorrow {record.start} at {record.site}, trailer {record.trailer}, ref {record.reference}.
+        pl: Jutro {record.start} w {record.site}, naczepa {record.trailer}, nr {record.reference}.
+      link: my_bookings
+  - key: move_assigned
+    'on':
+      collection: yard_moves
+      op: insert
+    notify:
+      to: record.assigned_to
+      subject:
+        en: Move trailer {record.trailer} to {record.to_dock}
+        pl: Przestaw naczepę {record.trailer} do {record.to_dock}
+      body:
+        en: 'Next move: trailer {record.trailer} from {record.from_zone} to {record.to_dock}.'
+        pl: 'Następny ruch: naczepa {record.trailer} z {record.from_zone} do {record.to_dock}.'
+      link: moves
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: site
+      price: 400
+      interval: month
+      label:
+        en: Per site
+        pl: Za obiekt
+      includes:
+      - Unlimited docks, bookings and users for one site
+      - Daily performance email
+      - Mobile app for yard staff
+      roles:
+      - admin
+  mobile:
+    appId: com.yardline.yard
+    appName: Yardline
+    capabilities:
+    - name: barcode
+      reason:
+        en: To scan the trailer barcode at the gate
+        pl: Aby skanować kod kreskowy naczepy przy bramie
+    - name: camera
+      reason:
+        en: To photograph the number plate
+        pl: Aby zrobić zdjęcie tablicy rejestracyjnej
+    - name: location
+      reason:
+        en: To record where a trailer is parked
+        pl: Aby zapisać, gdzie zaparkowano naczepę
+    - name: push
+  extensions:
+  - key: multi_company
+    description: This design serves one company's sites (the admin fills sites and docks on the data page). Separate companies
+      each signing up and managing their own sites, charging £400 per site automatically, and reading the plate text by OCR
+      are not expressible yet; per-site billing is a single plan to be bought once per site.
+  - key: site_scoping_yard_staff
+    description: Site managers and hauliers are scoped by manager_email / haulier_email stamped on records. Yard operators
+      see only their own entries and the moves assigned to them; sharing one site's timeline between several operators needs
+      a shared-site access rule.

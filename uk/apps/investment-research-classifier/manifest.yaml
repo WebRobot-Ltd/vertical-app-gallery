@@ -1,0 +1,1050 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: tessera
+  displayName: Tessera
+  tagline:
+    en: 'Investment research workspace: classify companies, build themes, ask the filings.'
+  description:
+    en: Tessera gives fund managers and analysts a research workspace built on free official filings (SEC EDGAR, Companies
+      House). Agents tag companies with activities, theme exposure and peers, backed by evidence passages and a confidence
+      score. Analysts build custom themes in words, ask questions across filings with citations, and watch companies for exposure
+      changes. Corrections are reviewed by a lead.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12263a'
+      accent: '#b5651d'
+      background: '#f6f5f1'
+      foreground: '#161b22'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Tes
+      color: primary
+    - text: sera
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Sources
+      href: '#sources'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: portfolio_manager
+      label: Portfolio manager
+      assignedBy: invite
+    - key: analyst
+      label: Analyst
+      assignedBy: signup
+  limits:
+  - action: agent:classifier
+    per: user
+    max: 30
+    window: day
+    roles:
+    - analyst
+    - portfolio_manager
+  - action: chat
+    per: user
+    max: 100
+    window: day
+  egress:
+    hosts:
+    - data.sec.gov
+    - efts.sec.gov
+    - www.sec.gov
+    - api.company-information.service.gov.uk
+    notes: 'SEC EDGAR: public US government data, free reuse, fair-access policy (max 10 requests/second, identifying User-Agent).
+      Companies House API: UK Open Government Licence, free API key set by the admins.'
+  agents:
+  - key: classifier
+    role: main
+    description: 'Reads a company''s latest filings and writes its classification: activities, theme exposure, peers, confidence
+      and evidence.'
+    profile:
+      inline:
+        display_name: Tessera classifier
+        crews:
+        - id: classifier
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are an equity research analyst who classifies one company from its official filings only (SEC
+            EDGAR for US issuers, Companies House for UK companies). You do not have prices or fundamentals.
+
+            Process: 1) find the company and its identifier (SEC: edgar_submissions with path CIK##########.json, or edgar_search
+            for full text; UK: ch_api with path search/companies and query q=<name>, then /company/<number>/filing-history).
+            2) Read the most recent annual report (10-K, 20-F, or UK accounts / strategic report) with edgar_doc or ch_api.
+            3) Decide: business activities (3-8 short phrases); exposure to themes (share of revenue or strategic weight 0-100
+            for each theme such as electrification, obesity drugs, AI infrastructure, plus any theme the user asked for),
+            peers (3-6 names), confidence 0-1 per overall classification, and 2-5 evidence passages quoted verbatim from filings
+            with form and date and URL. If a figure is not disclosed, say it is an estimate and lower the confidence. Never
+            invent quotes or numbers.
+
+            Then call save_company once with name, ticker, jurisdiction, identifier, activities, theme_exposure (JSON object
+            theme->0-100), peers, confidence, evidence, last_filing (YYYY-MM-DD), updated (today). Call log_exposure once
+            per theme with company, theme, date, exposure. Call log_filing for the filing you read.
+
+            Final answer: a Markdown report starting with a level-1 title "# <Company> — classification", then ## Activities,
+            ## Theme exposure (a table: theme, exposure, confidence, evidence reference), ## Peers, ## Evidence (quoted passages
+            with source links), ## Caveats. Add a chart block for theme exposure:
+
+            ```chart
+
+            {"type":"bar","title":"Theme exposure","labels":["A"],"series":[{"name":"Exposure","values":[1]}],"unit":"%"}
+
+            ```
+
+            Use real figures only. This is research support, not investment advice.'
+          mcp_servers: []
+    goalTemplate: 'Classify this company: {company}. Jurisdiction: {jurisdiction_label}.
+
+      {?identifier}Identifier (CIK or company number): {identifier}.{/identifier}
+
+      {?themes}Pay special attention to these themes: {themes}.{/themes}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    appTools:
+    - name: edgar_submissions
+      description: 'SEC filing list of a company. Path: CIK##########.json (10 digits, zero padded)'
+      action: http
+      http:
+        method: GET
+        url: https://data.sec.gov/submissions/
+        allowPath: true
+        headers:
+          User-Agent: Tessera research workspace
+        attribution: SEC EDGAR, public domain
+    - name: edgar_search
+      description: 'SEC EDGAR full-text search. query: q=<terms>&forms=10-K&ciks=<cik>'
+      action: http
+      http:
+        method: GET
+        url: https://efts.sec.gov/LATEST/search-index
+        headers:
+          User-Agent: Tessera research workspace
+        attribution: SEC EDGAR, public domain
+    - name: edgar_doc
+      description: 'Read a filing document. Path: Archives/edgar/data/<cik>/<accession>/<file>'
+      action: http
+      http:
+        method: GET
+        url: https://www.sec.gov/
+        allowPath: true
+        headers:
+          User-Agent: Tessera research workspace
+        maxBytes: 800000
+        attribution: SEC EDGAR, public domain
+    - name: ch_api
+      description: Companies House API. Path e.g. search/companies (query q=name), company/<number>, company/<number>/filing-history
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk/
+        allowPath: true
+        credential:
+          provider: companies_house
+          header: Authorization
+          format: Basic {secret}
+        attribution: Companies House, Open Government Licence v3.0
+    - name: save_company
+      description: Create or update the classification record of a company
+      action: write
+      collection: companies
+      scope: all
+    - name: log_exposure
+      description: Append one theme exposure data point for a company
+      action: append
+      collection: exposure_history
+      scope: all
+    - name: log_filing
+      description: Record a filing that was read
+      action: append
+      collection: filings
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 1.0
+  - key: theme_ranker
+    role: helper
+    description: Finds and ranks the classified companies exposed to a theme described in words.
+    profile:
+      inline:
+        display_name: Tessera theme ranker
+        crews:
+        - id: theme_ranker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You build a theme basket. You get a theme name and a description in words. Use search_companies
+            several times with different keywords (activities, products, synonyms) to find classified companies that plausibly
+            have exposure, and read their evidence. For each company with a meaningful link score it 0-100 (share of the business
+            tied to the theme), write a one-sentence rationale citing the evidence, and call save_member once per company
+            (theme, company, score, rationale, rank, date). Rank 1 is the highest score. Only use companies present in the
+            database; if coverage is thin, say so and suggest which companies to classify. Never invent exposure. Final answer:
+            Markdown starting with "# Theme basket — <name>", a ranked table and a short note on coverage gaps.'
+    appTools:
+    - name: search_companies
+      description: Search classified companies by keyword in name, activities and evidence
+      action: search
+      collection: companies
+      scope: all
+    - name: save_member
+      description: Save one company of the user's theme basket
+      action: write
+      collection: theme_members
+      scope: user
+    output: markdown
+  - key: assistant
+    role: helper
+    description: Research assistant answering questions across filings with citations.
+    profile:
+      inline:
+        display_name: Tessera research assistant
+        crews:
+        - id: assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a research assistant for fund managers and analysts. Answer questions about companies and
+            themes using the Tessera classification database (assistant_companies) and the official filings (SEC EDGAR, Companies
+            House). Always cite: company, form, filing date and URL, and quote the passage. If the answer is not in the sources,
+            say so; never invent figures, and never state prices or fundamentals (no licensed data in this app). Be concise;
+            use tables for comparisons. This is research support, not investment advice.'
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New question from {user}: {message}
+
+      Today is {date}. Answer in the language with ISO code {lang}.'
+    appTools:
+    - name: assistant_companies
+      description: Search the classified companies
+      action: search
+      collection: companies
+      scope: all
+    - name: edgar_search
+      description: 'SEC EDGAR full-text search. query: q=<terms>&forms=10-K&ciks=<cik>'
+      action: http
+      http:
+        method: GET
+        url: https://efts.sec.gov/LATEST/search-index
+        headers:
+          User-Agent: Tessera research workspace
+        attribution: SEC EDGAR, public domain
+    - name: edgar_doc
+      description: 'Read a filing document. Path: Archives/edgar/data/<cik>/<accession>/<file>'
+      action: http
+      http:
+        method: GET
+        url: https://www.sec.gov/
+        allowPath: true
+        headers:
+          User-Agent: Tessera research workspace
+        maxBytes: 800000
+        attribution: SEC EDGAR, public domain
+    - name: ch_api
+      description: Companies House API. Path e.g. search/companies (query q=name), company/<number>, company/<number>/filing-history
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk/
+        allowPath: true
+        credential:
+          provider: companies_house
+          header: Authorization
+          format: Basic {secret}
+        attribution: Companies House, Open Government Licence v3.0
+    output: markdown
+  - key: watcher
+    role: scheduled
+    description: Checks one watched company for a new filing and reports whether its theme exposure changed.
+    memory: instance
+    writesTo:
+      collection: watch_updates
+    profile:
+      inline:
+        display_name: Tessera watcher
+        crews:
+        - id: watcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You watch one company for one analyst. Your memory holds the last filing date and exposures you
+            reported. Look up the latest filings (SEC: edgar_submissions; UK: ch_api filing-history). If there is no new filing
+            since your memory, answer with a one-line report "# <Company> — no new filing" and nothing else. If there is one,
+            read it, re-estimate theme exposure (0-100, evidence quoted with source link) for the themes in the company''s
+            record (watch_company), and compare with the previous values. Write "# <Company> — <form> filed <date>" then ##
+            What changed (theme, before, after, evidence), ## Still true, ## Why it matters. Call watch_log_exposure per theme
+            with the new values only when a new filing was read. At the end call remember once with the filing date and exposures.
+            Never invent quotes or numbers.'
+    appTools:
+    - name: watch_company
+      description: Read the stored classification of a company
+      action: search
+      collection: companies
+      scope: all
+    - name: watch_log_exposure
+      description: Append one theme exposure data point for a company
+      action: append
+      collection: exposure_history
+      scope: all
+    - name: edgar_submissions
+      description: 'SEC filing list of a company. Path: CIK##########.json (10 digits, zero padded)'
+      action: http
+      http:
+        method: GET
+        url: https://data.sec.gov/submissions/
+        allowPath: true
+        headers:
+          User-Agent: Tessera research workspace
+        attribution: SEC EDGAR, public domain
+    - name: edgar_doc
+      description: 'Read a filing document. Path: Archives/edgar/data/<cik>/<accession>/<file>'
+      action: http
+      http:
+        method: GET
+        url: https://www.sec.gov/
+        allowPath: true
+        headers:
+          User-Agent: Tessera research workspace
+        maxBytes: 800000
+        attribution: SEC EDGAR, public domain
+    - name: ch_api
+      description: Companies House API. Path e.g. search/companies (query q=name), company/<number>, company/<number>/filing-history
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk/
+        allowPath: true
+        credential:
+          provider: companies_house
+          header: Authorization
+          format: Basic {secret}
+        attribution: Companies House, Open Government Licence v3.0
+    output: markdown
+  - key: applier
+    role: helper
+    description: Applies a correction approved by a lead to the company's classification.
+    profile:
+      inline:
+        display_name: Tessera correction applier
+        crews:
+        - id: applier
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You apply one approved correction. Find the company with find_company, then call update_company
+            with the full record where only the corrected field changes (keep every other field as it was). Add to evidence
+            a line "Corrected by analyst, approved by lead: <rationale>". Answer with a short Markdown summary starting with
+            "# Correction applied".'
+    appTools:
+    - name: find_company
+      description: Find a company record
+      action: search
+      collection: companies
+      scope: all
+    - name: update_company
+      description: Update the classification record of a company
+      action: write
+      collection: companies
+      scope: all
+    output: markdown
+  inputForm:
+    title:
+      en: Classify a company
+    fields:
+    - name: company
+      type: text
+      required: true
+      label:
+        en: Company name
+      maxLength: 120
+    - name: jurisdiction
+      type: select
+      required: true
+      label:
+        en: Filings source
+      options:
+      - value: us
+        label: US — SEC EDGAR
+      - value: uk
+        label: UK — Companies House
+    - name: identifier
+      type: text
+      label:
+        en: CIK or company number (optional)
+      maxLength: 20
+    - name: themes
+      type: text
+      label:
+        en: Themes to score (optional)
+      help:
+        en: e.g. electrification, obesity drugs
+      maxLength: 200
+    examples:
+    - company: Eli Lilly
+      jurisdiction: us
+      themes: obesity drugs
+    - company: Schneider Electric
+      jurisdiction: us
+      themes: electrification
+  data:
+    collections:
+    - name: companies
+      ownedBy: app
+      description: 'Classification of each company: activities, theme exposure, peers, confidence, evidence'
+      searchable: true
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: ticker
+        type: text
+      - name: jurisdiction
+        type: text
+      - name: identifier
+        type: text
+      - name: activities
+        type: textarea
+      - name: theme_exposure
+        type: json
+      - name: peers
+        type: textarea
+      - name: confidence
+        type: number
+      - name: evidence
+        type: textarea
+      - name: last_filing
+        type: date
+      - name: updated
+        type: date
+    - name: filings
+      ownedBy: app
+      description: Filings read by the agents
+      fields:
+      - name: company
+        type: text
+      - name: form
+        type: text
+      - name: filed
+        type: date
+      - name: url
+        type: url
+      - name: summary
+        type: textarea
+    - name: exposure_history
+      ownedBy: app
+      description: Theme exposure of each company over time
+      fields:
+      - name: company
+        type: text
+      - name: theme
+        type: text
+      - name: date
+        type: date
+      - name: exposure
+        type: number
+    - name: universes
+      ownedBy: user
+      description: Analyst universes of companies
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: companies
+        type: textarea
+        required: true
+        help:
+          en: One company per line
+      - name: notes
+        type: textarea
+    - name: themes
+      ownedBy: user
+      description: Custom themes described in words
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: description
+        type: textarea
+        required: true
+        help:
+          en: Describe the theme and the kind of revenue that counts as exposure
+    - name: theme_members
+      ownedBy: user
+      description: Ranked companies of each custom theme basket
+      fields:
+      - name: theme
+        type: text
+      - name: company
+        type: text
+      - name: score
+        type: number
+      - name: rationale
+        type: textarea
+      - name: rank
+        type: number
+      - name: date
+        type: date
+    - name: corrections
+      ownedBy: user
+      description: Analyst corrections waiting for a lead's review
+      retentionDays: 1095
+      access:
+      - role: portfolio_manager
+        can:
+        - read
+        - write
+      fields:
+      - name: company
+        type: text
+        required: true
+      - name: field
+        type: select
+        required: true
+        options:
+        - activities
+        - theme_exposure
+        - peers
+        - confidence
+        - evidence
+      - name: proposed_value
+        type: textarea
+        required: true
+      - name: rationale
+        type: textarea
+        required: true
+      - name: status
+        type: select
+        default: pending
+        options:
+        - pending
+        - approved
+        - rejected
+      - name: review_note
+        type: textarea
+    - name: watch_updates
+      ownedBy: instance
+      description: Reports of each watchlist entry
+      fields:
+      - name: title
+        type: text
+      - name: report
+        type: textarea
+    credentials:
+    - provider: companies_house
+      kind: api_key
+      scope: org
+      label: Companies House API key
+      help: Free key from developer.company-information.service.gov.uk. Paste the base64 of "<key>:" (the key followed by
+        a colon).
+  templates:
+  - key: watchlist
+    title:
+      en: Watchlist
+    description:
+      en: 'Watch a company: an email when a new filing changes its theme exposure.'
+    agent: watcher
+    params:
+    - name: company
+      type: text
+      required: true
+      label:
+        en: Company
+    - name: jurisdiction
+      type: select
+      required: true
+      label:
+        en: Filings source
+      options:
+      - value: us
+        label: US — SEC EDGAR
+      - value: uk
+        label: UK — Companies House
+    - name: identifier
+      type: text
+      label:
+        en: CIK or company number (optional)
+    goal: 'Watch "{instance}": the company {company}, jurisdiction {jurisdiction}. Identifier: {identifier}. Today is {date}.
+      Write the report in English.'
+    schedule:
+      cron: 0 6 * * *
+      userCanChange: true
+    maxPerUser: 50
+    deliver:
+      to: owner
+      onlyIfNew: true
+  triggers:
+  - key: theme_created
+    'on':
+      collection: themes
+      op: insert
+    start:
+      agent: theme_ranker
+    goal: 'Build the basket for the theme "{record.name}": {record.description}. Today is {date}.'
+  - key: correction_submitted
+    'on':
+      collection: corrections
+      op: insert
+    notify:
+      to: role:portfolio_manager
+      subject: 'Tessera: correction to review for {record.company}'
+      body: 'An analyst proposes a correction to {record.field} of {record.company}. Rationale: {record.rationale}'
+      link: corrections_queue
+  - key: correction_decided
+    'on':
+      collection: corrections
+      op: update
+      where:
+        status: approved
+    notify:
+      to: owner
+      subject: 'Tessera: your correction to {record.company} was approved'
+      body: Your correction to {record.field} of {record.company} was approved and is being applied to the classification.
+      link: corrections_queue
+  - key: correction_apply
+    'on':
+      collection: corrections
+      op: update
+      where:
+        status: approved
+    start:
+      agent: applier
+    asUser: false
+    goal: 'Apply this approved correction. Company: {record.company}. Field: {record.field}. New value: {record.proposed_value}.
+      Rationale: {record.rationale}.'
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Tessera
+    sections:
+    - type: hero
+      band: true
+      eyebrow: Investment research workspace
+      title: Know what a company **really** does, and which themes it is exposed to.
+      text: 'Tessera tags companies from their official filings: business activities, revenue exposure to themes such as electrification
+        or obesity drugs, and peers, each with a confidence score and the evidence passages. Build your own themes in words,
+        ask questions across filings, and get an email when a new filing moves a company''s exposure.'
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: See how it works
+        href: '#how'
+        style: ghost
+      note: Enterprise licence from £40,000 a year.
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Build universes
+        text: Group the companies you follow and classify them from their filings.
+        badge: 🗂
+      - title: Tags with evidence
+        text: Activities, theme exposure and peers, with a confidence score and quoted passages.
+        badge: 🏷
+      - title: Custom themes
+        text: Describe a theme in words; Tessera finds exposed companies and ranks them.
+        badge: 🧭
+      - title: Ask and watch
+        text: Ask the research assistant with citations; watch companies and get alerts on new filings.
+        badge: 🔔
+    - type: cards
+      id: sources
+      title: Sources
+      items:
+      - title: SEC EDGAR
+        text: 'US filings: 10-K, 10-Q, 20-F, 8-K. Public data.'
+      - title: Companies House
+        text: UK filings and accounts under the Open Government Licence.
+      - title: Review by a lead
+        text: Analyst corrections update the classification only after a portfolio manager approves them.
+    - type: note
+      content: Research support, not investment advice. Prices and fundamentals are not included unless a data licence is
+        connected.
+  - key: new_classification
+    type: new_run
+    title: Classify a company
+    roles:
+    - analyst
+    - portfolio_manager
+    - admin
+  - key: history
+    type: history
+    title: My classifications
+    source: run
+    roles:
+    - analyst
+    - portfolio_manager
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: company_list
+    type: table
+    title: Classified companies
+    source: collection:companies
+    export: true
+    roles:
+    - analyst
+    - portfolio_manager
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Company
+      - key: ticker
+        label: Ticker
+      - key: activities
+        label: Activities
+      - key: theme_exposure
+        label: Theme exposure
+      - key: peers
+        label: Peers
+      - key: confidence
+        label: Confidence
+        format: percent
+      - key: last_filing
+        label: Last filing
+        format: date
+      sort:
+        field: updated
+        dir: desc
+      limit: 100
+  - key: universe
+    type: form
+    title: New universe
+    collection: universes
+    roles:
+    - analyst
+    - portfolio_manager
+    - admin
+    submit:
+      label: Save universe
+      message: Universe saved.
+      redirect: universes
+  - key: universes
+    type: table
+    title: My universes
+    source: collection:universes
+    roles:
+    - analyst
+    - portfolio_manager
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Universe
+      - key: companies
+        label: Companies
+      - key: notes
+        label: Notes
+      limit: 100
+  - key: new_theme
+    type: form
+    title: Create a theme
+    collection: themes
+    roles:
+    - analyst
+    - portfolio_manager
+    - admin
+    submit:
+      label: Find exposed companies
+      message: Theme saved. The basket is being built; it appears in My baskets in a few minutes.
+      redirect: baskets
+  - key: baskets
+    type: page
+    title: Theme baskets
+    roles:
+    - analyst
+    - portfolio_manager
+    - admin
+    sections:
+    - type: data
+      title: My baskets, ranked
+      source: collection:theme_members
+      display: table
+      fields:
+      - key: theme
+        label: Theme
+      - key: rank
+        label: Rank
+        format: number
+      - key: company
+        label: Company
+      - key: score
+        label: Exposure
+        format: number
+      - key: rationale
+        label: Rationale
+      sort:
+        field: score
+        dir: desc
+      limit: 100
+      empty: No basket yet. Create a theme first.
+    - type: data
+      title: Average exposure over time
+      intro: Classified companies, by month.
+      source: collection:exposure_history
+      display: chart
+      chart: line
+      fields:
+      - key: date
+        label: Month
+      - key: avg_exposure
+        label: Average exposure
+      groupBy:
+        field: date
+        bucket: month
+        aggs:
+        - key: avg_exposure
+          agg: avg
+          field: exposure
+      empty: No exposure history yet.
+    - type: data
+      title: Exposure by theme
+      source: collection:exposure_history
+      display: bar
+      fields:
+      - key: theme
+        label: Theme
+      - key: avg_exposure
+        label: Average exposure
+      groupBy:
+        field: theme
+        aggs:
+        - key: avg_exposure
+          agg: avg
+          field: exposure
+  - key: ask
+    type: chat
+    title: Research assistant
+    source: agent:assistant
+    placeholder: Ask across filings, e.g. which of my companies mention grid capex?
+    examples:
+    - Which companies in the database have more than 40% exposure to electrification, and why?
+    - What does Eli Lilly's latest 10-K say about obesity drug supply?
+    - Compare the peers of Schneider Electric by activities
+    roles:
+    - analyst
+    - portfolio_manager
+    - admin
+  - key: watchlist
+    type: instances
+    template: watchlist
+    title: Watchlist
+    roles:
+    - analyst
+    - portfolio_manager
+    - admin
+  - key: watch_reports
+    type: table
+    title: Watchlist alerts
+    source: collection:watch_updates
+    roles:
+    - analyst
+    - portfolio_manager
+    - admin
+    data:
+      display: list
+      fields:
+      - key: title
+        label: Alert
+      - key: report
+        label: Report
+      limit: 50
+  - key: correction
+    type: form
+    title: Propose a correction
+    collection: corrections
+    fields:
+    - company
+    - field
+    - proposed_value
+    - rationale
+    roles:
+    - analyst
+    - portfolio_manager
+    - admin
+    submit:
+      label: Send for review
+      message: Sent to a lead for review.
+      redirect: my_corrections
+  - key: my_corrections
+    type: table
+    title: My corrections
+    source: collection:corrections
+    roles:
+    - analyst
+    - portfolio_manager
+    - admin
+    data:
+      display: table
+      fields:
+      - key: company
+        label: Company
+      - key: field
+        label: Field
+      - key: proposed_value
+        label: Proposed
+      - key: status
+        label: Status
+        format: badge
+      - key: review_note
+        label: Review note
+      limit: 100
+  - key: corrections_queue
+    type: table
+    title: Corrections to review
+    source: collection:corrections
+    roles:
+    - portfolio_manager
+    - admin
+    data:
+      display: table
+      fields:
+      - key: company
+        label: Company
+      - key: field
+        label: Field
+      - key: proposed_value
+        label: Proposed
+      - key: rationale
+        label: Rationale
+      - key: status
+        label: Status
+        format: badge
+      filters:
+      - field: status
+        op: '='
+        value: pending
+      limit: 100
+      empty: Nothing to review.
+  - key: review_correction
+    type: form
+    title: Decide a correction
+    collection: corrections
+    fields:
+    - status
+    - review_note
+    edit: true
+    nav: false
+    roles:
+    - portfolio_manager
+    - admin
+    submit:
+      label: Save decision
+      message: Decision saved.
+      redirect: corrections_queue
+  - key: account
+    type: account
+    title: Account and keys
+    roles:
+    - admin
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - free
+  extensions:
+  - key: foundation_model
+    description: The proprietary finance foundation model is outside this app. Classification here is done by general-purpose
+      agents reading official filings; the model can be connected later as an MCP server or HTTP API.
+  - key: licensed_market_data
+    description: Prices and fundamentals need a data licence and are not included. Add them as an org credential and an http
+      tool once a licence exists.
+  - key: enterprise_licence
+    description: The enterprise licence (from £40,000 a year) is contracted offline; the app runs with billing mode free and
+      no credit metering. Per-seat controls are managed by the admins.
+  - key: companies_house_key
+    description: Companies House requires a free API key, set by the admins on the account page (credential companies_house).
+      Review comments on corrections are by email link only; no SMS or chat alerts.

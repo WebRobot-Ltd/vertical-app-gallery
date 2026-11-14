@@ -1,0 +1,1129 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: goodseat
+  displayName: Goodseat
+  tagline:
+    en: Surplus event tickets for the people who keep us going.
+  description:
+    en: Goodseat gives surplus event tickets to NHS staff, teachers and charity workers for a small booking fee. Members are
+      verified, browse a shared catalogue, enter ballots or book first-come, and get reminders. Partners release seats and
+      get a report after each event.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f2a44'
+      accent: '#e4572e'
+      background: '#fbf8f3'
+      foreground: '#1b1f24'
+    fonts:
+      body: Inter
+      display: DM Serif Display
+    wordmark:
+    - text: Good
+      color: primary
+    - text: seat
+      color: accent
+    buttonShape: pill
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Who it's for
+      href: '#who'
+    cta:
+      label: Join
+      href: /v/join
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: verifier
+      label: Eligibility verifier
+      assignedBy: invite
+    - key: partner
+      label: Event partner
+      assignedBy: invite
+    - key: user
+      label: Member
+      assignedBy: signup
+  limits:
+  - action: agent:booker
+    per: user
+    max: 20
+    window: day
+    roles:
+    - user
+  agents:
+  - key: screener
+    role: helper
+    description: Checks a new member's document and work-email domain and records a recommendation for the human verifier.
+    profile:
+      inline:
+        display_name: Goodseat eligibility screener
+        crews:
+        - id: screener
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You pre-screen applications to Goodseat, a scheme giving surplus tickets to NHS staff, teachers
+            and charity workers. You receive the applicant''s employer, role, sector, work email and the id of an uploaded
+            document (staff ID, payslip, etc). Open the document with the read_upload tool (OCR included). Check: (1) does
+            the document show the same employer and a plausible name/role; (2) does the work-email domain fit the employer
+            and sector (e.g. nhs.net or .nhs.uk for NHS, .sch.uk, .school or academy trust domains for teachers, the charity''s
+            own domain for charity workers); free-mail domains such as gmail.com are a mismatch. Then call update_member once
+            with ai_verdict (one of likely_ok, doubtful, mismatch) and ai_notes (max 80 words stating what you saw and what
+            is unclear). Never set status and never approve or reject: a human verifier decides. Do not invent facts; if the
+            document is unreadable say so. Finish with a short markdown summary starting with a level-1 title "# Screening
+            result".'
+    appTools:
+    - name: read_upload
+      description: Read a file the member uploaded
+      action: read_file
+    - name: update_member
+      description: Save ai_verdict and ai_notes on the member's own record
+      action: write
+      collection: members
+      scope: user
+    output: markdown
+  - key: booker
+    role: main
+    description: Books first-come tickets, or tickets for ballot winners, for an approved member.
+    profile:
+      inline:
+        display_name: Goodseat booking agent
+        crews:
+        - id: booker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You book Goodseat tickets for one member. Steps: 1) If the member status is not approved, refuse
+            politely and explain they must be verified first; write no records. 2) Read the event with read_catalogue. Check
+            tickets_left covers the quantity (max 2 per booking), and that release_time has passed. 3) If the event mode is
+            ballot, the member must have won: check read_ballot_results for a result with this member email and this event
+            with result win; otherwise refuse and explain the ballot. 4) For each ticket call add_ticket with event_title,
+            event_date, venue, city, partner_email, member_sector, member_email, delivery (copy from the event), status confirmed,
+            fee_eur and ticket_code (a short code GS- followed by 8 random letters/digits). 5) Call update_event to reduce
+            tickets_left by the quantity. Finish with a markdown confirmation starting with a level-1 title "# Booking confirmed
+            — <event>" with date, venue, ticket codes, how the ticket reaches them (partner ticketing integration or e-ticket
+            by email) and the fee. Never invent events or codes of other people.'
+    context:
+    - key: member_status
+      from: collection:members.status
+    - key: member_sector
+      from: collection:members.sector
+    - key: member_email
+      from: user.email
+    goalTemplate: 'Member email: {member_email}. Member status: {member_status}. Sector: {member_sector}.
+
+      Event record: {event}.
+
+      Tickets: {quantity}.
+
+      Today is {date}. Write the confirmation in the language with ISO code {lang}.'
+    appTools:
+    - name: read_catalogue
+      description: Read the shared catalogue of events
+      action: read
+      collection: catalogue
+      scope: all
+    - name: update_event
+      description: Update tickets_left on an event
+      action: write
+      collection: catalogue
+      scope: all
+    - name: add_ticket
+      description: Create a ticket for the member
+      action: append
+      collection: tickets
+      scope: user
+    - name: read_ballot_results
+      description: Read ballot results
+      action: read
+      collection: ballot_results
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.3
+  - key: drawer
+    role: scheduled
+    description: Draws ballot winners once an event's release time has passed.
+    profile:
+      inline:
+        display_name: Goodseat ballot drawer
+        crews:
+        - id: drawer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You run Goodseat ballots. Read the catalogue with read_catalogue and find events with mode ballot
+            whose release_time has passed and that have no results yet (check read_results). For each, read the entries with
+            read_entries for that event, pick winners at random, as many as tickets_left (one per member), and write one record
+            per entry with add_result: event_ref, event_title, member_email, result (win or lose). Be fair and random; never
+            favour anyone. Finish with a markdown summary starting with "# Ballot draw — <date>" listing the events drawn
+            and counts only (no emails).'
+    appTools:
+    - name: read_catalogue
+      description: Read the shared catalogue of events
+      action: read
+      collection: catalogue
+      scope: all
+    - name: read_entries
+      description: Read ballot entries
+      action: read
+      collection: ballot_entries
+      scope: all
+    - name: read_results
+      description: Read ballot results
+      action: read
+      collection: ballot_results
+      scope: all
+    - name: add_result
+      description: Record a ballot result
+      action: append
+      collection: ballot_results
+      scope: all
+    output: markdown
+  - key: alerter
+    role: helper
+    description: Every day checks new catalogue events for one member's city and interests.
+    memory: instance
+    writesTo:
+      collection: alert_digests
+    profile:
+      inline:
+        display_name: Goodseat event alerts
+        crews:
+        - id: alerter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You tell one member about new events on Goodseat matching their city and interests. Search the catalogue
+            with read_catalogue. Use memory: only list events you have not mentioned before, and at the end call remember
+            with the titles you listed. If there is nothing new, answer with a one-line note starting "# No new events". Otherwise
+            start with "# New events for you — <date>" and list up to 8 events (title, date, venue, how to get it: ballot
+            or first-come, release time). Never invent events.'
+    appTools:
+    - name: read_catalogue
+      description: Read the shared catalogue of events
+      action: read
+      collection: catalogue
+      scope: all
+    output: markdown
+  - key: reporter
+    role: helper
+    description: Writes the partner's post-event report.
+    writesTo:
+      collection: event_reports
+    profile:
+      inline:
+        display_name: Goodseat event reporter
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write a post-event report for an event partner. Read the tickets for the given event with read_tickets
+            (you only see tickets of this partner). Count tickets confirmed, compare with seats offered, and break down by
+            member_sector (nhs, education, charity). Start with "# Event report — <event title>", then sections ## Seats filled,
+            ## Who attended (by sector, a small table), ## Notes. Add a chart block ```chart {"type":"pie","title":"Attendance
+            by sector","labels":[...],"series":[{"name":"Tickets","values":[...]}]} ``` with real figures only. Never include
+            member names or emails. Counts only; if a count is under 3 say "fewer than 3".'
+    appTools:
+    - name: read_tickets
+      description: Read tickets of the partner's events
+      action: read
+      collection: tickets
+      scope: user
+    output: markdown
+  inputForm:
+    title: Book tickets
+    fields:
+    - name: event
+      type: select
+      required: true
+      label: Event
+      optionsFrom: collection:catalogue
+    - name: quantity
+      type: number
+      required: true
+      default: 1
+      label: Number of tickets (max 2)
+  data:
+    collections:
+    - name: members
+      description: Each member's eligibility application
+      ownedBy: user
+      fields:
+      - name: employer
+        type: text
+        required: true
+        label: Employer
+      - name: job_role
+        type: text
+        required: true
+        label: Role
+      - name: sector
+        type: select
+        required: true
+        label: Sector
+        options:
+        - value: nhs
+          label: NHS
+        - value: education
+          label: Teacher / education
+        - value: charity
+          label: Charity
+      - name: work_email
+        type: email
+        required: true
+        label: Work email
+      - name: document
+        type: file
+        required: true
+        label: Staff ID or payslip
+        accept:
+        - pdf
+        - jpg
+        - jpeg
+        - png
+        maxMb: 10
+        capture: true
+      - name: status
+        type: select
+        label: Status
+        default: pending
+        options:
+        - pending
+        - approved
+        - rejected
+      - name: ai_verdict
+        type: select
+        label: Agent check
+        options:
+        - likely_ok
+        - doubtful
+        - mismatch
+      - name: ai_notes
+        type: textarea
+        label: Agent notes
+      - name: decision_reason
+        type: textarea
+        label: Verifier reason
+      access:
+      - role: verifier
+        can:
+        - read
+        - write
+    - name: partner_events
+      description: Events each partner adds (private to the partner)
+      ownedBy: user
+      fields:
+      - name: title
+        type: text
+        required: true
+        label: Event
+      - name: category
+        type: select
+        required: true
+        label: Category
+        options:
+        - music
+        - theatre
+        - sport
+        - comedy
+        - family
+        - other
+      - name: venue
+        type: text
+        required: true
+        label: Venue
+      - name: city
+        type: text
+        required: true
+        label: City
+      - name: lat
+        type: number
+        label: Latitude
+      - name: lon
+        type: number
+        label: Longitude
+      - name: event_date
+        type: date
+        required: true
+        label: Event date
+      - name: tickets_left
+        type: number
+        required: true
+        label: Free tickets
+      - name: release_time
+        type: date
+        required: true
+        label: Release date
+      - name: mode
+        type: select
+        required: true
+        label: Allocation
+        options:
+        - value: first_come
+          label: First come
+        - value: ballot
+          label: Ballot
+      - name: delivery
+        type: select
+        required: true
+        label: Delivery
+        options:
+        - value: integration
+          label: Our ticketing integration
+        - value: etickets
+          label: E-ticket emailed by Goodseat
+      - name: partner_email
+        type: email
+        required: true
+        label: Your contact email
+    - name: catalogue
+      description: The shared catalogue members browse
+      ownedBy: shared
+      fields:
+      - name: title
+        type: text
+        label: Event
+      - name: category
+        type: text
+        label: Category
+      - name: venue
+        type: text
+        label: Venue
+      - name: city
+        type: text
+        label: City
+      - name: lat
+        type: number
+        label: Latitude
+      - name: lon
+        type: number
+        label: Longitude
+      - name: event_date
+        type: date
+        label: Date
+      - name: tickets_left
+        type: number
+        label: Tickets left
+      - name: release_time
+        type: date
+        label: Release
+      - name: mode
+        type: text
+        label: Allocation
+      - name: delivery
+        type: text
+        label: Delivery
+      - name: partner_email
+        type: email
+        label: Partner
+    - name: ballot_entries
+      description: Ballot entries, back office only
+      ownedBy: org
+      fields:
+      - name: event_ref
+        type: text
+        required: true
+        label: Event reference (title)
+      - name: member_email
+        type: email
+        required: true
+        label: Your email
+    - name: ballot_results
+      description: Ballot outcomes, back office only
+      ownedBy: org
+      fields:
+      - name: event_ref
+        type: text
+      - name: event_title
+        type: text
+      - name: member_email
+        type: email
+      - name: result
+        type: select
+        options:
+        - win
+        - lose
+    - name: tickets
+      description: Tickets issued to members
+      ownedBy: user
+      retentionDays: 730
+      fields:
+      - name: event_title
+        type: text
+      - name: event_date
+        type: date
+      - name: venue
+        type: text
+      - name: city
+        type: text
+      - name: partner_email
+        type: email
+      - name: member_sector
+        type: text
+      - name: member_email
+        type: email
+      - name: delivery
+        type: text
+      - name: status
+        type: text
+      - name: fee_eur
+        type: number
+      - name: ticket_code
+        type: text
+      access:
+      - role: partner
+        where:
+          partner_email: '{user.email}'
+        can:
+        - read
+    - name: event_reports
+      description: Post-event reports for each partner
+      ownedBy: user
+    - name: alert_digests
+      description: Daily new-event alerts of each member's watch
+      ownedBy: instance
+  templates:
+  - key: event_alerts
+    title: Event alerts
+    description: Get an email when new events in your area and interests go live.
+    agent: alerter
+    params:
+    - name: city
+      type: text
+      required: true
+      label: City or area
+    - name: interests
+      type: multiselect
+      required: true
+      label: Interests
+      options:
+      - music
+      - theatre
+      - sport
+      - comedy
+      - family
+      - other
+    goal: 'Watch "{instance}": new events in {city} for interests {interests}. Today is {date}. Write in language {lang}.'
+    schedule:
+      cron: 0 7 * * *
+      userCanChange: false
+    maxPerUser: 3
+    deliver:
+      to: owner
+      onlyIfNew: true
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Goodseat
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: For NHS staff, teachers and charity workers
+      title: Great nights out, **thank you** seats included.
+      text: Surplus tickets from venues, promoters and clubs go to the people who keep us going. Pay only a small booking
+        fee per ticket.
+      actions:
+      - label: Join Goodseat
+        href: /v/join
+        style: primary
+      - label: Sign in
+        href: /login
+        style: ghost
+      aside: <div style="padding:16px"><b>Tonight's seat</b><br>Verified members only · fee from €1.50 per ticket</div>
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Prove eligibility
+        text: Send your employer, role, work email and a staff ID or payslip. A verifier approves you.
+      - title: Browse and enter
+        text: Filter the catalogue or the map; enter ballots for popular events or book first-come.
+      - title: Get your ticket
+        text: Pay the small fee by card. Tickets arrive through the venue's system or as an e-ticket by email.
+    - type: cards
+      id: who
+      title: Who it's for
+      items:
+      - title: NHS staff
+        badge: 🩺
+        text: Doctors, nurses and every colleague.
+      - title: Teachers
+        badge: 🍎
+        text: Schools, academies and colleges.
+      - title: Charity workers
+        badge: 💛
+        text: Paid staff of registered charities.
+      - title: Event partners
+        badge: 🎟️
+        text: Venues, promoters and clubs filling empty seats with people who deserve them.
+    - type: note
+      content: Goodseat is a surplus-ticket scheme. Eligibility is checked by a person before any booking.
+  - key: join
+    type: form
+    title: Join as a member
+    collection: members
+    fields:
+    - employer
+    - job_role
+    - sector
+    - work_email
+    - document
+    submit:
+      label: Send application
+      message: Thanks. A verifier will review your application and email you.
+      redirect: my_status
+    roles:
+    - user
+  - key: my_status
+    type: table
+    title: My eligibility
+    source: collection:members
+    data:
+      display: table
+      fields:
+      - key: employer
+        label: Employer
+      - key: sector
+        label: Sector
+      - key: status
+        label: Status
+        format: badge
+      - key: decision_reason
+        label: Reason
+    roles:
+    - user
+  - key: catalogue_list
+    type: table
+    title: Events
+    source: collection:catalogue
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Event
+      - key: category
+        label: Category
+        format: badge
+      - key: city
+        label: City
+      - key: venue
+        label: Venue
+      - key: event_date
+        label: Date
+        format: date
+      - key: tickets_left
+        label: Left
+        format: number
+      - key: mode
+        label: Allocation
+        format: badge
+      - key: release_time
+        label: Release
+        format: date
+      sort:
+        field: event_date
+        dir: asc
+      limit: 100
+    roles:
+    - user
+    - admin
+  - key: events_map
+    type: map
+    title: Map
+    source: collection:catalogue
+    map:
+      lat: lat
+      lon: lon
+      title: title
+      popup:
+      - venue
+      - event_date
+      - mode
+    roles:
+    - user
+    - admin
+  - key: enter_ballot
+    type: form
+    title: Enter a ballot
+    collection: ballot_entries
+    fields:
+    - event_ref
+    - member_email
+    submit:
+      label: Enter ballot
+      message: You're in. We'll email you if you win.
+    roles:
+    - user
+  - key: book
+    type: new_run
+    title: Book tickets
+    roles:
+    - user
+  - key: my_tickets
+    type: table
+    title: My tickets
+    source: collection:tickets
+    data:
+      display: table
+      fields:
+      - key: event_title
+        label: Event
+      - key: event_date
+        label: Date
+        format: date
+      - key: venue
+        label: Venue
+      - key: ticket_code
+        label: Code
+      - key: delivery
+        label: Delivery
+      - key: status
+        label: Status
+        format: badge
+      actions:
+      - type: calendar
+        title: event_title
+        start: event_date
+        location: venue
+      - type: directions
+        field: venue
+    roles:
+    - user
+  - key: history
+    type: history
+    title: My bookings
+    source: run
+    roles:
+    - user
+  - key: booking
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: alerts
+    type: instances
+    template: event_alerts
+    title: My alerts
+    roles:
+    - user
+  - key: add_event
+    type: form
+    title: Add an event
+    collection: partner_events
+    submit:
+      label: Publish event
+      message: Event added to the catalogue.
+      redirect: my_events
+    roles:
+    - partner
+  - key: my_events
+    type: table
+    title: My events
+    source: collection:partner_events
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Event
+      - key: event_date
+        label: Date
+        format: date
+      - key: tickets_left
+        label: Free tickets
+        format: number
+      - key: mode
+        label: Allocation
+        format: badge
+      - key: release_time
+        label: Release
+        format: date
+    roles:
+    - partner
+  - key: partner_tickets
+    type: table
+    title: Tickets issued
+    source: collection:tickets
+    data:
+      display: table
+      fields:
+      - key: event_title
+        label: Event
+      - key: member_sector
+        label: Sector
+      - key: status
+        label: Status
+        format: badge
+    roles:
+    - partner
+  - key: my_reports
+    type: table
+    title: Event reports
+    source: collection:event_reports
+    data:
+      display: list
+    roles:
+    - partner
+  - key: queue
+    type: table
+    title: Eligibility queue
+    source: collection:members
+    data:
+      display: table
+      fields:
+      - key: employer
+        label: Employer
+      - key: job_role
+        label: Role
+      - key: sector
+        label: Sector
+      - key: work_email
+        label: Work email
+      - key: ai_verdict
+        label: Agent check
+        format: badge
+      - key: ai_notes
+        label: Agent notes
+      - key: status
+        label: Status
+        format: badge
+      filters:
+      - field: status
+        op: '='
+        value: pending
+    roles:
+    - verifier
+    - admin
+  - key: review
+    type: form
+    title: Decide
+    collection: members
+    fields:
+    - status
+    - decision_reason
+    edit: true
+    submit:
+      label: Save decision
+      message: Decision saved and the member notified.
+      redirect: queue
+    roles:
+    - verifier
+    - admin
+    nav: false
+  - key: dash_members
+    type: table
+    title: Members by status
+    source: collection:members
+    data:
+      display: table
+      groupBy:
+        field: status
+        aggs: []
+      fields:
+      - key: status
+        label: Status
+      - key: count
+        label: Members
+    roles:
+    - admin
+    nav: false
+  - key: dash_tickets
+    type: table
+    title: Tickets and fees by month
+    source: collection:tickets
+    data:
+      display: chart
+      chart: bar
+      groupBy:
+        field: event_date
+        bucket: month
+        aggs:
+        - key: fees
+          agg: sum
+          field: fee_eur
+      fields:
+      - key: event_date
+        label: Month
+      - key: count
+        label: Tickets
+      - key: fees
+        label: Fees (€)
+    roles:
+    - admin
+    nav: false
+  - key: dash_sectors
+    type: table
+    title: Tickets by sector
+    source: collection:tickets
+    data:
+      display: chart
+      chart: pie
+      groupBy:
+        field: member_sector
+        aggs: []
+      fields:
+      - key: member_sector
+        label: Sector
+      - key: count
+        label: Tickets
+    roles:
+    - admin
+    nav: false
+  - key: admin
+    type: tabs
+    title: Admin
+    children:
+    - dash_members
+    - queue
+    - dash_tickets
+    - dash_sectors
+    roles:
+    - admin
+  - key: account
+    type: account
+    title: Credits
+    roles:
+    - user
+  schedules:
+  - agent: drawer
+    cron: 0 6 * * *
+    action: run
+    owner: app
+    goal: Run today's ballot draws. Today is {date}.
+  triggers:
+  - key: screen_member
+    'on':
+      collection: members
+      op: insert
+      where:
+        status: pending
+    start:
+      agent: screener
+    goal: 'New application. Employer: {record.employer}. Role: {record.job_role}. Sector: {record.sector}. Work email: {record.work_email}.
+      Document file id: {record.document}. Screen it and save ai_verdict and ai_notes.'
+  - key: verifier_new
+    'on':
+      collection: members
+      op: insert
+    notify:
+      to:
+      - role:verifier
+      subject: New Goodseat eligibility application
+      body: A new member application from {record.employer} is waiting in the eligibility queue.
+      link: queue
+  - key: member_approved
+    'on':
+      collection: members
+      op: update
+      where:
+        status: approved
+    notify:
+      to:
+      - owner
+      subject: You're verified on Goodseat
+      body: Your eligibility has been approved. You can now browse events, enter ballots and book tickets.
+      link: catalogue_list
+  - key: member_rejected
+    'on':
+      collection: members
+      op: update
+      where:
+        status: rejected
+    notify:
+      to:
+      - owner
+      subject: Your Goodseat application
+      body: 'We couldn''t approve your application. Reason: {record.decision_reason}. You can apply again with a clearer document.'
+      link: join
+  - key: publish_event
+    'on':
+      collection: partner_events
+      op: insert
+    write:
+      collection: catalogue
+      fields:
+        title: title
+        category: category
+        venue: venue
+        city: city
+        lat: lat
+        lon: lon
+        event_date: event_date
+        tickets_left: tickets_left
+        release_time: release_time
+        mode: mode
+        delivery: delivery
+        partner_email: partner_email
+  - key: ballot_won
+    'on':
+      collection: ballot_results
+      op: insert
+      where:
+        result: win
+    notify:
+      to:
+      - record.member_email
+      subject: You won the Goodseat ballot for {record.event_title}
+      body: 'Good news: you won a place. Book your ticket now before it is released to others.'
+      link: book
+  - key: ticket_issued
+    'on':
+      collection: tickets
+      op: insert
+    notify:
+      to:
+      - owner
+      subject: 'Your ticket: {record.event_title}'
+      body: 'Your ticket for {record.event_title} on {record.event_date} at {record.venue} is confirmed. Code: {record.ticket_code}.
+        Delivery: {record.delivery}.'
+      link: my_tickets
+  - key: ticket_reminder
+    'on':
+      date:
+        collection: tickets
+        field: event_date
+        offsetDays: -1
+        hour: 8
+    notify:
+      to:
+      - owner
+      subject: 'Tomorrow: {record.event_title}'
+      body: 'A reminder: {record.event_title} is tomorrow at {record.venue}. Your code is {record.ticket_code}.'
+      link: my_tickets
+  - key: event_done
+    'on':
+      date:
+        collection: partner_events
+        field: event_date
+        offsetDays: 1
+        hour: 8
+    start:
+      agent: reporter
+    goal: 'Write the report for the event "{record.title}" held on {record.event_date} at {record.venue}. Seats offered: {record.tickets_left}
+      left after booking. Partner: {record.partner_email}.'
+  - key: report_ready
+    'on':
+      collection: event_reports
+      op: insert
+    notify:
+      to:
+      - owner
+      subject: Your Goodseat event report is ready
+      body: The report for your latest event is ready.
+      link: my_reports
+  billing:
+    modes:
+    - credits
+    currency: eur
+    signupCredits: 0
+    costs:
+      agent:booker:
+        perUnit:
+          field: quantity
+          credits: 150
+          min: 150
+    packs:
+    - key: fees_small
+      credits: 300
+      price: 3
+      label: 2 tickets
+    - key: fees_medium
+      credits: 1500
+      price: 15
+      label: 10 tickets
+  notifications:
+    emailOnRunDone: true
+  extensions:
+  - key: eligibility_gate
+    description: Only approved members should book or enter ballots. The booking agent refuses members who are not approved,
+      but the runtime cannot hide the browse, ballot or book views until approval.
+  - key: ticketing_integrations
+    description: Pushing tickets into each partner's own ticketing system needs per-partner API credentials and tools. Today
+      delivery is an e-ticket by email with a code; partners flagged integration must be fulfilled by hand.
+  - key: ballot_claim
+    description: The ballot draw and winner emails work; winner validation at booking reads the back-office results table
+      through the booking agent. Strict verification and automatic expiry of unclaimed places are not available yet.
+  - key: filters_and_geocoding
+    description: Catalogue filters beyond the table's sort are not interactive yet; partners enter latitude and longitude
+      for the map.
+  - key: sms_push
+    description: SMS and WhatsApp notices are not available; members get email only.

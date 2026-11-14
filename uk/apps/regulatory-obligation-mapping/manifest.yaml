@@ -1,0 +1,1185 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: rulemesh
+  displayName: Rulemesh
+  tagline:
+    en: Every UK regulatory obligation, mapped to your policies and controls.
+  description:
+    en: Rulemesh builds your obligation register from FCA, PRA, ICO and Ofgem rules and legislation.gov.uk. It maps each obligation
+      to your own policies and controls, flags gaps and vague wording, assigns actions to owners, and drafts impact notes
+      when regulators publish changes.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12263f'
+      accent: '#0f7b6c'
+      background: '#f6f8fa'
+      foreground: '#16202c'
+    fonts:
+      body: Inter
+      display: Source Serif 4
+    wordmark:
+    - text: Rule
+      color: primary
+    - text: mesh
+      color: accent
+    width: wide
+  header:
+    links:
+    - label:
+        en: How it works
+      href: '#how'
+    - label:
+        en: Pricing
+      href: '#pricing'
+    cta:
+      label:
+        en: Start free trial
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: compliance_officer
+      label: Compliance officer
+      assignedBy: signup
+    - key: control_owner
+      label: Control owner
+      assignedBy: derived
+      from: collection:mappings.owner_email
+    - key: auditor
+      label: Auditor (read-only)
+      assignedBy: invite
+  limits:
+  - action: agent:mapper
+    per: user
+    max: 20
+    window: day
+  egress:
+    hosts:
+    - www.legislation.gov.uk
+    notes: legislation.gov.uk texts are reusable under the Open Government Licence v3.0. The FCA Handbook, PRA Rulebook, ICO
+      and Ofgem pages are read through the WebRobot MCP, not by direct API.
+  agents:
+  - key: mapper
+    role: main
+    description: Reads the rulebooks and legislation for the firm's regulators, builds the obligation register and maps each
+      obligation to the firm's policies and controls.
+    profile:
+      inline:
+        display_name: Rulemesh obligation mapper
+        crews:
+        - id: mapper
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: "You are a UK regulatory compliance analyst. You build an obligation register for ONE firm and map\
+            \ each obligation to the firm's own policies and controls.\n\nSteps:\n1. Read the firm profile (regulators, permissions,\
+            \ business areas) from the goal. Call read_obligations first so you do not duplicate obligations already in the\
+            \ register.\n2. For each regulator in scope, read the relevant rules: FCA Handbook (handbook.fca.org.uk), PRA\
+            \ Rulebook (prarulebook.co.uk), ICO guidance (ico.org.uk), Ofgem licence conditions (ofgem.gov.uk). Fetch these\
+            \ pages with the webrobot MCP. Read the primary legislation with the legislation_text tool. Use paths such as\
+            \ /ukpga/2000/8/contents/data.xml or /ukpga/2018/12/section/34/data.xml, and /{type}/{year}/{number}/section/{n}/data.xml.\
+            \ Select only what applies to the firm's permissions and business areas.\n3. For each obligation, call add_obligation\
+            \ with JSON {ref, regulator, citation, source_url, text, business_area, members}. ref is a stable id such as FCA-SYSC-3.1.1R.\
+            \ citation is the exact rule or section reference. text is a short faithful paraphrase of no more than 40 words.\
+            \ members is copied verbatim from the goal.\n4. Read the firm's policies and procedures with read_policies and\
+            \ read_controls. For a pasted text use its content field. For an uploaded file call read_upload with the file\
+            \ id. Then map every obligation with add_mapping, using JSON {obligation_ref, regulator, citation, obligation,\
+            \ business_area, coverage, covered_flag, weak_flag, gap_flag, matched, weakness_note, status:\"proposed\", members}.\n\
+            \   - coverage \"covered\": a policy or control clearly and specifically addresses it. Name it in matched and\
+            \ quote the supporting wording briefly. Set covered_flag=1, weak_flag=0, gap_flag=0.\n   - coverage \"weak\":\
+            \ something touches it but the wording is vague, has no owner, frequency or evidence, or only partly covers it.\
+            \ Explain in weakness_note and set weak_flag=1.\n   - coverage \"gap\": nothing covers it. Set gap_flag=1.\n \
+            \  Never mark covered unless you found the wording. When unsure, choose weak. Never invent rule numbers or section\
+            \ references; if you cannot verify a citation, leave the obligation out and list it under open questions in the\
+            \ report.\n5. Finish with a report starting with \"# Obligation register — <firm> — <date>\". Sections: ## Summary\
+            \ (counts per regulator: obligations, covered, weak, gaps), ## Priority gaps (top 10), ## Vague wording to fix,\
+            \ ## Open questions, ## Sources. Add a chart block for coverage per regulator:\n```chart\n{\"type\":\"stacked\"\
+            ,\"title\":\"Coverage by regulator\",\"labels\":[\"FCA\"],\"series\":[{\"name\":\"Covered\",\"values\":[0]},{\"\
+            name\":\"Weak\",\"values\":[0]},{\"name\":\"Gap\",\"values\":[0]}]}\n```\nUse real figures only. This is decision\
+            \ support and not legal advice. Write in the language with ISO code given in the goal."
+    context:
+    - key: profile
+      from: collection:firm_profile
+    - key: policy_list
+      from: collection:policies
+    - key: control_list
+      from: collection:controls
+    - key: members
+      from: collection:firm_profile.members
+    goalTemplate: 'Firm profile (JSON): {profile}
+
+      Team emails (members): {members}
+
+      Existing policies: {policy_list}
+
+      Existing controls: {control_list}
+
+      Scope: {scope_label}
+
+      {?focus}Focus: {focus}{/focus}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    appTools:
+    - name: read_obligations
+      description: Read the firm's obligation register
+      action: read
+      collection: obligations
+      scope: user
+    - name: read_policies
+      description: Read the firm's policies and procedures
+      action: read
+      collection: policies
+      scope: user
+    - name: read_controls
+      description: Read the firm's control library
+      action: read
+      collection: controls
+      scope: user
+    - name: add_obligation
+      description: Add an obligation to the register
+      action: append
+      collection: obligations
+      scope: user
+    - name: add_mapping
+      description: Add an obligation-to-policy/control mapping
+      action: append
+      collection: mappings
+      scope: user
+    - name: read_upload
+      description: Read a file the user uploaded (policy PDF, scan)
+      action: read_file
+    - name: legislation_text
+      description: GET a legislation.gov.uk document or section; append a path such as /ukpga/2000/8/section/19/data.xml
+      action: http
+      http:
+        method: GET
+        url: https://www.legislation.gov.uk
+        allowPath: true
+        attribution: Contains public sector information licensed under the Open Government Licence v3.0 (legislation.gov.uk)
+    output: markdown
+    limits:
+      maxTurns: 60
+      maxBudgetUsd: 1.5
+  - key: monitor
+    role: scheduled
+    description: Every night checks new FCA and PRA publications, consultation papers and policy statements.
+    profile:
+      inline:
+        display_name: Rulemesh regulatory monitor
+        crews:
+        - id: monitor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You monitor new UK regulatory publications. Using the webrobot MCP, read the FCA publications pages
+            (consultation papers CP, policy statements PS, Handbook Notices, Dear CEO letters, news at fca.org.uk/publications)
+            and the PRA pages (bankofengland.co.uk/prudential-regulation/publication: consultation papers, policy statements,
+            supervisory statements) for items published in the last 2 days. Read each item''s summary, but do not invent content
+            you could not read.
+
+            Start the answer with "# Regulatory watch — <date>", then a short bullet list. End with ONE fenced json block:
+
+            {"date":"YYYY-MM-DD","count":N,"summary":"two sentences","items":[{"regulator":"FCA|PRA","kind":"CP|PS|SS|Notice|Letter|Other","title":"","url":"","published":"YYYY-MM-DD","what_changes":"one
+            sentence","rules_affected":["citations mentioned in the document"]}]}
+
+            If nothing new was published, use count 0 and an empty items list.'
+    goalTemplate: Check new FCA and PRA publications. Today is {date}.
+    output: markdown+json
+    writesTo:
+      collection: publications
+      parse: json_last
+      keyBy: date
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1
+  - key: drafter
+    role: helper
+    description: For one firm, drafts an impact note when a new publication touches its obligations and controls.
+    awaits:
+    - impact_note
+    memory: instance
+    writesTo:
+      collection: impact_notes
+      parse: whole
+    profile:
+      inline:
+        display_name: Rulemesh impact drafter
+        crews:
+        - id: drafter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You draft regulatory impact notes for ONE firm. Call read_publications for the latest watch records
+            and read_obligations and read_controls for the firm. Your memory holds the publications you already covered: skip
+            them, and at the end call remember with the titles you have now covered.
+
+            If no new publication touches the firm''s regulators or obligations, answer only "# No change — <date>" and one
+            sentence.
+
+            Otherwise write "# Impact note — <publication title> — <date>" with these sections: ## What changed, ## Obligations
+            affected (a table of ref, citation, why), ## Controls and policies affected (a table of the existing control or
+            policy and what to review), ## Suggested actions, ## Confidence and caveats. Base it only on the publication data
+            and the firm''s records. Mark anything uncertain as such and never invent citations. Then call request_impact_note
+            once, so the compliance officer approves the note before it reaches the board pack. This is decision support and
+            not legal advice.'
+    appTools:
+    - name: read_publications
+      description: Read the nightly regulatory watch records
+      action: read
+      collection: publications
+      scope: all
+    - name: read_obligations
+      description: Read the firm's obligation register
+      action: read
+      collection: obligations
+      scope: user
+    - name: read_controls
+      description: Read the firm's control library
+      action: read
+      collection: controls
+      scope: user
+    output: markdown
+  inputForm:
+    title:
+      en: Build or refresh the obligation register
+    fields:
+    - name: scope
+      type: select
+      required: true
+      label:
+        en: Regulators in scope
+      default: all
+      options:
+      - value: all
+        label: All regulators in my firm profile
+      - value: fca
+        label: FCA
+      - value: pra
+        label: PRA
+      - value: ico
+        label: ICO
+      - value: ofgem
+        label: Ofgem
+    - name: focus
+      type: textarea
+      maxLength: 600
+      label:
+        en: Focus (optional)
+      help:
+        en: e.g. Consumer Duty, operational resilience, data protection
+  data:
+    collections:
+    - name: firm_profile
+      description: 'The firm: size, regulators, permissions, business areas and team emails'
+      ownedBy: user
+      fields:
+      - name: firm_name
+        type: text
+        required: true
+        label: Firm name
+      - name: size
+        type: select
+        label: Firm size
+        options:
+        - small
+        - medium
+        - large
+      - name: regulators
+        type: multiselect
+        required: true
+        label: Regulators
+        options:
+        - FCA
+        - PRA
+        - ICO
+        - Ofgem
+      - name: permissions
+        type: textarea
+        label: Permissions and regulated activities
+      - name: business_areas
+        type: textarea
+        label: Business areas
+      - name: members
+        type: json
+        label: 'Team emails (list of emails: compliance team and auditors)'
+      access:
+      - role: compliance_officer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: auditor
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: policies
+      description: The firm's policies and procedures
+      ownedBy: user
+      fields:
+      - name: title
+        type: text
+        required: true
+      - name: doc_type
+        type: select
+        options:
+        - policy
+        - procedure
+      - name: version
+        type: text
+      - name: file
+        type: file
+        accept:
+        - pdf
+        - docx
+        - txt
+        - md
+        maxMb: 15
+        multiple: true
+      - name: content
+        type: textarea
+        label: Or paste the text
+      - name: members
+        type: json
+      access:
+      - role: compliance_officer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: auditor
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: controls
+      description: The firm's control library
+      ownedBy: user
+      fields:
+      - name: control_ref
+        type: text
+        required: true
+      - name: title
+        type: text
+        required: true
+      - name: description
+        type: textarea
+      - name: business_area
+        type: text
+      - name: owner_email
+        type: email
+      - name: frequency
+        type: text
+      - name: members
+        type: json
+      access:
+      - role: compliance_officer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: auditor
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: obligations
+      description: The obligation register written by the mapper agent
+      ownedBy: user
+      fields:
+      - name: ref
+        type: text
+      - name: regulator
+        type: select
+        options:
+        - FCA
+        - PRA
+        - ICO
+        - Ofgem
+      - name: citation
+        type: text
+      - name: source_url
+        type: url
+      - name: text
+        type: textarea
+      - name: business_area
+        type: text
+      - name: members
+        type: json
+      access:
+      - role: compliance_officer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: auditor
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: mappings
+      description: Each obligation mapped to policies and controls; also the owner's task once assigned
+      ownedBy: user
+      fields:
+      - name: obligation_ref
+        type: text
+      - name: regulator
+        type: select
+        options:
+        - FCA
+        - PRA
+        - ICO
+        - Ofgem
+      - name: citation
+        type: text
+      - name: obligation
+        type: textarea
+      - name: business_area
+        type: text
+      - name: coverage
+        type: select
+        options:
+        - covered
+        - weak
+        - gap
+      - name: covered_flag
+        type: number
+      - name: weak_flag
+        type: number
+      - name: gap_flag
+        type: number
+      - name: matched
+        type: textarea
+        label: Matched policies and controls
+      - name: weakness_note
+        type: textarea
+        label: Gap or weakness note
+      - name: status
+        type: select
+        label: Status
+        options:
+        - proposed
+        - confirmed
+        - rejected
+        - assigned
+        - done
+      - name: owner_email
+        type: email
+        label: Owner (email)
+      - name: due_date
+        type: date
+        label: Due date
+      - name: review_note
+        type: textarea
+        label: Reviewer note
+      - name: evidence_note
+        type: textarea
+        label: Evidence of completion
+      - name: members
+        type: json
+      access:
+      - role: compliance_officer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: auditor
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: control_owner
+        where:
+          owner_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: publications
+      description: Nightly FCA and PRA regulatory watch, written by the monitor agent
+      ownedBy: app
+      fields:
+      - name: date
+        type: date
+      - name: count
+        type: number
+      - name: summary
+        type: textarea
+      - name: items
+        type: json
+    - name: impact_notes
+      description: Impact notes drafted for each firm's watch
+      ownedBy: instance
+      fields:
+      - name: title
+        type: text
+      - name: content
+        type: textarea
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Rulemesh
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: UK regulatory compliance
+      title: Know which **obligations** you meet, and which you do not.
+      text: Pick your regulators, upload your policies and controls, and an AI agent builds your obligation register from
+        the FCA, PRA, ICO and Ofgem rulebooks and legislation.gov.uk. It maps each obligation to your own documents and flags
+        the gaps.
+      actions:
+      - label: Start free trial
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+      aside: '<div style="padding:16px"><b>Example</b><br>FCA SYSC 3.1.1R: <span style="color:#0f7b6c">covered</span><br>FCA
+        PRIN 2A.5: <span style="color:#b26a00">weak wording</span><br>ICO UK GDPR Art. 30: <span style="color:#9a2b2b">gap</span></div>'
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: 1. Set up your firm
+        text: Choose regulators and permissions, then add policies, procedures and controls.
+        badge: 🏢
+      - title: 2. Build the register
+        text: The agent reads rules and legislation, lists the obligations and maps them to your documents.
+        badge: 📚
+      - title: 3. Review and assign
+        text: The compliance officer confirms, rejects or reassigns each mapping. Owners get an email task with a due date
+          and a reminder.
+        badge: ✅
+      - title: 4. Stay current
+        text: A nightly monitor checks new FCA and PRA publications. You approve each impact note before it goes to the board
+          pack.
+        badge: 🔔
+    - type: cards
+      id: pricing
+      title: Pricing
+      intro: Yearly subscription by firm size. The free trial includes starter credits.
+      items:
+      - title: Small
+        text: Smaller firms, up to about 50 staff.
+      - title: Medium
+        text: Mid-sized firms, up to about 250 staff.
+      - title: Large
+        text: Large firms and groups.
+    - type: note
+      content: 'Rulemesh is decision support, not legal advice. Sources: FCA Handbook, PRA Rulebook, ICO and Ofgem publications;
+        legislation.gov.uk under the Open Government Licence v3.0.'
+  - key: firm
+    type: form
+    title: Firm profile
+    collection: firm_profile
+    fields:
+    - firm_name
+    - size
+    - regulators
+    - permissions
+    - business_areas
+    - members
+    edit: true
+    submit:
+      label: Save profile
+      message: Profile saved.
+      redirect: policies
+    roles:
+    - compliance_officer
+    - admin
+  - key: policy_add
+    type: form
+    title: Upload a policy
+    collection: policies
+    submit:
+      label: Save
+      message: Policy saved.
+      redirect: policies
+    roles:
+    - compliance_officer
+    - admin
+  - key: policies
+    type: table
+    title: Policies
+    source: collection:policies
+    export: true
+    roles:
+    - compliance_officer
+    - auditor
+    - admin
+  - key: control_add
+    type: form
+    title: Add a control
+    collection: controls
+    submit:
+      label: Save
+      message: Control saved.
+      redirect: controls
+    roles:
+    - compliance_officer
+    - admin
+  - key: controls
+    type: table
+    title: Control library
+    source: collection:controls
+    export: true
+    roles:
+    - compliance_officer
+    - auditor
+    - admin
+  - key: map_run
+    type: new_run
+    title: Build register
+    roles:
+    - compliance_officer
+    - admin
+  - key: runs
+    type: history
+    title: Previous runs
+    source: run
+    roles:
+    - compliance_officer
+    - admin
+  - key: run_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: obligations
+    type: table
+    title: Obligation register
+    source: collection:obligations
+    export: true
+    printable: true
+    roles:
+    - compliance_officer
+    - auditor
+    - admin
+    data:
+      display: table
+      fields:
+      - key: ref
+        label: Ref
+      - key: regulator
+        label: Regulator
+        format: badge
+      - key: citation
+        label: Citation
+      - key: text
+        label: Obligation
+      - key: business_area
+        label: Business area
+      - key: source_url
+        label: Source
+        format: link
+      sort:
+        field: regulator
+        dir: asc
+  - key: mappings
+    type: table
+    title: Mappings to review
+    source: collection:mappings
+    export: true
+    printable: true
+    roles:
+    - compliance_officer
+    - auditor
+    - admin
+    data:
+      display: table
+      fields:
+      - key: citation
+        label: Citation
+      - key: regulator
+        label: Regulator
+        format: badge
+      - key: coverage
+        label: Coverage
+        format: badge
+      - key: matched
+        label: Matched to
+      - key: weakness_note
+        label: Note
+      - key: status
+        label: Status
+        format: badge
+      - key: owner_email
+        label: Owner
+      - key: due_date
+        label: Due
+        format: date
+      sort:
+        field: regulator
+        dir: asc
+  - key: review
+    type: form
+    title: Review mapping
+    collection: mappings
+    fields:
+    - status
+    - owner_email
+    - due_date
+    - review_note
+    edit: true
+    submit:
+      label: Save decision
+      message: Decision saved. Assigned owners are emailed.
+      redirect: mappings
+    nav: false
+    roles:
+    - compliance_officer
+    - admin
+  - key: my_tasks
+    type: table
+    title: My tasks
+    source: collection:mappings
+    export: true
+    roles:
+    - control_owner
+    - compliance_officer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: citation
+        label: Obligation
+      - key: obligation
+        label: What is required
+      - key: weakness_note
+        label: Note
+      - key: status
+        label: Status
+        format: badge
+      - key: due_date
+        label: Due
+        format: date
+      filters:
+      - field: status
+        op: '='
+        value: assigned
+      sort:
+        field: due_date
+        dir: asc
+      empty: No open tasks.
+  - key: task_update
+    type: form
+    title: Complete task
+    collection: mappings
+    fields:
+    - status
+    - evidence_note
+    edit: true
+    submit:
+      label: Save
+      message: Task updated.
+      redirect: my_tasks
+    nav: false
+    roles:
+    - control_owner
+    - compliance_officer
+    - admin
+  - key: dashboard
+    type: page
+    title: Dashboard
+    printable: true
+    roles:
+    - compliance_officer
+    - auditor
+    - admin
+    sections:
+    - type: data
+      id: kpis
+      title: Overview
+      source: collection:mappings
+      display: kpi
+      kpis:
+      - label: Obligations mapped
+        agg: count
+      - label: Covered
+        agg: sum
+        field: covered_flag
+        format: number
+      - label: Weak wording
+        agg: sum
+        field: weak_flag
+        format: number
+      - label: Open gaps
+        agg: sum
+        field: gap_flag
+        format: number
+    - type: data
+      id: coverage
+      title: Coverage per regulator
+      source: collection:mappings
+      display: chart
+      chart: stacked
+      fields:
+      - key: regulator
+        label: Regulator
+      - key: covered
+        label: Covered
+      - key: weak
+        label: Weak
+      - key: gaps
+        label: Gaps
+      groupBy:
+        field: regulator
+        aggs:
+        - key: covered
+          agg: sum
+          field: covered_flag
+        - key: weak
+          agg: sum
+          field: weak_flag
+        - key: gaps
+          agg: sum
+          field: gap_flag
+    - type: data
+      id: gaps
+      title: Open gaps
+      source: collection:mappings
+      display: table
+      fields:
+      - key: regulator
+        label: Regulator
+        format: badge
+      - key: citation
+        label: Citation
+      - key: obligation
+        label: Obligation
+      - key: status
+        label: Status
+        format: badge
+      filters:
+      - field: coverage
+        op: '='
+        value: gap
+      - field: status
+        op: '!='
+        value: rejected
+      limit: 50
+      empty: No open gaps.
+    - type: data
+      id: actions
+      title: Open actions by due date
+      intro: Earliest due dates first. Anything past its date is overdue.
+      source: collection:mappings
+      display: table
+      fields:
+      - key: due_date
+        label: Due
+        format: date
+      - key: citation
+        label: Obligation
+      - key: owner_email
+        label: Owner
+      - key: status
+        label: Status
+        format: badge
+      filters:
+      - field: status
+        op: '='
+        value: assigned
+      sort:
+        field: due_date
+        dir: asc
+      limit: 50
+      empty: No open actions.
+  - key: watches
+    type: instances
+    template: impact_watch
+    title: Regulatory watch
+    roles:
+    - compliance_officer
+    - admin
+  - key: approvals
+    type: approvals
+    title: Impact notes to approve
+    approvals:
+    - impact_note
+    roles:
+    - compliance_officer
+    - admin
+  - key: board_pack
+    type: table
+    title: 'Board pack: impact notes'
+    source: collection:impact_notes
+    export: true
+    printable: true
+    roles:
+    - compliance_officer
+    - auditor
+    - admin
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Note
+      - key: content
+        label: Impact
+  - key: publications
+    type: table
+    title: FCA and PRA publications
+    source: collection:publications
+    export: true
+    roles:
+    - compliance_officer
+    - auditor
+    - admin
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: count
+        label: New items
+        format: number
+      - key: summary
+        label: Summary
+      sort:
+        field: date
+        dir: desc
+      limit: 60
+  - key: account
+    type: account
+    title: Subscription
+    roles:
+    - compliance_officer
+    - admin
+  templates:
+  - key: impact_watch
+    title: Regulatory impact watch
+    description: Every night, checks new FCA and PRA publications against your obligations and controls and drafts an impact
+      note for you to approve.
+    agent: drafter
+    params:
+    - name: regulators
+      type: select
+      required: true
+      label: Regulators
+      options:
+      - value: FCA
+        label: FCA
+      - value: PRA
+        label: PRA
+      - value: FCA and PRA
+        label: FCA and PRA
+    goal: 'Watch "{instance}": new publications from {regulators}. Today is {date}.
+
+      Compare them with this firm''s obligation register and controls, and draft an impact note if something is affected.
+      Write in the language with ISO code {lang}.'
+    schedule:
+      cron: 30 3 * * *
+      userCanChange: true
+    maxPerUser: 1
+    cost:
+      perRun: 5
+    deliver:
+      to: owner
+      subject: Rulemesh impact note — {title}
+      onlyIfNew: true
+  approvals:
+  - key: impact_note
+    title: Impact note for the board pack
+    description: The compliance officer approves each impact note before it reaches the board pack.
+    decidedBy: requester
+    fields:
+    - title
+    - content
+  triggers:
+  - key: task_assigned
+    description: Email the owner when a mapping is assigned
+    'on':
+      collection: mappings
+      op: update
+      where:
+        status: assigned
+    notify:
+      to:
+      - record.owner_email
+      subject: 'Rulemesh task: {record.citation} due {record.due_date}'
+      body: 'You have been assigned a compliance action.
+
+
+        Obligation: {record.citation}
+
+        {record.obligation}
+
+
+        Note: {record.weakness_note}
+
+        Due date: {record.due_date}
+
+
+        Open the task, do the work and record your evidence.'
+      link: my_tasks
+  - key: task_reminder
+    description: Reminder two days before the due date
+    'on':
+      date:
+        collection: mappings
+        field: due_date
+        offsetDays: -2
+        hour: 8
+      where:
+        status: assigned
+    notify:
+      to:
+      - record.owner_email
+      subject: 'Reminder: {record.citation} is due on {record.due_date}'
+      body: Your compliance action {record.citation} is due on {record.due_date}. Please complete it and add your evidence.
+      link: my_tasks
+  - key: task_overdue
+    description: Tell the owner and the compliance officer the day after the due date
+    'on':
+      date:
+        collection: mappings
+        field: due_date
+        offsetDays: 1
+        hour: 8
+      where:
+        status: assigned
+    notify:
+      to:
+      - record.owner_email
+      - owner
+      subject: 'Overdue: {record.citation}'
+      body: The action {record.citation} was due on {record.due_date} and is still open.
+      link: my_tasks
+  - key: note_approved
+    description: Confirm an approved impact note
+    'on':
+      approval: impact_note
+      decision: approved
+    notify:
+      to: owner
+      subject: Impact note approved for the board pack
+      body: The impact note you approved is now in the board pack.
+      link: board_pack
+  schedules:
+  - agent: monitor
+    cron: 0 2 * * *
+    action: run
+    owner: app
+    goal: Check new FCA and PRA publications, consultation papers and policy statements from the last 2 days. Today is {date}.
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: gbp
+    signupCredits: 300
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:mapper:
+        estimate: 60
+        metered: true
+    plans:
+    - key: small
+      price: 1500
+      interval: year
+      label: Small firm (up to ~50 staff)
+      credits: 8000
+      creditsReset: monthly
+      roles:
+      - compliance_officer
+    - key: medium
+      price: 4500
+      interval: year
+      label: Medium firm (up to ~250 staff)
+      credits: 30000
+      creditsReset: monthly
+      roles:
+      - compliance_officer
+    - key: large
+      price: 12000
+      interval: year
+      label: Large firm or group
+      credits: 100000
+      creditsReset: monthly
+      roles:
+      - compliance_officer
+  extensions:
+  - key: trial_by_credits
+    description: The free trial is a one-off allowance of starter credits at signup, not a time-limited trial.
+  - key: overdue_filter
+    description: A filter on due dates relative to today is not available. The dashboard lists open actions by due date, and
+      overdue owners are emailed the day after the due date.
+  - key: pdf_export
+    description: PDF export uses the printable views (browser print or save as PDF). CSV export is available on the tables.
+  - key: rulebook_sources
+    description: The FCA Handbook, PRA Rulebook, ICO and Ofgem have no reusable API here. The agent reads their pages through
+      the WebRobot MCP, and legislation.gov.uk through its open data. The nightly monitor covers FCA and PRA only.

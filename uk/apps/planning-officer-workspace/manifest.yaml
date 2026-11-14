@@ -1,0 +1,839 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: plandesk
+  displayName: Plandesk
+  tagline: An AI workspace for council planning officers.
+  description: Plandesk helps council planning teams check validation, summarise proposals and representations, retrieve policy
+    and constraints, and draft the officer's report. Officers edit, team leaders approve, and agents never decide an application.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12355b'
+      accent: '#1f7a5c'
+      background: '#f6f8fa'
+      foreground: '#16222e'
+    fonts:
+      body: Inter
+      display: Source Serif 4
+    wordmark:
+    - text: Plan
+      color: primary
+    - text: desk
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how-it-works'
+    - label: Safeguards
+      href: '#safeguards'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Council admin
+      assignedBy: admin_emails
+    - key: planning_officer
+      label: Planning officer
+      assignedBy: invite
+    - key: validation_officer
+      label: Validation officer
+      assignedBy: invite
+    - key: team_leader
+      label: Team leader
+      assignedBy: derived
+      from: collection:cases.team_leader_email
+  limits:
+  - action: agent:drafter
+    per: user
+    max: 20
+    window: day
+  agents:
+  - key: drafter
+    role: main
+    description: Checks validation, summarises the proposal, retrieves policy and constraints, and drafts the officer's report
+      for the officer to edit.
+    profile:
+      inline:
+        display_name: Plandesk case drafter
+        crews:
+        - id: drafter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a drafting assistant for a council planning officer in the UK. You prepare a DRAFT for the
+            officer; you never decide, recommend approval or refusal as fact, or publish anything. The officer is responsible
+            for every judgement.
+
+
+            Work in this order:
+
+            1. Read the application documents: use the uploaded text in the goal; for scans or photos call read_upload with
+            the file id.
+
+            2. Validation: check the application against national and local validation requirements (form, fee, plans, ownership
+            certificate, design and access statement, and the local list if it is in the policy library). List each item as
+            Present / Missing / Unclear with the document reference. Do not invent requirements.
+
+            3. Proposal summary: neutral, factual, in plain English.
+
+            4. Policy: call policy_search for the case''s jurisdiction. England: the council''s local plan and the NPPF. Scotland:
+            NPF4 and the local development plan. Wales: Future Wales, Planning Policy Wales and the local development plan.
+            Quote only policies that you retrieved from the library, with their reference; if a needed policy is not in the
+            library, write ''Not in the council''s policy library'' and do not quote it from memory.
+
+            5. Constraints: if the jurisdiction is England and the site location (lat,lng) is given, call planning_data (GET
+            entity.json with query latitude=<lat>&longitude=<lng>&dataset=conservation-area&dataset=listed-building&dataset=tree-preservation-zone&dataset=flood-risk-zone&dataset=green-belt&dataset=article-4-direction-area;
+            the response lists matching entities with name, dataset, reference). Report what it returns, with the attribution.
+            planning.data.gov.uk covers England only and datasets are incomplete: for Scotland and Wales, or when a call fails,
+            say constraints must be checked manually with the officer''s local sources. Absence of a result is not proof of
+            absence of a constraint.
+
+            6. Representations: call ask_comment_summariser with the case reference and include its summary by material planning
+            consideration, keeping every comment reference.
+
+            7. Draft the officer''s report.
+
+
+            Output format: a level-1 title ''# Officer report DRAFT — <case ref>, <address>''. Then ## Validation check, ##
+            Site and constraints, ## Proposal, ## Relevant policy, ## Representations, ## Assessment (issues for the officer
+            to weigh, with the policy references; leave the planning balance as ''Officer to complete''), ## Options for the
+            officer (neutral list of possible outcomes and the conditions or reasons each would need; no recommendation),
+            ## Gaps and items to verify. Start the body with the line ''DRAFT prepared by AI for officer review. Not a decision.''
+            Use British English. Never invent facts, figures, dates, policy text or case law; mark uncertainty plainly.'
+          mcp_servers: []
+    goalTemplate: 'Case {case_ref}: {address}
+
+      Jurisdiction: {jurisdiction}
+
+      Application type: {application_type}
+
+      {?site_location}Site location (lat,lng): {site_location}{/site_location}
+
+      Statutory target date: {target_date}
+
+      Proposal: {proposal}
+
+      Task: {stage_label}
+
+      {?application}Application documents (file ids): {application}
+
+      {application_text}{/application}
+
+      {?notes}Officer notes: {notes}{/notes}
+
+      Today is {date}. Write in British English.'
+    context:
+    - key: case_ref
+      from: collection:cases.case_ref
+    - key: address
+      from: collection:cases.address
+    - key: jurisdiction
+      from: collection:cases.jurisdiction
+    - key: application_type
+      from: collection:cases.application_type
+    - key: site_location
+      from: collection:cases.site_location
+    - key: target_date
+      from: collection:cases.target_date
+    - key: proposal
+      from: collection:cases.proposal
+    appTools:
+    - name: policy_search
+      description: Search the council's policy library (local plan, NPPF, NPF4, Planning Policy Wales, SPDs) by keyword and
+        jurisdiction
+      action: search
+      collection: policies
+      scope: all
+    - name: planning_data
+      description: Look up planning constraints for a point in England on planning.data.gov.uk (entity.json with latitude,
+        longitude, dataset)
+      action: http
+      http:
+        method: GET
+        url: https://www.planning.data.gov.uk/entity.json
+        allowPath: false
+        attribution: planning.data.gov.uk, Open Government Licence v3.0
+    - name: read_upload
+      description: Read a file the user uploaded (scans and photos included)
+      action: read_file
+    delegates:
+    - comment_summariser
+    writesTo:
+      collection: reports
+      parse: whole
+    output: markdown
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 1.5
+  - key: comment_summariser
+    role: helper
+    description: Summarises neighbour comments and consultee responses by material planning consideration, keeping every comment
+      traceable.
+    profile:
+      inline:
+        display_name: Plandesk representations summariser
+        crews:
+        - id: comment_summariser
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You summarise neighbour comments and consultee responses for a planning case. Use comments_read
+            to fetch the comments for the given case reference and read_upload for attached files. Group the points by material
+            planning consideration (for example design and character, residential amenity, highways and parking, heritage,
+            ecology, flooding, policy). Put non-material points (property values, private covenants, personal disputes) in
+            a separate group ''Not material planning considerations''. For every point cite the comment reference(s) in brackets,
+            e.g. [C-014], and give counts of support, objection and neutral comments, and consultee positions by consultee
+            name. Never merge away a comment: each comment reference must appear at least once. Do not weigh or decide anything,
+            do not invent comments, and keep the original tone neutral. Output Markdown.'
+          mcp_servers: []
+    appTools:
+    - name: comments_read
+      description: Read the neighbour comments and consultee responses of a case
+      action: read
+      collection: comments
+      scope: user
+    - name: read_upload
+      description: Read a file attached to a comment or uploaded by the user
+      action: read_file
+    output: markdown
+  inputForm:
+    title: Prepare a case
+    fields:
+    - name: case
+      type: select
+      required: true
+      label: Case
+      optionsFrom: collection:cases
+    - name: stage
+      type: select
+      required: true
+      label: What do you need?
+      default: full
+      options:
+      - value: validation
+        label: Validation check only
+      - value: full
+        label: Full draft officer's report
+    - name: application
+      type: file
+      label: Application documents (PDF)
+      accept:
+      - pdf
+      - docx
+      - jpg
+      - png
+      maxMb: 15
+      multiple: true
+    - name: notes
+      type: textarea
+      maxLength: 800
+      label: Notes for the drafter (optional)
+  data:
+    collections:
+    - name: cases
+      description: Planning applications in the officer's caseload
+      ownedBy: user
+      fields:
+      - name: case_ref
+        type: text
+        required: true
+        label: Case reference
+      - name: address
+        type: text
+        required: true
+        label: Site address
+      - name: site_location
+        type: location
+        label: Site position (lat,lng)
+      - name: proposal
+        type: textarea
+        required: true
+        label: Proposal description
+      - name: jurisdiction
+        type: select
+        required: true
+        label: Planning system
+        options:
+        - value: england
+          label: England
+        - value: scotland
+          label: Scotland
+        - value: wales
+          label: Wales
+      - name: application_type
+        type: select
+        required: true
+        label: Application type
+        options:
+        - householder
+        - full
+        - outline
+        - reserved_matters
+        - listed_building
+        - prior_approval
+        - discharge_of_conditions
+        - other
+      - name: received_date
+        type: date
+        label: Received
+      - name: target_date
+        type: date
+        required: true
+        label: Statutory determination date
+      - name: status
+        type: select
+        required: true
+        label: Status
+        default: new
+        options:
+        - new
+        - validation
+        - in_progress
+        - report_drafted
+        - determined
+      - name: source
+        type: select
+        label: Source
+        options:
+        - value: upload
+          label: Uploaded PDF
+        - value: manual
+          label: Entered by hand
+      - name: team_leader_email
+        type: email
+        required: true
+        label: Team leader email
+      - name: documents
+        type: file
+        label: Application documents
+        accept:
+        - pdf
+        - docx
+        - jpg
+        - png
+        maxMb: 15
+        multiple: true
+      access:
+      - role: team_leader
+        where:
+          team_leader_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: validation_officer
+        can:
+        - read
+        - write
+    - name: comments
+      description: Neighbour comments and consultee responses, one record per comment
+      ownedBy: user
+      fields:
+      - name: reference
+        type: text
+        required: true
+        label: Comment reference (e.g. C-014)
+      - name: case_ref
+        type: text
+        required: true
+        label: Case reference
+      - name: kind
+        type: select
+        required: true
+        label: Type
+        options:
+        - neighbour
+        - consultee
+      - name: author
+        type: text
+        label: Neighbour address or consultee name
+      - name: position
+        type: select
+        label: Position
+        options:
+        - support
+        - objection
+        - neutral
+      - name: received_date
+        type: date
+        label: Received
+      - name: text
+        type: textarea
+        label: Text
+      - name: attachment
+        type: file
+        label: Letter or response (PDF)
+        accept:
+        - pdf
+        - docx
+        - txt
+        - jpg
+        - png
+        maxMb: 15
+        multiple: true
+      - name: team_leader_email
+        type: email
+        label: Team leader email
+      access:
+      - role: team_leader
+        where:
+          team_leader_email: '{user.email}'
+        can:
+        - read
+      retentionDays: 1825
+    - name: reports
+      description: Draft officer's reports, edited by the officer and approved by the team leader
+      ownedBy: user
+      fields:
+      - name: case_ref
+        type: text
+        label: Case reference
+      - name: title
+        type: text
+        label: Title
+      - name: content
+        type: textarea
+        label: Report
+      - name: status
+        type: select
+        label: Status
+        default: draft
+        options:
+        - draft
+        - submitted
+        - approved
+        - returned
+      - name: officer_email
+        type: email
+        label: Officer email
+      - name: team_leader_email
+        type: email
+        label: Team leader email
+      - name: review_note
+        type: textarea
+        label: Team leader's note
+      access:
+      - role: team_leader
+        where:
+          team_leader_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: policies
+      description: The council's policy library, configured per council and jurisdiction (local plan, NPPF, NPF4, Planning
+        Policy Wales, SPDs)
+      ownedBy: shared
+      fields:
+      - name: jurisdiction
+        type: select
+        required: true
+        label: Planning system
+        options:
+        - england
+        - scotland
+        - wales
+      - name: document
+        type: text
+        required: true
+        label: Document (e.g. Local Plan 2024, NPPF)
+      - name: policy_ref
+        type: text
+        required: true
+        label: Policy reference
+      - name: title
+        type: text
+        label: Title
+      - name: text
+        type: textarea
+        required: true
+        label: Policy text
+      - name: adopted_date
+        type: date
+        label: Adopted
+  views:
+  - key: home
+    type: page
+    title: Plandesk
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: For council planning teams
+      title: Draft the **officer's report** faster. Decide it yourself.
+      text: Plandesk checks validation, summarises proposals and representations, retrieves your local plan policies and national
+        policy, checks constraints, and drafts the report. Officers edit it, team leaders approve it, and the agent never
+        decides an application.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+    - type: steps
+      id: how-it-works
+      title: How it works
+      items:
+      - title: Add the case
+        text: Upload the application PDFs or enter the case. Set the statutory date and your team leader.
+      - title: Prepare
+        text: The agent checks validation, retrieves policy from your library, checks constraints and summarises comments
+          by material consideration.
+      - title: Edit and submit
+        text: You edit the draft report and submit it to your team leader.
+      - title: Approve
+        text: The team leader approves or returns it. Nothing is published before that.
+    - type: cards
+      id: safeguards
+      title: Safeguards
+      items:
+      - title: Human decides
+        text: Agents never determine an application and never recommend an outcome as fact.
+      - title: Traceable comments
+        text: Every neighbour comment and consultee response keeps its reference in the summary.
+      - title: Your policy library
+        text: Each council configures its own policies for England, Scotland and Wales. Nothing is quoted from outside it.
+      - title: Right visibility
+        text: Officers see their caseload, team leaders their team, and the council admin manages users.
+    - type: note
+      content: Plandesk supports officers; it is not a decision-maker. Constraint data comes from planning.data.gov.uk (England,
+        OGL v3.0) and is not exhaustive. Council planning portals are used only where their terms allow.
+  - key: caseload
+    type: page
+    title: Caseload
+    roles:
+    - planning_officer
+    - team_leader
+    - validation_officer
+    - admin
+    sections:
+    - type: data
+      title: Open cases
+      source: collection:cases
+      display: kpi
+      filters:
+      - field: status
+        op: '!='
+        value: determined
+      kpis:
+      - label: Open cases
+        agg: count
+    - type: data
+      title: Cases by status
+      source: collection:cases
+      display: chart
+      chart: bar
+      groupBy:
+        field: status
+        aggs:
+        - key: n
+          agg: count
+      fields:
+      - key: status
+        label: Status
+      - key: count
+        label: Cases
+    - type: data
+      title: Statutory deadlines
+      intro: Earliest determination dates first.
+      source: collection:cases
+      display: table
+      filters:
+      - field: status
+        op: '!='
+        value: determined
+      sort:
+        field: target_date
+        dir: asc
+      limit: 50
+      fields:
+      - key: case_ref
+        label: Case
+      - key: address
+        label: Site
+      - key: jurisdiction
+        label: System
+        format: badge
+      - key: target_date
+        label: Determination date
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      empty: No open cases.
+  - key: cases
+    type: table
+    title: Cases
+    source: collection:cases
+    columns:
+    - case_ref
+    - address
+    - jurisdiction
+    - application_type
+    - target_date
+    - status
+    export: true
+    roles:
+    - planning_officer
+    - team_leader
+    - validation_officer
+    - admin
+  - key: new_case
+    type: form
+    title: Add a case
+    collection: cases
+    submit:
+      label: Save case
+      message: Case saved.
+      redirect: cases
+    edit: true
+    roles:
+    - planning_officer
+    - validation_officer
+    - team_leader
+    - admin
+  - key: new_run
+    type: new_run
+    title: Prepare a case
+    roles:
+    - planning_officer
+    - team_leader
+    - admin
+  - key: history
+    type: history
+    title: My drafts
+    source: run
+    roles:
+    - planning_officer
+    - team_leader
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: add_comment
+    type: form
+    title: Add a comment or response
+    collection: comments
+    submit:
+      label: Save
+      message: Saved with its reference.
+      redirect: comments
+    edit: true
+    roles:
+    - planning_officer
+    - team_leader
+    - admin
+  - key: comments
+    type: table
+    title: Representations
+    source: collection:comments
+    columns:
+    - reference
+    - case_ref
+    - kind
+    - author
+    - position
+    - received_date
+    export: true
+    roles:
+    - planning_officer
+    - team_leader
+    - admin
+  - key: reports
+    type: table
+    title: Officer reports
+    source: collection:reports
+    columns:
+    - case_ref
+    - title
+    - status
+    - officer_email
+    - team_leader_email
+    roles:
+    - planning_officer
+    - team_leader
+    - admin
+  - key: edit_report
+    type: form
+    title: Edit and submit report
+    collection: reports
+    submit:
+      label: Save report
+      message: Report saved.
+      redirect: reports
+    edit: true
+    nav: false
+    roles:
+    - planning_officer
+    - team_leader
+    - admin
+  - key: policy_library
+    type: table
+    title: Policy library
+    source: collection:policies
+    columns:
+    - jurisdiction
+    - document
+    - policy_ref
+    - title
+    - adopted_date
+    roles:
+    - planning_officer
+    - team_leader
+    - validation_officer
+    - admin
+  - key: admin
+    type: tabs
+    title: Council admin
+    children:
+    - admin_users
+    - admin_data
+    roles:
+    - admin
+  - key: admin_users
+    type: admin
+    title: Users and roles
+    roles:
+    - admin
+    nav: false
+  - key: admin_data
+    type: admin
+    title: Policy library and data
+    roles:
+    - admin
+    nav: false
+  triggers:
+  - key: deadline_7
+    description: Reminder a week before the determination date
+    'on':
+      date:
+        collection: cases
+        field: target_date
+        offsetDays: -7
+        hour: 8
+    notify:
+      to:
+      - owner
+      - record.team_leader_email
+      subject: 'Determination date in 7 days: {record.case_ref}'
+      body: Case {record.case_ref} at {record.address} reaches its statutory determination date on {record.target_date}.
+      link: caseload
+  - key: deadline_2
+    description: Reminder two days before the determination date
+    'on':
+      date:
+        collection: cases
+        field: target_date
+        offsetDays: -2
+        hour: 8
+    notify:
+      to:
+      - owner
+      - record.team_leader_email
+      subject: 'Determination date in 2 days: {record.case_ref}'
+      body: Case {record.case_ref} at {record.address} reaches its statutory determination date on {record.target_date}. Please
+        make sure the report is approved.
+      link: caseload
+  - key: report_submitted
+    description: Tell the team leader a report awaits approval
+    'on':
+      collection: reports
+      op: update
+      where:
+        status: submitted
+    notify:
+      to:
+      - record.team_leader_email
+      subject: 'Report awaiting approval: {record.case_ref}'
+      body: The officer's report for {record.case_ref} has been submitted for your approval.
+      link: reports
+  - key: report_decided
+    description: Tell the officer the report was approved
+    'on':
+      collection: reports
+      op: update
+      where:
+        status: approved
+    notify:
+      to:
+      - record.officer_email
+      subject: 'Report approved: {record.case_ref}'
+      body: Your report for {record.case_ref} was approved by the team leader.
+      link: reports
+  - key: report_returned
+    description: Tell the officer the report was returned
+    'on':
+      collection: reports
+      op: update
+      where:
+        status: returned
+    notify:
+      to:
+      - record.officer_email
+      subject: 'Report returned: {record.case_ref}'
+      body: Your report for {record.case_ref} was returned with a note from the team leader.
+      link: reports
+  egress:
+    hosts:
+    - www.planning.data.gov.uk
+    notes: 'planning.data.gov.uk: national planning data for England, Open Government Licence v3.0, reuse allowed with attribution.'
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - free
+  extensions:
+  - key: idox_uniform_integration
+    description: 'Pulling applications from the council back office (Idox, Uniform) needs a per-council integration (API access
+      and credentials agreed with the council). Not available yet: cases are uploaded as PDFs or entered by hand.'
+  - key: council_portals
+    description: Council planning portals may be read only where their terms of use allow it; no portal is scraped by default.
+  - key: gcloud_contract
+    description: Pricing is an annual council contract sold through G-Cloud, invoiced outside the app, so billing is set to
+      free.
+  - key: scotland_wales_constraints
+    description: planning.data.gov.uk covers England only; constraint data sources for Scotland and Wales are not integrated
+      and officers check them manually.
+  - key: single_council_tenancy
+    description: Each council runs its own app instance, so its users, cases and policy library stay separate; records are
+      ownedBy user, with team leader access via team_leader_email.
+  - key: deadline_reminder_filter
+    description: Date reminders cannot be filtered by status, so they fire for every case with a determination date, including
+      determined ones.

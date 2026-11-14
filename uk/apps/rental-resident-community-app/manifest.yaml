@@ -1,0 +1,1091 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: nestlane
+  displayName: Nestlane
+  tagline:
+    en: The resident app for build-to-rent buildings.
+  description:
+    en: Notices, community board, amenity booking, AI-triaged maintenance requests and a handbook chat assistant for verified
+      residents. Dashboards for managers.
+  langs:
+  - en
+  defaultLang: en
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f3d3a'
+      accent: '#e07a3f'
+      background: '#faf8f4'
+      foreground: '#1c2524'
+    fonts:
+      body: DM Sans
+      display: Fraunces
+    wordmark:
+    - text: Nest
+      color: primary
+    - text: lane
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: For operators
+      href: '#operators'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Operator admin
+      assignedBy: admin_emails
+    - key: manager
+      label: Building manager
+      assignedBy: derived
+      from: collection:buildings.manager_email
+    - key: maintenance
+      label: Maintenance staff
+      assignedBy: derived
+      from: collection:staff.email
+    - key: resident
+      label: Resident
+      assignedBy: derived
+      from: collection:residents.email
+  limits:
+  - action: chat
+    per: user
+    max: 50
+    window: day
+    roles:
+    - resident
+  agents:
+  - key: triage
+    role: main
+    description: 'Triages each maintenance request: category, priority, duplicate check, routing and approvals.'
+    profile:
+      inline:
+        display_name: Nestlane triage
+        crews:
+        - id: triage
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You triage maintenance requests for a build-to-rent residential operator. Start your final answer
+            with a level-1 title "# Triage — <short summary>". Steps: (1) If photos are attached, open each with read_upload
+            using the file id. (2) Call read_buildings and find the building named in the request to get its manager_email.
+            (3) Call search_open_issues for the same building and look for the same category/location logged in the last 14
+            days; if it is clearly the same problem, call update_request with status "duplicate", duplicate_of set to the
+            earlier request_ref and a triage_note, and stop (do not route). (4) Otherwise decide the category (plumbing, electrical,
+            heating, appliances, structural, pests, locks_security, common_areas, other) and priority p1 (safety/emergency:
+            flood, gas, fire, no heating in winter, lift entrapment, security breach), p2 (urgent: no water/power in a unit),
+            p3 (normal), p4 (cosmetic). Use the resident''s urgency as a hint, not a rule. (5) Call search_staff to pick the
+            staff member of that building whose skills match the category; if none, leave assignee_email empty and say so
+            in triage_note. (6) For p1 that needs an out-of-hours or external contractor call-out, call request_urgent_callout
+            first and set status "awaiting_approval"; for in-house p1 dispatch immediately. (7) Call update_request with ai_category,
+            priority, assignee_email, manager_email, response_minutes (minutes elapsed since submission, best estimate), triage_note
+            (one or two sentences) and status "assigned" (or "awaiting_approval"). (8) Call log_issue with building, category,
+            location, summary, request_ref, logged_on (today''s date). When asked to handle a contractor quote: if estimated_cost
+            is above 500 EUR call request_contractor_cost and set status "awaiting_approval"; otherwise set status "in_progress".
+            When resumed after an approval decision: if approved set status "assigned" (callout) or "in_progress" (cost);
+            if rejected add a triage_note for the manager and set status "assigned" with in-house staff. Never invent staff,
+            costs or building data; if something is missing, say so.'
+          mcp_servers: []
+    appTools:
+    - name: read_buildings
+      description: Read the buildings and their manager emails
+      action: read
+      collection: buildings
+      scope: all
+    - name: search_staff
+      description: Search maintenance staff by building and skills
+      action: search
+      collection: staff
+      scope: all
+    - name: search_open_issues
+      description: Search recently logged issues for duplicate detection
+      action: search
+      collection: open_issues
+      scope: all
+    - name: log_issue
+      description: Log a triaged issue so later requests can be checked for duplicates
+      action: append
+      collection: open_issues
+      scope: all
+    - name: update_request
+      description: Update the maintenance request being triaged
+      action: write
+      collection: requests
+      scope: user
+    - name: read_upload
+      description: Read a photo or file attached to the request
+      action: read_file
+    awaits:
+    - urgent_callout
+    - contractor_cost
+    output: markdown
+    limits:
+      maxTurns: 14
+      maxBudgetUsd: 0.4
+  - key: concierge
+    role: helper
+    description: Answers resident questions from the building handbook and house rules.
+    profile:
+      inline:
+        display_name: Nestlane concierge
+        crews:
+        - id: concierge
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.15
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You are the friendly concierge of a residential building. Answer only from the handbook and house
+            rules you find with search_handbook (search by topic; if the resident's building is unknown, ask which building).
+            Quote the rule briefly, keep answers under 150 words, and say plainly when the handbook does not cover the question
+            and suggest contacting the building manager. For repairs, tell the resident to use the Report an issue page. Never
+            invent rules, opening hours or fees.
+    appTools:
+    - name: search_handbook
+      description: Search the building handbook and house rules
+      action: search
+      collection: handbook
+      scope: all
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+      Resident asks: {message}
+
+      Reply in the language with ISO code {lang}.'
+    output: markdown
+  data:
+    collections:
+    - name: buildings
+      ownedBy: shared
+      description: Buildings of the operator (filled by admins on the data page)
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Building
+      - name: address
+        type: text
+        label: Address
+      - name: units
+        type: number
+        label: Units
+      - name: manager_email
+        type: email
+        label: Manager email
+    - name: residents
+      ownedBy: org
+      description: Tenancy data imported from CSV by the operator; only residents listed here can verify and join
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Name
+      - name: email
+        type: email
+        required: true
+        label: Email
+      - name: building
+        type: text
+        required: true
+        label: Building
+      - name: unit
+        type: text
+        label: Unit
+      - name: phone
+        type: text
+        label: Phone
+      - name: lease_end
+        type: date
+        label: Lease end
+    - name: staff
+      ownedBy: app
+      description: Maintenance staff (filled by admins)
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Name
+      - name: email
+        type: email
+        required: true
+        label: Email
+      - name: building
+        type: text
+        label: Building
+      - name: skills
+        type: text
+        label: Skills (categories)
+      - name: phone
+        type: text
+        label: Phone
+    - name: amenities
+      ownedBy: shared
+      description: Bookable amenities (gym, lounge, guest suite)
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Amenity
+      - name: building
+        type: text
+        label: Building
+      - name: description
+        type: text
+        label: Description
+    - name: handbook
+      ownedBy: shared
+      description: Building handbook and house rules
+      fields:
+      - name: building
+        type: text
+        label: Building
+      - name: title
+        type: text
+        required: true
+        label: Topic
+      - name: content
+        type: textarea
+        required: true
+        label: Content
+    - name: notices
+      ownedBy: user
+      description: Building notices written by managers
+      access:
+      - role: resident
+        can:
+        - read
+      fields:
+      - name: building
+        type: text
+        required: true
+        label: Building
+      - name: title
+        type: text
+        required: true
+        label: Title
+      - name: body
+        type: textarea
+        required: true
+        label: Message
+      - name: urgent
+        type: boolean
+        label: Urgent
+    - name: posts
+      ownedBy: user
+      description: Community board posts and events
+      retentionDays: 365
+      access:
+      - role: resident
+        can:
+        - read
+      fields:
+      - name: building
+        type: text
+        required: true
+        label: Building
+      - name: kind
+        type: select
+        required: true
+        label: Type
+        options:
+        - value: event
+          label: Event
+        - value: post
+          label: Post
+        - value: for_sale
+          label: For sale
+        - value: lost_found
+          label: Lost & found
+      - name: title
+        type: text
+        required: true
+        label: Title
+      - name: body
+        type: textarea
+        label: Details
+      - name: event_date
+        type: date
+        label: Event date
+    - name: amenity_bookings
+      ownedBy: user
+      description: Amenity bookings
+      access:
+      - role: manager
+        can:
+        - read
+      fields:
+      - name: notes
+        type: text
+        label: Notes
+    - name: requests
+      ownedBy: user
+      description: Maintenance requests of each resident
+      retentionDays: 1095
+      access:
+      - role: manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: maintenance
+        where:
+          assignee_email: '{user.email}'
+        can:
+        - read
+        - write
+      fields:
+      - name: building
+        type: select
+        required: true
+        label: Building
+        optionsFrom: collection:buildings
+      - name: unit
+        type: text
+        label: Unit
+      - name: category
+        type: select
+        required: true
+        label: Category
+        options:
+        - value: plumbing
+          label: Plumbing
+        - value: electrical
+          label: Electrical
+        - value: heating
+          label: Heating & hot water
+        - value: appliances
+          label: Appliances
+        - value: structural
+          label: Doors, windows, walls
+        - value: pests
+          label: Pests
+        - value: locks_security
+          label: Locks & security
+        - value: common_areas
+          label: Common areas
+        - value: other
+          label: Other
+      - name: location
+        type: text
+        required: true
+        label: Location (room, area)
+      - name: urgency
+        type: select
+        required: true
+        label: Urgency
+        options:
+        - value: low
+          label: Low
+        - value: normal
+          label: Normal
+        - value: high
+          label: High
+        - value: emergency
+          label: Emergency
+      - name: description
+        type: textarea
+        required: true
+        label: Description
+        maxLength: 1500
+      - name: photos
+        type: file
+        label: Photos
+        accept:
+        - jpg
+        - jpeg
+        - png
+        - webp
+        maxMb: 10
+        multiple: true
+        capture: true
+      - name: status
+        type: select
+        label: Status
+        default: new
+        options:
+        - value: new
+          label: New
+        - value: awaiting_approval
+          label: Awaiting approval
+        - value: assigned
+          label: Assigned
+        - value: quote_submitted
+          label: Quote submitted
+        - value: in_progress
+          label: In progress
+        - value: resolved
+          label: Resolved
+        - value: closed
+          label: Closed
+        - value: duplicate
+          label: Duplicate
+      - name: ai_category
+        type: text
+        label: Suggested category
+      - name: priority
+        type: select
+        label: Priority
+        options:
+        - p1
+        - p2
+        - p3
+        - p4
+      - name: assignee_email
+        type: email
+        label: Assigned to
+      - name: manager_email
+        type: email
+        label: Manager
+      - name: duplicate_of
+        type: text
+        label: Duplicate of
+      - name: triage_note
+        type: textarea
+        label: Triage note
+      - name: response_minutes
+        type: number
+        label: Response time (min)
+      - name: estimated_cost
+        type: number
+        label: Estimated cost (EUR)
+      - name: resolution_note
+        type: textarea
+        label: Resolution note
+    - name: open_issues
+      ownedBy: app
+      description: Triaged issues per building, used only by the triage agent for duplicate detection
+      retentionDays: 60
+      fields:
+      - name: building
+        type: text
+        label: Building
+      - name: category
+        type: text
+        label: Category
+      - name: location
+        type: text
+        label: Location
+      - name: summary
+        type: text
+        label: Summary
+      - name: request_ref
+        type: text
+        label: Request
+      - name: logged_on
+        type: date
+        label: Logged on
+    - name: feedback
+      ownedBy: user
+      description: Satisfaction answers when a job is closed
+      access:
+      - role: manager
+        can:
+        - read
+      fields:
+      - name: request_ref
+        type: text
+        label: Request
+      - name: rating
+        type: select
+        required: true
+        label: How satisfied are you?
+        options:
+        - value: '5'
+          label: 5 - Very satisfied
+        - value: '4'
+          label: '4'
+        - value: '3'
+          label: '3'
+        - value: '2'
+          label: '2'
+        - value: '1'
+          label: 1 - Not satisfied
+      - name: comment
+        type: textarea
+        label: Comment
+  approvals:
+  - key: urgent_callout
+    title: Urgent call-out
+    description: Manager approves an urgent out-of-hours or external contractor call-out
+    role: manager
+    fields:
+    - building
+    - location
+    - description
+    - priority
+    timeoutMinutes: 60
+    onTimeout: approve
+  - key: contractor_cost
+    title: Contractor cost above threshold
+    description: Manager approves a contractor cost above 500 EUR
+    role: manager
+    fields:
+    - building
+    - description
+    - estimated_cost
+    timeoutMinutes: 2880
+    onTimeout: reject
+  triggers:
+  - key: triage_new
+    'on':
+      collection: requests
+      op: insert
+      where:
+        status: new
+    start:
+      agent: triage
+    goal: 'Triage this new maintenance request. Building: {record.building}, unit: {record.unit}. Category chosen by resident:
+      {record.category}. Location: {record.location}. Urgency: {record.urgency}. Description: {record.description}. Photo
+      file ids: {record.photos}.'
+    asUser: true
+  - key: quote_received
+    'on':
+      collection: requests
+      op: update
+      where:
+        status: quote_submitted
+    start:
+      agent: triage
+    goal: 'A contractor quote was submitted for this request in {record.building} ({record.location}): {record.description}.
+      Estimated cost: {record.estimated_cost} EUR. Apply the cost-approval rule.'
+    asUser: true
+  - key: callout_decided
+    'on':
+      approval: urgent_callout
+      decision: any
+    start:
+      agent: triage
+    goal: 'The urgent call-out approval was decided. Event: {event}. Resume the request and apply the decision.'
+    asUser: true
+  - key: cost_decided
+    'on':
+      approval: contractor_cost
+      decision: any
+    start:
+      agent: triage
+    goal: 'The contractor cost approval was decided. Event: {event}. Resume the request and apply the decision.'
+    asUser: true
+  - key: notify_assigned
+    'on':
+      collection: requests
+      op: update
+      where:
+        status: assigned
+    notify:
+      to:
+      - owner
+      subject: Your request has been assigned
+      body: 'Your maintenance request ({record.location}) has been triaged and assigned. Priority: {record.priority}.'
+      link: my_requests
+  - key: notify_staff
+    'on':
+      collection: requests
+      op: update
+      where:
+        status: assigned
+    notify:
+      to:
+      - record.assignee_email
+      subject: New request assigned to you
+      body: 'Building {record.building}, {record.location}: {record.description}. Priority {record.priority}.'
+      link: staff_queue
+  - key: notify_progress
+    'on':
+      collection: requests
+      op: update
+      where:
+        status: in_progress
+    notify:
+      to:
+      - owner
+      subject: Work has started on your request
+      body: Work is under way on your request ({record.location}).
+      link: my_requests
+  - key: notify_resolved
+    'on':
+      collection: requests
+      op: update
+      where:
+        status: resolved
+    notify:
+      to:
+      - owner
+      subject: Your request has been resolved
+      body: Your request ({record.location}) is marked as resolved. {record.resolution_note}
+      link: my_requests
+  - key: notify_duplicate
+    'on':
+      collection: requests
+      op: update
+      where:
+        status: duplicate
+    notify:
+      to:
+      - owner
+      subject: Your request matches a known issue
+      body: Your request ({record.location}) matches an issue already reported and being handled. You will get updates on
+        the original request.
+      link: my_requests
+  - key: csat_closed
+    'on':
+      collection: requests
+      op: update
+      where:
+        status: closed
+    notify:
+      to:
+      - owner
+      subject: How did we do?
+      body: Your request ({record.location}) is closed. Please tell us how satisfied you are; it takes 10 seconds.
+      link: feedback
+  - key: notice_push
+    'on':
+      collection: notices
+      op: insert
+    notify:
+      to:
+      - role:resident
+      subject: '{record.title}'
+      body: '{record.body}'
+      link: notices
+  - key: booking_confirm
+    'on':
+      collection: amenity_bookings
+      op: insert
+    notify:
+      to:
+      - owner
+      subject: Booking confirmed
+      body: Your amenity booking is confirmed. See you there.
+      link: book
+  - key: booking_reminder
+    'on':
+      date:
+        collection: amenity_bookings
+        field: start
+        offsetDays: 0
+        hour: 7
+    notify:
+      to:
+      - owner
+      subject: Booking reminder
+      body: 'Reminder: you have an amenity booking today.'
+      link: book
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Nestlane
+    sections:
+    - type: hero
+      title: Your building, in your **pocket**.
+      text: Notices, community board, amenity booking, maintenance requests and a handbook assistant, only for verified residents
+        of your build-to-rent building.
+      eyebrow: Free for residents
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Verify
+        text: Sign in with your email. Only residents on the operator's tenancy list can join.
+      - title: Report
+        text: Send a maintenance request with photos. An AI agent triages it, checks duplicates and routes it to the right
+          person.
+      - title: Stay informed
+        text: Push and email updates, building notices, bookings and a satisfaction question when the job is closed.
+    - type: cards
+      id: operators
+      title: For operators and managers
+      items:
+      - title: Import residents
+        text: Upload tenancy data as CSV on the data page; every member is a real resident.
+        badge: 👥
+      - title: Approvals
+        text: Managers approve urgent call-outs and contractor costs above the threshold.
+        badge: ✅
+      - title: Dashboards
+        text: Open requests, response times and engagement per building.
+        badge: 📊
+    - type: note
+      content: Nestlane is free for residents. Operators pay a monthly fee based on the number of units.
+  - key: notices
+    type: cards
+    title: Notices
+    source: collection:notices
+    roles:
+    - resident
+    - manager
+    - admin
+    data:
+      display: cards
+      fields:
+      - key: title
+        label: Title
+      - key: building
+        label: Building
+        format: badge
+      - key: body
+        label: Message
+      limit: 50
+      empty: No notices yet.
+  - key: post_notice
+    type: form
+    title: Post a notice
+    collection: notices
+    roles:
+    - manager
+    - admin
+    submit:
+      label: Publish
+      message: Notice published and sent by push and email.
+      redirect: notices
+  - key: board
+    type: cards
+    title: Community board
+    source: collection:posts
+    roles:
+    - resident
+    - manager
+    - admin
+    data:
+      display: cards
+      fields:
+      - key: title
+        label: Title
+      - key: kind
+        label: Type
+        format: badge
+      - key: event_date
+        label: Date
+        format: date
+      - key: body
+        label: Details
+      limit: 60
+      empty: Nothing posted yet.
+  - key: new_post
+    type: form
+    title: New post or event
+    collection: posts
+    roles:
+    - resident
+    - manager
+    - admin
+    submit:
+      label: Post
+      message: Posted on the community board.
+      redirect: board
+  - key: book
+    type: booking
+    title: Book an amenity
+    collection: amenity_bookings
+    resources: collection:amenities
+    fields:
+    - notes
+    roles:
+    - resident
+    slots:
+      days:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      - 7
+      from: 07:00
+      to: '22:00'
+      minutes: 60
+      aheadDays: 30
+      minNoticeHours: 1
+      capacity: 1
+  - key: new_request
+    type: form
+    title: Report an issue
+    collection: requests
+    fields:
+    - building
+    - unit
+    - category
+    - location
+    - urgency
+    - description
+    - photos
+    roles:
+    - resident
+    submit:
+      label: Send request
+      message: Request received. We are triaging it now.
+      redirect: my_requests
+  - key: my_requests
+    type: table
+    title: My requests
+    source: collection:requests
+    roles:
+    - resident
+    data:
+      display: table
+      fields:
+      - key: location
+        label: Location
+      - key: category
+        label: Category
+      - key: priority
+        label: Priority
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+      - key: triage_note
+        label: Note
+      sort:
+        field: createdAt
+        dir: desc
+      limit: 100
+      empty: No requests yet.
+  - key: staff_queue
+    type: table
+    title: Request queue
+    source: collection:requests
+    roles:
+    - maintenance
+    - manager
+    - admin
+    data:
+      display: table
+      fields:
+      - key: building
+        label: Building
+      - key: unit
+        label: Unit
+      - key: location
+        label: Location
+      - key: description
+        label: Description
+      - key: priority
+        label: Priority
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+      - key: estimated_cost
+        label: Cost
+        format: money
+      sort:
+        field: priority
+        dir: asc
+      limit: 100
+      empty: Nothing assigned.
+    export: true
+  - key: update_request
+    type: form
+    title: Update request
+    collection: requests
+    fields:
+    - status
+    - estimated_cost
+    - resolution_note
+    edit: true
+    roles:
+    - maintenance
+    - manager
+    - admin
+    nav: false
+    submit:
+      label: Save update
+      message: Request updated.
+      redirect: staff_queue
+  - key: approvals
+    type: approvals
+    title: Approvals
+    roles:
+    - manager
+    - admin
+  - key: feedback
+    type: form
+    title: Rate the repair
+    collection: feedback
+    roles:
+    - resident
+    nav: false
+    submit:
+      label: Send
+      message: Thank you for your feedback.
+  - key: assistant
+    type: chat
+    title: Ask the building
+    source: agent:concierge
+    roles:
+    - resident
+    examples:
+    - What are the quiet hours?
+    - How do I book the guest suite?
+    - Where do I put bulky waste?
+    placeholder: Ask about house rules or the handbook
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - manager
+    - admin
+    sections:
+    - type: data
+      title: Requests
+      source: collection:requests
+      display: kpi
+      kpis:
+      - label: Total requests
+        agg: count
+      - label: Avg response (min)
+        agg: avg
+        field: response_minutes
+        format: number
+      - label: Avg cost
+        agg: avg
+        field: estimated_cost
+        format: money
+    - type: data
+      title: Requests by status
+      source: collection:requests
+      display: chart
+      chart: bar
+      fields:
+      - key: status
+      - key: count
+      groupBy:
+        field: status
+        aggs:
+        - key: avg_response
+          agg: avg
+          field: response_minutes
+    - type: data
+      title: Requests by category
+      source: collection:requests
+      display: chart
+      chart: pie
+      fields:
+      - key: category
+      - key: count
+      groupBy:
+        field: category
+        aggs: []
+    - type: data
+      title: Satisfaction
+      source: collection:feedback
+      display: kpi
+      kpis:
+      - label: Answers
+        agg: count
+    - type: data
+      title: Community engagement
+      source: collection:posts
+      display: chart
+      chart: bar
+      fields:
+      - key: kind
+      - key: count
+      groupBy:
+        field: kind
+        aggs: []
+    - type: data
+      title: Amenity bookings
+      source: collection:amenity_bookings
+      display: kpi
+      kpis:
+      - label: Bookings
+        agg: count
+  - key: account
+    type: account
+    title: Plan
+    roles:
+    - admin
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: starter
+      price: 150
+      interval: month
+      label: Starter (up to 100 units)
+      includes:
+      - Up to 100 units
+      - Unlimited free residents
+      roles:
+      - admin
+    - key: growth
+      price: 500
+      interval: month
+      label: Growth (up to 400 units)
+      includes:
+      - Up to 400 units
+      - Unlimited free residents
+      roles:
+      - admin
+    - key: scale
+      price: 1200
+      interval: month
+      label: Scale (up to 1,200 units)
+      includes:
+      - Up to 1,200 units
+      - Unlimited free residents
+      roles:
+      - admin
+  mobile:
+    appId: com.nestlane.resident
+    appName: Nestlane
+    capabilities:
+    - name: push
+    - name: camera
+      reason:
+        en: To photograph a maintenance problem
+    - name: microphone
+      reason:
+        en: To ask the building assistant by voice
+  extensions:
+  - key: per_unit_pricing
+    description: The fee is per unit, but plans are sold as unit bands; exact per-unit metering is not available yet.
+  - key: building_scoping
+    description: Notices, community posts, bookings and feedback are visible to all residents/managers of the app, not filtered
+      per building, because access rules cannot match a user's building yet. Push notices reach all residents.

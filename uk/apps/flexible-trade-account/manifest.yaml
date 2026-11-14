@@ -1,0 +1,1222 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: tallyline
+  displayName: Tallyline
+  tagline: A flexible trade account for businesses, instead of an overdraft.
+  description: 'Tallyline is the software layer around an FCA-regulated funding partner''s trade account: supplier and marketplace
+    onboarding, buyer applications checked against Companies House and passed to the partner''s credit decision API, buyer
+    dashboards, repayment reminders, supplier settlement reports, a cost simulator and an assistant that flags accounts nearing
+    their limit.'
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0b3b3c'
+      accent: '#d98e04'
+      background: '#f7f8f6'
+      foreground: '#16201f'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Tally
+      color: primary
+    - text: line
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: For suppliers
+      href: '#suppliers'
+    cta:
+      label: Apply for a trade account
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+      - supplier_signup
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: buyer
+      label: Buyer
+      assignedBy: signup
+    - key: supplier
+      label: Supplier or marketplace
+      assignedBy: invite
+    - key: credit_team
+      label: Partner credit team
+      assignedBy: invite
+  limits:
+  - action: chat
+    per: user
+    max: 60
+    window: day
+  - action: agent:simulator
+    per: user
+    max: 20
+    window: day
+  - action: login
+    per: ip
+    max: 20
+    window: hour
+  slots:
+  - key: schedule
+    description: Repayment schedule and total cost for an amount, number of months, monthly rate and fee.
+    timeoutMs: 2000
+    example:
+      args:
+        amount: 12000
+        months: 6
+        monthly_rate_pct: 1.5
+        fee_pct: 1
+      userId: u1
+    code: "def main(input):\n    a = input.get('args') or input\n    amount = float(a.get('amount', 0) or 0)\n    months =\
+      \ int(a.get('months', 1) or 1)\n    if months < 1:\n        months = 1\n    r = float(a.get('monthly_rate_pct', 0) or\
+      \ 0) / 100.0\n    fee = amount * float(a.get('fee_pct', 0) or 0) / 100.0\n    if r > 0:\n        pay = amount * r /\
+      \ (1 - (1 + r) ** (-months))\n    else:\n        pay = amount / months\n    bal = amount\n    rows = []\n    total_interest\
+      \ = 0.0\n    for i in range(1, months + 1):\n        interest = bal * r\n        principal = pay - interest\n      \
+      \  bal = max(bal - principal, 0.0)\n        total_interest += interest\n        rows.append({'n': i, 'instalment': round(pay,\
+      \ 2), 'interest': round(interest, 2), 'principal': round(principal, 2), 'balance': round(bal, 2)})\n    return {\n \
+      \       'amount': round(amount, 2),\n        'months': months,\n        'instalment': round(pay, 2),\n        'total_interest':\
+      \ round(total_interest, 2),\n        'fee': round(fee, 2),\n        'total_cost': round(total_interest + fee, 2),\n\
+      \        'total_repayable': round(amount + total_interest + fee, 2),\n        'schedule': rows\n    }\n"
+  agents:
+  - key: simulator
+    role: main
+    description: Shows a buyer the cost of a purchase over each repayment period, using the partner's rate card.
+    profile:
+      inline:
+        display_name: Tallyline cost simulator
+        crews:
+        - id: simulator
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the Tallyline cost simulator. The user wants to see what a purchase on the trade account
+            would cost over different repayment periods. Call read_pricing to get the partner''s rate card (period_months,
+            monthly_rate_pct, fee_pct). For every period in the rate card call calc_schedule with amount, months, monthly_rate_pct
+            and fee_pct. Never compute figures yourself and never invent rates; if the rate card is empty say the partner''s
+            pricing is not published yet. Output: a level-1 title "# Trade account cost simulation — £<amount>", a comparison
+            table (period, instalment, total interest, fee, total cost, total repayable), a ```chart block (bar, total cost
+            per period, unit £), then the instalment schedule of the shortest and longest period. End with: figures are indicative;
+            the final terms are set by the FCA-regulated funding partner, who provides the credit. Write in English.'
+    appTools:
+    - name: read_pricing
+      description: Read the partner's rate card
+      action: read
+      collection: pricing
+      scope: all
+    - name: calc_schedule
+      description: 'Compute the repayment schedule and total cost. args: amount, months, monthly_rate_pct, fee_pct'
+      action: call
+      slot: schedule
+    goalTemplate: 'Purchase amount: £{amount}. Show the cost of paying it over every repayment period of the rate card. Today
+      is {date}. Write in the language with ISO code {lang}.'
+    output: markdown
+  - key: underwriter
+    role: helper
+    description: Checks the company on Companies House, prepares the application file and passes it to the partner's credit
+      decision API.
+    profile:
+      inline:
+        display_name: Tallyline application processor
+        crews:
+        - id: underwriter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare trade-account applications for the FCA-regulated funding partner, who alone takes the
+            credit decision. You NEVER approve, decline or estimate a limit yourself. Steps: 1) call read_application and
+            find the newest record with status ''submitted'' for the company number in the goal. 2) call companies_house with
+            path /<company_number> (company profile) and /<company_number>/officers (officers). Compare: company exists and
+            is active, name matches, incorporation date, accounts/confirmation overdue flags, insolvency or charges flags,
+            and whether the directors typed by the applicant appear among the current officers. 3) Build the application file
+            as JSON: applicant data, requested limit, turnover, directors, bank details, and your Companies House findings
+            (facts only, with discrepancies listed). 4) If the company is not found or is dissolved, or has insolvency history,
+            call save_application with status ''declined'' and a decision_note and stop; do not call the partner. Otherwise
+            call partner_credit_decision (POST, JSON body = the file) and read the response. 5) call save_application with
+            ch_status, status (''approved'', ''declined'' or ''referred'' as returned by the partner), approved_limit, terms
+            (the partner''s terms in plain words), partner_ref and decision_note. If approved also call save_account with
+            partner_account_id, limit_approved, limit_available (same as approved), balance_used 0, utilisation_pct 0, status
+            ''active'', terms_summary. Never invent figures: use only what the APIs return. Final answer: a level-1 title
+            "# Application file — <company name>", then sections ## Companies House checks, ## Sent to the partner, ## Outcome.'
+    appTools:
+    - name: read_application
+      description: Read the buyer's applications
+      action: read
+      collection: applications
+      scope: user
+    - name: save_application
+      description: Update the application record with checks and the partner's outcome
+      action: write
+      collection: applications
+      scope: user
+    - name: save_account
+      description: Create or update the buyer's trade account
+      action: write
+      collection: accounts
+      scope: user
+    - name: companies_house
+      description: 'Companies House public data API: GET /<number> for the profile, /<number>/officers for officers'
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk/company
+        allowPath: true
+        attribution: Companies House, Open Government Licence v3.0
+        credential:
+          provider: companies_house
+          header: Authorization
+          format: Basic {secret}
+    - name: partner_credit_decision
+      description: Submit the application file to the funding partner's credit decision API
+      action: http
+      http:
+        method: POST
+        url: https://api.fundingpartner.example/v1/credit-applications
+        attribution: Funding partner credit decision API
+        credential:
+          provider: funding_partner
+          header: Authorization
+          format: Bearer {secret}
+    goalTemplate: Process the new application for company number {record.company_number} ({record.company_name}), requested
+      limit £{record.requested_limit}. Today is {date}.
+    output: markdown
+    limits:
+      maxTurns: 14
+      maxBudgetUsd: 0.5
+  - key: assistant
+    role: helper
+    description: Answers buyers' questions about their terms, limit and repayments and flags accounts nearing their limit
+      to the credit team.
+    awaits:
+    - limit_increase
+    profile:
+      inline:
+        display_name: Tallyline assistant
+        chat_mode: true
+        crews:
+        - id: assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the Tallyline assistant for business buyers who use a trade account provided by an FCA-regulated
+            funding partner. Answer questions about their terms, available limit, purchases, repayment dates, fees and statements
+            using ONLY the tools read_account, read_purchases, read_repayments and read_pricing. You are not a financial adviser:
+            explain, never recommend borrowing, and never promise an outcome. Credit decisions and limit increases belong
+            to the partner''s credit team. If utilisation (balance_used / limit_approved) is 80% or more, or the buyer asks
+            for a higher limit, call flag_limit once with utilisation_pct, reason and status ''open''; and if they ask for
+            an increase, call request_limit_increase with the figures so the credit team can decide. Tell the buyer what you
+            have done. If a question needs information you do not have (a dispute, a collection problem), say the credit team
+            will follow up and flag it. Be brief, plain English.'
+    appTools:
+    - name: read_account
+      description: The buyer's trade account
+      action: read
+      collection: accounts
+      scope: user
+    - name: read_purchases
+      description: The buyer's purchases
+      action: read
+      collection: purchases
+      scope: user
+    - name: read_repayments
+      description: The buyer's repayment schedule
+      action: read
+      collection: repayments
+      scope: user
+    - name: read_pricing
+      description: Read the partner's rate card
+      action: read
+      collection: pricing
+      scope: all
+    - name: flag_limit
+      description: Flag an account nearing its limit to the credit team
+      action: append
+      collection: limit_flags
+      scope: user
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New message from {user}: {message}
+
+      Today is {date}. Answer in the language with ISO code {lang}.'
+    output: markdown
+  - key: monitor
+    role: helper
+    description: After each purchase checks how close the account is to its limit and asks the credit team for a decision;
+      applies approved increases through the partner.
+    awaits:
+    - limit_increase
+    profile:
+      inline:
+        display_name: Tallyline limit monitor
+        crews:
+        - id: monitor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You monitor one buyer''s trade account for the funding partner''s credit team. Two cases. A) A purchase
+            was recorded: call read_account, compute utilisation = balance_used / limit_approved. Under 80%: answer ''no action''.
+            At 80% or more: call flag_limit (utilisation_pct, reason, status ''open'') and, if utilisation is 90% or more,
+            call request_limit_increase with current_limit, utilisation_pct and a one-line reason. B) The goal says an increase
+            was approved: call partner_limit_increase (POST, body with the partner_account_id and the new_limit from the approval
+            event) and then save_account with the new limit_approved and limit_available. Never decide an increase yourself;
+            use only figures from the tools. Final answer: a level-1 title "# Limit check — <date>" and two lines of what
+            you did.'
+    appTools:
+    - name: read_account
+      description: The buyer's trade account
+      action: read
+      collection: accounts
+      scope: user
+    - name: save_account
+      description: Create or update the buyer's trade account
+      action: write
+      collection: accounts
+      scope: user
+    - name: flag_limit
+      description: Flag an account nearing its limit to the credit team
+      action: append
+      collection: limit_flags
+      scope: user
+    - name: partner_limit_increase
+      description: Apply an approved limit increase at the funding partner
+      action: http
+      http:
+        method: POST
+        url: https://api.fundingpartner.example/v1/limit-increases
+        attribution: Funding partner API
+        credential:
+          provider: funding_partner
+          header: Authorization
+          format: Bearer {secret}
+    goalTemplate: '{?record.order_ref}Purchase {record.order_ref} of £{record.amount} was just recorded. Check the buyer''s
+      utilisation.{/record.order_ref}{!record.order_ref}An approval was decided: {event}. Apply it.{/record.order_ref}'
+    output: markdown
+  inputForm:
+    title: Cost simulator
+    fields:
+    - name: amount
+      type: number
+      required: true
+      label: Purchase amount (£)
+      help: e.g. 12000
+  data:
+    credentials:
+    - provider: companies_house
+      kind: api_key
+      scope: org
+      label: Companies House API key
+      help: Register at developer.company-information.service.gov.uk. Paste the base64 of "<key>:" (key, colon, empty password).
+    - provider: funding_partner
+      kind: api_key
+      scope: org
+      label: Funding partner API key
+      help: Issued by the funding partner for the credit decision and limit APIs.
+    collections:
+    - name: applications
+      ownedBy: user
+      description: Buyers' trade account applications and the partner's outcome
+      retentionDays: 2190
+      access:
+      - role: credit_team
+        can:
+        - read
+        - write
+      fields:
+      - name: company_number
+        type: text
+        required: true
+        label: Companies House number
+        maxLength: 8
+      - name: company_name
+        type: text
+        label: Company name
+      - name: turnover
+        type: number
+        required: true
+        label: Annual turnover (£)
+      - name: directors
+        type: textarea
+        required: true
+        label: Directors (full names, one per line)
+      - name: bank_account_name
+        type: text
+        required: true
+        label: Bank account name
+      - name: sort_code
+        type: text
+        required: true
+        label: Sort code
+        maxLength: 8
+      - name: account_number
+        type: text
+        required: true
+        label: Account number
+        maxLength: 8
+      - name: requested_limit
+        type: number
+        required: true
+        label: Requested limit (£)
+      - name: consent
+        type: boolean
+        required: true
+        label: I authorise credit and Companies House checks and the sharing of this application with the funding partner
+      - name: status
+        type: select
+        label: Status
+        default: submitted
+        options:
+        - submitted
+        - approved
+        - declined
+        - referred
+      - name: ch_status
+        type: text
+        label: Companies House result
+      - name: approved_limit
+        type: number
+        label: Approved limit (£)
+      - name: terms
+        type: textarea
+        label: Terms
+      - name: partner_ref
+        type: text
+        label: Partner reference
+      - name: decision_note
+        type: textarea
+        label: Decision note
+    - name: accounts
+      ownedBy: user
+      description: Each buyer's trade account, kept in sync with the partner
+      access:
+      - role: credit_team
+        can:
+        - read
+      fields:
+      - name: partner_account_id
+        type: text
+      - name: buyer_email
+        type: email
+      - name: limit_approved
+        type: number
+        label: Approved limit
+      - name: limit_available
+        type: number
+        label: Available limit
+      - name: balance_used
+        type: number
+        label: Used
+      - name: utilisation_pct
+        type: number
+        label: Utilisation %
+      - name: status
+        type: select
+        options:
+        - active
+        - suspended
+        - closed
+      - name: next_repayment_date
+        type: date
+        label: Next repayment
+      - name: terms_summary
+        type: textarea
+        label: Terms
+    - name: purchases
+      ownedBy: user
+      description: Orders paid through the trade account
+      access:
+      - role: supplier
+        where:
+          supplier_email: '{user.email}'
+        can:
+        - read
+      - role: credit_team
+        can:
+        - read
+      fields:
+      - name: order_ref
+        type: text
+        label: Order
+      - name: buyer_email
+        type: email
+      - name: supplier_email
+        type: email
+      - name: supplier_name
+        type: text
+        label: Supplier
+      - name: amount
+        type: number
+        label: Amount
+      - name: platform_fee
+        type: number
+        label: Platform fee
+      - name: repayment_months
+        type: number
+        label: Months
+      - name: date
+        type: date
+        label: Date
+      - name: due_date
+        type: date
+        label: Due
+      - name: status
+        type: select
+        options:
+        - authorised
+        - settled
+        - repaid
+        - refunded
+    - name: repayments
+      ownedBy: user
+      description: Direct Debit repayment schedule collected by the partner
+      access:
+      - role: credit_team
+        can:
+        - read
+      fields:
+      - name: buyer_email
+        type: email
+      - name: purchase_ref
+        type: text
+        label: Order
+      - name: due_date
+        type: date
+        label: Due date
+      - name: amount
+        type: number
+        label: Amount
+      - name: status
+        type: select
+        options:
+        - scheduled
+        - collected
+        - failed
+      - name: collected_at
+        type: date
+        label: Collected
+    - name: statements
+      ownedBy: user
+      description: Monthly statements
+      fields:
+      - name: buyer_email
+        type: email
+      - name: period
+        type: text
+        label: Period
+      - name: opening_balance
+        type: number
+        label: Opening
+      - name: purchases_total
+        type: number
+        label: Purchases
+      - name: repayments_total
+        type: number
+        label: Repayments
+      - name: interest_fees
+        type: number
+        label: Interest and fees
+      - name: closing_balance
+        type: number
+        label: Closing
+      - name: statement_url
+        type: url
+        label: PDF
+    - name: settlements
+      ownedBy: org
+      description: Supplier settlement reports
+      access:
+      - role: supplier
+        where:
+          supplier_email: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: supplier_email
+        type: email
+      - name: supplier_name
+        type: text
+        label: Supplier
+      - name: period
+        type: text
+        label: Period
+      - name: orders_count
+        type: number
+        label: Orders
+      - name: gross_amount
+        type: number
+        label: Gross
+      - name: platform_fee
+        type: number
+        label: Platform fee
+      - name: net_amount
+        type: number
+        label: Net settled
+      - name: paid_on
+        type: date
+        label: Paid on
+      - name: status
+        type: select
+        options:
+        - pending
+        - paid
+    - name: limit_flags
+      ownedBy: user
+      description: Accounts flagged to the credit team
+      retentionDays: 730
+      access:
+      - role: credit_team
+        can:
+        - read
+        - write
+      fields:
+      - name: utilisation_pct
+        type: number
+        label: Utilisation %
+      - name: reason
+        type: textarea
+        label: Reason
+      - name: status
+        type: select
+        options:
+        - open
+        - reviewed
+        label: Status
+    - name: pricing
+      ownedBy: shared
+      description: The partner's rate card, kept by admins
+      fields:
+      - name: period_months
+        type: number
+        label: Months
+      - name: monthly_rate_pct
+        type: number
+        label: Monthly interest %
+      - name: fee_pct
+        type: number
+        label: Arrangement fee %
+      - name: late_fee
+        type: number
+        label: Late fee (£)
+      - name: notes
+        type: textarea
+        label: Notes
+    - name: supplier_requests
+      ownedBy: org
+      description: Supplier and marketplace sign-up requests
+      fields:
+      - name: company_name
+        type: text
+        required: true
+        label: Company
+      - name: kind
+        type: select
+        required: true
+        label: We are a
+        options:
+        - supplier
+        - marketplace
+      - name: contact_name
+        type: text
+        required: true
+        label: Contact name
+      - name: contact_email
+        type: email
+        required: true
+        label: Work email
+      - name: website
+        type: url
+        label: Website
+      - name: monthly_volume
+        type: number
+        label: Expected monthly trade-account sales (£)
+      - name: message
+        type: textarea
+        label: Anything else
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Tallyline
+    sections:
+    - type: hero
+      title: A flexible **trade account** instead of an overdraft.
+      text: Buy from your suppliers now and repay over the period you choose, by Direct Debit. Credit is provided by our FCA-regulated
+        funding partner.
+      actions:
+      - label: Apply for a trade account
+        href: /login
+        style: primary
+      - label: Become a supplier
+        href: /v/supplier_signup
+        style: ghost
+      note: Tallyline is software; lending and credit decisions are made by the funding partner.
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Apply
+        text: Company number, turnover, directors, bank details and the limit you want.
+      - title: Checked
+        text: We check Companies House, prepare your file and send it to the partner's credit decision.
+      - title: Buy
+        text: Choose the trade account at your supplier's checkout and see your limit, purchases and repayments.
+      - title: Repay
+        text: Email reminders before each Direct Debit collected by the partner.
+    - type: cards
+      id: suppliers
+      title: For suppliers and marketplaces
+      items:
+      - title: Embedded checkout option
+        text: Offer buyers a trade account at payment.
+      - title: Settlement reports
+        text: See every order paid through the trade account and what was settled to you.
+    - type: note
+      content: Credit is subject to status and provided by the funding partner. Interest and fees are charged by the partner.
+        Tallyline charges a platform fee per transaction.
+  - key: supplier_signup
+    type: form
+    title: Become a supplier
+    collection: supplier_requests
+    submit:
+      label: Send request
+      message: Thanks, we will contact you to set up your supplier account.
+    nav: false
+  - key: apply
+    type: form
+    title: Apply for a trade account
+    collection: applications
+    fields:
+    - company_number
+    - company_name
+    - turnover
+    - directors
+    - bank_account_name
+    - sort_code
+    - account_number
+    - requested_limit
+    - consent
+    submit:
+      label: Submit application
+      message: Application received. We are checking it and sending it to the funding partner.
+      redirect: dashboard
+    roles:
+    - buyer
+    - admin
+  - key: dashboard
+    type: page
+    title: My account
+    roles:
+    - buyer
+    - admin
+    sections:
+    - type: data
+      title: Available limit
+      source: collection:accounts
+      display: kpi
+      kpis:
+      - label: Approved limit
+        agg: last
+        field: limit_approved
+        format: money
+      - label: Available
+        agg: last
+        field: limit_available
+        format: money
+      - label: Used
+        agg: last
+        field: balance_used
+        format: money
+      - label: Next repayment
+        agg: last
+        field: next_repayment_date
+        format: date
+      empty: 'No trade account yet: apply first.'
+    - type: data
+      title: Application
+      source: collection:applications
+      display: table
+      fields:
+      - key: company_name
+        label: Company
+      - key: requested_limit
+        label: Requested
+        format: money
+      - key: approved_limit
+        label: Approved
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      - key: terms
+        label: Terms
+      limit: 5
+    - type: data
+      title: Repayment schedule
+      source: collection:repayments
+      display: table
+      fields:
+      - key: due_date
+        label: Due
+        format: date
+      - key: purchase_ref
+        label: Order
+      - key: amount
+        label: Amount
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: due_date
+        dir: asc
+      limit: 50
+    - type: data
+      title: Purchases
+      source: collection:purchases
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: supplier_name
+        label: Supplier
+      - key: order_ref
+        label: Order
+      - key: amount
+        label: Amount
+        format: money
+      - key: repayment_months
+        label: Months
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: date
+        dir: desc
+      limit: 50
+    - type: data
+      title: Statements
+      source: collection:statements
+      display: table
+      fields:
+      - key: period
+        label: Period
+      - key: opening_balance
+        label: Opening
+        format: money
+      - key: purchases_total
+        label: Purchases
+        format: money
+      - key: repayments_total
+        label: Repayments
+        format: money
+      - key: interest_fees
+        label: Interest and fees
+        format: money
+      - key: closing_balance
+        label: Closing
+        format: money
+      - key: statement_url
+        label: PDF
+        format: link
+      sort:
+        field: period
+        dir: desc
+      limit: 24
+  - key: simulator
+    type: new_run
+    title: Cost simulator
+    roles:
+    - buyer
+    - admin
+  - key: simulations
+    type: history
+    title: My simulations
+    source: run
+    roles:
+    - buyer
+    - admin
+  - key: simulation
+    type: report
+    title: Simulation
+    source: run
+    printable: true
+    nav: false
+  - key: ask
+    type: chat
+    title: Ask about my account
+    source: agent:assistant
+    examples:
+    - What are my repayment dates?
+    - How much would it cost to repay over 3 months?
+    - I am close to my limit, can it be raised?
+    placeholder: Ask about your terms, limit or repayments
+    roles:
+    - buyer
+    - admin
+  - key: supplier_orders
+    type: table
+    title: Orders paid by trade account
+    source: collection:purchases
+    columns:
+    - date
+    - order_ref
+    - amount
+    - platform_fee
+    - status
+    export: true
+    roles:
+    - supplier
+    - admin
+  - key: supplier_settlements
+    type: table
+    title: Settlement reports
+    source: collection:settlements
+    columns:
+    - period
+    - orders_count
+    - gross_amount
+    - platform_fee
+    - net_amount
+    - paid_on
+    - status
+    export: true
+    roles:
+    - supplier
+    - admin
+  - key: credit_flags
+    type: table
+    title: Accounts flagged
+    source: collection:limit_flags
+    columns:
+    - utilisation_pct
+    - reason
+    - status
+    roles:
+    - credit_team
+    - admin
+  - key: credit_applications
+    type: table
+    title: Applications
+    source: collection:applications
+    columns:
+    - company_name
+    - company_number
+    - turnover
+    - requested_limit
+    - approved_limit
+    - status
+    - ch_status
+    export: true
+    roles:
+    - credit_team
+    - admin
+  - key: credit_accounts
+    type: table
+    title: Accounts
+    source: collection:accounts
+    columns:
+    - buyer_email
+    - limit_approved
+    - limit_available
+    - balance_used
+    - utilisation_pct
+    - status
+    roles:
+    - credit_team
+    - admin
+  - key: approvals
+    type: approvals
+    title: Limit increases
+    approvals:
+    - limit_increase
+    roles:
+    - credit_team
+    - admin
+  - key: account
+    type: account
+    title: Integrations
+    roles:
+    - admin
+  approvals:
+  - key: limit_increase
+    title: Limit increase
+    description: A buyer account is near its limit; the partner's credit team decides any increase.
+    role: credit_team
+    fields:
+    - current_limit
+    - utilisation_pct
+    - new_limit
+    - reason
+    timeoutMinutes: 4320
+    onTimeout: reject
+    decidedBy: role
+  triggers:
+  - key: process_application
+    'on':
+      collection: applications
+      op: insert
+      where:
+        status: submitted
+    start:
+      agent: underwriter
+    goal: Process the new application for company number {record.company_number} ({record.company_name}), requested limit
+      £{record.requested_limit}.
+  - key: application_approved
+    'on':
+      collection: applications
+      op: update
+      where:
+        status: approved
+    notify:
+      to: owner
+      subject: Your Tallyline trade account is approved
+      body: 'Good news: the funding partner approved a limit of £{record.approved_limit}. Terms: {record.terms}'
+      link: dashboard
+  - key: application_declined
+    'on':
+      collection: applications
+      op: update
+      where:
+        status: declined
+    notify:
+      to: owner
+      subject: Your Tallyline application
+      body: 'The funding partner could not approve this application. Note: {record.decision_note}'
+      link: dashboard
+  - key: application_referred
+    'on':
+      collection: applications
+      op: update
+      where:
+        status: referred
+    notify:
+      to:
+      - role:credit_team
+      subject: Application referred for manual review
+      body: Company {record.company_name} ({record.company_number}) was referred by the partner. Reference {record.partner_ref}.
+      link: credit_applications
+  - key: watch_limit
+    'on':
+      collection: purchases
+      op: insert
+    start:
+      agent: monitor
+    goal: Purchase {record.order_ref} of £{record.amount} was just recorded. Check the buyer's utilisation.
+  - key: increase_approved
+    'on':
+      approval: limit_increase
+      decision: approved
+    start:
+      agent: monitor
+    goal: 'An approval was decided: {event}. Apply it.'
+  - key: increase_rejected
+    'on':
+      approval: limit_increase
+      decision: rejected
+    notify:
+      to: owner
+      subject: Limit increase request
+      body: The partner's credit team did not approve a higher limit at this time.
+      link: dashboard
+  - key: repayment_reminder
+    'on':
+      date:
+        collection: repayments
+        field: due_date
+        offsetDays: -3
+        hour: 8
+    notify:
+      to: owner
+      subject: Repayment of £{record.amount} due on {record.due_date}
+      body: Your Direct Debit of £{record.amount} for order {record.purchase_ref} will be collected by the funding partner
+        on {record.due_date}. Please make sure the funds are in your account.
+      link: dashboard
+  - key: repayment_failed
+    'on':
+      collection: repayments
+      op: update
+      where:
+        status: failed
+    notify:
+      to:
+      - owner
+      - role:credit_team
+      subject: Direct Debit collection failed
+      body: The collection of £{record.amount} due on {record.due_date} (order {record.purchase_ref}) failed. Please contact
+        the funding partner.
+      link: dashboard
+  - key: supplier_request_in
+    'on':
+      collection: supplier_requests
+      op: insert
+    notify:
+      to: admins
+      subject: 'New supplier request: {record.company_name}'
+      body: '{record.contact_name} ({record.contact_email}) from {record.company_name} asked to join as a {record.kind}.'
+      link: supplier_signup
+  - key: hook_account
+    'on':
+      webhook: true
+    write:
+      collection: accounts
+      fields:
+        partner_account_id: account.id
+        buyer_email: account.buyer_email
+        limit_approved: account.limit
+        limit_available: account.available
+        balance_used: account.used
+        utilisation_pct: account.utilisation_pct
+        status: account.status
+        next_repayment_date: account.next_repayment_date
+      keyBy: partner_account_id
+  - key: hook_purchase
+    'on':
+      webhook: true
+    write:
+      collection: purchases
+      fields:
+        order_ref: order.ref
+        buyer_email: order.buyer_email
+        supplier_email: order.supplier_email
+        supplier_name: order.supplier_name
+        amount: order.amount
+        platform_fee: order.platform_fee
+        repayment_months: order.months
+        date: order.date
+        due_date: order.due_date
+        status: order.status
+      keyBy: order_ref
+  - key: hook_repayment
+    'on':
+      webhook: true
+    write:
+      collection: repayments
+      fields:
+        buyer_email: repayment.buyer_email
+        purchase_ref: repayment.order_ref
+        due_date: repayment.due_date
+        amount: repayment.amount
+        status: repayment.status
+        collected_at: repayment.collected_at
+      keyBy: purchase_ref
+  - key: hook_statement
+    'on':
+      webhook: true
+    write:
+      collection: statements
+      fields:
+        buyer_email: statement.buyer_email
+        period: statement.period
+        opening_balance: statement.opening
+        purchases_total: statement.purchases
+        repayments_total: statement.repayments
+        interest_fees: statement.interest_fees
+        closing_balance: statement.closing
+        statement_url: statement.url
+      keyBy: period
+  - key: hook_settlement
+    'on':
+      webhook: true
+    write:
+      collection: settlements
+      fields:
+        supplier_email: settlement.supplier_email
+        supplier_name: settlement.supplier_name
+        period: settlement.period
+        orders_count: settlement.orders
+        gross_amount: settlement.gross
+        platform_fee: settlement.platform_fee
+        net_amount: settlement.net
+        paid_on: settlement.paid_on
+        status: settlement.status
+      keyBy: period
+  egress:
+    hosts:
+    - api.company-information.service.gov.uk
+    - api.fundingpartner.example
+    notes: 'Companies House public data API (Open Government Licence v3.0, free API key). api.fundingpartner.example is a
+      placeholder: replace with the funding partner''s real credit decision API host and adapt the paths in the agent prompt
+      to its documentation.'
+  billing:
+    modes:
+    - free
+  notifications:
+    emailOnRunDone: false
+  extensions:
+  - key: partner_api_contract
+    description: The funding partner's real credit decision, limit increase and webhook payloads (account, order, repayment,
+      statement, settlement events, each carrying the buyer or supplier email) must be mapped to the placeholder endpoints
+      and webhook field paths; partner webhooks must be configured to POST to /api/hooks/<trigger key>.
+  - key: platform_fee
+    description: The per-transaction platform fee is recorded on each purchase and on supplier settlements (set by the partner's
+      settlement flow); automatic collection of the fee through Stripe per_transaction billing is not configured.
+  - key: embedded_checkout
+    description: The embeddable checkout button or widget for supplier and marketplace sites, and the Direct Debit mandate
+      set-up, are provided by the funding partner's API and are not part of this manifest.
+  - key: sms_notifications
+    description: Repayment reminders are by email only; SMS is not available yet.

@@ -1,0 +1,934 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: lumora
+  displayName: Lumora
+  tagline: Clinician-led weight management for women, with a pharmacy and support behind you.
+  description: 'Lumora is the software around a regulated UK pharmacy service for women: an online consultation reviewed by
+    an independent prescriber, a monthly programme, dispatch tracking, weekly check-ins, and an assistant for general nutrition
+    and habit questions.'
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#3b2f4a'
+      accent: '#c4577a'
+      background: '#fbf8f6'
+      foreground: '#231f27'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Lum
+      color: primary
+    - text: ora
+      color: accent
+    buttonShape: pill
+  header:
+    links:
+    - label: How it works
+      href: '#how-it-works'
+    - label: What is included
+      href: '#included'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Start your consultation
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: patient
+      label: Patient
+      assignedBy: signup
+    - key: prescriber
+      label: Prescriber
+      assignedBy: invite
+    - key: pharmacist
+      label: Pharmacist
+      assignedBy: invite
+    - key: support
+      label: Support
+      assignedBy: invite
+  limits:
+  - action: agent:coach
+    per: user
+    max: 60
+    window: day
+    roles:
+    - patient
+  - action: login
+    per: ip
+    max: 20
+    window: hour
+  agents:
+  - key: intake
+    role: helper
+    description: Summarises a new consultation for the prescriber and asks for their review. Never decides eligibility.
+    awaits:
+    - consultation_review
+    profile:
+      inline:
+        display_name: Lumora intake summariser
+        crews:
+        - id: intake
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare a new patient consultation for review by a UK independent prescriber. You NEVER decide,
+            suggest or imply eligibility or treatment: the prescriber alone approves or declines.
+
+            Steps: 1) call calc_bmi with the height in cm and weight in kg. 2) If a photo file id is given, call read_upload
+            to check that a photo is present and readable, and note whether it appears usable for identity and weight verification
+            (do not guess a weight from it). 3) Write a neutral summary of the answers in under 200 words, listing factually:
+            reported contraindications, current medications, medical history items, pregnancy plans, missing or inconsistent
+            information, and BMI. 4) Call save_intake_note once with fields summary, bmi, flags (a short list of items the
+            prescriber should look at first). 5) Call request_consultation_review with the same summary, bmi and flags. Never
+            invent information. Write in English.'
+    appTools:
+    - name: calc_bmi
+      description: Calculate BMI from height_cm and weight_kg
+      action: call
+      slot: bmi
+    - name: read_upload
+      description: Read the photo the patient uploaded (file id)
+      action: read_file
+    - name: save_intake_note
+      description: Save the intake note with fields summary, bmi, flags
+      action: append
+      collection: intake_notes
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.4
+  - key: coach
+    role: main
+    description: Answers general nutrition and habit questions from the approved content; escalates anything clinical to the
+      prescriber.
+    profile:
+      inline:
+        display_name: Lumora assistant
+        chat_mode: true
+        crews:
+        - id: coach
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the Lumora assistant, supporting women in a clinician-led weight-management programme. You
+            answer ONLY general questions on nutrition, meals, hydration, sleep, activity and habits, and ONLY from the approved
+            content: call search_content first and base your answer on what it returns; if nothing relevant is found, say
+            so. You may call read_my_checkins to personalise encouragement with the patient''s own logged data.
+
+            You NEVER give clinical advice: no dosing, no changes to medication or injection timing, no interpretation of
+            symptoms or side effects, no eligibility or treatment opinions, no diagnosis. If the question touches any of these
+            (side effects, symptoms, missed or extra doses, other medicines, pregnancy, mental health, anything worrying)
+            call escalate with fields question (the patient''s words), then tell the patient their prescriber team will reply
+            in the app and by email. For severe symptoms (severe abdominal pain, repeated vomiting, trouble breathing, allergic
+            reaction, thoughts of self-harm) tell them to call 999 or NHS 111 immediately AND escalate. Keep answers short,
+            kind and practical. Never mention specific prescription medicine brands as recommendations. Write in English.'
+    appTools:
+    - name: search_content
+      description: Search the approved nutrition and habits content
+      action: search
+      collection: content
+      scope: all
+    - name: read_my_checkins
+      description: Read the patient's own weight check-ins
+      action: read
+      collection: checkins
+      scope: user
+    - name: escalate
+      description: Send a clinical question to the prescriber team (field question)
+      action: append
+      collection: escalations
+      scope: user
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New message from the patient: {message}
+
+      Reply in English.'
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.3
+  slots:
+  - key: bmi
+    description: BMI from height in cm and weight in kg
+    timeoutMs: 1000
+    example:
+      args:
+        height_cm: 165
+        weight_kg: 82
+    code: "def main(input):\n    a = input.get('args') or {}\n    try:\n        h = float(a.get('height_cm')) / 100.0\n  \
+      \      w = float(a.get('weight_kg'))\n        if h <= 0 or w <= 0:\n            return {'bmi': None, 'error': 'invalid\
+      \ values'}\n        return {'bmi': round(w / (h * h), 1)}\n    except Exception:\n        return {'bmi': None, 'error':\
+      \ 'invalid values'}\n"
+  approvals:
+  - key: consultation_review
+    title: Consultation review
+    description: An independent prescriber approves or declines each consultation. Nobody else, and no agent, decides eligibility.
+    role: prescriber
+    decidedBy: role
+    fields:
+    - summary
+    - bmi
+    - flags
+  triggers:
+  - key: new_consult
+    description: A new consultation is summarised for the prescriber
+    'on':
+      collection: consultations
+      op: insert
+    start:
+      agent: intake
+    goal: 'A patient submitted a consultation. Height cm: {record.height_cm}. Weight kg: {record.weight_kg}. Medical history:
+      {record.medical_history}. Current medications: {record.current_medications}. Contraindications ticked: {record.contraindications}.
+      Pregnancy plans: {record.pregnancy_plans}. Photo file id: {record.photo}. Prepare the summary and ask for the prescriber''s
+      review.'
+  - key: consult_approved
+    'on':
+      approval: consultation_review
+      decision: approved
+    notify:
+      to: owner
+      subject: Your Lumora consultation has been reviewed
+      body: A prescriber has reviewed your consultation and approved it. You can now start your monthly programme in the app.
+      link: account
+  - key: consult_declined
+    'on':
+      approval: consultation_review
+      decision: rejected
+    notify:
+      to: owner
+      subject: Your Lumora consultation has been reviewed
+      body: A prescriber has reviewed your consultation and is unable to approve it at this time. Please open the app for
+        next steps or contact support.
+      link: support_form
+  - key: subscribed
+    description: A payment creates a dispatch record for the pharmacy team
+    'on':
+      payment: monthly
+    write:
+      collection: dispatches
+  - key: escalated
+    'on':
+      collection: escalations
+      op: insert
+    notify:
+      to: role:prescriber
+      subject: A patient question needs a prescriber
+      body: A patient question has been escalated from the assistant. Please open the app to reply.
+      link: escalation_inbox
+  - key: ticket_new
+    'on':
+      collection: tickets
+      op: insert
+    notify:
+      to: role:support
+      subject: New support request
+      body: 'A new support request has arrived: {record.subject}'
+      link: ticket_inbox
+  - key: remind_checkin
+    'on':
+      date:
+        collection: checkins
+        field: next_checkin
+        offsetDays: 0
+        hour: 8
+    notify:
+      to: owner
+      subject: Time for your weekly Lumora check-in
+      body: Please log this week's weight, any side effects and your meals in the app.
+      link: diary
+  - key: remind_injection
+    'on':
+      date:
+        collection: checkins
+        field: next_injection
+        offsetDays: 0
+        hour: 8
+    notify:
+      to: owner
+      subject: Injection reminder
+      body: Your next injection is due today, as directed by your prescriber. If you have any concerns, message your prescriber
+        team in the app.
+      link: diary
+  data:
+    collections:
+    - name: consultations
+      ownedBy: user
+      description: Medical consultation forms, with photo for identity and weight verification
+      access:
+      - role: prescriber
+        can:
+        - read
+      fields:
+      - name: height_cm
+        type: number
+        required: true
+        label: Height (cm)
+      - name: weight_kg
+        type: number
+        required: true
+        label: Weight (kg)
+      - name: medical_history
+        type: textarea
+        required: true
+        label: Medical history
+        help: Conditions, surgeries, allergies
+      - name: current_medications
+        type: textarea
+        required: true
+        label: Current medications and supplements
+        help: Write 'none' if none
+      - name: contraindications
+        type: multiselect
+        required: true
+        label: Do any of these apply to you?
+        options:
+        - Pancreatitis
+        - Personal or family history of medullary thyroid cancer or MEN2
+        - Gallbladder disease
+        - Kidney disease
+        - Diabetic retinopathy
+        - Current or past eating disorder
+        - None of these
+      - name: pregnancy_plans
+        type: select
+        required: true
+        label: Pregnancy
+        options:
+        - value: pregnant
+          label: I am pregnant
+        - value: breastfeeding
+          label: I am breastfeeding
+        - value: planning
+          label: I plan to become pregnant in the next 12 months
+        - value: 'no'
+          label: None of these
+      - name: photo
+        type: file
+        required: true
+        label: Photo for identity and weight verification
+        accept:
+        - jpg
+        - jpeg
+        - png
+        maxMb: 10
+        capture: true
+        help: A clear photo of your face and upper body, taken now
+      - name: consent
+        type: boolean
+        required: true
+        label: I confirm my answers are accurate and complete
+    - name: intake_notes
+      ownedBy: user
+      description: Neutral summaries prepared for the prescriber
+      access:
+      - role: prescriber
+        can:
+        - read
+      fields:
+      - name: summary
+        type: textarea
+      - name: bmi
+        type: number
+      - name: flags
+        type: textarea
+    - name: checkins
+      ownedBy: user
+      description: Weekly weight check-ins
+      access:
+      - role: prescriber
+        can:
+        - read
+      fields:
+      - name: date
+        type: date
+        required: true
+        label: Date
+      - name: weight_kg
+        type: number
+        required: true
+        label: Weight (kg)
+      - name: notes
+        type: textarea
+        label: How are you feeling?
+      - name: next_checkin
+        type: date
+        label: Next check-in date
+        help: We will remind you by push and email
+      - name: next_injection
+        type: date
+        label: Next injection date
+        help: As directed by your prescriber
+    - name: side_effects
+      ownedBy: user
+      description: Side effects reported by the patient
+      access:
+      - role: prescriber
+        can:
+        - read
+      fields:
+      - name: date
+        type: date
+        required: true
+        label: Date
+      - name: severity
+        type: select
+        required: true
+        label: Severity
+        options:
+        - value: mild
+          label: Mild
+        - value: moderate
+          label: Moderate
+        - value: severe
+          label: Severe
+      - name: description
+        type: textarea
+        required: true
+        label: What happened?
+        help: For severe symptoms call NHS 111 or 999. Your prescriber team can see this log.
+    - name: meals
+      ownedBy: user
+      description: Meal log
+      access:
+      - role: prescriber
+        can:
+        - read
+      fields:
+      - name: date
+        type: date
+        required: true
+        label: Date
+      - name: meal
+        type: select
+        required: true
+        label: Meal
+        options:
+        - Breakfast
+        - Lunch
+        - Dinner
+        - Snack
+      - name: description
+        type: textarea
+        required: true
+        label: What did you eat?
+    - name: escalations
+      ownedBy: user
+      description: Clinical questions the assistant passed to the prescriber
+      access:
+      - role: prescriber
+        can:
+        - read
+        - write
+      fields:
+      - name: question
+        type: textarea
+        label: Question
+      - name: status
+        type: select
+        label: Status
+        default: open
+        options:
+        - open
+        - answered
+      - name: prescriber_reply
+        type: textarea
+        label: Prescriber reply
+    - name: dispatches
+      ownedBy: user
+      description: Monthly dispatch tracked by the pharmacy team
+      access:
+      - role: pharmacist
+        can:
+        - read
+        - write
+      - role: support
+        can:
+        - read
+      fields:
+      - name: status
+        type: select
+        required: true
+        label: Status
+        default: to_dispatch
+        options:
+        - value: to_dispatch
+          label: To dispatch
+        - value: packed
+          label: Packed
+        - value: dispatched
+          label: Dispatched
+        - value: delivered
+          label: Delivered
+      - name: tracking_ref
+        type: text
+        label: Tracking reference
+      - name: dispatched_on
+        type: date
+        label: Dispatched on
+    - name: tickets
+      ownedBy: org
+      description: Support requests from patients
+      access:
+      - role: support
+        can:
+        - read
+        - write
+      fields:
+      - name: subject
+        type: text
+        required: true
+        label: Subject
+      - name: message
+        type: textarea
+        required: true
+        label: How can we help?
+      - name: status
+        type: select
+        label: Status
+        default: open
+        options:
+        - open
+        - closed
+    - name: content
+      ownedBy: shared
+      description: Approved nutrition and habits content, kept by the admins
+      fields:
+      - name: title
+        type: text
+        label: Title
+      - name: topic
+        type: select
+        label: Topic
+        options:
+        - nutrition
+        - protein
+        - hydration
+        - activity
+        - sleep
+        - habits
+      - name: body
+        type: textarea
+        label: Content
+  views:
+  - key: home
+    type: page
+    title: Lumora
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: Clinician-led weight management for women
+      title: A **regulated service** and a supportive app, in one place.
+      text: Complete an online consultation. An independent prescriber reviews it and decides whether our service is appropriate
+        for you. If it is, a UK pharmacy team looks after your monthly programme and the app keeps your check-ins, reminders
+        and questions in one place.
+      actions:
+      - label: Start your consultation
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how-it-works'
+        style: ghost
+      note: Not everyone is suitable. Any treatment is a clinical decision made by a prescriber after your consultation.
+    - type: steps
+      id: how-it-works
+      title: How it works
+      items:
+      - title: Complete your consultation
+        text: Height, weight, medical history, current medicines and a photo for identity and weight verification.
+        badge: '1'
+      - title: A prescriber reviews it
+        text: An independent prescriber looks at every consultation and approves or declines. No software makes that decision.
+        badge: '2'
+      - title: Join the monthly programme
+        text: If approved, you subscribe securely through Stripe and the pharmacy team prepares and dispatches your order.
+        badge: '3'
+      - title: Check in each week
+        text: Log your weight, how you feel and your meals, with reminders by push and email.
+        badge: '4'
+    - type: cards
+      id: included
+      title: What is included
+      items:
+      - title: Clinical oversight
+        text: Independent prescribers and a pharmacist team, working within a GPhC-registered pharmacy and CQC-registered
+          service.
+        badge: 🩺
+      - title: Weekly check-ins
+        text: Track your weight and see your progress over time.
+        badge: 📈
+      - title: Everyday guidance
+        text: An assistant answers general nutrition and habit questions from our approved content. Anything clinical goes
+          to your prescriber team.
+        badge: 💬
+      - title: Private by design
+        text: You see only your own data. Staff see what their role needs.
+        badge: 🔒
+    - type: cards
+      id: pricing
+      title: Pricing
+      intro: Our monthly programme starts from £149 a month, available only after a prescriber has approved your consultation.
+        Cancel any time.
+      items:
+      - title: Monthly programme
+        text: 'From £149 a month: clinical review, pharmacy service, dispatch tracking, app support and reminders.'
+        badge: £149
+    - type: note
+      content: Lumora provides software and support around a regulated UK pharmacy service. This site does not advertise prescription-only
+        medicines to the public. Whether any treatment is suitable for you is decided only by an independent prescriber after
+        a consultation. If you feel unwell, contact your GP or call NHS 111; in an emergency call 999.
+  - key: consult_form
+    type: form
+    title: Medical consultation
+    collection: consultations
+    roles:
+    - patient
+    fields:
+    - height_cm
+    - weight_kg
+    - medical_history
+    - current_medications
+    - contraindications
+    - pregnancy_plans
+    - photo
+    - consent
+    submit:
+      label: Send for review
+      message: Thank you. A prescriber will review your consultation and we will email you.
+      redirect: my_consultations
+  - key: my_consultations
+    type: table
+    title: My consultations
+    source: collection:consultations
+    roles:
+    - patient
+    data:
+      display: table
+      fields:
+      - key: height_cm
+        label: Height (cm)
+      - key: weight_kg
+        label: Weight (kg)
+      - key: pregnancy_plans
+        label: Pregnancy
+      sort:
+        field: createdAt
+        dir: desc
+      limit: 20
+      empty: No consultations yet.
+  - key: checkin_form
+    type: form
+    title: Weekly check-in
+    collection: checkins
+    nav: false
+    fields:
+    - date
+    - weight_kg
+    - notes
+    - next_checkin
+    - next_injection
+    submit:
+      label: Save check-in
+      message: Check-in saved.
+      redirect: progress
+  - key: side_effect_form
+    type: form
+    title: Side effects
+    collection: side_effects
+    nav: false
+    submit:
+      label: Save
+      message: Saved. Your prescriber team can see this.
+  - key: meal_form
+    type: form
+    title: Meals
+    collection: meals
+    nav: false
+    submit:
+      label: Save meal
+      message: Meal saved.
+  - key: diary
+    type: tabs
+    title: Diary
+    children:
+    - checkin_form
+    - side_effect_form
+    - meal_form
+    roles:
+    - patient
+  - key: progress
+    type: chart
+    title: My progress
+    source: collection:checkins
+    roles:
+    - patient
+    data:
+      display: chart
+      chart: line
+      fields:
+      - key: date
+        label: Date
+      - key: weight_kg
+        label: Weight (kg)
+      sort:
+        field: date
+        dir: asc
+      limit: 60
+      empty: Log your first check-in to see your progress.
+  - key: assistant
+    type: chat
+    title: Ask the assistant
+    source: agent:coach
+    roles:
+    - patient
+    examples:
+    - What is a balanced plate?
+    - How can I get enough protein?
+    - Ideas for healthy snacks
+    - I feel sick after injecting, what should I do?
+    placeholder: Ask about nutrition and habits. Clinical questions go to your prescriber.
+  - key: orders
+    type: table
+    title: My deliveries
+    source: collection:dispatches
+    roles:
+    - patient
+    data:
+      display: table
+      fields:
+      - key: status
+        label: Status
+        format: badge
+      - key: tracking_ref
+        label: Tracking
+      - key: dispatched_on
+        label: Dispatched
+        format: date
+      sort:
+        field: createdAt
+        dir: desc
+      empty: No deliveries yet.
+  - key: support_form
+    type: form
+    title: Contact support
+    collection: tickets
+    roles:
+    - patient
+    submit:
+      label: Send
+      message: Thank you, our support team will reply by email.
+  - key: account
+    type: account
+    title: Subscription
+    roles:
+    - patient
+  - key: reviews
+    type: approvals
+    title: Consultations to review
+    roles:
+    - prescriber
+  - key: consult_list
+    type: table
+    title: Consultations
+    source: collection:consultations
+    roles:
+    - prescriber
+    data:
+      display: table
+      fields:
+      - key: height_cm
+        label: Height
+      - key: weight_kg
+        label: Weight
+      - key: medical_history
+        label: History
+      - key: current_medications
+        label: Medications
+      - key: contraindications
+        label: Contraindications
+      - key: pregnancy_plans
+        label: Pregnancy
+      - key: photo
+        label: Photo
+      limit: 100
+  - key: escalation_inbox
+    type: table
+    title: Patient questions
+    source: collection:escalations
+    roles:
+    - prescriber
+    data:
+      display: table
+      fields:
+      - key: question
+        label: Question
+      - key: status
+        label: Status
+        format: badge
+      - key: prescriber_reply
+        label: Reply
+      sort:
+        field: createdAt
+        dir: desc
+      limit: 100
+  - key: escalation_reply
+    type: form
+    title: Reply to a patient
+    collection: escalations
+    fields:
+    - prescriber_reply
+    - status
+    edit: true
+    roles:
+    - prescriber
+    nav: false
+    submit:
+      label: Send reply
+      message: Reply saved.
+  - key: dispatch_queue
+    type: table
+    title: Dispatch queue
+    source: collection:dispatches
+    roles:
+    - pharmacist
+    - support
+    export: true
+    data:
+      display: table
+      fields:
+      - key: status
+        label: Status
+        format: badge
+      - key: tracking_ref
+        label: Tracking
+      - key: dispatched_on
+        label: Dispatched
+        format: date
+      sort:
+        field: createdAt
+        dir: desc
+      limit: 200
+  - key: dispatch_edit
+    type: form
+    title: Update dispatch
+    collection: dispatches
+    fields:
+    - status
+    - tracking_ref
+    - dispatched_on
+    edit: true
+    roles:
+    - pharmacist
+    nav: false
+    submit:
+      label: Update
+      message: Dispatch updated.
+  - key: ticket_inbox
+    type: table
+    title: Support requests
+    source: collection:tickets
+    roles:
+    - support
+    data:
+      display: table
+      fields:
+      - key: subject
+        label: Subject
+      - key: message
+        label: Message
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: createdAt
+        dir: desc
+      limit: 100
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: monthly
+      price: 149
+      interval: month
+      label: Lumora monthly programme
+      includes:
+      - Clinical review and pharmacy service
+      - Dispatch tracking
+      - Weekly check-ins and reminders
+      - Assistant for nutrition and habits
+      roles:
+      - patient
+  notifications:
+    emailOnRunDone: false
+  mobile:
+    appId: com.lumora.app
+    appName: Lumora
+    orientation: portrait
+    lock: biometric
+    capabilities:
+    - name: camera
+      reason: To take your verification photo
+    - name: push
+      reason: Reminders for injections and check-ins
+    - name: biometrics
+      reason: To keep your health data private with Face ID or fingerprint
+    - name: microphone
+      reason: To ask the assistant by voice
+  extensions:
+  - key: approval_gated_checkout
+    description: The subscription is not technically blocked until a prescriber approves the consultation; the pharmacy must
+      verify the approval in the Consultations to review page before dispatching. Gating checkout on approval needs a platform
+      change.
+  - key: regulatory_review
+    description: Marketing copy avoids naming or promoting prescription-only medicines. Have it reviewed against MHRA and
+      ASA/CAP rules, and complete a DPIA and medical-records retention policy under UK GDPR before launch.
+  - key: sms_whatsapp
+    description: SMS and WhatsApp reminders are not available yet; reminders go by email and push.
+  - key: recurring_reminders
+    description: Reminders fire on the next check-in and next injection dates the patient enters at each check-in; automatic
+      weekly recurrence is not available yet.

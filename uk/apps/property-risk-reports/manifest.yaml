@@ -1,0 +1,660 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: plotwise
+  displayName: Plotwise
+  tagline:
+    en: Environmental and property risk reports for conveyancers and lenders.
+  description:
+    en: Order a report by address or title number. Plotwise maps the site, checks flood, geology, planning, EPC and historic
+      land use, and delivers a conveyancing-format PDF, with a human review for high-risk sites.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12343b'
+      accent: '#2a7f62'
+      background: '#f6f8f7'
+      foreground: '#16222a'
+    fonts:
+      body: Inter
+      display: Source Serif 4
+    wordmark:
+    - text: Plot
+      color: primary
+    - text: wise
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Data sources
+      href: '#sources'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Order a report
+      href: /v/new_order
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Plotwise admin
+      assignedBy: admin_emails
+    - key: firm_admin
+      label: Firm admin
+      assignedBy: invite
+    - key: reviewer
+      label: Reviewer
+      assignedBy: invite
+    - key: conveyancer
+      label: Conveyancer
+      assignedBy: signup
+  limits:
+  - action: agent:analyst
+    per: user
+    max: 30
+    window: day
+    roles:
+    - conveyancer
+  agents:
+  - key: analyst
+    role: main
+    description: Geocodes the site, queries open datasets (and licensed ones when connected), writes the conveyancing risk
+      report and asks a reviewer to release high-risk reports.
+    awaits:
+    - high_risk_review
+    profile:
+      inline:
+        display_name: Plotwise risk analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are an environmental and property risk analyst writing for conveyancers and lenders in England.
+
+
+            WORKFLOW
+
+            1. Geocode the address with the geocode tool (Nominatim, query: q=<address>, format=jsonv2, countrycodes=gb, limit=1).
+            If only a title number is given and no address, say so in the report and ask the user to supply the address; do
+            not guess. Save the site with write_site (name, address, lat, lon, order_ref = client reference, risk_level once
+            known).
+
+            2. Flood: call flood_query on the Environment Agency spatial data services for risk of flooding from rivers and
+            sea, and from surface water, at the point. Report the band (very low, low, medium, high) for each, and whether
+            the site is in Flood Zone 2 or 3 if available.
+
+            3. Geology: call bgs_query (BGS OGC API, openly licensed layers only) for bedrock and superficial deposits and
+            natural ground hazards that the open layers cover.
+
+            4. Planning: call planning_search (planning.data.gov.uk entity search, with the point or the lat/lon and a radius)
+            for planning applications, conservation areas, listed buildings and other constraints nearby.
+
+            5. EPC: call epc_search for certificates at the address (commercial: non-domestic endpoint) and report rating
+            and date.
+
+            6. Historic land use: use the open layers reachable with bgs_query and planning_search (made ground, mining, landfill,
+            industrial designations). State plainly that historic use coverage from open data is partial.
+
+            7. Contaminated land and ground stability: call contaminated_land and ground_stability ONLY if the tools report
+            the customer has connected a licence. If they are not connected, write ''Not included: requires a commercial data
+            licence'' and do not estimate anything.
+
+
+            RULES
+
+            - Never invent figures, bands, dates or references. If a call fails or returns nothing, say ''no data returned''
+            for that item.
+
+            - You are decision support, not a legal opinion or a survey. Say so.
+
+            - Rate each risk topic Low, Medium or High and an overall rating. If the overall rating is High (or any flood
+            or ground topic is High), call request_high_risk_review with the order summary before finalising, and only finalise
+            after it is approved; if it is rejected, state that the report was not released.
+
+
+            REPORT STRUCTURE (Markdown, level-1 title first): ''# Plotwise Risk Report — <address>''. Then ## Order details
+            (client reference, transaction type, property type, date), ## Summary (overall rating and 3 key findings), ##
+            Risk ratings (a table: topic, rating, source, date), ## Findings and explanations (flood, geology and ground,
+            planning, EPC, historic land use, licensed datasets), ## CON29-style questions (a table of the CON29 questions
+            the data can answer — planning decisions and designations, nearby proposals, conservation or listed status, and
+            environmental items — each with an answer or ''Not answerable from open data: ask the local authority''), ## Recommendations
+            (specific searches or surveys), ## Sources and licences (name each dataset with its attribution). Add a ```chart
+            bar block of the flood bands only when you have real values.
+
+
+            Finish with a final JSON object on its own in a ```json fence: {"address":"","client_reference":"","transaction_type":"","property_type":"","overall_risk":"low|medium|high","flood_risk":"low|medium|high|unknown","ground_risk":"low|medium|high|unknown","planning_items":0,"epc_rating":"","needs_review":true,"report_date":"YYYY-MM-DD"}.'
+    goalTemplate: 'Order a risk report.
+
+      {?address}Property address: {address}{/address}
+
+      {?title_number}Title number: {title_number}{/title_number}
+
+      Transaction type: {transaction_type_label}
+
+      Property type: {property_type_label}
+
+      {?client_reference}Client reference: {client_reference}{/client_reference}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    output: markdown+json
+    resultSchema:
+      type: object
+      properties:
+        address:
+          type: string
+        client_reference:
+          type: string
+        transaction_type:
+          type: string
+        property_type:
+          type: string
+        overall_risk:
+          type: string
+        flood_risk:
+          type: string
+        ground_risk:
+          type: string
+        planning_items:
+          type: number
+        epc_rating:
+          type: string
+        needs_review:
+          type: boolean
+        report_date:
+          type: string
+    writesTo:
+      collection: orders
+      parse: json_last
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+    appTools:
+    - name: geocode
+      description: Geocode a UK address with Nominatim
+      action: http
+      http:
+        method: GET
+        url: https://nominatim.openstreetmap.org/search
+        attribution: © OpenStreetMap contributors, ODbL
+    - name: flood_query
+      description: Environment Agency flood risk datasets (rivers and sea, surface water) at a point
+      action: http
+      http:
+        method: GET
+        url: https://environment.data.gov.uk/spatialdata
+        allowPath: true
+        attribution: Environment Agency, Open Government Licence v3.0
+    - name: bgs_query
+      description: BGS openly licensed geology layers (OGC API)
+      action: http
+      http:
+        method: GET
+        url: https://ogcapi.bgs.ac.uk
+        allowPath: true
+        attribution: Contains British Geological Survey materials © UKRI, open licence
+    - name: planning_search
+      description: Planning applications and constraints from planning.data.gov.uk
+      action: http
+      http:
+        method: GET
+        url: https://www.planning.data.gov.uk/entity.json
+        attribution: planning.data.gov.uk, Open Government Licence v3.0
+    - name: epc_search
+      description: Energy Performance Certificates by address or postcode
+      action: http
+      http:
+        method: GET
+        url: https://epc.opendatacommunities.org/api/v1/domestic/search
+        allowPath: false
+        headers:
+          Accept: application/json
+        attribution: EPC data, MHCLG, Open Government Licence v3.0
+        credential:
+          provider: epc_register
+          header: Authorization
+          format: Basic {secret}
+    - name: contaminated_land
+      description: Contaminated land search from the customer's licensed commercial provider
+      action: http
+      http:
+        method: GET
+        url: https://{host}/api/contaminated-land
+        credential:
+          provider: ground_data_licence
+          header: Authorization
+          format: Bearer {secret}
+    - name: ground_stability
+      description: Ground stability search from the customer's licensed commercial provider
+      action: http
+      http:
+        method: GET
+        url: https://{host}/api/ground-stability
+        credential:
+          provider: ground_data_licence
+          header: Authorization
+          format: Bearer {secret}
+    - name: write_site
+      description: Save the geocoded site so it appears on the map
+      action: write
+      collection: sites
+      scope: user
+  egress:
+    hosts:
+    - nominatim.openstreetmap.org
+    - environment.data.gov.uk
+    - ogcapi.bgs.ac.uk
+    - www.planning.data.gov.uk
+    - epc.opendatacommunities.org
+    - '*.groundsure.com'
+    notes: 'Nominatim: ODbL, usage policy respected (one lookup per order). Environment Agency, planning.data.gov.uk and EPC
+      register: Open Government Licence v3.0. BGS: openly licensed layers only. *.groundsure.com is the licensed provider
+      host a customer enters with their own key; adjust to the provider they license.'
+  inputForm:
+    title:
+      en: Order a report
+    fields:
+    - name: address
+      type: text
+      maxLength: 250
+      label:
+        en: Property address
+      help:
+        en: Give the address or the title number (at least one).
+    - name: title_number
+      type: text
+      maxLength: 20
+      label:
+        en: Title number
+      help:
+        en: e.g. TGL123456
+    - name: transaction_type
+      type: select
+      required: true
+      label:
+        en: Transaction type
+      options:
+      - value: purchase
+        label:
+          en: Purchase
+      - value: sale
+        label:
+          en: Sale
+      - value: remortgage
+        label:
+          en: Remortgage
+      - value: lending
+        label:
+          en: Lending / security valuation
+      - value: development
+        label:
+          en: Development
+    - name: property_type
+      type: select
+      required: true
+      label:
+        en: Property type
+      options:
+      - value: residential
+        label:
+          en: Residential
+      - value: commercial
+        label:
+          en: Commercial
+    - name: client_reference
+      type: text
+      maxLength: 60
+      label:
+        en: Client reference
+  data:
+    credentials:
+    - provider: ground_data_licence
+      kind: api_key
+      scope: user
+      label:
+        en: Contaminated land and ground stability licence
+      help:
+        en: Paste the API key of your licensed commercial provider. Without it these two datasets are left out of reports.
+      hostLabel:
+        en: api.your-provider.com
+    - provider: epc_register
+      kind: api_key
+      scope: org
+      label:
+        en: EPC register key (set by Plotwise admins)
+      help:
+        en: Base64 of email:apikey from the EPC open data portal.
+    collections:
+    - name: orders
+      ownedBy: user
+      description: 'One record per finished report: ratings for dashboards'
+      fields:
+      - name: address
+        type: text
+      - name: client_reference
+        type: text
+      - name: transaction_type
+        type: text
+      - name: property_type
+        type: text
+      - name: overall_risk
+        type: text
+      - name: flood_risk
+        type: text
+      - name: ground_risk
+        type: text
+      - name: planning_items
+        type: number
+      - name: epc_rating
+        type: text
+      - name: needs_review
+        type: boolean
+      - name: report_date
+        type: date
+      access:
+      - role: reviewer
+      retentionDays: 2555
+    - name: sites
+      ownedBy: user
+      description: Geocoded sites shown on the map
+      fields:
+      - name: name
+        type: text
+      - name: address
+        type: text
+      - name: lat
+        type: number
+      - name: lon
+        type: number
+      - name: order_ref
+        type: text
+      - name: risk_level
+        type: text
+      access:
+      - role: reviewer
+      retentionDays: 2555
+  approvals:
+  - key: high_risk_review
+    title:
+      en: Release high-risk report
+    description: A Plotwise reviewer checks a report rated high risk before the client receives it.
+    role: reviewer
+    decidedBy: role
+    fields:
+    - address
+    - client_reference
+    - overall_risk
+    - summary
+    timeoutMinutes: 2880
+    onTimeout: reject
+  notifications:
+    emailOnRunDone: true
+  views:
+  - key: home
+    type: page
+    title: Plotwise
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: For conveyancers and lenders
+      title: Environmental and property **risk reports**, ready to download.
+      text: Order by address or title number. Plotwise maps the site, checks flood, geology, planning, EPC and historic land
+        use against official data, and delivers a conveyancing-format PDF.
+      actions:
+      - label: Order a report
+        href: /v/new_order
+        style: primary
+      - label: Sign in
+        href: /login
+        style: ghost
+      aside: '<div style="padding:16px"><strong>Sample summary</strong><p>Overall rating: Medium</p><p>Surface water: High
+        · Rivers and sea: Low</p><p>Recommendation: drainage and flood-resilience enquiries.</p></div>'
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Order
+        text: Enter the address or title number, transaction type, property type and your client reference.
+      - title: Analyse
+        text: The site is geocoded and mapped, then checked against open datasets and your licensed ones.
+      - title: Review and release
+        text: High-risk reports are checked by a reviewer before release. You get an email and a PDF.
+    - type: cards
+      id: sources
+      title: Data sources
+      items:
+      - title: Environment Agency
+        text: Flood risk from rivers, sea and surface water.
+      - title: British Geological Survey
+        text: Openly licensed geology layers.
+      - title: planning.data.gov.uk
+        text: Planning applications and constraints.
+      - title: EPC register
+        text: Energy performance certificates.
+      - title: Your licensed data
+        text: Contaminated land and ground stability, only when you connect your own licence.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: Pay per report
+        text: Buy a single report or a small pack through Stripe.
+      - title: Firm bundles
+        text: Monthly bundles of reports at a lower price per report.
+    - type: note
+      content: Plotwise reports are decision support based on open data. They are not a legal opinion or a site survey.
+  - key: new_order
+    type: new_run
+    title:
+      en: Order a report
+    roles:
+    - conveyancer
+    - firm_admin
+    - admin
+  - key: orders
+    type: history
+    title:
+      en: My orders
+    source: run
+    columns:
+    - createdAt
+    - address
+    - client_reference
+    - status
+    roles:
+    - conveyancer
+    - firm_admin
+    - admin
+  - key: report
+    type: report
+    title:
+      en: Report
+    source: run
+    printable: true
+    nav: false
+  - key: site_map
+    type: map
+    title:
+      en: Site map
+    source: collection:sites
+    map:
+      lat: lat
+      lon: lon
+      title: name
+      popup:
+      - address
+      - order_ref
+      - risk_level
+    roles:
+    - conveyancer
+    - firm_admin
+    - reviewer
+    - admin
+  - key: reviews
+    type: approvals
+    title:
+      en: Reports to review
+    approvals:
+    - high_risk_review
+    roles:
+    - reviewer
+    - admin
+  - key: dashboard
+    type: page
+    title:
+      en: Dashboard
+    roles:
+    - firm_admin
+    - reviewer
+    - admin
+    sections:
+    - type: data
+      title: Orders
+      source: collection:orders
+      display: kpi
+      kpis:
+      - label: Reports
+        agg: count
+      - label: Planning items (avg)
+        agg: avg
+        field: planning_items
+        format: number
+    - type: data
+      title: Orders by overall risk
+      source: collection:orders
+      display: chart
+      chart: pie
+      fields:
+      - key: overall_risk
+        label: Risk
+      - key: count
+        label: Orders
+      groupBy:
+        field: overall_risk
+        aggs: []
+    - type: data
+      title: Orders per month
+      source: collection:orders
+      display: chart
+      chart: bar
+      fields:
+      - key: report_date
+        label: Month
+      - key: count
+        label: Orders
+      groupBy:
+        field: report_date
+        bucket: month
+        aggs: []
+    - type: data
+      title: Recent orders and turnaround
+      source: run
+      display: table
+      fields:
+      - key: createdAt
+        label: Ordered
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      - key: title
+        label: Report
+      sort:
+        field: createdAt
+        dir: desc
+      limit: 50
+      empty: No orders yet.
+  - key: orders_table
+    type: table
+    title:
+      en: All orders
+    source: collection:orders
+    columns:
+    - report_date
+    - address
+    - client_reference
+    - property_type
+    - overall_risk
+    - flood_risk
+    - ground_risk
+    export: true
+    roles:
+    - reviewer
+    - admin
+  - key: account
+    type: account
+    title:
+      en: Credits and data licences
+    roles:
+    - conveyancer
+    - firm_admin
+  billing:
+    modes:
+    - credits
+    - subscription
+    currency: gbp
+    signupCredits: 0
+    costs:
+      agent:analyst: 1
+    packs:
+    - key: single
+      credits: 1
+      price: 35
+      label: Single report
+    - key: pack5
+      credits: 5
+      price: 160
+      label: 5 reports
+    plans:
+    - key: bundle_10
+      price: 299
+      interval: month
+      credits: 10
+      creditsReset: monthly
+      label: 'Firm bundle: 10 reports a month'
+      roles:
+      - firm_admin
+    - key: bundle_40
+      price: 999
+      interval: month
+      credits: 40
+      creditsReset: monthly
+      label: 'Firm bundle: 40 reports a month'
+      roles:
+      - firm_admin
+  extensions:
+  - key: firm_wide_visibility
+    description: Firm admins should see all orders of their firm. Records are owned per user, so firm-wide visibility and
+      firm-level credit sharing are not available yet; a firm admin buys bundles and sees their own orders.
+  - key: turnaround_metric
+    description: The dashboard shows order and completion times from the run list; a computed turnaround-hours figure is not
+      available as an aggregate yet.
+  - key: pdf_download
+    description: The PDF comes from the printable report view (print or save as PDF).
+  - key: licensed_provider_host
+    description: The commercial provider host pattern in egress (*.groundsure.com) must match the provider the customers license.

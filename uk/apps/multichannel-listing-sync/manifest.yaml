@@ -1,0 +1,601 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: shelfsync
+  displayName: Shelfsync
+  tagline:
+    en: Inventory, listings and prices in step across Shopify, Amazon and Etsy.
+  description:
+    en: An AI agent keeps stock in step across your sales channels, and drafts price changes and listing rewrites that wait
+      for your approval.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/Rome
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#12343b'
+      accent: '#e07a1f'
+      background: '#f7f8f6'
+      foreground: '#1a2326'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Shelf
+      color: primary
+    - text: Sync
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Plans
+      href: '#plans'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: Merchant
+      assignedBy: signup
+  limits:
+  - action: create:products
+    max: 100
+    window: total
+    plans:
+      growth: 1000
+      scale: -1
+  egress:
+    hosts:
+    - '*.myshopify.com'
+    notes: Shopify Admin API on each merchant's own store, using the merchant's own access token, under the Shopify developer
+      terms. Amazon SP-API and Etsy need OAuth and are not available yet.
+  agents:
+  - key: syncer
+    role: scheduled
+    description: Pulls orders and stock for one connected store, keeps stock in step, and proposes price changes and listing
+      rewrites for approval.
+    memory: instance
+    awaits:
+    - price_change
+    - listing_rewrite
+    profile:
+      inline:
+        display_name: Shelfsync agent
+        crews:
+        - id: syncer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Shelfsync, an inventory and pricing agent for one merchant store. Each run: (1) read orders
+            and stock from the store with shopify_get (orders: /orders.json?status=any&updated_at_min=<last run from memory>;
+            inventory: /inventory_levels.json?location_ids=...). (2) Record each new sale with log_sale (channel, sku, quantity,
+            revenue, date). (3) For each sold SKU, reduce the stock in the product collection (product_update) and on the
+            store with shopify_set_stock. Stock updates are automatic and need no approval. (4) If stock is at or below the
+            product''s low-stock level, call raise_alert with kind low_stock; if a call fails call log_sync with status failed
+            and raise_alert with kind sync_failed; if a listing is suppressed or inactive raise_alert with kind listing_suppressed.
+            Always finish with log_sync (status ok or failed, items processed). (5) Price changes: using min_margin_pct, cost
+            and the merchant''s own sales history (sales records), propose a new price only if margin stays at or above the
+            minimum. NEVER change a price or rewrite a listing directly: call request_price_change or request_listing_rewrite
+            with sku, current value, proposed value and the reason, and stop work on that item. Never invent figures or sales.
+            Only Shopify is connected today; do not touch other channels. Before ending, call remember with the last processed
+            timestamp and open proposals. End with a short markdown report starting with a level-1 title ''# Sync <date>''.'
+          mcp_servers: []
+    appTools:
+    - name: products_read
+      description: Read the merchant's products
+      action: read
+      collection: products
+      scope: user
+    - name: product_update
+      description: Update stock fields of a product
+      action: write
+      collection: products
+      scope: user
+    - name: sales_read
+      description: Read the merchant's sales history
+      action: read
+      collection: sales
+      scope: user
+    - name: log_sale
+      description: Record a sale
+      action: append
+      collection: sales
+      scope: user
+    - name: log_sync
+      description: Record the result of a sync run
+      action: append
+      collection: sync_events
+      scope: user
+    - name: raise_alert
+      description: Record an alert (low_stock, sync_failed, listing_suppressed); it is emailed to the merchant
+      action: append
+      collection: alerts
+      scope: user
+    - name: log_change
+      description: Record an applied, approved change
+      action: append
+      collection: change_log
+      scope: user
+    - name: shopify_get
+      description: GET from the merchant's Shopify Admin API (path such as /orders.json)
+      action: http
+      http:
+        method: GET
+        url: https://{host}/admin/api/2025-01
+        allowPath: true
+        attribution: Shopify Admin API
+        credential:
+          provider: shopify
+          header: X-Shopify-Access-Token
+          format: '{secret}'
+    - name: shopify_set_stock
+      description: 'Set the stock of an inventory item at a location (JSON body: location_id, inventory_item_id, available)'
+      action: http
+      http:
+        method: POST
+        url: https://{host}/admin/api/2025-01/inventory_levels/set.json
+        attribution: Shopify Admin API
+        credential:
+          provider: shopify
+          header: X-Shopify-Access-Token
+          format: '{secret}'
+    - name: shopify_update_product
+      description: Update a product (price, title, description) AFTER the merchant approved it; path /products/<id>.json,
+        JSON body
+      action: http
+      http:
+        method: PUT
+        url: https://{host}/admin/api/2025-01
+        allowPath: true
+        attribution: Shopify Admin API
+        credential:
+          provider: shopify
+          header: X-Shopify-Access-Token
+          format: '{secret}'
+  templates:
+  - key: store_sync
+    title: Store sync
+    description: 'Connect a store: the agent syncs its orders and stock every hour.'
+    agent: syncer
+    params:
+    - name: channel
+      type: select
+      required: true
+      label: Channel
+      options:
+      - value: shopify
+        label: Shopify
+    goal: Sync the store "{instance}" on channel {channel}. Today is {date}. Pull orders and stock, update stock everywhere,
+      raise alerts, and propose price changes and listing rewrites for approval.
+    schedule:
+      cron: 0 * * * *
+      userCanChange: false
+    maxPerUser: 3
+  approvals:
+  - key: price_change
+    title: Price change
+    decidedBy: requester
+    fields:
+    - sku
+    - channel
+    - current_price
+    - proposed_price
+    - reason
+    timeoutMinutes: 10080
+  - key: listing_rewrite
+    title: Listing rewrite
+    decidedBy: requester
+    fields:
+    - sku
+    - channel
+    - current_text
+    - proposed_text
+    - reason
+    timeoutMinutes: 10080
+  triggers:
+  - key: apply_price
+    'on':
+      approval: price_change
+      decision: approved
+    start:
+      agent: syncer
+    goal: 'The merchant approved this price change: {event}. Apply it with shopify_update_product, update the product record,
+      then log_change.'
+  - key: apply_listing
+    'on':
+      approval: listing_rewrite
+      decision: approved
+    start:
+      agent: syncer
+    goal: 'The merchant approved this listing rewrite: {event}. Apply it with shopify_update_product, update the product record,
+      then log_change.'
+  - key: alert_low_stock
+    'on':
+      collection: alerts
+      op: insert
+      where:
+        kind: low_stock
+    notify:
+      to: owner
+      subject: 'Low stock: {record.sku}'
+      body: '{record.message}'
+      link: alerts
+  - key: alert_sync_failed
+    'on':
+      collection: alerts
+      op: insert
+      where:
+        kind: sync_failed
+    notify:
+      to: owner
+      subject: Sync failed on {record.channel}
+      body: '{record.message}'
+      link: dashboard
+  - key: alert_suppressed
+    'on':
+      collection: alerts
+      op: insert
+      where:
+        kind: listing_suppressed
+    notify:
+      to: owner
+      subject: 'Listing suppressed: {record.sku}'
+      body: '{record.message}'
+      link: alerts
+  data:
+    credentials:
+    - provider: shopify
+      kind: api_key
+      scope: user
+      label: Shopify Admin API access token
+      help: 'In Shopify admin: Settings > Apps > Develop apps > create an app with read/write products, orders and inventory,
+        then copy the Admin API access token.'
+      hostLabel: your-store.myshopify.com
+    collections:
+    - name: products
+      ownedBy: user
+      description: One catalogue per merchant organisation
+      access:
+      - role: user
+        where:
+          editors: '{user.email}'
+        can:
+        - read
+        - write
+      - role: user
+        where:
+          viewers: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: sku
+        type: text
+        required: true
+        label: SKU
+      - name: title
+        type: text
+        required: true
+        label: Title
+      - name: description
+        type: textarea
+        label: Description
+      - name: images
+        type: urls
+        label: Images
+      - name: stock_by_location
+        type: json
+        label: Stock per location
+      - name: stock_total
+        type: number
+        label: Total stock
+      - name: low_stock_level
+        type: number
+        label: Low-stock level
+      - name: cost
+        type: number
+        label: Cost
+      - name: prices
+        type: json
+        label: Price per channel
+      - name: stock_value
+        type: number
+        label: Stock value
+      - name: min_margin_pct
+        type: number
+        label: Minimum margin %
+      - name: editors
+        type: json
+        label: Editors (emails)
+      - name: viewers
+        type: json
+        label: Read-only members (emails)
+    - name: sales
+      ownedBy: user
+      description: Sales pulled from the channels
+      retentionDays: 730
+      fields:
+      - name: date
+        type: date
+      - name: channel
+        type: text
+      - name: sku
+        type: text
+      - name: quantity
+        type: number
+      - name: revenue
+        type: number
+    - name: sync_events
+      ownedBy: user
+      description: Result of each sync run
+      retentionDays: 180
+      fields:
+      - name: date
+        type: date
+      - name: channel
+        type: text
+      - name: status
+        type: text
+      - name: items
+        type: number
+      - name: message
+        type: textarea
+    - name: alerts
+      ownedBy: user
+      retentionDays: 180
+      fields:
+      - name: kind
+        type: text
+      - name: channel
+        type: text
+      - name: sku
+        type: text
+      - name: message
+        type: textarea
+    - name: change_log
+      ownedBy: user
+      description: Approved price changes and listing rewrites
+      fields:
+      - name: date
+        type: date
+      - name: kind
+        type: text
+      - name: channel
+        type: text
+      - name: sku
+        type: text
+      - name: before
+        type: textarea
+      - name: after
+        type: textarea
+      - name: reason
+        type: textarea
+  views:
+  - key: home
+    type: page
+    title: Shelfsync
+    nav: false
+    sections:
+    - type: hero
+      title: Keep every **channel** in step.
+      text: An AI agent syncs stock across your stores automatically and drafts price and listing improvements that only go
+        live when you approve them.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Connect your store
+        text: Add your Shopify access token and create a store sync.
+      - title: Stock stays in step
+        text: When an item sells, stock drops everywhere, automatically.
+      - title: You approve changes
+        text: Every price change and listing rewrite waits for your yes.
+    - type: cards
+      id: plans
+      title: Plans
+      items:
+      - title: Starter
+        text: Up to 100 SKUs, 1 channel
+        badge: €29/mo
+      - title: Growth
+        text: Up to 1,000 SKUs, 2 channels
+        badge: €79/mo
+      - title: Scale
+        text: Unlimited SKUs, all channels
+        badge: €199/mo
+    - type: note
+      content: 'Shelfsync works with each marketplace under its developer agreement. Decision support: you approve every price
+        and listing change.'
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - user
+    - admin
+    sections:
+    - type: data
+      title: Sales per channel
+      source: collection:sales
+      display: chart
+      chart: bar
+      fields:
+      - key: channel
+      - key: revenue
+      groupBy:
+        field: channel
+        aggs:
+        - key: revenue
+          agg: sum
+          field: revenue
+    - type: data
+      title: Stock value
+      source: collection:products
+      display: kpi
+      kpis:
+      - label: Stock value
+        agg: sum
+        field: stock_value
+        format: money
+      - label: SKUs
+        agg: count
+    - type: data
+      title: Sync errors
+      source: collection:sync_events
+      display: table
+      fields:
+      - key: date
+        format: date
+      - key: channel
+      - key: status
+        format: badge
+      - key: message
+      filters:
+      - field: status
+        op: '='
+        value: failed
+      sort:
+        field: date
+        dir: desc
+      limit: 50
+      empty: No sync errors.
+    - type: data
+      title: Approved changes
+      source: collection:change_log
+      display: table
+      fields:
+      - key: date
+        format: date
+      - key: kind
+        format: badge
+      - key: channel
+      - key: sku
+      - key: before
+      - key: after
+      - key: reason
+      sort:
+        field: date
+        dir: desc
+      limit: 50
+      empty: No approved changes yet.
+  - key: products_list
+    type: table
+    title: Products
+    source: collection:products
+    columns:
+    - sku
+    - title
+    - stock_total
+    - cost
+    - prices
+    - min_margin_pct
+    export: true
+    roles:
+    - user
+    - admin
+  - key: product_form
+    type: form
+    title: Add product
+    collection: products
+    submit:
+      label: Save product
+      message: Product saved.
+      redirect: products_list
+    edit: true
+    roles:
+    - user
+    - admin
+  - key: stores
+    type: instances
+    template: store_sync
+    title: Stores
+    roles:
+    - user
+    - admin
+  - key: approvals_view
+    type: approvals
+    title: Approvals
+    roles:
+    - user
+    - admin
+  - key: alerts
+    type: table
+    title: Alerts
+    source: collection:alerts
+    columns:
+    - kind
+    - channel
+    - sku
+    - message
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title: Plan and store keys
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: starter
+      price: 29
+      interval: month
+      label: Starter
+      includes:
+      - Up to 100 SKUs
+      - 1 channel
+    - key: growth
+      price: 79
+      interval: month
+      label: Growth
+      includes:
+      - Up to 1,000 SKUs
+      - 2 channels
+    - key: scale
+      price: 199
+      interval: month
+      label: Scale
+      includes:
+      - Unlimited SKUs
+      - All channels
+  extensions:
+  - key: oauth_channels
+    description: 'OAuth sign-in is not available yet: Shopify is connected with the merchant''s Admin API access token. Amazon
+      SP-API and Etsy need OAuth and cannot be connected yet.'
+  - key: sync_frequency
+    description: Monitors run hourly (the minimum supported); a 15-minute cycle is not available.
+  - key: channel_quota
+    description: Plan limits on the number of channels are described in the plans but only the SKU quota is enforced.
+  - key: team_roles
+    description: Team members are added by email in the editors and viewers lists of each product; there is no invitation
+      screen yet.

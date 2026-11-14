@@ -1,0 +1,1188 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: intakely
+  displayName: Intakely
+  tagline:
+    en: One front door for every purchase, with supplier risk checked before anyone signs.
+  description:
+    en: Employees request what they need to buy through one intake form. Intakely routes each request to security, legal and
+      finance, checks new suppliers against Companies House and the OFSI sanctions list, collects supplier risk questionnaires
+      and documents, and gives approvers an AI risk summary and recommendation. People make the decision.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12263f'
+      accent: '#1f7a6d'
+      background: '#f6f8fa'
+      foreground: '#16202c'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Intake
+      color: primary
+    - text: ly
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Risk checks
+      href: '#checks'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: requester
+      label: Requester
+      assignedBy: signup
+    - key: reviewer
+      label: Reviewer (security, legal, finance)
+      assignedBy: invite
+    - key: approver
+      label: Approver
+      assignedBy: invite
+    - key: supplier
+      label: Supplier
+      assignedBy: derived
+      from: collection:suppliers.contact_email
+  egress:
+    hosts:
+    - api.company-information.service.gov.uk
+    - ofsistorage.blob.core.windows.net
+    notes: Companies House public data API (Open Government Licence; needs a free API key set by the admins). OFSI Consolidated
+      List of Financial Sanctions Targets, published by HM Treasury under the Open Government Licence v3.0.
+  agents:
+  - key: router
+    role: main
+    description: Reads a new request, decides which reviews it needs, creates the tasks and registers new suppliers.
+    profile:
+      inline:
+        display_name: Intakely router
+        crews:
+        - id: router
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You route procurement requests. You get a new request record (id, supplier_name, description, cost
+            in GBP, contract_months, data_shared one of none|internal|personal|sensitive, business_owner, supplier_email).
+            Rules: security review if data_shared is not none; legal review if contract_months is above 0; finance review
+            if cost is at least 10000 GBP. If none applies, no task is needed. For each needed review call tasks_append with
+            fields request_id, supplier_name, team (security|legal|finance), title, due_date (YYYY-MM-DD: 5 working days from
+            today for security and legal, 3 for finance), status "open", summary (one sentence on what to check). Then call
+            suppliers_read: if the supplier name is not there yet, call suppliers_append with name, contact_email (the supplier_email
+            of the request, only when data_shared is not none or cost is at least 10000, otherwise leave empty), questionnaire_status
+            ("invited" when you set the email, otherwise "not_needed"), last_request_id, risk_rating "unrated". Finally call
+            requests_update on the request with stage "in_review" (or "ready_for_decision" when no tasks and no questionnaire
+            are needed and the supplier already exists), submitted_on (today), required_reviews (comma separated teams) and
+            questionnaire_required (true/false). Never invent data. Reply with a level-1 title "# Routing — <supplier name>"
+            and a short list of what you created.'
+    appTools:
+    - name: tasks_append
+      description: Create a review task
+      action: append
+      collection: tasks
+      scope: all
+    - name: suppliers_read
+      description: Look up suppliers already registered
+      action: read
+      collection: suppliers
+      scope: all
+    - name: suppliers_append
+      description: Register a new supplier
+      action: append
+      collection: suppliers
+      scope: all
+    - name: requests_update
+      description: Update fields of a request (pass its id)
+      action: write
+      collection: requests
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 14
+      maxBudgetUsd: 0.4
+  - key: screener
+    role: helper
+    description: Checks a new supplier against Companies House and the OFSI sanctions list.
+    profile:
+      inline:
+        display_name: Intakely supplier screener
+        crews:
+        - id: screener
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You screen a new supplier. Step 1: call ch_search with query q=<supplier name>. Pick the best match
+            only if the name clearly matches; otherwise report ''no clear match''. Step 2: call ch_company with path /<company_number>
+            and read company_status, date_of_creation, type, registered_office_address, accounts overdue flag, has_insolvency_history,
+            has_charges. Step 3: call ofsi_list (the OFSI consolidated list in CSV; it may be cut, say so if the name could
+            be beyond the cut) and look for the supplier name and any directors'' names you found, allowing for spelling variants.
+            Never state a sanctions match as fact: say ''possible match, human confirmation required'' and give the list entry.
+            Never state a clear result unless the list was read. No credit data is available: do not guess credit scores.
+            Then call screenings_append with supplier_name, company_number, company_status, incorporated_on, sanctions_result
+            (clear|possible_match|not_checked), flags (short text), checked_on. Call suppliers_update on the supplier record
+            with screening_status and, if company_status is not active or sanctions is possible_match, risk_rating "high".
+            If the supplier''s last_request_id is set and questionnaire_status is not_needed, call requests_update with stage
+            "ready_for_decision". Reply with "# Screening — <supplier>" then sections ## Companies House, ## Sanctions, ##
+            Flags. Cite sources: Companies House and OFSI, Open Government Licence v3.0.'
+    appTools:
+    - name: ch_search
+      description: Search Companies House for a company by name
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk/search/companies
+        allowPath: false
+        attribution: Companies House, Open Government Licence v3.0
+        credential:
+          provider: companies_house
+          header: Authorization
+          format: Basic {secret}
+    - name: ch_company
+      description: Read a Companies House company profile, path /<company_number>
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk/company
+        allowPath: true
+        attribution: Companies House, Open Government Licence v3.0
+        credential:
+          provider: companies_house
+          header: Authorization
+          format: Basic {secret}
+    - name: ofsi_list
+      description: Download the OFSI consolidated sanctions list (CSV)
+      action: http
+      http:
+        method: GET
+        url: https://ofsistorage.blob.core.windows.net/publishlive/ConList.csv
+        allowPath: false
+        maxBytes: 2000000
+        timeoutMs: 30000
+        attribution: OFSI, HM Treasury, Open Government Licence v3.0
+    - name: screenings_append
+      description: Save the screening result
+      action: append
+      collection: screenings
+      scope: all
+    - name: suppliers_update
+      description: Update a supplier record (pass its id)
+      action: write
+      collection: suppliers
+      scope: all
+    - name: requests_update
+      description: Update fields of a request (pass its id)
+      action: write
+      collection: requests
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 14
+      maxBudgetUsd: 0.5
+  - key: doc_checker
+    role: helper
+    description: Reads the documents a supplier uploaded and checks them.
+    profile:
+      inline:
+        display_name: Intakely document checker
+        crews:
+        - id: doc_checker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You check supplier documents. For each file id you are given, call read_upload and extract: document
+            type, insured entity name, insurer, policy number, cover type, limit of indemnity in GBP, start and expiry date.
+            Check: the entity name matches the supplier name, the policy is not expired today, cover is at least GBP 1,000,000
+            for public liability and GBP 5,000,000 for professional indemnity where applicable. Quote only what the document
+            shows; if unreadable say so. Call doc_checks_append with request_ref, supplier_name, document_type, insurer, cover_limit,
+            expiry_date, name_matches (true/false), expired (true/false), verdict (ok|issues|unreadable), notes. Then call
+            requests_update on the request whose id is request_ref with stage "ready_for_decision". Reply with "# Document
+            check — <supplier>" and a table of findings. Never invent values.'
+    appTools:
+    - name: read_upload
+      description: Read a file the supplier uploaded
+      action: read_file
+    - name: doc_checks_append
+      description: Save a document check result
+      action: append
+      collection: doc_checks
+      scope: all
+    - name: requests_update
+      description: Update fields of a request (pass its id)
+      action: write
+      collection: requests
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  - key: analyst
+    role: analyst
+    description: Summarises supplier risk, recommends a decision and asks the approver; later records the outcome.
+    awaits:
+    - purchase_decision
+    profile:
+      inline:
+        display_name: Intakely risk analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 16
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a third-party risk analyst. You advise; people decide. When a request is ready for decision:
+            read the request (requests_read), the supplier (suppliers_read), screenings (screenings_read), the questionnaire
+            answers (questionnaires_read), document checks (doc_checks_read) and the review tasks with their outcomes (tasks_read).
+            Write a report that starts with "# Risk summary — <supplier> — <request description in 5 words>", then ## Recommendation
+            (approve | approve with conditions | reject, one reason line), ## Key risks (ranked, each with its evidence),
+            ## Missing information, ## Conditions to attach, ## Evidence (sources). Put a risk rating low|medium|high. Call
+            assessments_append with request_id, supplier_name, risk_rating, recommendation, summary. Call suppliers_update
+            with risk_rating. Then call request_purchase_decision with the recommendation and a short summary so the approver
+            decides. Set the request stage to "awaiting_approval" with requests_update. Never present a sanctions possible
+            match as confirmed, and do not give legal advice as fact. When instead you are told an approval was decided, set
+            the request stage to approved or rejected, set decided_on and cycle_days (days from submitted_on to today) with
+            requests_update, and reply with a short title and the outcome. Include a ```chart block only if comparing numbers.'
+    appTools:
+    - name: requests_read
+      description: Read requests
+      action: read
+      collection: requests
+      scope: all
+    - name: requests_update
+      description: Update fields of a request (pass its id)
+      action: write
+      collection: requests
+      scope: all
+    - name: suppliers_read
+      description: Read suppliers
+      action: read
+      collection: suppliers
+      scope: all
+    - name: suppliers_update
+      description: Update a supplier record (pass its id)
+      action: write
+      collection: suppliers
+      scope: all
+    - name: screenings_read
+      description: Read supplier screenings
+      action: read
+      collection: screenings
+      scope: all
+    - name: questionnaires_read
+      description: Read supplier questionnaires
+      action: read
+      collection: questionnaires
+      scope: all
+    - name: doc_checks_read
+      description: Read document checks
+      action: read
+      collection: doc_checks
+      scope: all
+    - name: tasks_read
+      description: Read review tasks
+      action: read
+      collection: tasks
+      scope: all
+    - name: assessments_append
+      description: Save the risk assessment
+      action: append
+      collection: risk_assessments
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 16
+      maxBudgetUsd: 0.8
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Intakely
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: Procurement intake and third-party risk
+      title: One front door for every **purchase**, with supplier risk checked first.
+      text: Employees ask once. Intakely routes the request to security, legal and finance, screens the supplier, collects
+        their documents, and gives approvers a clear risk summary. People always decide.
+      actions:
+      - label: Request a purchase
+        href: /v/new_request
+        style: primary
+      - label: Sign in
+        href: /login
+        style: ghost
+      aside: '<div style="padding:16px"><b>Example</b><br>Acme Analytics Ltd, £42,000, 24 months, personal data<br>→ Security
+        review, Legal review, Finance review<br>→ Companies House: active · Sanctions: clear<br>→ Recommendation: approve
+        with conditions</div>'
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Request
+        text: 'One form: supplier, description, cost, contract length, data shared, business owner.'
+        badge: 📝
+      - title: Route
+        text: Security if data is shared, legal for contracts, finance above £10,000. Each reviewer gets a task, a deadline
+          and email reminders.
+        badge: 🔀
+      - title: Check
+        text: New suppliers are screened automatically and fill a risk questionnaire in their own portal.
+        badge: 🔎
+      - title: Decide
+        text: An agent summarises the risk and recommends. An approver decides.
+        badge: ✅
+    - type: cards
+      id: checks
+      title: Risk checks
+      items:
+      - title: Companies House
+        text: Company status, incorporation date and filing flags.
+      - title: OFSI sanctions list
+        text: Supplier and director names against the UK consolidated list.
+      - title: Supplier documents
+        text: Insurance certificates read and checked for name, cover and expiry.
+    - type: note
+      content: 'Intakely supports decisions; it is not legal advice. Sanctions matches always need human confirmation. Data:
+        Companies House and OFSI, Open Government Licence v3.0.'
+  - key: new_request
+    type: form
+    title: New purchase request
+    collection: requests
+    fields:
+    - supplier_name
+    - description
+    - cost
+    - contract_months
+    - data_shared
+    - business_owner
+    - supplier_email
+    - requester_email
+    submit:
+      label: Submit request
+      message: Request received. You will get an email when it moves.
+      redirect: my_requests
+    roles:
+    - requester
+    - reviewer
+    - approver
+    - admin
+  - key: my_requests
+    type: table
+    title: Requests
+    source: collection:requests
+    export: true
+    data:
+      display: table
+      fields:
+      - key: supplier_name
+        label: Supplier
+      - key: description
+        label: What
+      - key: cost
+        label: Cost (£)
+        format: money
+      - key: stage
+        label: Stage
+        format: badge
+      - key: submitted_on
+        label: Submitted
+        format: date
+      sort:
+        field: submitted_on
+        dir: desc
+      limit: 100
+    roles:
+    - requester
+    - reviewer
+    - approver
+    - admin
+  - key: tasks
+    type: table
+    title: Review tasks
+    source: collection:tasks
+    export: true
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Task
+      - key: supplier_name
+        label: Supplier
+      - key: team
+        label: Team
+        format: badge
+      - key: due_date
+        label: Due
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      - key: summary
+        label: What to check
+      sort:
+        field: due_date
+        dir: asc
+      limit: 100
+    roles:
+    - reviewer
+    - approver
+    - admin
+  - key: task_update
+    type: form
+    title: Update a task
+    collection: tasks
+    edit: true
+    fields:
+    - status
+    - outcome
+    - notes
+    submit:
+      label: Save
+      message: Task updated.
+      redirect: tasks
+    nav: false
+    roles:
+    - reviewer
+    - admin
+  - key: approvals_view
+    type: approvals
+    title: Decisions
+    roles:
+    - approver
+    - admin
+  - key: suppliers
+    type: table
+    title: Suppliers
+    source: collection:suppliers
+    export: true
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Supplier
+      - key: risk_rating
+        label: Risk
+        format: badge
+      - key: screening_status
+        label: Screening
+        format: badge
+      - key: questionnaire_status
+        label: Questionnaire
+        format: badge
+      limit: 200
+    roles:
+    - reviewer
+    - approver
+    - admin
+  - key: supplier_portal
+    type: form
+    title: Supplier risk questionnaire
+    collection: questionnaires
+    submit:
+      label: Send to the buyer
+      message: Thank you. Your answers and documents were received.
+    roles:
+    - supplier
+  - key: contract_upload
+    type: form
+    title: Upload signed contract
+    collection: contracts
+    submit:
+      label: Save contract
+      message: Signed contract stored.
+    roles:
+    - reviewer
+    - approver
+    - admin
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - reviewer
+    - approver
+    - admin
+    sections:
+    - type: data
+      title: Overview
+      source: collection:requests
+      display: kpi
+      kpis:
+      - label: Requests
+        agg: count
+      - label: Average cycle time (days)
+        agg: avg
+        field: cycle_days
+        format: number
+      - label: Total value (£)
+        agg: sum
+        field: cost
+        format: money
+    - type: data
+      title: Requests by stage
+      source: collection:requests
+      display: chart
+      chart: bar
+      fields:
+      - key: stage
+        label: Stage
+      - key: count
+        label: Requests
+      groupBy:
+        field: stage
+        aggs: []
+    - type: data
+      title: Cycle time by month
+      source: collection:requests
+      display: chart
+      chart: line
+      fields:
+      - key: submitted_on
+        label: Month
+      - key: avg_cycle
+        label: Average days
+      groupBy:
+        field: submitted_on
+        bucket: month
+        aggs:
+        - key: avg_cycle
+          agg: avg
+          field: cycle_days
+    - type: data
+      title: Supplier risk
+      source: collection:suppliers
+      display: chart
+      chart: pie
+      fields:
+      - key: risk_rating
+        label: Risk
+      - key: count
+        label: Suppliers
+      groupBy:
+        field: risk_rating
+        aggs: []
+    - type: data
+      title: High-risk suppliers
+      source: collection:suppliers
+      display: table
+      fields:
+      - key: name
+        label: Supplier
+      - key: risk_rating
+        label: Risk
+        format: badge
+      - key: screening_status
+        label: Screening
+        format: badge
+      filters:
+      - field: risk_rating
+        op: '='
+        value: high
+      empty: No high-risk suppliers.
+  - key: account
+    type: account
+    title: Plan and connections
+    roles:
+    - admin
+  data:
+    credentials:
+    - provider: companies_house
+      kind: api_key
+      scope: org
+      label:
+        en: Companies House API key
+      help:
+        en: Create a free key at developer.company-information.service.gov.uk. Paste it base64-encoded as 'key:' (the key
+          as username, empty password).
+    collections:
+    - name: requests
+      ownedBy: org
+      description: Purchase requests
+      fields:
+      - name: supplier_name
+        type: text
+        required: true
+        label: Supplier name
+      - name: description
+        type: textarea
+        required: true
+        label: What do you want to buy?
+      - name: cost
+        type: number
+        required: true
+        label: Total cost (£)
+      - name: contract_months
+        type: number
+        label: Contract length (months, 0 if none)
+      - name: data_shared
+        type: select
+        required: true
+        label: Data shared with the supplier
+        options:
+        - value: none
+          label: None
+        - value: internal
+          label: Internal business data
+        - value: personal
+          label: Personal data
+        - value: sensitive
+          label: Sensitive or confidential data
+      - name: business_owner
+        type: text
+        required: true
+        label: Business owner
+      - name: supplier_email
+        type: email
+        label: Supplier contact email
+      - name: requester_email
+        type: email
+        required: true
+        label: Your work email
+      - name: stage
+        type: select
+        label: Stage
+        default: submitted
+        options:
+        - submitted
+        - in_review
+        - awaiting_supplier
+        - ready_for_decision
+        - awaiting_approval
+        - approved
+        - rejected
+        - signed
+        - synced
+      - name: submitted_on
+        type: date
+      - name: decided_on
+        type: date
+      - name: cycle_days
+        type: number
+      - name: required_reviews
+        type: text
+      - name: questionnaire_required
+        type: boolean
+      access:
+      - role: requester
+        where:
+          requester_email: '{user.email}'
+        can:
+        - read
+      - role: reviewer
+        can:
+        - read
+        - write
+      - role: approver
+        can:
+        - read
+        - write
+    - name: tasks
+      ownedBy: org
+      description: Review tasks for security, legal and finance
+      fields:
+      - name: request_id
+        type: text
+      - name: supplier_name
+        type: text
+      - name: team
+        type: select
+        options:
+        - security
+        - legal
+        - finance
+      - name: title
+        type: text
+      - name: summary
+        type: textarea
+      - name: due_date
+        type: date
+      - name: status
+        type: select
+        options:
+        - open
+        - in_progress
+        - done
+        - blocked
+        default: open
+      - name: outcome
+        type: select
+        options:
+        - pass
+        - pass_with_conditions
+        - fail
+      - name: notes
+        type: textarea
+        label: Notes
+      access:
+      - role: reviewer
+        can:
+        - read
+        - write
+      - role: approver
+        can:
+        - read
+    - name: suppliers
+      ownedBy: org
+      description: Supplier register
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: contact_email
+        type: email
+      - name: questionnaire_status
+        type: select
+        options:
+        - not_needed
+        - invited
+        - received
+      - name: screening_status
+        type: select
+        options:
+        - pending
+        - clear
+        - flagged
+      - name: risk_rating
+        type: select
+        options:
+        - unrated
+        - low
+        - medium
+        - high
+        default: unrated
+      - name: last_request_id
+        type: text
+      access:
+      - role: reviewer
+        can:
+        - read
+        - write
+      - role: approver
+        can:
+        - read
+      - role: supplier
+        where:
+          contact_email: '{user.email}'
+        can:
+        - read
+    - name: screenings
+      ownedBy: org
+      description: Companies House and sanctions checks
+      fields:
+      - name: supplier_name
+        type: text
+      - name: company_number
+        type: text
+      - name: company_status
+        type: text
+      - name: incorporated_on
+        type: date
+      - name: sanctions_result
+        type: select
+        options:
+        - clear
+        - possible_match
+        - not_checked
+      - name: flags
+        type: textarea
+      - name: checked_on
+        type: date
+      access:
+      - role: reviewer
+      - role: approver
+    - name: questionnaires
+      ownedBy: org
+      description: Supplier risk questionnaire answers and documents
+      fields:
+      - name: contact_email
+        type: email
+        required: true
+        label: Your email (as invited)
+      - name: supplier_name
+        type: text
+        required: true
+        label: Company name
+      - name: request_ref
+        type: text
+        required: true
+        label: Request reference (from the invitation)
+      - name: company_number
+        type: text
+        label: Companies House number
+      - name: has_iso27001
+        type: boolean
+        label: ISO 27001 certified
+      - name: data_location
+        type: select
+        label: Where is customer data stored?
+        options:
+        - uk
+        - eea
+        - other
+      - name: subprocessors
+        type: textarea
+        label: Sub-processors
+      - name: breach_history
+        type: textarea
+        label: Security incidents in the last 3 years
+      - name: security_contact
+        type: email
+        label: Security contact
+      - name: insurance_cert
+        type: file
+        accept:
+        - pdf
+        - jpg
+        - png
+        maxMb: 10
+        capture: false
+        label: Insurance certificate
+      - name: other_docs
+        type: file
+        accept:
+        - pdf
+        - docx
+        maxMb: 10
+        multiple: true
+        label: Other documents (policies, certificates)
+      access:
+      - role: supplier
+        where:
+          contact_email: '{user.email}'
+        can:
+        - read
+      - role: reviewer
+      - role: approver
+    - name: doc_checks
+      ownedBy: org
+      description: Results of document checks
+      fields:
+      - name: request_ref
+        type: text
+      - name: supplier_name
+        type: text
+      - name: document_type
+        type: text
+      - name: insurer
+        type: text
+      - name: cover_limit
+        type: number
+      - name: expiry_date
+        type: date
+      - name: name_matches
+        type: boolean
+      - name: expired
+        type: boolean
+      - name: verdict
+        type: select
+        options:
+        - ok
+        - issues
+        - unreadable
+      - name: notes
+        type: textarea
+      access:
+      - role: reviewer
+      - role: approver
+    - name: risk_assessments
+      ownedBy: org
+      description: AI risk summaries and recommendations
+      fields:
+      - name: request_id
+        type: text
+      - name: supplier_name
+        type: text
+      - name: risk_rating
+        type: select
+        options:
+        - low
+        - medium
+        - high
+      - name: recommendation
+        type: text
+      - name: summary
+        type: textarea
+      access:
+      - role: reviewer
+      - role: approver
+    - name: contracts
+      ownedBy: org
+      description: Signed contracts
+      fields:
+      - name: request_ref
+        type: text
+        required: true
+        label: Request reference
+      - name: supplier_name
+        type: text
+        required: true
+      - name: signed_on
+        type: date
+      - name: document
+        type: file
+        accept:
+        - pdf
+        maxMb: 15
+        label: Signed contract
+      access:
+      - role: reviewer
+      - role: approver
+      retentionDays: 3650
+  approvals:
+  - key: purchase_decision
+    title: Purchase decision
+    description: The approver decides on the AI recommendation.
+    role: approver
+    fields:
+    - supplier
+    - recommendation
+    - summary
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: route_request
+    'on':
+      collection: requests
+      op: insert
+    start:
+      agent: router
+    asUser: false
+    goal: 'New purchase request received. Record: {event}. Today is {date}. Route it.'
+  - key: screen_supplier
+    'on':
+      collection: suppliers
+      op: insert
+    start:
+      agent: screener
+    asUser: false
+    goal: 'Screen the new supplier "{record.name}" (supplier record id in the event: {event}). Linked request id: {record.last_request_id}.
+      Today is {date}.'
+  - key: check_docs
+    'on':
+      collection: questionnaires
+      op: insert
+    start:
+      agent: doc_checker
+    asUser: true
+    goal: 'Supplier "{record.supplier_name}" answered the questionnaire for request {record.request_ref}. Insurance certificate
+      file ids: {record.insurance_cert}. Other documents: {record.other_docs}. Today is {date}. Check them.'
+  - key: recommend
+    'on':
+      collection: requests
+      op: update
+      where:
+        stage: ready_for_decision
+    start:
+      agent: analyst
+    asUser: false
+    goal: 'Request {record.supplier_name} is ready for a decision. Event: {event}. Today is {date}. Write the risk summary
+      and ask for the purchase decision.'
+  - key: decision_recorded
+    'on':
+      approval: purchase_decision
+      decision: any
+    start:
+      agent: analyst
+    asUser: false
+    goal: 'The purchase decision was made. Event: {event}. Today is {date}. Record the outcome on the request.'
+  - key: request_received
+    'on':
+      collection: requests
+      op: insert
+    notify:
+      to:
+      - record.requester_email
+      subject: 'Request received: {record.supplier_name}'
+      body: We received your request for {record.supplier_name} (£{record.cost}). We will email you when it is approved or
+        if more information is needed.
+      link: my_requests
+  - key: request_approved
+    'on':
+      collection: requests
+      op: update
+      where:
+        stage: approved
+    notify:
+      to:
+      - record.requester_email
+      subject: 'Approved: {record.supplier_name}'
+      body: Your request for {record.supplier_name} was approved. Legal will send the contract for signature.
+      link: my_requests
+  - key: request_rejected
+    'on':
+      collection: requests
+      op: update
+      where:
+        stage: rejected
+    notify:
+      to:
+      - record.requester_email
+      subject: 'Not approved: {record.supplier_name}'
+      body: Your request for {record.supplier_name} was not approved. Contact the approver for the reasons.
+      link: my_requests
+  - key: task_assigned
+    'on':
+      collection: tasks
+      op: insert
+    notify:
+      to:
+      - role:reviewer
+      subject: 'New {record.team} review: {record.supplier_name}'
+      body: A {record.team} review is waiting for {record.supplier_name}. Due {record.due_date}. {record.summary}
+      link: tasks
+  - key: task_reminder
+    'on':
+      date:
+        collection: tasks
+        field: due_date
+        offsetDays: -1
+        hour: 8
+      where:
+        status: open
+    notify:
+      to:
+      - role:reviewer
+      subject: 'Reminder: {record.team} review due tomorrow'
+      body: The {record.team} review for {record.supplier_name} is due on {record.due_date}.
+      link: tasks
+  - key: task_overdue
+    'on':
+      date:
+        collection: tasks
+        field: due_date
+        offsetDays: 1
+        hour: 8
+      where:
+        status: open
+    notify:
+      to:
+      - admins
+      - role:approver
+      subject: 'Overdue: {record.team} review for {record.supplier_name}'
+      body: The {record.team} review was due on {record.due_date} and is still open.
+      link: tasks
+  - key: supplier_invite
+    'on':
+      collection: suppliers
+      op: insert
+      where:
+        questionnaire_status: invited
+    notify:
+      to:
+      - record.contact_email
+      subject: Please complete our supplier risk questionnaire
+      body: 'We are considering buying from {record.name}. Please sign in with this email address, complete the short risk
+        questionnaire and upload your insurance certificate. Reference to quote: {record.last_request_id}.'
+      link: supplier_portal
+  - key: contract_signed
+    'on':
+      collection: contracts
+      op: insert
+    notify:
+      to:
+      - admins
+      subject: 'Signed contract stored: {record.supplier_name}'
+      body: A signed contract for request {record.request_ref} was stored.
+      link: contract_upload
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: platform
+      price: 25000
+      interval: year
+      label: Intakely platform (from £25,000 a year)
+      includes:
+      - unlimited requests
+      - automated supplier screening
+      - supplier portal
+      - risk dashboards
+      roles:
+      - admin
+  notifications:
+    emailOnRunDone: false
+  extensions:
+  - key: slack_teams_intake
+    description: Requests from Slack and Microsoft Teams through OAuth sign-in. OAuth to other services is not available yet;
+      employees use the intake form for now.
+  - key: erp_sync
+    description: Sync of approved purchases (purchase order or vendor creation) to the ERP. Needs the customer's ERP API or
+      OAuth connection; not available yet. Approved requests stay at stage approved and can be exported as CSV.
+  - key: esignature
+    description: E-signature integration (send for signature, receive signed contract). Not available yet; legal staff upload
+      the signed PDF on the contract upload page.
+  - key: credit_data
+    description: Credit reports are off until the customer holds a licence with a credit bureau. Add the bureau API key as
+      an admin credential and one http tool for the screener then.
+  - key: companies_house_key
+    description: 'The admins set the Companies House API key on the account page (credential companies_house, HTTP basic authentication:
+      the key as username, empty password, pasted base64-encoded as ''key:''). The free OFSI list file can be large and is
+      read up to 2 MB, so a very late entry might be cut.'
+  - key: requester_identity
+    description: The requester email field is typed by the requester. Prefilling it from the signed-in user and a per-request
+      supplier link are not available yet.

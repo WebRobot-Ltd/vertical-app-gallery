@@ -1,0 +1,641 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: helixa
+  displayName: Helixa
+  tagline:
+    en: An autonomous AI bioinformatician for biotech teams.
+  description:
+    en: Upload omics data or point to public GEO/ENA data, ask your question in plain English, approve the analysis plan,
+      and get a reproducible report with figures, methods and caveats, reviewed by a senior scientist.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0b2a4a'
+      accent: '#12a38a'
+      background: '#f6f9fb'
+      foreground: '#14212e'
+    fonts:
+      body: Inter
+      display: Space Grotesk
+    wordmark:
+    - text: Heli
+      color: primary
+    - text: xa
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how-it-works'
+    - label: Reproducibility
+      href: '#repro'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Lab admin
+      assignedBy: admin_emails
+    - key: scientist
+      label: Scientist
+      assignedBy: signup
+    - key: reviewer
+      label: Senior reviewer
+      assignedBy: invite
+    - key: collaborator
+      label: External collaborator (read-only)
+      assignedBy: invite
+  limits:
+  - action: agent:analyst
+    per: user
+    max: 20
+    window: day
+    roles:
+    - scientist
+  - action: agent:planner
+    per: user
+    max: 30
+    window: day
+    roles:
+    - scientist
+  egress:
+    hosts:
+    - eutils.ncbi.nlm.nih.gov
+    - www.ebi.ac.uk
+    notes: NCBI E-utilities (GEO metadata) and the ENA Portal API are public; reuse follows each dataset's own terms, which
+      the agent must cite.
+  agents:
+  - key: planner
+    role: main
+    description: Reads the question and the data description and proposes an analysis plan; nothing runs until the scientist
+      approves it.
+    awaits:
+    - plan_approval
+    profile:
+      inline:
+        display_name: Helixa planner
+        crews:
+        - id: planner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Helixa, a careful senior bioinformatician. You turn a scientist''s question into an analysis
+            PLAN and never run the analysis yourself. Inspect the uploaded files with read_upload (file ids are in the goal;
+            {data_text} holds the text of tables when available) and, for public data, look up accessions with geo_search
+            / ena_search, noting the dataset''s terms of use. Start with a level-1 title "# Analysis plan — <short question>".
+            Sections (## headings): Question and hypothesis; Data (files, accessions, organism, sample counts, design, metadata
+            gaps); Quality checks (library size, outliers, batch effects, PCA, filtering); Methods (normalisation, statistical
+            tests, multiple-testing correction, with named tools such as DESeq2, edgeR, limma, Scanpy, Seurat, and the language
+            Python or R); Expected outputs (figures, tables); Compute needs (CPU, large-file, GPU or HPC and why); Risks and
+            caveats. Be explicit about every file id the analyst must use. Never invent data, sample sizes or results. When
+            the plan is complete, call request_plan_approval with the plan text; the scientist who requested it decides. Do
+            not proceed beyond the approval request.'
+          mcp_servers: []
+    appTools:
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
+    - name: geo_search
+      description: 'Search NCBI GEO/other NCBI databases through E-utilities esearch (query: db=gds&term=...&retmode=json)'
+      action: http
+      http:
+        method: GET
+        url: https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi
+        attribution: NCBI GEO / E-utilities, public data; check each dataset's terms
+    - name: ena_search
+      description: 'Search the European Nucleotide Archive Portal API (query: result=read_run&query=...&format=json)'
+      action: http
+      http:
+        method: GET
+        url: https://www.ebi.ac.uk/ena/portal/api/search
+        attribution: ENA, EMBL-EBI, open data; check each dataset's terms
+    goalTemplate: 'Project: {project}
+
+      Question: {question}
+
+      Data type: {data_type_label}
+
+      Organism: {organism}
+
+      {?accession}Public accession(s): {accession}{/accession}
+
+      {?data}Uploaded files: {data}{/data}
+
+      {?data_text}File contents (may be truncated):
+
+      {data_text}{/data_text}
+
+      {?notes}Notes: {notes}{/notes}
+
+      Today is {date}. Write the plan in English.'
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 1.0
+  - key: analyst
+    role: helper
+    description: Runs the approved plan through the WebRobot platform, saves code, versions and parameters, and writes the
+      report.
+    writesTo:
+      collection: analyses
+      parse: whole
+    profile:
+      inline:
+        display_name: Helixa analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 80
+          max_budget_usd: 6.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are Helixa, an autonomous bioinformatician. You execute ONLY the plan the scientist approved
+            (it is in the goal). Build and run the analysis through the WebRobot MCP (pipelines for Python and R steps, large
+            omics files, GPU or HPC jobs when the plan calls for them); open uploaded files with read_upload using the file
+            ids in the plan. Do not deviate from the approved methods; if something forces a change, say so in Deviations.
+            Record for reproducibility: every script, the tool and package versions, random seeds, parameters, input file
+            ids/accessions and the pipeline/job ids. Never invent results; if a step fails, report it. Produce a report that
+            begins with a level-1 title "# <Project> — <question in a few words>" and has ## sections: Summary; Data and quality
+            control; Methods (with versions and parameters); Results (tables with real figures; add figures as ```chart blocks
+            like {"type":"bar","title":"...","labels":[...],"series":[{"name":"...","values":[...]}]} when comparing numbers);
+            Reproducibility (code listing or job ids, versions, seeds, parameters); Deviations from plan; Caveats and limitations.
+            State clearly that results need senior review and are not clinical or diagnostic claims.'
+    appTools:
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
+    - name: geo_search
+      description: 'Search NCBI GEO/other NCBI databases through E-utilities esearch (query: db=gds&term=...&retmode=json)'
+      action: http
+      http:
+        method: GET
+        url: https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi
+        attribution: NCBI GEO / E-utilities, public data; check each dataset's terms
+    - name: ena_search
+      description: 'Search the European Nucleotide Archive Portal API (query: result=read_run&query=...&format=json)'
+      action: http
+      http:
+        method: GET
+        url: https://www.ebi.ac.uk/ena/portal/api/search
+        attribution: ENA, EMBL-EBI, open data; check each dataset's terms
+    goalTemplate: 'Execute the approved analysis plan below. Today is {date}. Requester: {user}.
+
+      {event}'
+    output: markdown
+    limits:
+      maxTurns: 80
+      maxBudgetUsd: 6.0
+  - key: followup
+    role: helper
+    description: Answers follow-up questions about the results the user can see.
+    profile:
+      inline:
+        display_name: Helixa follow-up
+        crews:
+        - id: followup
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You answer follow-up questions about Helixa analyses. Use the read_results tool to find the relevant
+            report, and answer only from it: cite sections, figures and parameters. If the question needs a new computation,
+            say so and suggest starting a new analysis. Mention the review status (validated, needs rework, pending) when
+            relevant. Never invent numbers.'
+    appTools:
+    - name: read_results
+      description: Read the analyses the user may see
+      action: read
+      collection: analyses
+      scope: all
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New question: {message}
+
+      Answer in English.'
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.5
+  approvals:
+  - key: plan_approval
+    title: Approve the analysis plan
+    description: Nothing runs until the requesting scientist approves the plan.
+    decidedBy: requester
+  triggers:
+  - key: plan_approved
+    description: Run the analysis once the plan is approved
+    'on':
+      approval: plan_approval
+      decision: approved
+    start:
+      agent: analyst
+    goal: 'Execute the approved analysis plan below, exactly as approved. Today is {date}. Write the report in English.
+
+      {event}'
+  - key: result_validated
+    'on':
+      collection: analyses
+      op: update
+      where:
+        validation: validated
+    notify:
+      to: owner
+      subject: Your analysis {record.title} was validated
+      body: 'A senior scientist validated your analysis.
+
+
+        Review note: {record.review_note}'
+      link: results
+  - key: result_rework
+    'on':
+      collection: analyses
+      op: update
+      where:
+        validation: rework
+    notify:
+      to: owner
+      subject: Your analysis {record.title} needs rework
+      body: 'A senior scientist marked your analysis as needing rework.
+
+
+        Review note: {record.review_note}'
+      link: results
+  notifications:
+    emailOnRunDone: true
+  inputForm:
+    title: New analysis
+    fields:
+    - name: project
+      type: select
+      required: true
+      label: Project
+      optionsFrom: collection:projects
+    - name: question
+      type: textarea
+      required: true
+      maxLength: 1200
+      label: Your question
+      help: e.g. Which genes differ between treated and control samples?
+    - name: data_type
+      type: select
+      required: true
+      label: Data type
+      options:
+      - value: rnaseq
+        label: Bulk RNA-seq counts
+      - value: scrna
+        label: Single-cell matrix
+      - value: proteomics
+        label: Proteomics table
+      - value: other
+        label: Other omics
+    - name: organism
+      type: text
+      required: true
+      label: Organism
+      default: Homo sapiens
+    - name: data
+      type: file
+      label: Datasets and sample metadata
+      accept:
+      - csv
+      - txt
+      - xlsx
+      - json
+      - pdf
+      maxMb: 15
+      multiple: true
+      help: 'Very large files: describe them in notes and the agent will plan a pipeline run.'
+    - name: accession
+      type: text
+      label: Public accession (GEO / ENA)
+      help: e.g. GSE12345 or PRJEB12345. Reuse follows the dataset's terms.
+    - name: notes
+      type: textarea
+      maxLength: 800
+      label: Notes (design, covariates, compute needs)
+  data:
+    collections:
+    - name: projects
+      ownedBy: user
+      description: Lab projects; members share them
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Project name
+      - name: organism
+        type: text
+        label: Organism
+      - name: description
+        type: textarea
+        label: Description
+      - name: members
+        type: array
+        label: Team member emails
+      access:
+      - role: scientist
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: reviewer
+    - name: analyses
+      ownedBy: user
+      description: Finished analyses with report, reproducibility record and review status
+      fields:
+      - name: title
+        type: text
+        label: Title
+      - name: report
+        type: textarea
+        label: Report
+      - name: validation
+        type: select
+        label: Review status
+        default: pending
+        options:
+        - value: pending
+          label: Pending review
+        - value: validated
+          label: Validated
+        - value: rework
+          label: Needs rework
+      - name: review_note
+        type: textarea
+        label: Review note
+      - name: shared_with
+        type: array
+        label: Share with collaborators (emails)
+      access:
+      - role: reviewer
+        can:
+        - read
+        - write
+      - role: collaborator
+        where:
+          shared_with: '{user.email}'
+        can:
+        - read
+  views:
+  - key: home
+    type: page
+    title: Helixa
+    nav: false
+    sections:
+    - type: hero
+      band: true
+      eyebrow: For biotech teams
+      title: Your autonomous **bioinformatician**, with every step reproducible.
+      text: Upload omics data or point to public GEO/ENA data, ask your question in plain English, approve the plan, and get
+        figures, tables and a report with methods and caveats.
+      actions:
+      - label: Start an analysis
+        href: /v/new_analysis
+        style: primary
+      - label: Sign in
+        href: /login
+        style: ghost
+    - type: steps
+      id: how-it-works
+      title: How it works
+      items:
+      - title: Ask
+        text: Create a project, upload counts, matrices or metadata, and describe your question.
+      - title: Approve the plan
+        text: The agent proposes methods, quality checks and statistical tests. Nothing runs until you approve.
+      - title: Run
+        text: Python and R in a sandbox, with GPU or HPC for large jobs. You get an email when it finishes.
+      - title: Review
+        text: A senior scientist marks the result validated or needing rework. Ask follow-up questions on the results.
+    - type: cards
+      id: repro
+      title: Reproducible by design
+      items:
+      - title: Code, versions, parameters
+        text: Every script, package version, seed and parameter is recorded in the report.
+        badge: 🔬
+      - title: Senior review
+        text: Results carry a review status and note.
+        badge: ✅
+      - title: Roles
+        text: Admins, scientists, reviewers and read-only external collaborators.
+        badge: 👥
+    - type: note
+      content: Helixa supports research decisions. Results require expert review and are not clinical or diagnostic claims.
+        Public datasets are used under their own terms.
+  - key: new_project
+    type: form
+    title: New project
+    collection: projects
+    fields:
+    - name
+    - organism
+    - description
+    - members
+    submit:
+      label: Create project
+      message: Project created.
+      redirect: projects
+    roles:
+    - scientist
+    - admin
+  - key: projects
+    type: table
+    title: Projects
+    source: collection:projects
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Project
+      - key: organism
+        label: Organism
+      - key: description
+        label: Description
+    roles:
+    - scientist
+    - admin
+    - reviewer
+  - key: new_analysis
+    type: new_run
+    title: New analysis
+    roles:
+    - scientist
+    - admin
+  - key: plans
+    type: approvals
+    title: Plans to approve
+    roles:
+    - scientist
+    - admin
+  - key: history
+    type: history
+    title: My runs
+    source: run
+    roles:
+    - scientist
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: results
+    type: table
+    title: Results
+    source: collection:analyses
+    export: true
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Analysis
+      - key: validation
+        label: Review
+        format: badge
+      - key: review_note
+        label: Review note
+      sort:
+        field: title
+        dir: asc
+    roles:
+    - scientist
+    - admin
+    - reviewer
+    - collaborator
+  - key: review
+    type: form
+    title: Review a result
+    collection: analyses
+    edit: true
+    fields:
+    - validation
+    - review_note
+    - shared_with
+    submit:
+      label: Save review
+      message: Review saved.
+    nav: false
+    roles:
+    - reviewer
+    - admin
+  - key: ask
+    type: chat
+    title: Ask about results
+    source: agent:followup
+    examples:
+    - Which genes are most up-regulated and what is the adjusted p-value cutoff?
+    - Which quality checks flagged problems?
+    - Which package versions were used?
+    placeholder: Ask a follow-up question about your results
+    roles:
+    - scientist
+    - admin
+    - reviewer
+  - key: account
+    type: account
+    title: Plan and compute
+    roles:
+    - admin
+    - scientist
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: gbp
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 30
+      drivers:
+      - llm_tokens
+      - compute
+      - vm
+      - storage
+    costs:
+      agent:planner:
+        estimate: 10
+        metered: true
+      agent:analyst:
+        estimate: 300
+        metered: true
+    packs:
+    - key: compute_s
+      credits: 2000
+      price: 20
+      label: Compute 2,000
+    - key: compute_l
+      credits: 15000
+      price: 135
+      label: Compute 15,000
+    plans:
+    - key: lab
+      price: 1000
+      interval: month
+      label: Helixa Lab
+      includes:
+      - Unlimited projects and team members
+      - Reviewer and read-only collaborator seats
+      - Compute billed on usage
+      credits: 0
+      roles:
+      - admin
+  extensions:
+  - key: gpu_hpc_sandbox
+    description: GPU/HPC execution and the dedicated Python/R sandbox are delegated to WebRobot pipelines via the MCP; a dedicated
+      per-lab isolated workspace and per-lab data separation across signed-up users are not expressible in the manifest yet.

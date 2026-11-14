@@ -1,0 +1,820 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: careerloom
+  displayName: Careerloom
+  tagline:
+    en: An AI talent agent that coaches you and matches you with the right job.
+  description:
+    en: Talk to your AI talent agent, get a profile, a career plan and weekly job matches. You approve every application before
+      it is sent. Employers post roles and receive shortlists of candidates who agreed to be put forward.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#1d2b53'
+      accent: '#e4572e'
+      background: '#faf8f5'
+      foreground: '#1b1f2a'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Career
+      color: primary
+    - text: loom
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: For employers
+      href: '#employers'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      assignedBy: signup
+  limits:
+  - action: chat
+    per: user
+    max: 200
+    window: day
+    roles:
+    - user
+  - action: create:job_posts
+    max: 1
+    window: total
+    plans:
+      employer: -1
+  agents:
+  - key: coach
+    role: main
+    description: 'Voice/text career coach: interviews the candidate, builds the profile and the career plan.'
+    profile:
+      inline:
+        display_name: Careerloom coach
+        crews:
+        - id: coach
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Careerloom''s talent agent: a warm, direct career coach talking with a candidate (often
+            by voice, so keep replies short and conversational, one or two questions at a time). Learn their background, strengths,
+            ambitions and constraints (location, remote, salary, notice period). When you have enough, call save_profile with
+            a clear profile (headline, summary, strengths, skills, ambitions, constraints, preferences, a rewritten CV text).
+            Then call add_plan with a career plan: suggested roles, skills to build, a CV rewrite and next steps. Tell the
+            candidate they can edit the profile on the Profile page and that putting their profile forward to employers is
+            their choice (the put_forward field). Never invent experience, qualifications or figures; ask when unsure. Never
+            promise a job. You cannot make phone calls.'
+    appTools:
+    - name: read_profile
+      description: Read the candidate's saved profile
+      action: read
+      collection: candidate_profiles
+      scope: user
+    - name: save_profile
+      description: Save or update the candidate's profile
+      action: write
+      collection: candidate_profiles
+      scope: user
+    - name: add_plan
+      description: Save a career plan for the candidate
+      action: append
+      collection: career_plans
+      scope: user
+    context:
+    - key: profile
+      from: collection:candidate_profiles
+    goalTemplate: 'Saved profile so far (JSON, may be empty): {profile}
+
+      Conversation so far:
+
+      {history}
+
+      Candidate says: {message}
+
+      Reply in English.'
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  - key: applier
+    role: helper
+    description: Helps prepare applications and mock interviews; asks the candidate to approve each application before it
+      is saved as sent.
+    awaits:
+    - send_application
+    profile:
+      inline:
+        display_name: Careerloom application coach
+        crews:
+        - id: applier
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You help a candidate prepare applications and practise interviews. Read the candidate''s profile
+            (read_my_profile) and the platform''s jobs (search_jobs). For an application: draft a tailored cover note, show
+            it, refine it with the candidate, then call request_send_application with job_title, company, employer_email,
+            cover_note. NEVER send or save an application without the candidate''s approval. For a mock interview: ask one
+            question at a time, then give short, honest feedback. Never invent experience. Never contact anyone yourself.
+            When restarted after an approval, call save_application once with status ''sent'', the sent_at date (today), candidate_name,
+            candidate_email, candidate_summary (3 sentences from the profile, only if put_forward is true in the profile,
+            otherwise tell the candidate to enable it first and do not save), and the approved details.'
+    appTools:
+    - name: read_my_profile
+      description: Read the candidate's profile
+      action: read
+      collection: candidate_profiles
+      scope: user
+    - name: search_jobs
+      description: Search the open roles on the platform
+      action: search
+      collection: jobs
+      scope: all
+    - name: save_application
+      description: Save an approved application as sent
+      action: append
+      collection: applications
+      scope: user
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+      Candidate says: {message}
+
+      Reply in English.'
+    output: markdown
+  - key: matcher
+    role: scheduled
+    description: 'Weekly per candidate: finds roles on the platform and on public ads whose terms allow it, explains the fit,
+      and summarises progress.'
+    profile:
+      inline:
+        display_name: Careerloom matcher
+        crews:
+        - id: matcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You find job matches for one candidate each week. Start with a level-1 title "# Your Careerloom
+            week — <date>". Sections: ## Top matches (3-8 roles: title, company, location, salary if known, link, and 2-3
+            sentences on why it fits the candidate''s profile and constraints, plus one gap to close), ## Your progress (applications
+            and statuses, in plain words), ## Next steps. First search the platform''s own roles with search_open_jobs, then
+            look at public job ads ONLY on sites whose terms allow automated reading (check robots/terms; skip otherwise)
+            using the WebRobot tools. Respect the candidate''s constraints. Never invent roles, salaries or links; give only
+            what you found. If the profile is empty, say the candidate should talk to the coach first.'
+    appTools:
+    - name: search_open_jobs
+      description: Search the open roles posted by employers on the platform
+      action: search
+      collection: jobs
+      scope: all
+    context:
+    - key: profile
+      from: collection:candidate_profiles
+    - key: applications
+      from: collection:applications
+    writesTo:
+      collection: matches
+      parse: whole
+    output: markdown
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 1.0
+  - key: publisher
+    role: helper
+    description: Checks a new employer job post and publishes it on the job board.
+    profile:
+      inline:
+        display_name: Careerloom job publisher
+        crews:
+        - id: publisher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You publish employer job posts on the job board. If the post is a genuine job (not discriminatory,
+            not a scam, not asking candidates for money), call publish_job once with the same fields (title, company, skills,
+            salary_min, salary_max, location, remote_policy, description, employer_email) plus source 'platform'. Otherwise
+            do not publish and explain briefly. Never change the substance of the post.
+    appTools:
+    - name: publish_job
+      description: Publish a job on the board
+      action: append
+      collection: jobs
+      scope: all
+    goalTemplate: 'New job post: title {record.title}; company {record.company}; skills {record.skills}; salary {record.salary_min}-{record.salary_max};
+      location {record.location}; remote policy {record.remote_policy}; description {record.description}; employer email {record.employer_email}.'
+    output: markdown
+  templates:
+  - key: job_watch
+    title:
+      en: Weekly job watch
+    description:
+      en: 'Every week: roles that fit you, why, and your progress, by email.'
+    agent: matcher
+    params:
+    - name: focus
+      type: text
+      label:
+        en: Focus this week (optional)
+    goal: 'Find this week''s matches for the candidate. {?focus}Focus: {focus}.{/focus} Profile (JSON): {profile}. Applications
+      so far: {applications}. Today is {date}. Write in English.'
+    schedule:
+      cron: 0 7 * * 1
+      userCanChange: true
+    maxPerUser: 1
+    deliver:
+      to: owner
+      subject: Your weekly Careerloom matches and progress
+      onlyIfNew: true
+  approvals:
+  - key: send_application
+    title: Send this application?
+    decidedBy: requester
+    fields:
+    - job_title
+    - company
+    - employer_email
+    - cover_note
+  triggers:
+  - key: application_approved
+    'on':
+      approval: send_application
+      decision: approved
+    start:
+      agent: applier
+    goal: 'The candidate approved sending this application: {event}. Save it now with save_application (status sent).'
+  - key: publish_post
+    'on':
+      collection: job_posts
+      op: insert
+    start:
+      agent: publisher
+    asUser: false
+    goal: Review and publish this post.
+  - key: new_application
+    'on':
+      collection: applications
+      op: insert
+    notify:
+      to:
+      - record.employer_email
+      subject: New candidate for {record.job_title}
+      body: A candidate who agreed to be put forward applied for {record.job_title}. Open your dashboard to see the shortlist.
+      link: employer_dashboard
+  - key: status_change
+    'on':
+      collection: applications
+      op: update
+      where:
+        status: interview
+    notify:
+      to:
+      - owner
+      subject: Interview for {record.job_title} at {record.company}
+      body: 'Good news: {record.company} wants to interview you for {record.job_title}. Open Careerloom to prepare a mock
+        interview.'
+      link: prepare
+  - key: interview_reminder
+    'on':
+      date:
+        collection: applications
+        field: interview_date
+        offsetDays: -1
+        hour: 8
+    notify:
+      to:
+      - owner
+      - record.employer_email
+      subject: 'Interview tomorrow: {record.job_title}'
+      body: 'Reminder: the interview for {record.job_title} at {record.company} is tomorrow.'
+  inputForm:
+    title: Talk to your agent
+    fields: []
+  data:
+    collections:
+    - name: candidate_profiles
+      ownedBy: user
+      description: The candidate's profile, built with the coach and edited by them
+      retentionDays: 730
+      fields:
+      - name: headline
+        type: text
+        label: Headline
+      - name: summary
+        type: textarea
+        label: Summary
+      - name: strengths
+        type: textarea
+        label: Strengths
+      - name: skills
+        type: text
+        label: Skills
+      - name: ambitions
+        type: textarea
+        label: Ambitions
+      - name: constraints
+        type: textarea
+        label: Constraints
+      - name: location
+        type: text
+        label: Location
+      - name: remote_pref
+        type: select
+        label: Work mode
+        options:
+        - onsite
+        - hybrid
+        - remote
+        - any
+      - name: salary_min
+        type: number
+        label: Minimum salary
+      - name: cv_text
+        type: textarea
+        label: CV text
+      - name: put_forward
+        type: boolean
+        label: I agree to be put forward to employers
+        default: false
+    - name: career_plans
+      ownedBy: user
+      description: Career plans written by the coach
+      fields:
+      - name: title
+        type: text
+        label: Plan
+      - name: suggested_roles
+        type: textarea
+        label: Suggested roles
+      - name: skills_to_build
+        type: textarea
+        label: Skills to build
+      - name: cv_rewrite
+        type: textarea
+        label: CV rewrite
+      - name: next_steps
+        type: textarea
+        label: Next steps
+      - name: date
+        type: date
+        label: Date
+    - name: job_posts
+      ownedBy: user
+      description: Roles posted by each employer
+      fields:
+      - name: title
+        type: text
+        required: true
+        label: Job title
+      - name: company
+        type: text
+        required: true
+        label: Company
+      - name: skills
+        type: text
+        required: true
+        label: Skills
+      - name: salary_min
+        type: number
+        label: Salary from
+      - name: salary_max
+        type: number
+        label: Salary to
+      - name: location
+        type: text
+        required: true
+        label: Location
+      - name: remote_policy
+        type: select
+        required: true
+        label: Remote policy
+        options:
+        - onsite
+        - hybrid
+        - remote
+      - name: description
+        type: textarea
+        label: Description
+      - name: employer_email
+        type: email
+        required: true
+        label: Contact email for applications
+    - name: jobs
+      ownedBy: app
+      searchable: true
+      description: 'The job board: published employer roles'
+      fields:
+      - name: title
+        type: text
+      - name: company
+        type: text
+      - name: skills
+        type: text
+      - name: salary_min
+        type: number
+      - name: salary_max
+        type: number
+      - name: location
+        type: text
+      - name: remote_policy
+        type: text
+      - name: description
+        type: textarea
+      - name: employer_email
+        type: email
+      - name: source
+        type: text
+    - name: matches
+      ownedBy: instance
+      retentionDays: 90
+      description: The weekly matches and progress report of each candidate
+      fields:
+      - name: title
+        type: text
+      - name: content
+        type: textarea
+    - name: applications
+      ownedBy: user
+      description: Applications the candidate approved; the employer sees only those sent to them
+      access:
+      - role: user
+        where:
+          employer_email: '{user.email}'
+        can:
+        - read
+        - write
+      fields:
+      - name: job_title
+        type: text
+        label: Role
+      - name: company
+        type: text
+        label: Company
+      - name: employer_email
+        type: email
+        label: Employer
+      - name: cover_note
+        type: textarea
+        label: Cover note
+      - name: candidate_name
+        type: text
+        label: Candidate
+      - name: candidate_email
+        type: email
+        label: Candidate email
+      - name: candidate_summary
+        type: textarea
+        label: Candidate summary
+      - name: status
+        type: select
+        label: Status
+        default: sent
+        options:
+        - sent
+        - viewed
+        - interview
+        - rejected
+        - hired
+      - name: sent_at
+        type: date
+        label: Sent
+      - name: response_days
+        type: number
+        label: Days to respond
+      - name: interview_date
+        type: date
+        label: Interview date
+      - name: employer_note
+        type: textarea
+        label: Employer note
+  views:
+  - key: home
+    type: page
+    title: Careerloom
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: AI talent agent
+      title: Talk about your career. We **weave** it into your next role.
+      text: Have a conversation with your agent, get a profile, a career plan and weekly matches. You approve every application.
+        Free for candidates.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      - label: I hire
+        href: '#employers'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Talk
+        text: A voice or text conversation about your background, strengths, ambitions and limits.
+      - title: Plan
+        text: 'An editable profile and a career plan: roles, skills to build, a CV rewrite.'
+      - title: Match
+        text: 'Every week: roles from employers on Careerloom and public ads where site terms allow, with why they fit.'
+      - title: Apply
+        text: Prepare applications and mock interviews. Nothing is sent without your approval.
+    - type: cards
+      id: employers
+      title: For employers
+      items:
+      - title: Post roles
+        text: Title, skills, salary band, location and remote policy.
+      - title: Shortlists
+        text: See only candidates who agreed to be put forward and approved their application.
+      - title: Response times
+        text: A dashboard of shortlists and how fast you reply.
+    - type: note
+      content: Careerloom supports decisions and does not guarantee jobs. Candidates are free; employers pay a subscription.
+  - key: coach
+    type: chat
+    title: Talk to your agent
+    source: agent:coach
+    placeholder: Tell me about your background and what you want next
+    examples:
+    - I'm a nurse looking to move into health tech
+    - I want a remote product role, 60k+
+    roles:
+    - user
+    - admin
+  - key: profile
+    type: form
+    title: My profile
+    collection: candidate_profiles
+    edit: true
+    submit:
+      label: Save profile
+      message: Profile saved.
+    roles:
+    - user
+    - admin
+  - key: plan
+    type: table
+    title: My career plan
+    source: collection:career_plans
+    data:
+      display: cards
+      fields:
+      - key: title
+      - key: suggested_roles
+      - key: skills_to_build
+      - key: next_steps
+      - key: date
+        format: date
+    roles:
+    - user
+    - admin
+  - key: prepare
+    type: chat
+    title: Applications & mock interviews
+    source: agent:applier
+    placeholder: Pick a role and I'll draft your application, or ask for a mock interview
+    examples:
+    - Draft an application for the first role you found
+    - Start a mock interview
+    roles:
+    - user
+    - admin
+  - key: approvals
+    type: approvals
+    title: Approve applications
+    approvals:
+    - send_application
+    roles:
+    - user
+    - admin
+  - key: matches
+    type: instances
+    template: job_watch
+    title: Weekly matches
+    roles:
+    - user
+    - admin
+  - key: dashboard
+    type: page
+    title: My progress
+    sections:
+    - type: data
+      title: Applications by status
+      source: collection:applications
+      display: chart
+      chart: bar
+      groupBy:
+        field: status
+        aggs: []
+      fields:
+      - key: status
+      - key: count
+    - type: data
+      title: My applications
+      source: collection:applications
+      display: table
+      fields:
+      - key: job_title
+        label: Role
+      - key: company
+        label: Company
+      - key: status
+        format: badge
+      - key: sent_at
+        format: date
+      - key: interview_date
+        format: date
+      sort:
+        field: sent_at
+        dir: desc
+      limit: 50
+      empty: No applications yet.
+    roles:
+    - user
+    - admin
+  - key: post_job
+    type: form
+    title: Post a role
+    collection: job_posts
+    submit:
+      label: Post role
+      message: 'Role submitted: it will appear on the job board after a quick check.'
+    roles:
+    - user
+    - admin
+  - key: my_posts
+    type: table
+    title: My roles
+    source: collection:job_posts
+    data:
+      display: table
+      fields:
+      - key: title
+      - key: location
+      - key: remote_policy
+      - key: salary_min
+        format: money
+      - key: salary_max
+        format: money
+    roles:
+    - user
+    - admin
+  - key: employer_dashboard
+    type: page
+    title: Shortlists
+    sections:
+    - type: data
+      title: Overview
+      source: collection:applications
+      display: kpi
+      kpis:
+      - label: Candidates shortlisted
+        agg: count
+      - label: Avg days to respond
+        agg: avg
+        field: response_days
+        format: number
+    - type: data
+      title: Candidates
+      source: collection:applications
+      display: table
+      fields:
+      - key: candidate_name
+        label: Candidate
+      - key: job_title
+        label: Role
+      - key: candidate_summary
+        label: Summary
+      - key: status
+        format: badge
+      - key: response_days
+        label: Days to respond
+      - key: sent_at
+        format: date
+      sort:
+        field: sent_at
+        dir: desc
+      limit: 100
+      empty: No candidates yet.
+    - type: text
+      title: Respond to a candidate
+      content: Open [the response form](/v/respond) with the candidate's record to set status, interview date and a note.
+    roles:
+    - user
+    - admin
+  - key: respond
+    type: form
+    title: Respond to candidate
+    collection: applications
+    fields:
+    - status
+    - interview_date
+    - response_days
+    - employer_note
+    edit: true
+    submit:
+      label: Save response
+      message: Saved.
+    nav: false
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title: Plan
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: employer
+      price: 149
+      interval: month
+      label: Employer
+      includes:
+      - Unlimited roles
+      - Shortlists of candidates
+      - Response-time dashboard
+  notifications:
+    emailOnRunDone: false
+  extensions:
+  - key: phone_calls
+    description: Phone calls to candidates are not available yet. The agent coaches by chat and by voice input in the browser.
+  - key: fee_per_hire
+    description: A fee per hire charged to the employer is not expressible yet (triggers charge the event's user, here the
+      candidate). Employers pay the monthly subscription; the fee per hire needs manual invoicing.
+  - key: proactive_shortlists
+    description: The agent cannot read all candidates' profiles on behalf of an employer; employers see only candidates who
+      approved an application for their role. Proactive candidate search needs a platform change.
+  - key: two_sided_network
+    description: The network effect between candidates and employers relies on the shared job board; no cross-user matching
+      beyond it.

@@ -1,0 +1,1082 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: clipcart
+  displayName: Clipcart
+  tagline:
+    en: Creator campaigns, shoppable video approvals and commissions in one place.
+  description:
+    en: Clipcart helps social-commerce brands manage creators and campaigns, approve shoppable videos, track sales, get a
+      weekly AI report per campaign and approve monthly commissions.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f1147'
+      accent: '#ff3d71'
+      background: '#fbf8ff'
+      foreground: '#1a1426'
+    fonts:
+      body: Inter
+      display: Space Grotesk
+    wordmark:
+    - text: Clip
+      color: primary
+    - text: cart
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      label: Brand
+      assignedBy: signup
+    - key: creator
+      label: Creator
+      assignedBy: derived
+      from: collection:creators.email
+  limits:
+  - action: create:creators
+    max: 5
+    window: total
+    plans:
+      starter: 15
+      growth: 60
+      scale: -1
+  - action: run
+    per: user
+    max: 20
+    window: day
+    roles:
+    - user
+  agents:
+  - key: importer
+    role: main
+    description: Imports a sales CSV exported from TikTok Shop or Meta into the sales collection.
+    profile:
+      inline:
+        display_name: Clipcart sales importer
+        crews:
+        - id: importer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You import sales rows from a CSV exported by a social commerce platform into the sales collection.
+            Read the CSV text in the goal, map columns to the fields date (YYYY-MM-DD), campaign_name, creator_handle, creator_email,
+            product, channel, orders, units, revenue, video_title, views. Use campaigns_read to match campaign names and creators;
+            leave a field empty if the CSV has no value, never invent figures. Call sales_append once per row. Skip rows that
+            are clearly totals or headers. Finish with a Markdown report starting with a level-1 title "# Sales import — <channel>"
+            listing rows imported, rows skipped and why, and any unmatched creators or campaigns.
+    appTools:
+    - name: sales_append
+      description: Add a sales row
+      action: append
+      collection: sales
+      scope: user
+    - name: campaigns_read
+      description: Read the brand's campaigns
+      action: read
+      collection: campaigns
+      scope: user
+    goalTemplate: 'Channel: {channel_label}
+
+      {?note}Note: {note}{/note}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.
+
+      CSV content:
+
+      {csv_text}'
+    output: markdown
+  - key: reporter
+    role: helper
+    description: Weekly report for one campaign, emailed to the brand.
+    memory: instance
+    writesTo:
+      collection: weekly_reports
+    profile:
+      inline:
+        display_name: Clipcart campaign reporter
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the weekly performance report of ONE influencer campaign for the brand. Use campaigns_read,
+            sales_read, videos_read and creators_read (look only at the campaign named in the goal). Start with "# <Campaign>
+            — week of <date>". Sections (##): Summary, Sales per creator (table: creator, orders, units, revenue, commission
+            owed at the campaign rate), Cost per sale (creator rate or fee plus commission divided by orders; say plainly
+            when data is missing), Best videos (by sales then views), Rebook recommendations (which creators to rebook, hold
+            or drop, with one-line reasons), Next steps. Add one ```chart block (bar) of revenue per creator. Compare with
+            last week using your memory, then call remember with the 5 key figures. Never invent figures: if there are no
+            sales rows, say so and suggest importing a CSV. Under 450 words.'
+    appTools:
+    - name: campaigns_read
+      description: Read the brand's campaigns
+      action: read
+      collection: campaigns
+      scope: user
+    - name: sales_read
+      description: Read the brand's sales rows
+      action: read
+      collection: sales
+      scope: user
+    - name: videos_read
+      description: Read videos for the brand's campaigns
+      action: read
+      collection: videos
+      scope: user
+    - name: creators_read
+      description: Read the brand's creators
+      action: read
+      collection: creators
+      scope: user
+    output: markdown
+  - key: commissioner
+    role: helper
+    description: Calculates monthly commissions per creator and asks the brand to approve them.
+    awaits:
+    - commission_approval
+    profile:
+      inline:
+        display_name: Clipcart commission calculator
+        crews:
+        - id: commissioner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You calculate the commissions a brand owes its creators for the previous calendar month. Read campaigns_read
+            and sales_read. For each creator and campaign, sum revenue of the month and multiply by the campaign's commission_rate
+            (percent). Skip combinations that already exist in commissions_read. Call commissions_append for each (creator_email,
+            creator_handle, campaign_name, month as YYYY-MM, sales_total, rate, amount rounded to 2 decimals, status pending).
+            Then call request_commission_approval with a short summary of the total owed and the number of creators. When
+            you are woken because the approval was granted, use commissions_write to set the status of that month's pending
+            commissions to approved. Never pay anything yourself. Finish with a report starting "# Commissions — <month>"
+            with a table of creator, campaign, sales, rate, amount and the total.
+    appTools:
+    - name: campaigns_read
+      description: Read the brand's campaigns
+      action: read
+      collection: campaigns
+      scope: user
+    - name: sales_read
+      description: Read the brand's sales rows
+      action: read
+      collection: sales
+      scope: user
+    - name: commissions_read
+      description: Read commissions
+      action: read
+      collection: commissions
+      scope: user
+    - name: commissions_append
+      description: Add a commission row
+      action: append
+      collection: commissions
+      scope: user
+    - name: commissions_write
+      description: Update a commission row
+      action: write
+      collection: commissions
+      scope: user
+    output: markdown
+  inputForm:
+    title: Import sales (CSV)
+    fields:
+    - name: csv
+      type: file
+      required: true
+      accept:
+      - csv
+      - xlsx
+      - txt
+      maxMb: 10
+      label: Sales CSV
+      help: Export from TikTok Shop or Meta until the API connection is available.
+    - name: channel
+      type: select
+      required: true
+      label: Channel
+      options:
+      - value: tiktok_shop
+        label: TikTok Shop
+      - value: meta
+        label: Meta (Instagram / Facebook)
+      - value: other
+        label: Other
+    - name: note
+      type: textarea
+      maxLength: 300
+      label: Notes (optional)
+  data:
+    collections:
+    - name: creators
+      ownedBy: user
+      description: The brand's creators
+      fields:
+      - name: handle
+        type: text
+        required: true
+        label: Handle
+      - name: email
+        type: email
+        required: true
+        label: Creator login email
+      - name: platform
+        type: select
+        required: true
+        label: Platform
+        options:
+        - tiktok
+        - instagram
+        - youtube
+        - other
+      - name: niche
+        type: text
+        label: Niche
+      - name: followers
+        type: number
+        label: Followers
+      - name: rate
+        type: number
+        label: Rate (flat fee)
+      - name: contract_status
+        type: select
+        label: Contract
+        options:
+        - prospect
+        - negotiating
+        - signed
+        - ended
+      - name: members
+        type: array
+        label: Team emails with access
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: creator
+        where:
+          email: '{user.email}'
+        can:
+        - read
+    - name: campaigns
+      ownedBy: user
+      description: Campaigns
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Campaign
+      - name: product
+        type: text
+        required: true
+        label: Product
+      - name: start_date
+        type: date
+        label: Start
+      - name: end_date
+        type: date
+        label: End
+      - name: budget
+        type: number
+        label: Budget
+      - name: deliverables
+        type: textarea
+        label: Deliverables
+      - name: commission_rate
+        type: number
+        required: true
+        label: Commission rate (%)
+      - name: creator_emails
+        type: array
+        label: Creator emails assigned
+      - name: members
+        type: array
+        label: Team emails with access
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: creator
+        where:
+          creator_emails: '{user.email}'
+        can:
+        - read
+    - name: videos
+      ownedBy: user
+      description: Shoppable video drafts uploaded by creators, approved by the brand
+      fields:
+      - name: campaign_name
+        type: text
+        required: true
+        label: Campaign
+      - name: title
+        type: text
+        required: true
+        label: Video title
+      - name: creator_handle
+        type: text
+        required: true
+        label: Your handle
+      - name: creator_email
+        type: email
+        required: true
+        label: Your email
+      - name: brand_email
+        type: email
+        required: true
+        label: Brand manager email
+        help: The email of the brand manager who reviews this draft.
+      - name: file
+        type: file
+        required: true
+        accept:
+        - jpg
+        - png
+        maxMb: 15
+        label: Draft video or cover
+      - name: video_link
+        type: url
+        label: Draft link (large videos)
+      - name: notes
+        type: textarea
+        label: Notes, captions, product tags
+      - name: status
+        type: select
+        label: Status
+        default: submitted
+        options:
+        - submitted
+        - changes_requested
+        - approved
+        - rejected
+        - published
+      - name: feedback
+        type: textarea
+        label: Manager feedback
+      access:
+      - role: user
+        where:
+          brand_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: sales
+      ownedBy: user
+      description: Sales rows imported from CSV
+      fields:
+      - name: date
+        type: date
+        required: true
+        label: Date
+      - name: campaign_name
+        type: text
+        label: Campaign
+      - name: creator_handle
+        type: text
+        label: Creator
+      - name: creator_email
+        type: email
+        label: Creator email
+      - name: product
+        type: text
+        label: Product
+      - name: channel
+        type: select
+        label: Channel
+        options:
+        - tiktok_shop
+        - meta
+        - other
+      - name: orders
+        type: number
+        label: Orders
+      - name: units
+        type: number
+        label: Units
+      - name: revenue
+        type: number
+        label: Revenue
+      - name: video_title
+        type: text
+        label: Video
+      - name: views
+        type: number
+        label: Views
+      - name: members
+        type: array
+        label: Team emails with access
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: creator
+        where:
+          creator_email: '{user.email}'
+        can:
+        - read
+    - name: commissions
+      ownedBy: user
+      description: Monthly commissions owed to creators
+      fields:
+      - name: creator_email
+        type: email
+        label: Creator email
+      - name: creator_handle
+        type: text
+        label: Creator
+      - name: campaign_name
+        type: text
+        label: Campaign
+      - name: month
+        type: text
+        label: Month
+      - name: sales_total
+        type: number
+        label: Sales
+      - name: rate
+        type: number
+        label: Rate (%)
+      - name: amount
+        type: number
+        label: Commission owed
+      - name: status
+        type: select
+        label: Status
+        options:
+        - pending
+        - approved
+        - paid
+      - name: members
+        type: array
+        label: Team emails with access
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: creator
+        where:
+          creator_email: '{user.email}'
+        can:
+        - read
+    - name: weekly_reports
+      ownedBy: instance
+      description: Weekly campaign reports
+  views:
+  - key: home
+    type: page
+    nav: false
+    sections:
+    - type: hero
+      eyebrow: For social-commerce brands
+      title: Run creator campaigns and **get paid on results**
+      text: Manage creators and campaigns, approve every shoppable video, see sales by channel, creator and product, and approve
+        monthly commissions. An AI agent emails you a report per campaign every week.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Invite creators
+        text: Each creator logs in and sees only their campaigns, uploads drafts and tracks their sales.
+      - title: Approve videos
+        text: Brand managers review every draft before it is published.
+      - title: Track sales
+        text: Import TikTok Shop and Meta sales as CSV; direct API connection is coming.
+      - title: Pay fairly
+        text: Commissions are calculated monthly and you approve them before payment.
+    - type: cards
+      id: pricing
+      title: Pricing by number of creators
+      items:
+      - title: Starter
+        text: Up to 15 creators
+        badge: €49/mo
+      - title: Growth
+        text: Up to 60 creators
+        badge: €149/mo
+      - title: Scale
+        text: Unlimited creators
+        badge: €399/mo
+    - type: note
+      content: Clipcart provides reporting and workflow support; commission payments are made by the brand outside the app.
+  - key: dashboard
+    type: dashboard
+    title: Dashboards
+    children:
+    - rev_channel
+    - rev_creator
+    - rev_product
+    - commissions_due
+    roles:
+    - user
+    - admin
+  - key: rev_channel
+    type: chart
+    title: Revenue by channel
+    source: collection:sales
+    data:
+      display: chart
+      chart: pie
+      fields:
+      - key: channel
+        label: Channel
+      - key: revenue
+        label: Revenue
+      groupBy:
+        field: channel
+        aggs:
+        - key: revenue
+          agg: sum
+          field: revenue
+    nav: false
+  - key: rev_creator
+    type: chart
+    title: Revenue by creator
+    source: collection:sales
+    data:
+      display: chart
+      chart: bar
+      fields:
+      - key: creator_handle
+        label: Creator
+      - key: revenue
+        label: Revenue
+      groupBy:
+        field: creator_handle
+        aggs:
+        - key: revenue
+          agg: sum
+          field: revenue
+    nav: false
+  - key: rev_product
+    type: chart
+    title: Revenue by product
+    source: collection:sales
+    data:
+      display: chart
+      chart: bar
+      fields:
+      - key: product
+        label: Product
+      - key: revenue
+        label: Revenue
+      groupBy:
+        field: product
+        aggs:
+        - key: revenue
+          agg: sum
+          field: revenue
+    nav: false
+  - key: commissions_due
+    type: table
+    title: Commission owed by creator
+    source: collection:commissions
+    data:
+      display: table
+      fields:
+      - key: creator_handle
+        label: Creator
+      - key: owed
+        label: Owed
+      filters:
+      - field: status
+        op: '!='
+        value: paid
+      groupBy:
+        field: creator_handle
+        aggs:
+        - key: owed
+          agg: sum
+          field: amount
+    nav: false
+  - key: creators
+    type: table
+    title: Creators
+    source: collection:creators
+    export: true
+    data:
+      display: table
+      fields:
+      - key: handle
+      - key: platform
+        format: badge
+      - key: niche
+      - key: followers
+        format: number
+      - key: rate
+        format: money
+      - key: contract_status
+        format: badge
+      actions:
+      - type: share
+        field: email
+        label: Share email
+    roles:
+    - user
+    - admin
+  - key: add_creator
+    type: form
+    title: Add creator
+    collection: creators
+    edit: true
+    submit:
+      label: Save creator
+      message: Creator saved. They can sign in with this email.
+      redirect: creators
+    roles:
+    - user
+    - admin
+  - key: campaigns
+    type: table
+    title: Campaigns
+    source: collection:campaigns
+    data:
+      display: table
+      fields:
+      - key: name
+      - key: product
+      - key: start_date
+        format: date
+      - key: end_date
+        format: date
+      - key: budget
+        format: money
+      - key: commission_rate
+        format: number
+    roles:
+    - user
+    - admin
+  - key: add_campaign
+    type: form
+    title: New campaign
+    collection: campaigns
+    edit: true
+    submit:
+      label: Save campaign
+      message: Campaign saved.
+      redirect: campaigns
+    roles:
+    - user
+    - admin
+  - key: videos
+    type: table
+    title: Videos to review
+    source: collection:videos
+    data:
+      display: table
+      fields:
+      - key: title
+      - key: creator_handle
+      - key: campaign_name
+      - key: status
+        format: badge
+      - key: video_link
+        format: link
+      sort:
+        field: status
+        dir: asc
+    roles:
+    - user
+    - admin
+  - key: review_video
+    type: form
+    title: Review video
+    collection: videos
+    fields:
+    - status
+    - feedback
+    edit: true
+    submit:
+      label: Save decision
+      message: Decision saved; the creator is notified.
+      redirect: videos
+    nav: false
+    roles:
+    - user
+    - admin
+  - key: sales
+    type: table
+    title: Sales
+    source: collection:sales
+    export: true
+    data:
+      display: table
+      fields:
+      - key: date
+        format: date
+      - key: campaign_name
+      - key: creator_handle
+      - key: product
+      - key: channel
+        format: badge
+      - key: orders
+        format: number
+      - key: revenue
+        format: money
+      sort:
+        field: date
+        dir: desc
+      limit: 200
+    roles:
+    - user
+    - admin
+  - key: new_import
+    type: new_run
+    title: Import sales CSV
+    roles:
+    - user
+    - admin
+  - key: imports
+    type: history
+    title: Imports
+    source: run
+    roles:
+    - user
+    - admin
+  - key: import_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: campaign_reports
+    type: instances
+    template: campaign_report
+    title: Weekly campaign reports
+    roles:
+    - user
+    - admin
+  - key: commission_runs
+    type: instances
+    template: commission_run
+    title: Monthly commissions
+    roles:
+    - user
+    - admin
+  - key: commissions
+    type: table
+    title: Commissions
+    source: collection:commissions
+    export: true
+    data:
+      display: table
+      fields:
+      - key: month
+      - key: creator_handle
+      - key: campaign_name
+      - key: sales_total
+        format: money
+      - key: rate
+        format: number
+      - key: amount
+        format: money
+      - key: status
+        format: badge
+      sort:
+        field: month
+        dir: desc
+    roles:
+    - user
+    - admin
+  - key: approvals
+    type: approvals
+    title: Approvals
+    roles:
+    - user
+    - admin
+  - key: my_campaigns
+    type: cards
+    title: My campaigns
+    source: collection:campaigns
+    data:
+      display: cards
+      fields:
+      - key: name
+      - key: product
+      - key: start_date
+        format: date
+      - key: end_date
+        format: date
+      - key: deliverables
+      - key: commission_rate
+        format: number
+    roles:
+    - creator
+  - key: upload_video
+    type: form
+    title: Upload a draft
+    collection: videos
+    fields:
+    - campaign_name
+    - title
+    - creator_handle
+    - creator_email
+    - brand_email
+    - file
+    - video_link
+    - notes
+    submit:
+      label: Submit for review
+      message: Draft sent to the brand.
+      redirect: my_videos
+    roles:
+    - creator
+  - key: my_videos
+    type: table
+    title: My videos
+    source: collection:videos
+    data:
+      display: table
+      fields:
+      - key: title
+      - key: campaign_name
+      - key: status
+        format: badge
+      - key: feedback
+    roles:
+    - creator
+  - key: my_sales
+    type: table
+    title: My sales
+    source: collection:sales
+    data:
+      display: table
+      fields:
+      - key: date
+        format: date
+      - key: campaign_name
+      - key: video_title
+      - key: orders
+        format: number
+      - key: revenue
+        format: money
+      sort:
+        field: date
+        dir: desc
+    roles:
+    - creator
+  - key: my_commissions
+    type: table
+    title: My commissions
+    source: collection:commissions
+    data:
+      display: table
+      fields:
+      - key: month
+      - key: campaign_name
+      - key: amount
+        format: money
+      - key: status
+        format: badge
+    roles:
+    - creator
+  - key: account
+    type: account
+    title: Plan
+    roles:
+    - user
+  templates:
+  - key: campaign_report
+    title: Weekly campaign report
+    description: 'Every Monday: sales per creator, cost per sale, best videos and who to rebook, by email.'
+    agent: reporter
+    params:
+    - name: campaign
+      type: select
+      required: true
+      label: Campaign
+      optionsFrom: collection:campaigns
+    goal: 'Write this week''s report for the campaign "{campaign}" (watch: {instance}). Today is {date}. Write in the language
+      with ISO code {lang}.'
+    schedule:
+      cron: 0 7 * * 1
+      userCanChange: true
+    maxPerUser: 20
+    deliver:
+      to: owner
+      onlyIfNew: true
+  - key: commission_run
+    title: Monthly commissions
+    description: 'On the 1st of each month: calculates what you owe creators and asks for your approval.'
+    agent: commissioner
+    params:
+    - name: payout_notes
+      type: text
+      label: Notes (optional)
+    goal: 'Calculate commissions for the previous calendar month. Today is {date}. {?payout_notes}Notes: {payout_notes}{/payout_notes}
+      Write in the language with ISO code {lang}.'
+    schedule:
+      cron: 0 6 1 * *
+      userCanChange: true
+    maxPerUser: 1
+    deliver:
+      to: owner
+  approvals:
+  - key: commission_approval
+    title: Approve monthly commissions
+    decidedBy: requester
+    description: The brand confirms the commissions before they are paid.
+  triggers:
+  - key: video_submitted
+    'on':
+      collection: videos
+      op: insert
+    notify:
+      to:
+      - record.brand_email
+      subject: 'New video to review: {record.title}'
+      body: '{record.creator_handle} submitted a draft for {record.campaign_name}. Open Clipcart to approve it or request
+        changes.'
+      link: videos
+  - key: video_approved
+    'on':
+      collection: videos
+      op: update
+      where:
+        status: approved
+    notify:
+      to:
+      - record.creator_email
+      subject: 'Video approved: {record.title}'
+      body: Your video for {record.campaign_name} was approved and can be published.
+      link: my_videos
+  - key: video_changes
+    'on':
+      collection: videos
+      op: update
+      where:
+        status: changes_requested
+    notify:
+      to:
+      - record.creator_email
+      subject: 'Changes requested: {record.title}'
+      body: 'The brand asked for changes: {record.feedback}'
+      link: my_videos
+  - key: commission_granted
+    'on':
+      approval: commission_approval
+      decision: approved
+    start:
+      agent: commissioner
+    goal: 'The brand approved the commissions. Set the status of this month''s pending commissions to approved. Event: {event}'
+  - key: commission_notice
+    'on':
+      collection: commissions
+      op: update
+      where:
+        status: approved
+    notify:
+      to:
+      - record.creator_email
+      subject: 'Commission approved: {record.month}'
+      body: Your commission of {record.amount} for {record.campaign_name} was approved and will be paid by the brand.
+      link: my_commissions
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: starter
+      price: 49
+      interval: month
+      label: Starter — up to 15 creators
+      includes:
+      - Up to 15 creators
+      - Weekly campaign reports
+    - key: growth
+      price: 149
+      interval: month
+      label: Growth — up to 60 creators
+      includes:
+      - Up to 60 creators
+      - Weekly campaign reports
+    - key: scale
+      price: 399
+      interval: month
+      label: Scale — unlimited creators
+      includes:
+      - Unlimited creators
+      - Weekly campaign reports
+  extensions:
+  - key: social_apis_oauth
+    description: TikTok Shop and Meta sales and video performance via OAuth per brand (needs partner approval) is not available
+      yet; brands import CSV for now.
+  - key: video_processing
+    description: Trimming, captions and product tags are not available yet; creators attach notes and drafts, and a processing
+      service must be integrated.
+  - key: creator_payouts
+    description: Payments to creators are not executed by the app; the brand pays outside Clipcart after approving commissions.
+  - key: brand_team_invites
+    description: Team access is by listing member emails on each record; automatic brand workspaces and invitations would
+      need a dedicated feature.

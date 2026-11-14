@@ -1,0 +1,1512 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: taxtidy
+  displayName: Taxtidy
+  tagline: Digital records and Making Tax Digital updates for sole traders and landlords.
+  description: 'Taxtidy keeps your records MTD-ready: upload receipts from your phone, import bank CSVs, let an AI agent categorise
+    income and expenses into HMRC categories, confirm them, then review and approve each quarterly update and your year-end
+    figures with an estimate of tax due. Taxtidy does not submit to HMRC by itself (see the note on the home page).'
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12355b'
+      accent: '#1b998b'
+      background: '#f6f8fa'
+      foreground: '#16212c'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Tax
+      color: primary
+    - text: tidy
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how-it-works'
+    - label: HMRC filing
+      href: '#hmrc'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: Sole trader / landlord
+      assignedBy: signup
+    - key: accountant
+      label: Accountant
+      assignedBy: derived
+      from:
+      - collection:businesses.accountant_email
+  limits:
+  - action: agent:bookkeeper
+    per: user
+    max: 30
+    window: day
+    roles:
+    - user
+  - action: agent:quarter_preparer
+    per: user
+    max: 10
+    window: day
+    roles:
+    - user
+  - action: agent:year_end
+    per: user
+    max: 5
+    window: day
+    roles:
+    - user
+  - action: create:businesses
+    max: 1
+    window: total
+    plans:
+      multi: 10
+  egress:
+    hosts:
+    - www.gov.uk
+    notes: GOV.UK Search and Content APIs, used to link HMRC guidance on allowable expenses. Content is published under the
+      Open Government Licence v3.0.
+  agents:
+  - key: bookkeeper
+    role: main
+    when: mode == 'import'
+    description: Extracts income and expenses from receipts, invoices and bank CSVs, categorises them into HMRC categories,
+      flags personal items and proposes them for the user's confirmation.
+    profile:
+      inline:
+        display_name: Taxtidy bookkeeper
+        crews:
+        - id: bookkeeper
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Taxtidy''s bookkeeping assistant for UK sole traders and landlords keeping digital records
+            for Making Tax Digital.
+
+
+            WORKFLOW
+
+            1. Call read_business to get the chosen business (kind, VAT status, accountant_email, accounting period). The
+            goal names it.
+
+            2. Call list_transactions to see what is already saved, so you never add a duplicate (same date, description and
+            amount).
+
+            3. Extract every line: from the bank CSV text in the goal, and from each receipt/invoice file (call read_upload
+            with the file id: it reads PDFs and photos, OCR included).
+
+            4. Save each line with add_transaction, always with status "proposed". Fields: business (name), date (YYYY-MM-DD),
+            description, counterparty, income OR expense (a positive number; leave the other 0), category, personal (true
+            if it looks private: groceries, personal subscriptions, transfers between own accounts, cash withdrawals, family
+            payments), source (receipt | bank_csv | manual), receipt_status (ok when backed by a receipt or invoice you read;
+            missing for a bank expense over 25 GBP with no receipt; not_needed for income, bank charges and small items),
+            suggestion (one short sentence: is it likely allowable and what to check, e.g. part-private use must be apportioned),
+            guidance_url (only a gov.uk URL returned by govuk_search or govuk_content, otherwise empty), tax_year (6 April
+            to 5 April, e.g. 2026-27), accountant_email (copied from the business).
+
+            5. Categories (use exactly): turnover, other_business_income, rental_income, cost_of_goods, staff_costs, travel_vehicle,
+            premises_costs, repairs_maintenance, admin_office, advertising_marketing, interest_bank_charges, professional_fees,
+            residential_finance_costs, legal_management_property, services_property, other_allowable, capital_item, uncategorised.
+            Sole-trader income is turnover; landlord income is rental_income. Equipment, vehicles and mortgage capital repayments
+            are capital_item (not a normal expense). Residential mortgage interest is residential_finance_costs (not deducted
+            as an expense, it gets a basic-rate credit). If the business is VAT registered, record net amounts and mention
+            the VAT in the description.
+
+            6. Use govuk_search (query e.g. "allowable expenses simple assessment sole trader") and govuk_content (path of
+            a result) to ground your suggestions in gov.uk guidance. Never invent URLs.
+
+
+            RULES
+
+            - Never invent amounts, dates or lines. If something is illegible or ambiguous, save it as proposed with category
+            uncategorised and say what is unclear in suggestion.
+
+            - You only propose. Nothing counts until the user confirms each line on the To review page. Say so.
+
+            - You give guidance, not tax advice as fact; when unsure say so and suggest checking with an accountant.
+
+            - You do not submit anything to HMRC.
+
+
+            REPORT (Markdown, in the language requested): start with "# Import summary — <business> — <date>". Then ## What
+            was added (a table: date, description, amount, category), ## Flagged as personal, ## Suggested allowable expenses,
+            ## Missing receipts, ## Please confirm (tell the user to open To review and confirm or correct each line). Under
+            450 words plus the table.'
+    appTools:
+    - name: read_business
+      description: Read the user's businesses (kind, start date, accounting period, VAT status, accountant email)
+      action: read
+      collection: businesses
+      scope: user
+    - name: list_transactions
+      description: List the user's saved transactions
+      action: read
+      collection: transactions
+      scope: user
+    - name: add_transaction
+      description: Save one income or expense line as a proposed transaction
+      action: append
+      collection: transactions
+      scope: user
+    - name: read_upload
+      description: Read a file the user uploaded (receipt, invoice, photo)
+      action: read_file
+    - name: govuk_search
+      description: Search GOV.UK pages (HMRC guidance). Use the query parameter q.
+      action: http
+      http:
+        method: GET
+        url: https://www.gov.uk/api/search.json
+        attribution: GOV.UK, Open Government Licence v3.0
+    - name: govuk_content
+      description: Read a GOV.UK page by path, e.g. /expenses-if-youre-self-employed
+      action: http
+      http:
+        method: GET
+        url: https://www.gov.uk/api/content
+        allowPath: true
+        attribution: GOV.UK, Open Government Licence v3.0
+    goalTemplate: 'Business: {business}.
+
+      {?statement}Bank CSV file(s): {statement}
+
+      {statement_text}{/statement}
+
+      {?receipts}Receipts and invoices (file ids): {receipts}
+
+      {receipts_text}{/receipts}
+
+      {?notes}Notes from the user: {notes}{/notes}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+  - key: quarter_preparer
+    role: main
+    when: mode == 'quarter'
+    description: Prepares the cumulative quarterly update summary for one business and asks the user to approve it.
+    awaits:
+    - quarter_approval
+    profile:
+      inline:
+        display_name: Taxtidy quarterly update
+        crews:
+        - id: quarter_preparer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare the Making Tax Digital quarterly update summary for one UK business, for the user to
+            review and approve.
+
+
+            WORKFLOW
+
+            1. read_business: get the business (kind, VAT status, accountant_email, reporting_basis standard or calendar).
+
+            2. list_transactions: take only this business and this tax year, up to the end of the chosen quarter. Quarterly
+            updates are CUMULATIVE for the tax year to date. Standard quarters end 5 Jul, 5 Oct, 5 Jan, 5 Apr; calendar quarters
+            end 30 Jun, 30 Sep, 31 Dec, 31 Mar. Tax year runs 6 April to 5 April.
+
+            3. Count only status "confirmed" lines. Report separately how many lines are still "proposed" (and their value)
+            and how many expenses lack a receipt: the user must confirm them first.
+
+            4. Sum income and expenses per category, cumulative. Exclude personal and excluded lines and capital_item (list
+            capital items separately as ''to discuss'').
+
+            5. Call estimate_tax with trading_profit and property_profit year to date (and other_income 0) to give an indicative
+            tax figure. Label it clearly as indicative, year to date, not annualised.
+
+            6. Save the update with add_quarter_update (business, tax_year, quarter, period_start, period_end, turnover, expenses,
+            profit, summary (short Markdown), status "draft", accountant_email). Save add_tax_estimate (tax_year, as_of, trading_profit,
+            property_profit, estimated_income_tax, estimated_nic, estimated_total, accountant_email).
+
+            7. Call request_quarter_approval so the user can approve the figures. Do not claim anything has been sent to HMRC:
+            after approval the update waits for submission through HMRC-recognised software, which Taxtidy does not yet connect
+            to.
+
+
+            Never invent figures; use only saved transactions. If there is no confirmed data, say so and stop after the report.
+
+
+            REPORT: start with "# Quarter update — <business> — <quarter> <tax year>". Sections: ## Summary (table of categories,
+            cumulative), ## Before you approve (unconfirmed lines, missing receipts, capital items), ## Estimated tax so far,
+            ## Next step. Add a chart block when comparing categories:
+
+            ```chart
+
+            {"type":"bar","title":"Cumulative by category","labels":["A"],"series":[{"name":"GBP","values":[1]}],"unit":"GBP"}
+
+            ```
+
+            with real figures only. Under 400 words.'
+    appTools:
+    - name: read_business
+      description: Read the user's businesses (kind, start date, accounting period, VAT status, accountant email)
+      action: read
+      collection: businesses
+      scope: user
+    - name: list_transactions
+      description: List the user's saved transactions
+      action: read
+      collection: transactions
+      scope: user
+    - name: add_quarter_update
+      description: Save a draft quarterly update
+      action: append
+      collection: quarter_updates
+      scope: user
+    - name: add_tax_estimate
+      description: Save an estimate of tax due
+      action: append
+      collection: tax_estimates
+      scope: user
+    - name: estimate_tax
+      description: 'Indicative income tax and Class 4 NIC from profits (args: trading_profit, property_profit, other_income,
+        tax_year)'
+      action: call
+      slot: tax_estimate
+    goalTemplate: 'Prepare the update for business {business}, {quarter_label}, tax year {tax_year}.
+
+      {?notes}Notes from the user: {notes}{/notes}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 0.8
+  - key: year_end
+    role: main
+    when: mode == 'final'
+    description: Prepares the year-end final figures and an estimate of tax due across all the user's businesses, for approval.
+    awaits:
+    - final_approval
+    profile:
+      inline:
+        display_name: Taxtidy year end
+        crews:
+        - id: year_end
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare the year-end final figures for a UK sole trader or landlord (tax year 6 April to 5 April)
+            and an estimate of tax due, for the user to approve.
+
+
+            WORKFLOW
+
+            1. read_business: all the user''s businesses and properties context.
+
+            2. list_transactions: the whole tax year, all businesses. Count only status "confirmed" lines; report how many
+            are still proposed and how many expenses lack receipts.
+
+            3. Per business: income, allowable expenses by HMRC category, profit. Property income and expenses are combined
+            per UK property business; note the 1,000 GBP trading/property allowance as an alternative to actual expenses when
+            it is more favourable, without deciding for the user. List capital items, part-private use, residential finance
+            costs, losses brought forward and anything else needing the user''s or an accountant''s input under ## To check.
+
+            4. Call estimate_tax with trading_profit (sum of sole-trader profits), property_profit, other_income 0 unless
+            the user''s notes give a figure, and tax_year. Present it as an ESTIMATE under England/Wales/NI rates; say Scottish
+            rates differ.
+
+            5. Save add_final_return (tax_year, turnover, expenses, trading_profit, property_profit, estimated_total, summary,
+            status "draft", accountant_email) and add_tax_estimate.
+
+            6. Call request_final_approval. State that after approval the final declaration still has to be submitted through
+            HMRC-recognised software; Taxtidy does not submit to HMRC yet.
+
+
+            Never invent figures. Not tax advice; recommend an accountant for anything unusual.
+
+
+            REPORT: start with "# Final figures — tax year <year>". Sections: ## Income and profit by business, ## Allowable
+            expenses by category (table), ## Estimated tax due (table: income tax, Class 4 NIC, total), ## To check before
+            you approve, ## Next step. Add a bar chart block with real figures. Under 600 words plus tables.'
+    appTools:
+    - name: read_business
+      description: Read the user's businesses (kind, start date, accounting period, VAT status, accountant email)
+      action: read
+      collection: businesses
+      scope: user
+    - name: list_transactions
+      description: List the user's saved transactions
+      action: read
+      collection: transactions
+      scope: user
+    - name: add_final_return
+      description: Save the draft year-end final figures
+      action: append
+      collection: final_returns
+      scope: user
+    - name: add_tax_estimate
+      description: Save an estimate of tax due
+      action: append
+      collection: tax_estimates
+      scope: user
+    - name: estimate_tax
+      description: 'Indicative income tax and Class 4 NIC from profits (args: trading_profit, property_profit, other_income,
+        tax_year)'
+      action: call
+      slot: tax_estimate
+    goalTemplate: 'Prepare the final figures and tax estimate for tax year {tax_year}.
+
+      {?notes}Notes from the user (other income, losses, adjustments): {notes}{/notes}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 1.0
+  slots:
+  - key: tax_estimate
+    description: Indicative UK income tax and Class 4 NIC (England, Wales, NI rates, 2026-27 thresholds)
+    timeoutMs: 2000
+    example:
+      args:
+        trading_profit: 30000
+        property_profit: 5000
+        other_income: 0
+      userId: x
+    code: "def main(input):\n    a = input.get('args') or {}\n    def num(k):\n        try:\n            return float(a.get(k)\
+      \ or 0)\n        except Exception:\n            return 0.0\n    trading = num('trading_profit')\n    prop = num('property_profit')\n\
+      \    other = num('other_income')\n    total = max(trading, 0.0) + max(prop, 0.0) + max(other, 0.0)\n    pa = 12570.0\n\
+      \    if total > 100000:\n        pa = max(0.0, pa - (total - 100000) / 2.0)\n    taxable = max(0.0, total - pa)\n  \
+      \  basic = min(taxable, 37700.0) * 0.20\n    higher = min(max(taxable - 37700.0, 0.0), 125140.0 - 37700.0) * 0.40\n\
+      \    additional = max(taxable - 125140.0, 0.0) * 0.45\n    income_tax = basic + higher + additional\n    p = max(trading,\
+      \ 0.0)\n    nic = 0.0\n    if p > 12570.0:\n        nic = (min(p, 50270.0) - 12570.0) * 0.06 + max(p - 50270.0, 0.0)\
+      \ * 0.02\n    return {\n        'total_income': round(total, 2),\n        'personal_allowance': round(pa, 2),\n    \
+      \    'taxable_income': round(taxable, 2),\n        'income_tax': round(income_tax, 2),\n        'class4_nic': round(nic,\
+      \ 2),\n        'total_estimate': round(income_tax + nic, 2),\n        'notes': 'Indicative only: England, Wales and\
+      \ Northern Ireland rates, no dividends/savings, no losses, no pension or Gift Aid adjustments, no student loan, no payments\
+      \ on account.'\n    }\n"
+  inputForm:
+    title: What would you like Taxtidy to do?
+    fields:
+    - name: mode
+      type: select
+      required: true
+      label: Task
+      default: import
+      options:
+      - value: import
+        label: Import receipts and bank transactions
+      - value: quarter
+        label: Prepare a quarterly update
+      - value: final
+        label: Prepare year-end final figures
+    - name: business
+      type: select
+      label: Business
+      optionsFrom: collection:businesses
+      visibleWhen: mode != 'final'
+      required: true
+    - name: statement
+      type: file
+      label: Bank transactions (CSV)
+      accept:
+      - csv
+      maxMb: 10
+      multiple: false
+      visibleWhen: mode == 'import'
+    - name: receipts
+      type: file
+      label: Receipts and invoices
+      accept:
+      - pdf
+      - jpg
+      - jpeg
+      - png
+      maxMb: 10
+      multiple: true
+      capture: true
+      visibleWhen: mode == 'import'
+    - name: tax_year
+      type: select
+      label: Tax year
+      default: 2026-27
+      visibleWhen: mode != 'import'
+      options:
+      - value: 2026-27
+        label: 2026-27 (6 Apr 2026 – 5 Apr 2027)
+      - value: 2025-26
+        label: 2025-26 (6 Apr 2025 – 5 Apr 2026)
+    - name: quarter
+      type: select
+      label: Quarter
+      visibleWhen: mode == 'quarter'
+      options:
+      - value: q1
+        label: Q1 (to 5 Jul)
+      - value: q2
+        label: Q2 (to 5 Oct)
+      - value: q3
+        label: Q3 (to 5 Jan)
+      - value: q4
+        label: Q4 (to 5 Apr)
+    - name: notes
+      type: textarea
+      maxLength: 600
+      label: Notes (optional)
+  data:
+    collections:
+    - name: businesses
+      ownedBy: user
+      description: The user's businesses (self-employment or UK property)
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Business name
+      - name: kind
+        type: select
+        required: true
+        label: Type
+        options:
+        - value: sole_trader
+          label: Sole trader (self-employment)
+        - value: uk_property
+          label: Landlord (UK property)
+      - name: start_date
+        type: date
+        required: true
+        label: Start date
+      - name: period_start
+        type: date
+        required: true
+        label: Accounting period start
+      - name: period_end
+        type: date
+        required: true
+        label: Accounting period end
+      - name: reporting_basis
+        type: select
+        label: Quarterly periods
+        default: standard
+        options:
+        - value: standard
+          label: Standard (6 Apr – 5 Jul …)
+        - value: calendar
+          label: Calendar quarters (1 Apr – 30 Jun …)
+      - name: vat_status
+        type: select
+        required: true
+        label: VAT status
+        options:
+        - value: not_registered
+          label: Not VAT registered
+        - value: registered_standard
+          label: VAT registered (standard)
+        - value: registered_flat_rate
+          label: VAT registered (flat rate)
+      - name: vat_number
+        type: text
+        label: VAT number (if registered)
+      - name: accountant_email
+        type: email
+        label: Accountant's email (optional)
+        help: Your accountant gets access to this business's records and can edit them.
+      access:
+      - role: accountant
+        where:
+          accountant_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: properties
+      ownedBy: user
+      description: Rental properties
+      fields:
+      - name: address
+        type: text
+        required: true
+        label: Property address
+      - name: business
+        type: select
+        optionsFrom: collection:businesses
+        required: true
+        label: Business
+      - name: property_type
+        type: select
+        label: Property type
+        options:
+        - value: residential
+          label: Residential
+        - value: furnished_holiday_let
+          label: Furnished holiday let
+        - value: commercial
+          label: Commercial
+      - name: ownership_share
+        type: number
+        label: Your ownership share (%)
+        default: 100
+      - name: start_date
+        type: date
+        label: Rented from
+      - name: accountant_email
+        type: email
+        label: Accountant's email (same as the business, optional)
+      access:
+      - role: accountant
+        where:
+          accountant_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: documents
+      ownedBy: user
+      description: Receipts and invoices uploaded from the phone
+      fields:
+      - name: business
+        type: select
+        optionsFrom: collection:businesses
+        required: true
+        label: Business
+      - name: file
+        type: file
+        required: true
+        label: Receipt or invoice
+        accept:
+        - pdf
+        - jpg
+        - jpeg
+        - png
+        maxMb: 10
+        multiple: true
+        capture: true
+      - name: note
+        type: text
+        maxLength: 200
+        label: Note (optional)
+      - name: accountant_email
+        type: email
+        label: Accountant's email (optional)
+      access:
+      - role: accountant
+        where:
+          accountant_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: transactions
+      ownedBy: user
+      description: Income and expense lines, categorised by the agent and confirmed by the user
+      retentionDays: 3650
+      fields:
+      - name: business
+        type: select
+        optionsFrom: collection:businesses
+        label: Business
+      - name: date
+        type: date
+        required: true
+        label: Date
+      - name: description
+        type: text
+        label: Description
+      - name: counterparty
+        type: text
+        label: Counterparty
+      - name: income
+        type: number
+        label: Income (GBP)
+      - name: expense
+        type: number
+        label: Expense (GBP)
+      - name: category
+        type: select
+        label: HMRC category
+        options:
+        - turnover
+        - other_business_income
+        - rental_income
+        - cost_of_goods
+        - staff_costs
+        - travel_vehicle
+        - premises_costs
+        - repairs_maintenance
+        - admin_office
+        - advertising_marketing
+        - interest_bank_charges
+        - professional_fees
+        - residential_finance_costs
+        - legal_management_property
+        - services_property
+        - other_allowable
+        - capital_item
+        - uncategorised
+      - name: personal
+        type: boolean
+        label: Personal item
+      - name: source
+        type: select
+        label: Source
+        options:
+        - receipt
+        - bank_csv
+        - manual
+      - name: receipt_status
+        type: select
+        label: Receipt
+        options:
+        - ok
+        - missing
+        - not_needed
+      - name: status
+        type: select
+        label: Status
+        default: proposed
+        options:
+        - proposed
+        - confirmed
+        - personal
+        - excluded
+      - name: suggestion
+        type: textarea
+        label: Allowable? (agent's note)
+      - name: guidance_url
+        type: url
+        label: GOV.UK guidance
+      - name: tax_year
+        type: text
+        label: Tax year
+      - name: accountant_email
+        type: email
+        label: Accountant
+      access:
+      - role: accountant
+        where:
+          accountant_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: quarter_updates
+      ownedBy: user
+      description: Quarterly update summaries prepared by the agent
+      fields:
+      - name: business
+        type: text
+        label: Business
+      - name: tax_year
+        type: text
+        label: Tax year
+      - name: quarter
+        type: text
+        label: Quarter
+      - name: period_start
+        type: date
+        label: From
+      - name: period_end
+        type: date
+        label: To
+      - name: turnover
+        type: number
+        label: Income (cumulative)
+      - name: expenses
+        type: number
+        label: Expenses (cumulative)
+      - name: profit
+        type: number
+        label: Profit (cumulative)
+      - name: summary
+        type: textarea
+        label: Summary
+      - name: status
+        type: select
+        label: Status
+        default: draft
+        options:
+        - draft
+        - approved
+        - submitted
+      - name: accountant_email
+        type: email
+        label: Accountant
+      access:
+      - role: accountant
+        where:
+          accountant_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: final_returns
+      ownedBy: user
+      description: Year-end final figures
+      fields:
+      - name: tax_year
+        type: text
+        label: Tax year
+      - name: turnover
+        type: number
+        label: Income
+      - name: expenses
+        type: number
+        label: Expenses
+      - name: trading_profit
+        type: number
+        label: Trading profit
+      - name: property_profit
+        type: number
+        label: Property profit
+      - name: estimated_total
+        type: number
+        label: Estimated tax due
+      - name: summary
+        type: textarea
+        label: Summary
+      - name: status
+        type: select
+        label: Status
+        default: draft
+        options:
+        - draft
+        - approved
+        - submitted
+      - name: accountant_email
+        type: email
+        label: Accountant
+      access:
+      - role: accountant
+        where:
+          accountant_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: tax_estimates
+      ownedBy: user
+      description: Indicative tax estimates over time
+      fields:
+      - name: tax_year
+        type: text
+        label: Tax year
+      - name: as_of
+        type: date
+        label: As of
+      - name: trading_profit
+        type: number
+        label: Trading profit
+      - name: property_profit
+        type: number
+        label: Property profit
+      - name: estimated_income_tax
+        type: number
+        label: Income tax
+      - name: estimated_nic
+        type: number
+        label: Class 4 NIC
+      - name: estimated_total
+        type: number
+        label: Estimated total
+      - name: accountant_email
+        type: email
+        label: Accountant
+      access:
+      - role: accountant
+        where:
+          accountant_email: '{user.email}'
+        can:
+        - read
+    - name: deadlines
+      ownedBy: shared
+      description: MTD quarterly and annual deadlines, kept by the admins (CSV on /admin/data)
+      fields:
+      - name: label
+        type: text
+        required: true
+        label: Deadline
+      - name: date
+        type: date
+        required: true
+        label: Date
+      - name: kind
+        type: select
+        required: true
+        label: Kind
+        options:
+        - quarterly
+        - final
+        - payment
+      - name: tax_year
+        type: text
+        label: Tax year
+  views:
+  - key: home
+    type: page
+    title: Taxtidy
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: Making Tax Digital, tidied
+      title: Keep your **MTD records** without the shoebox of receipts.
+      text: Snap receipts, import your bank CSV and let an AI agent sort income and expenses into HMRC categories. You confirm,
+        review each quarter and see your estimated tax at any time.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how-it-works'
+        style: ghost
+    - type: steps
+      id: how-it-works
+      title: How it works
+      items:
+      - title: Add your businesses
+        text: Sole trader or landlord, start date, accounting period, VAT status, and your properties.
+      - title: Upload and import
+        text: Photograph receipts on your phone and import bank transactions from CSV.
+      - title: Confirm
+        text: The agent categorises, flags personal items and suggests allowable expenses with GOV.UK guidance. Nothing counts
+          until you confirm.
+      - title: Review each quarter
+        text: A quarterly update summary for you to approve; at year end, final figures and an estimate of tax due.
+    - type: cards
+      title: Also included
+      items:
+      - title: Accountant access
+        text: 'Invite your accountant by email: they see and edit your records.'
+        badge: 👥
+      - title: Reminders
+        text: Email before quarterly and annual deadlines and for missing receipts.
+        badge: ⏰
+      - title: Dashboard
+        text: Income, expenses and estimated tax in one place.
+        badge: 📊
+    - type: text
+      id: hmrc
+      title: Filing with HMRC
+      content: Submitting quarterly updates and the final declaration to HMRC requires HMRC-recognised software with production
+        approval for the MTD APIs. Taxtidy prepares and records everything you approve; the submission itself is handled by
+        a separate, approved connector. Until it is connected, approved figures are marked ready to submit and you or your
+        accountant file them through HMRC-recognised software.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: Single income source
+        text: 'GBP 9 per month: one business or one property portfolio.'
+        badge: 💷
+      - title: Multiple income sources
+        text: 'GBP 19 per month: up to 10 businesses.'
+        badge: 💷
+    - type: note
+      content: Taxtidy gives decision support and estimates, not tax advice. Tax figures are indicative (England, Wales and
+        Northern Ireland rates).
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - user
+    - admin
+    - accountant
+    sections:
+    - type: data
+      title: Confirmed income
+      source: collection:transactions
+      display: kpi
+      filters:
+      - field: status
+        op: '='
+        value: confirmed
+      kpis:
+      - label: Income
+        agg: sum
+        field: income
+        format: money
+      - label: Expenses
+        agg: sum
+        field: expense
+        format: money
+      - label: Confirmed lines
+        agg: count
+    - type: data
+      title: Estimated tax
+      source: collection:tax_estimates
+      display: kpi
+      sort:
+        field: as_of
+        dir: desc
+      kpis:
+      - label: Latest estimate
+        agg: last
+        field: estimated_total
+        format: money
+      - label: Income tax
+        agg: last
+        field: estimated_income_tax
+        format: money
+      - label: Class 4 NIC
+        agg: last
+        field: estimated_nic
+        format: money
+    - type: data
+      title: Income and expenses by month
+      source: collection:transactions
+      display: chart
+      chart: bar
+      filters:
+      - field: status
+        op: '='
+        value: confirmed
+      groupBy:
+        field: date
+        bucket: month
+        aggs:
+        - key: income_total
+          agg: sum
+          field: income
+        - key: expense_total
+          agg: sum
+          field: expense
+      fields:
+      - key: date
+        label: Month
+      - key: income_total
+        label: Income
+      - key: expense_total
+        label: Expenses
+    - type: data
+      title: Expenses by category
+      source: collection:transactions
+      display: chart
+      chart: pie
+      filters:
+      - field: status
+        op: '='
+        value: confirmed
+      groupBy:
+        field: category
+        aggs:
+        - key: total
+          agg: sum
+          field: expense
+      fields:
+      - key: category
+        label: Category
+      - key: total
+        label: Expenses
+    - type: data
+      title: Deadlines
+      source: collection:deadlines
+      display: table
+      sort:
+        field: date
+        dir: asc
+      limit: 12
+      fields:
+      - key: label
+        label: Deadline
+      - key: date
+        label: Date
+        format: date
+      - key: kind
+        label: Kind
+        format: badge
+      empty: No deadlines loaded yet.
+  - key: assistant
+    type: new_run
+    title: Import, quarter or year end
+    roles:
+    - user
+    - admin
+  - key: runs
+    type: history
+    title: My runs
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: business_form
+    type: form
+    title: Add a business
+    collection: businesses
+    submit:
+      label: Save business
+      message: Business saved.
+      redirect: businesses
+    edit: true
+    roles:
+    - user
+    - admin
+  - key: businesses
+    type: table
+    title: My businesses
+    source: collection:businesses
+    roles:
+    - user
+    - admin
+    - accountant
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Business
+      - key: kind
+        label: Type
+        format: badge
+      - key: start_date
+        label: Start
+        format: date
+      - key: vat_status
+        label: VAT
+        format: badge
+      - key: accountant_email
+        label: Accountant
+  - key: property_form
+    type: form
+    title: Add a property
+    collection: properties
+    submit:
+      label: Save property
+      message: Property saved.
+      redirect: properties
+    edit: true
+    roles:
+    - user
+    - admin
+  - key: properties
+    type: table
+    title: My properties
+    source: collection:properties
+    roles:
+    - user
+    - admin
+    - accountant
+    data:
+      display: table
+      fields:
+      - key: address
+        label: Address
+      - key: business
+        label: Business
+      - key: property_type
+        label: Type
+        format: badge
+      - key: ownership_share
+        label: Share %
+        format: number
+  - key: upload_receipt
+    type: form
+    title: Upload a receipt
+    collection: documents
+    submit:
+      label: Send receipt
+      message: 'Received. Taxtidy is reading it: check To review in a minute.'
+      redirect: to_review
+    roles:
+    - user
+    - admin
+  - key: to_review
+    type: table
+    title: To review
+    source: collection:transactions
+    roles:
+    - user
+    - admin
+    - accountant
+    data:
+      display: table
+      filters:
+      - field: status
+        op: '='
+        value: proposed
+      sort:
+        field: date
+        dir: desc
+      limit: 100
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: description
+        label: Description
+      - key: income
+        label: In
+        format: money
+      - key: expense
+        label: Out
+        format: money
+      - key: category
+        label: Category
+        format: badge
+      - key: personal
+        label: Personal?
+      - key: suggestion
+        label: Agent's note
+      - key: guidance_url
+        label: Guidance
+        format: link
+      empty: Nothing waiting for confirmation.
+  - key: confirm_tx
+    type: form
+    title: Confirm or correct a transaction
+    collection: transactions
+    fields:
+    - category
+    - personal
+    - status
+    - receipt_status
+    - expense
+    - income
+    - description
+    edit: true
+    submit:
+      label: Save
+      message: Saved.
+      redirect: to_review
+    roles:
+    - user
+    - admin
+    - accountant
+    nav: false
+  - key: transactions
+    type: table
+    title: All transactions
+    source: collection:transactions
+    export: true
+    roles:
+    - user
+    - admin
+    - accountant
+    data:
+      display: table
+      sort:
+        field: date
+        dir: desc
+      limit: 200
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: business
+        label: Business
+      - key: description
+        label: Description
+      - key: income
+        label: In
+        format: money
+      - key: expense
+        label: Out
+        format: money
+      - key: category
+        label: Category
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+  - key: quarters
+    type: table
+    title: Quarterly updates
+    source: collection:quarter_updates
+    roles:
+    - user
+    - admin
+    - accountant
+    data:
+      display: table
+      sort:
+        field: period_end
+        dir: desc
+      fields:
+      - key: business
+        label: Business
+      - key: tax_year
+        label: Tax year
+      - key: quarter
+        label: Quarter
+      - key: turnover
+        label: Income
+        format: money
+      - key: expenses
+        label: Expenses
+        format: money
+      - key: profit
+        label: Profit
+        format: money
+      - key: status
+        label: Status
+        format: badge
+  - key: finals
+    type: table
+    title: Year-end figures
+    source: collection:final_returns
+    roles:
+    - user
+    - admin
+    - accountant
+    data:
+      display: table
+      fields:
+      - key: tax_year
+        label: Tax year
+      - key: turnover
+        label: Income
+        format: money
+      - key: expenses
+        label: Expenses
+        format: money
+      - key: estimated_total
+        label: Estimated tax
+        format: money
+      - key: status
+        label: Status
+        format: badge
+  - key: my_approvals
+    type: approvals
+    title: To approve
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title: Subscription
+    roles:
+    - user
+  approvals:
+  - key: quarter_approval
+    title: Approve quarterly update
+    decidedBy: requester
+    fields:
+    - business
+    - tax_year
+    - quarter
+    - turnover
+    - expenses
+    - profit
+  - key: final_approval
+    title: Approve year-end figures
+    decidedBy: requester
+    fields:
+    - tax_year
+    - turnover
+    - expenses
+    - estimated_total
+  triggers:
+  - key: invite_accountant
+    description: Tell the named accountant they have been given access
+    'on':
+      collection: businesses
+      op: insert
+    notify:
+      to:
+      - record.accountant_email
+      subject: You have been given access to a client's records on Taxtidy
+      body: A client named you as their accountant for {record.name}. Sign in to Taxtidy with this email address to see and
+        edit their records.
+      link: businesses
+  - key: receipt_uploaded
+    description: Read each uploaded receipt and propose transactions
+    'on':
+      collection: documents
+      op: insert
+    start:
+      agent: bookkeeper
+    goal: 'A receipt or invoice was uploaded for business {record.business}. File ids: {record.file}. Note: {record.note}.
+      Read each file with read_upload and propose the transactions. Today is {date}.'
+  - key: quarter_reminder_week
+    description: A week before a quarterly deadline
+    'on':
+      date:
+        collection: deadlines
+        field: date
+        offsetDays: -7
+        hour: 8
+      where:
+        kind: quarterly
+    notify:
+      to: role:user
+      subject: 'Quarterly update due in a week: {record.label}'
+      body: Your quarterly update deadline ({record.label}) is on {record.date}. Confirm your transactions, then prepare the
+        update in Taxtidy.
+      link: assistant
+  - key: quarter_reminder_day
+    description: The day before a quarterly deadline
+    'on':
+      date:
+        collection: deadlines
+        field: date
+        offsetDays: -1
+        hour: 8
+      where:
+        kind: quarterly
+    notify:
+      to: role:user
+      subject: 'Quarterly update due tomorrow: {record.label}'
+      body: Your quarterly update deadline ({record.label}) is tomorrow, {record.date}. Approve your update in Taxtidy and
+        file it through your HMRC-recognised software.
+      link: my_approvals
+  - key: final_reminder_month
+    description: A month before the final declaration deadline
+    'on':
+      date:
+        collection: deadlines
+        field: date
+        offsetDays: -30
+        hour: 8
+      where:
+        kind: final
+    notify:
+      to: role:user
+      subject: 'Final declaration due in 30 days: {record.label}'
+      body: The deadline ({record.label}) is on {record.date}. Prepare your year-end figures in Taxtidy.
+      link: assistant
+  - key: final_reminder_week
+    description: A week before the final declaration deadline
+    'on':
+      date:
+        collection: deadlines
+        field: date
+        offsetDays: -7
+        hour: 8
+      where:
+        kind: final
+    notify:
+      to: role:user
+      subject: 'Final declaration due in a week: {record.label}'
+      body: The deadline ({record.label}) is on {record.date}. Approve your final figures in Taxtidy and submit.
+      link: my_approvals
+  - key: missing_receipt_reminder
+    description: A week after an expense with no receipt
+    'on':
+      date:
+        collection: transactions
+        field: date
+        offsetDays: 7
+        hour: 9
+      where:
+        receipt_status: missing
+    notify:
+      to: owner
+      subject: 'Missing receipt: {record.description}'
+      body: We have no receipt for {record.description} ({record.expense} GBP) on {record.date}. Photograph it in Taxtidy
+        so it can be claimed.
+      link: upload_receipt
+  - key: quarter_approved
+    description: 'Hook for the HMRC submission: fires when the user approves a quarterly update'
+    'on':
+      approval: quarter_approval
+      decision: approved
+    notify:
+      to: owner
+      subject: Quarterly update approved
+      body: Your quarterly update is approved and ready to submit. Submission to HMRC goes through HMRC-recognised software;
+        Taxtidy does not submit it yet.
+      link: quarters
+  - key: final_approved
+    description: 'Hook for the HMRC submission: fires when the user approves the final figures'
+    'on':
+      approval: final_approval
+      decision: approved
+    notify:
+      to: owner
+      subject: Final figures approved
+      body: Your year-end figures are approved and ready for the final declaration. Submission to HMRC goes through HMRC-recognised
+        software; Taxtidy does not submit it yet.
+      link: finals
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: single
+      price: 9
+      interval: month
+      label: Single income source
+      includes:
+      - 1 business or property portfolio
+      - Receipts, bank CSV import, quarterly updates, year-end figures
+      - Accountant access
+    - key: multi
+      price: 19
+      interval: month
+      label: Multiple income sources
+      includes:
+      - Up to 10 businesses
+      - Receipts, bank CSV import, quarterly updates, year-end figures
+      - Accountant access
+  mobile:
+    appId: com.taxtidy.app
+    appName: Taxtidy
+    capabilities:
+    - name: camera
+      reason: To photograph receipts and invoices
+    - name: biometrics
+      reason: To open the app with Face ID or fingerprint
+    - name: push
+    lock: biometric
+  extensions:
+  - key: hmrc_submission
+    description: 'Submitting quarterly updates and the final declaration to HMRC needs HMRC-recognised software and production
+      approval for the MTD APIs, plus OAuth sign-in to HMRC (Government Gateway). Not available in the builder. Hook: the
+      approvals quarter_approval and final_approval and the triggers quarter_approved and final_approved mark figures as approved
+      and ready to submit; an external approved connector would read the approved quarter_updates / final_returns records
+      and set status to submitted.'
+  - key: scottish_rates_and_plan_gating
+    description: The tax estimate uses England, Wales and Northern Ireland rates only; Scottish rates, dividends, savings
+      and student loans are not modelled. Plan gating of agent runs (requiring an active subscription) is to be configured
+      by the owner.

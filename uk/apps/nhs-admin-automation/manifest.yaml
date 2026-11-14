@@ -1,0 +1,678 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: wardloom
+  displayName: Wardloom
+  tagline: Agents that take the admin off NHS trust staff, with an administrator approving every action.
+  description: 'Wardloom agents pick administrative tasks from team work queues (referral paperwork, clinic letters, waiting-list
+    validation, booking and rebooking, discharge-summary chasing) and prepare the action. An administrator approves before
+    anything is written back. Agents make no clinical decisions: anything clinical goes to a clinician.'
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#005eb8'
+      accent: '#007f3b'
+      background: '#f4f7fa'
+      foreground: '#212b32'
+    fonts:
+      body: Inter
+      display: Inter
+    buttonShape: rounded
+  header:
+    links:
+    - label: How it works
+      href: '#how-it-works'
+    - label: Safeguards
+      href: '#safeguards'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Wardloom administrator
+      assignedBy: admin_emails
+    - key: user
+      label: Trust staff
+      assignedBy: signup
+    - key: digital_lead
+      label: Trust digital lead
+      assignedBy: invite
+  agents:
+  - key: prep
+    role: main
+    description: Takes one queued task, prepares the administrative action as a draft proposal and asks the administrator
+      to approve it. Escalates anything clinical.
+    awaits:
+    - writeback
+    profile:
+      inline:
+        display_name: Wardloom task preparer
+        crews:
+        - id: prep
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: "You are an administrative assistant for NHS trust staff. You prepare ADMINISTRATIVE actions only\
+            \ and you never write to any patient record: a human administrator approves everything first.\n\nYou receive one\
+            \ task from a work queue (task type, specialty, team, details). Steps:\n1. Call read_tasks to load the task record\
+            \ if you need more detail.\n2. Decide whether the task is purely administrative. If it needs ANY clinical judgement\
+            \ (urgency or priority changes, diagnosis, medication, whether a patient is fit or safe, clinical content of a\
+            \ letter that is not already dictated), do NOT attempt it: call update_task to set status to 'escalated' with\
+            \ a one-line reason in the field agent_note, and stop. Never make clinical decisions.\n3. Otherwise prepare the\
+            \ action according to task_type:\n - referral_triage: a checklist of the paperwork present and missing against\
+            \ the referral details, and a draft administrative cover note. Do not grade or prioritise clinically.\n - clinic_letter:\
+            \ a clean typed letter from the dictated or supplied text, fixing only typing, layout and formatting, never changing\
+            \ clinical content, plus the distribution list.\n - waiting_list_validation: a validated waiting-list entry (fields\
+            \ checked, inconsistencies found, contact questions to ask the patient). Do not remove or reprioritise anyone\
+            \ clinically.\n - booking: the appointment or rebooking options proposed from the details given, and the patient\
+            \ message draft.\n - discharge_chase: a chase message to the ward or clinician for the outstanding discharge summary,\
+            \ with the dates and reference.\n Never invent dates, names, identifiers or figures: mark anything missing as\
+            \ MISSING.\n4. Call save_proposal with task_ref, team, members (copy from the task), kind (the task_type), draft\
+            \ (Markdown, starting with a level-1 title '# <task type> — <reference>') and flags (anything the approver must\
+            \ double-check).\n5. Call request_writeback so the administrator can approve, with a one-paragraph summary of\
+            \ what would be written back. Then call update_task to set status to 'prepared'.\nKeep patient identifiers to\
+            \ the minimum needed. Write in British English."
+          mcp_servers: []
+    appTools:
+    - name: read_tasks
+      description: Read work-queue tasks of the user's team
+      action: read
+      collection: tasks
+      scope: user
+    - name: update_task
+      description: Update the status and agent note of a task
+      action: write
+      collection: tasks
+      scope: user
+    - name: save_proposal
+      description: Save the prepared draft action for approval
+      action: write
+      collection: proposals
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  - key: closer
+    role: helper
+    description: After an administrator approves, marks the task approved and logs the time saved.
+    profile:
+      inline:
+        display_name: Wardloom closer
+        crews:
+        - id: closer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'An administrator has approved a prepared action. Do these steps and nothing else. 1) Call read_tasks
+            to find the task named in the event and call update_task to set its status to ''approved''. 2) Call log_done once
+            with: task_type, specialty, team, date (today, YYYY-MM-DD) and minutes_saved using these fixed planning estimates
+            per task type: referral_triage 12, clinic_letter 8, waiting_list_validation 10, booking 6, discharge_chase 9.
+            The log holds no patient data. Reply with one line: ''Logged <task type> for <specialty>.'' Write-back to the
+            patient record is done by the trust''s integration or by staff; you never write to it.'
+          mcp_servers: []
+    appTools:
+    - name: read_tasks
+      description: Read work-queue tasks of the user's team
+      action: read
+      collection: tasks
+      scope: user
+    - name: update_task
+      description: Update the status and agent note of a task
+      action: write
+      collection: tasks
+      scope: user
+    - name: log_done
+      description: Append an anonymous completed-task entry used for the dashboards
+      action: append
+      collection: task_log
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.2
+  - key: reporter
+    role: scheduled
+    description: Writes the monthly report for the trust digital lead.
+    writesTo:
+      collection: monthly_reports
+      parse: whole
+    profile:
+      inline:
+        display_name: Wardloom monthly reporter
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the monthly report for an NHS trust digital lead on what Wardloom did. Call read_task_log
+            for the completed-task entries of the last full calendar month and read_rtt_context for the NHS England waiting-time
+            figures loaded by the administrators. Begin with ''# Wardloom monthly report — <month year>''. Sections (## headings):
+            Summary, Tasks completed by specialty, Time saved (state that minutes are planning estimates per task type), Context
+            from NHS England waiting-time data (name the period and quote only figures present in the data), Issues and next
+            steps. Add one chart as a fenced block ```chart {"type":"bar","title":"Tasks completed by specialty","labels":[...],"series":[{"name":"Tasks","values":[...]}]}```.
+            Never invent figures; say plainly when data is missing. No clinical commentary and no patient data. British English.'
+          mcp_servers: []
+    appTools:
+    - name: read_task_log
+      description: Read the anonymous completed-task log
+      action: read
+      collection: task_log
+      scope: all
+    - name: read_rtt_context
+      description: Read the NHS England waiting-time context figures
+      action: read
+      collection: rtt_context
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.4
+  data:
+    collections:
+    - name: tasks
+      description: Administrative work-queue tasks. Each task lists the team members who may see it. Do not put clinical detail
+        in free text beyond what the task needs.
+      ownedBy: user
+      retentionDays: 180
+      fields:
+      - name: reference
+        type: text
+        required: true
+        label: Task reference
+        help: Trust's own task or referral reference, not a name
+      - name: team
+        type: text
+        required: true
+        label: Team
+      - name: members
+        type: array
+        required: true
+        label: Team member emails
+        help: Everyone in the team who may see this task
+      - name: specialty
+        type: select
+        required: true
+        label: Specialty
+        options:
+        - Cardiology
+        - Dermatology
+        - ENT
+        - General surgery
+        - Gynaecology
+        - Ophthalmology
+        - Orthopaedics
+        - Paediatrics
+        - Respiratory
+        - Urology
+      - name: task_type
+        type: select
+        required: true
+        label: Task type
+        options:
+        - value: referral_triage
+          label: Referral triage paperwork
+        - value: clinic_letter
+          label: Clinic letter
+        - value: waiting_list_validation
+          label: Waiting-list validation
+        - value: booking
+          label: Booking or rebooking
+        - value: discharge_chase
+          label: Discharge summary chase
+      - name: details
+        type: textarea
+        required: true
+        label: Details
+        maxLength: 4000
+      - name: status
+        type: select
+        label: Status
+        default: queued
+        options:
+        - queued
+        - prepared
+        - approved
+        - rejected
+        - escalated
+      - name: agent_note
+        type: text
+        label: Agent note
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: proposals
+      description: Draft actions prepared by agents, awaiting administrator approval
+      ownedBy: user
+      retentionDays: 180
+      fields:
+      - name: task_ref
+        type: text
+        label: Task reference
+      - name: team
+        type: text
+        label: Team
+      - name: members
+        type: array
+        label: Team member emails
+      - name: kind
+        type: text
+        label: Kind
+      - name: draft
+        type: textarea
+        label: Draft action
+      - name: flags
+        type: textarea
+        label: Check before approving
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: task_log
+      description: Anonymous completed-task entries for dashboards (no patient data)
+      ownedBy: app
+      retentionDays: 730
+      fields:
+      - name: date
+        type: date
+        label: Date
+      - name: team
+        type: text
+        label: Team
+      - name: specialty
+        type: text
+        label: Specialty
+      - name: task_type
+        type: text
+        label: Task type
+      - name: minutes_saved
+        type: number
+        label: Minutes saved (estimate)
+    - name: rtt_context
+      description: NHS England referral-to-treatment waiting-time figures by specialty (open data), loaded by admins as CSV
+        on the data page
+      ownedBy: shared
+      fields:
+      - name: specialty
+        type: text
+        label: Specialty
+      - name: period
+        type: text
+        label: Period
+      - name: waiting_list_total
+        type: number
+        label: Waiting list
+      - name: pct_within_18_weeks
+        type: number
+        label: '% within 18 weeks'
+      - name: median_wait_weeks
+        type: number
+        label: Median wait (weeks)
+    - name: monthly_reports
+      description: Monthly reports for the digital lead
+      ownedBy: app
+  approvals:
+  - key: writeback
+    title: Approve write-back
+    description: The administrator confirms the prepared action before anything is written to the record.
+    decidedBy: requester
+    fields:
+    - task_ref
+    - kind
+    - summary
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: prepare_new_task
+    description: A queued task starts the preparer
+    'on':
+      collection: tasks
+      op: insert
+      where:
+        status: queued
+    start:
+      agent: prep
+    goal: 'Prepare the administrative action for this queued task. Task record: {event}. Reference {record.reference}, type
+      {record.task_type}, specialty {record.specialty}, team {record.team}.'
+  - key: after_approval
+    description: Approved actions are closed and logged
+    'on':
+      approval: writeback
+      decision: approved
+    start:
+      agent: closer
+    goal: 'The administrator approved the prepared action. Event: {event}'
+  - key: after_rejection
+    'on':
+      approval: writeback
+      decision: rejected
+    notify:
+      to: owner
+      subject: 'Wardloom: action not approved'
+      body: You rejected a prepared action. Nothing was written back. The task stays in your queue.
+      link: queue
+  - key: clinical_escalation
+    description: Tell the owner when a task needs a clinician
+    'on':
+      collection: tasks
+      op: update
+      where:
+        status: escalated
+    notify:
+      to: owner
+      subject: 'Wardloom: task {record.reference} needs a clinician'
+      body: 'The agent found that task {record.reference} needs clinical judgement and has not acted on it. Please pass it
+        to a clinician. Note: {record.agent_note}'
+      link: queue
+  schedules:
+  - agent: reporter
+    action: run
+    cron: 0 7 1 * *
+    owner: app
+    goal: Write the monthly report for the last full calendar month. Today is {date}.
+    deliver:
+      to: role:digital_lead
+      subject: Wardloom monthly report — {date}
+      onlyIfNew: true
+  views:
+  - key: home
+    type: page
+    title: Wardloom
+    nav: false
+    sections:
+    - type: hero
+      eyebrow: For NHS trust admin teams
+      title: Take the **paperwork** off your teams, keep a person in control.
+      text: 'Wardloom agents pick tasks from your team''s work queue and prepare the action: a drafted clinic letter, a validated
+        waiting-list entry, a rebooking, a discharge-summary chase. An administrator approves before anything is written back.
+        Agents never make clinical decisions.'
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      note: Supports trust staff; not a medical device.
+    - type: steps
+      id: how-it-works
+      title: How it works
+      items:
+      - title: Tasks join your team queue
+        text: Each team sees only its own work.
+        badge: 📥
+      - title: The agent prepares the action
+        text: A draft, with anything missing or doubtful flagged.
+        badge: 📝
+      - title: An administrator approves
+        text: Nothing is written back without a named person's approval.
+        badge: ✅
+      - title: Clinical items go to a clinician
+        text: Anything needing clinical judgement is escalated, never decided.
+        badge: 🩺
+    - type: cards
+      id: safeguards
+      title: Safeguards
+      items:
+      - title: Human approval
+        text: Every write-back is approved by an administrator.
+      - title: Team separation
+        text: Queues and drafts are visible only to the team they belong to.
+      - title: Data minimisation
+        text: Tasks are deleted automatically after 180 days.
+    - type: note
+      content: Wardloom · English · Information governance assurances (DSPT, DTAC, DCB0129) are provided by the supplier and
+        contracted per trust.
+  - key: intake
+    type: form
+    title: Add a task
+    collection: tasks
+    fields:
+    - reference
+    - team
+    - members
+    - specialty
+    - task_type
+    - details
+    submit:
+      label: Add to queue
+      message: Task added. The agent is preparing it.
+      redirect: queue
+    roles:
+    - user
+    - admin
+  - key: queue
+    type: table
+    title: Work queue
+    source: collection:tasks
+    export: true
+    data:
+      display: table
+      fields:
+      - key: reference
+        label: Reference
+      - key: specialty
+        label: Specialty
+      - key: task_type
+        label: Task type
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+      - key: agent_note
+        label: Agent note
+      sort:
+        field: status
+        dir: asc
+      limit: 200
+      empty: No tasks in your queue.
+    roles:
+    - user
+    - admin
+  - key: drafts
+    type: cards
+    title: Prepared actions
+    source: collection:proposals
+    data:
+      display: cards
+      fields:
+      - key: task_ref
+        label: Reference
+      - key: kind
+        label: Type
+        format: badge
+      - key: draft
+        label: Draft
+      - key: flags
+        label: Check before approving
+      limit: 50
+      empty: Nothing awaiting approval.
+    roles:
+    - user
+    - admin
+  - key: approvals
+    type: approvals
+    title: Approvals
+    approvals:
+    - writeback
+    roles:
+    - user
+    - admin
+  - key: performance
+    type: page
+    title: Performance
+    roles:
+    - user
+    - admin
+    - digital_lead
+    sections:
+    - type: data
+      title: Totals
+      source: collection:task_log
+      display: kpi
+      kpis:
+      - label: Tasks completed
+        agg: count
+      - label: Minutes saved (estimate)
+        agg: sum
+        field: minutes_saved
+        format: number
+    - type: data
+      title: Tasks completed and time saved by specialty
+      source: collection:task_log
+      display: bar
+      groupBy:
+        field: specialty
+        aggs:
+        - key: minutes
+          agg: sum
+          field: minutes_saved
+      fields:
+      - key: specialty
+        label: Specialty
+      - key: count
+        label: Tasks
+      - key: minutes
+        label: Minutes saved
+    - type: data
+      title: Time saved by month
+      source: collection:task_log
+      display: chart
+      chart: line
+      groupBy:
+        field: date
+        bucket: month
+        aggs:
+        - key: minutes
+          agg: sum
+          field: minutes_saved
+      fields:
+      - key: date
+        label: Month
+      - key: minutes
+        label: Minutes saved
+    - type: data
+      title: Open backlog in your teams, by specialty
+      source: collection:tasks
+      display: table
+      filters:
+      - field: status
+        op: '!='
+        value: approved
+      groupBy:
+        field: specialty
+        aggs: []
+      fields:
+      - key: specialty
+        label: Specialty
+      - key: count
+        label: Open tasks
+    - type: data
+      title: 'Context: NHS England waiting times'
+      intro: Referral-to-treatment figures from NHS England open data.
+      source: collection:rtt_context
+      display: table
+      fields:
+      - key: specialty
+        label: Specialty
+      - key: period
+        label: Period
+      - key: waiting_list_total
+        label: Waiting list
+        format: number
+      - key: pct_within_18_weeks
+        label: '% within 18 weeks'
+        format: number
+      - key: median_wait_weeks
+        label: Median wait (weeks)
+        format: number
+      limit: 100
+      empty: Waiting-time context has not been loaded yet.
+  - key: reports
+    type: table
+    title: Monthly reports
+    source: collection:monthly_reports
+    data:
+      display: list
+      fields:
+      - key: title
+        label: Report
+      - key: date
+        label: Date
+        format: date
+      limit: 36
+      empty: No monthly report yet.
+    roles:
+    - digital_lead
+    - admin
+  billing:
+    modes:
+    - free
+  extensions:
+  - key: epr_pas_integration
+    description: Reading from and writing back to the trust's electronic patient record and patient administration system
+      (HL7/FHIR interfaces, supplier APIs) is not available in this app. Tasks are added through the intake form or CSV, and
+      approved actions are written back by the trust's integration or by staff. A bespoke interface is needed.
+  - key: information_governance
+    description: DSPT submission, DTAC, DCB0129 clinical safety case and the named clinical safety officer are the supplier's
+      own assurances outside the software. The app supports them with team-restricted records, human approval, escalation
+      of clinical items and 180-day retention.
+  - key: annual_contract_billing
+    description: Pricing is per trust by annual contract, invoiced outside the app. The app is free to use inside a contracted
+      trust, with no in-app payments.
+  - key: rtt_open_data_load
+    description: NHS England waiting-time data is published as spreadsheets, not an API. Admins load it as a CSV on the data
+      page (rtt_context); there is no automatic refresh.
+  - key: multi_team_roles
+    description: Team separation is by the member email list on each task. A team-lead role with automatic team management,
+      and a clinician hand-off queue, are not available yet.

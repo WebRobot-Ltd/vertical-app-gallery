@@ -1,0 +1,890 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: renewly
+  displayName: Renewly
+  tagline:
+    en: The AI operating model that takes routine admin off insurance brokers.
+  description:
+    en: Renewly extracts policy documents into your broker system, starts every renewal 90 days out, compares insurer terms
+      with expiring cover and drafts a Consumer Duty-aware renewal report that the account handler approves before anything
+      reaches the client.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12304a'
+      accent: '#1f8a70'
+      background: '#f6f8fa'
+      foreground: '#16202a'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Renew
+      color: primary
+    - text: ly
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Compliance
+      href: '#compliance'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+      - client_update
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: account_handler
+      label: Account handler
+      assignedBy: invite
+    - key: team_leader
+      label: Team leader
+      assignedBy: invite
+    - key: compliance
+      label: Compliance
+      assignedBy: invite
+    - key: user
+      label: Member
+      assignedBy: signup
+  limits:
+  - action: run
+    per: user
+    max: 40
+    window: day
+    roles:
+    - user
+    - account_handler
+  agents:
+  - key: extractor
+    role: main
+    description: Reads schedules, wordings, statements of fact and endorsements, extracts the data and enters it into the
+      broker system.
+    when: mode == 'extract'
+    profile:
+      inline:
+        display_name: Renewly document extractor
+        crews:
+        - id: extractor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a UK insurance broker''s document-processing assistant. You receive a policy schedule, wording,
+            statement of fact or endorsement (text in the goal, or a scan/photo you open with read_upload using the file id).
+            Extract: insured name and address, client email, insurer, policy number, class of business, inception and renewal
+            dates (YYYY-MM-DD), covers/sections, limits, excesses, premium (with IPT and fees if shown), and for endorsements
+            what changed. Never invent values: leave a field empty and flag it when unclear. Check the insurer with fca_lookup
+            when you have its FRN and report its FCA status. Save the policy with policy_write, then enter it in the broker
+            system with bms_create_policy (if the broker system is not connected, say so and skip). Output a report starting
+            with ''# Extraction — <insured> — <policy number>'' with sections ## Extracted data (table), ## Items to verify,
+            ## Broker system entry, ## FCA status.'
+    goalTemplate: 'Extract this document and enter it.
+
+      Handler email: {email}
+
+      {?document}Files: {document}{/document}
+
+      {?document_text}Document text:
+
+      {document_text}{/document_text}
+
+      {?notes}Handler notes: {notes}{/notes}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    context:
+    - key: email
+      from: user.email
+    appTools:
+    - name: read_upload
+      description: Read a file the user uploaded (OCR included)
+      action: read_file
+    - name: policy_write
+      description: Save or update a policy record
+      action: write
+      collection: policies
+      scope: user
+    - name: policy_read
+      description: Read the user's policies
+      action: read
+      collection: policies
+      scope: user
+    - name: fca_lookup
+      description: Look up a firm on the FCA Register by FRN (path = FRN)
+      action: http
+      http:
+        method: GET
+        url: https://register.fca.org.uk/services/V0.1/Firm/
+        allowPath: true
+        credential:
+          provider: fca_register
+          header: X-Auth-Key
+          format: '{secret}'
+        attribution: FCA Register, Financial Conduct Authority
+    - name: bms_create_policy
+      description: Create a policy record in the broker management system
+      action: http
+      http:
+        method: POST
+        url: https://{host}/api/v1/policies
+        credential:
+          provider: bms
+          header: Authorization
+          format: Bearer {secret}
+        attribution: Broker management system
+    output: markdown
+    limits:
+      maxTurns: 20
+      maxBudgetUsd: 0.6
+  - key: drafter
+    role: helper
+    description: 'Runs a renewal: compares insurer terms with expiring cover, checks FCA status, drafts the renewal report
+      and asks the handler to approve.'
+    when: mode == 'renewal'
+    awaits:
+    - client_release
+    profile:
+      inline:
+        display_name: Renewly renewal drafter
+        crews:
+        - id: drafter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a renewal analyst for a UK insurance broker. Given a policy, read it with policy_read, the
+            insurer terms received with terms_read and the client''s renewal answers with client_answers_read. Compare renewal
+            terms with expiring cover line by line (premium, limits, excesses, exclusions, conditions, endorsements) and highlight
+            every change. Check the insurer, and any appointed representative, on the FCA Register with fca_lookup. Draft
+            a client-ready renewal report starting with ''# Renewal report — <client> — <policy number>''. Sections: ## Summary
+            of changes (table, expiring vs renewal), ## Material changes in the client''s circumstances, ## Demands and needs
+            / suitability (ICOBS), ## Fair value and Consumer Duty assessment (price and value, target market, consumer understanding,
+            any foreseeable harm, commission disclosure if provided), ## Alternatives if terms were not competitive, ## Recommendation,
+            ## Open points for the handler. Add a ```chart block (bar, expiring vs renewal premium by section) only with real
+            figures. Never invent terms, premiums or FCA status: say ''not received'' instead. Save the draft with renewal_write
+            (status ''draft'', handler_email, policy_number, client_email, report text). Then call request_client_release
+            so the handler reviews it. Nothing goes to the client until it is approved; after approval set status ''approved''
+            with renewal_write.'
+    goalTemplate: 'Run the renewal for policy {policy}.
+
+      {?notes}Handler notes: {notes}{/notes}
+
+      Today is {date}. Write in the language with ISO code {lang}.'
+    appTools:
+    - name: policy_read
+      description: Read the user's policies
+      action: read
+      collection: policies
+      scope: user
+    - name: terms_read
+      description: Read insurer terms received
+      action: search
+      collection: insurer_terms
+      scope: user
+    - name: client_answers_read
+      description: Read the clients' renewal information answers
+      action: search
+      collection: client_responses
+      scope: all
+    - name: renewal_write
+      description: Save or update a renewal record
+      action: write
+      collection: renewals
+      scope: user
+    - name: fca_lookup
+      description: Look up a firm on the FCA Register by FRN (path = FRN)
+      action: http
+      http:
+        method: GET
+        url: https://register.fca.org.uk/services/V0.1/Firm/
+        allowPath: true
+        credential:
+          provider: fca_register
+          header: X-Auth-Key
+          format: '{secret}'
+        attribution: FCA Register, Financial Conduct Authority
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 1.0
+  inputForm:
+    title:
+      en: New work item
+    fields:
+    - name: mode
+      type: select
+      required: true
+      label:
+        en: What do you need?
+      options:
+      - value: extract
+        label:
+          en: Extract a document into the system
+      - value: renewal
+        label:
+          en: Run a renewal now
+    - name: document
+      type: file
+      accept:
+      - pdf
+      - docx
+      - jpg
+      - png
+      maxMb: 15
+      multiple: true
+      visibleWhen: mode == 'extract'
+      label:
+        en: Schedule, wording, SoF or endorsement
+    - name: policy
+      type: select
+      optionsFrom: collection:policies
+      visibleWhen: mode == 'renewal'
+      label:
+        en: Policy
+    - name: notes
+      type: textarea
+      maxLength: 500
+      label:
+        en: Notes (optional)
+  data:
+    collections:
+    - name: policies
+      description: Policies the handler manages
+      ownedBy: user
+      retentionDays: 2555
+      access:
+      - role: team_leader
+        can:
+        - read
+        - write
+      - role: compliance
+      fields:
+      - name: client_name
+        type: text
+        required: true
+      - name: client_email
+        type: email
+      - name: insurer
+        type: text
+      - name: insurer_frn
+        type: text
+      - name: policy_number
+        type: text
+        required: true
+      - name: class_of_business
+        type: text
+      - name: inception_date
+        type: date
+      - name: renewal_date
+        type: date
+        required: true
+      - name: covers
+        type: textarea
+      - name: limits
+        type: textarea
+      - name: excesses
+        type: textarea
+      - name: expiring_premium
+        type: number
+      - name: handler_email
+        type: email
+      - name: bms_ref
+        type: text
+      - name: status
+        type: select
+        options:
+        - active
+        - in_renewal
+        - renewed
+        - lost
+    - name: insurer_terms
+      description: Renewal terms received from insurers
+      ownedBy: user
+      access:
+      - role: team_leader
+      - role: compliance
+      fields:
+      - name: policy_number
+        type: text
+        required: true
+      - name: insurer
+        type: text
+      - name: renewal_premium
+        type: number
+      - name: excesses
+        type: textarea
+      - name: limits
+        type: textarea
+      - name: changes
+        type: textarea
+      - name: document
+        type: file
+        accept:
+        - pdf
+        - docx
+        maxMb: 15
+    - name: client_responses
+      description: Clients' answers to the renewal information request
+      ownedBy: org
+      access:
+      - role: account_handler
+      - role: team_leader
+      - role: compliance
+      fields:
+      - name: policy_number
+        type: text
+        required: true
+      - name: client_email
+        type: email
+        required: true
+      - name: changes_in_circumstances
+        type: textarea
+      - name: new_assets_or_locations
+        type: textarea
+      - name: claims_since_last_renewal
+        type: textarea
+      - name: updated_values
+        type: textarea
+      - name: confirmed_accurate
+        type: boolean
+        required: true
+    - name: renewals
+      description: Renewal reports and their status
+      ownedBy: user
+      retentionDays: 2555
+      access:
+      - role: team_leader
+        can:
+        - read
+        - write
+      - role: compliance
+      fields:
+      - name: policy_number
+        type: text
+      - name: client_email
+        type: email
+      - name: handler_email
+        type: email
+      - name: renewal_date
+        type: date
+      - name: status
+        type: select
+        options:
+        - draft
+        - awaiting_approval
+        - approved
+        - sent
+      - name: outcome
+        type: select
+        options:
+        - pending
+        - retained
+        - lost
+      - name: expiring_premium
+        type: number
+      - name: renewal_premium
+        type: number
+      - name: report
+        type: textarea
+    - name: tasks
+      description: Mid-term adjustments and other handler tasks
+      ownedBy: user
+      access:
+      - role: team_leader
+        can:
+        - read
+        - write
+      fields:
+      - name: policy_number
+        type: text
+        required: true
+      - name: adjustment_type
+        type: select
+        required: true
+        options:
+        - address change
+        - vehicle change
+        - sum insured change
+        - cancellation
+        - add cover
+        - other
+      - name: description
+        type: textarea
+        required: true
+      - name: due_date
+        type: date
+      - name: handler_email
+        type: email
+      - name: status
+        type: select
+        options:
+        - open
+        - in_progress
+        - done
+    credentials:
+    - provider: bms
+      kind: api_key
+      scope: user
+      label:
+        en: Broker management system (e.g. Acturis)
+      help:
+        en: Paste your API key from the broker system's integration settings.
+      hostLabel:
+        en: your-broker.acturis.com
+    - provider: fca_register
+      kind: api_key
+      scope: org
+      label:
+        en: FCA Register API key
+      help:
+        en: Key from the FCA Developer Portal.
+  views:
+  - key: home
+    type: page
+    title: Renewly
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: For insurance brokers
+      title: Renewals on **autopilot**, with the handler in control.
+      text: Renewly extracts policy documents, starts each renewal 90 days out, compares insurer terms with expiring cover
+        and drafts the renewal report. Nothing reaches the client until the account handler approves.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Upload or forward
+        text: Schedules, wordings, statements of fact and endorsements arrive by upload or inbound email and are keyed into
+          your broker system.
+      - title: Renewal starts 90 days out
+        text: The client gets an information form by email; insurer terms are collected and compared with expiring cover.
+      - title: Review and approve
+        text: The handler reviews the drafted report with changes highlighted, then approves before it goes to the client.
+      - title: Track the book
+        text: Pipeline, retention and workload per handler on one dashboard.
+    - type: cards
+      id: compliance
+      title: Built for FCA ICOBS and Consumer Duty
+      items:
+      - title: Fair value
+        text: Every report includes a price and value assessment and a demands-and-needs check.
+      - title: FCA Register
+        text: Insurers and appointed representatives are checked on the FCA Register.
+      - title: Audit trail
+        text: Compliance sees every report, approval and task.
+    - type: note
+      content: Decision support for regulated brokers. The handler remains responsible for advice and client communications.
+  - key: new_work
+    type: new_run
+    title: New work item
+    roles:
+    - user
+    - account_handler
+    - team_leader
+    - admin
+  - key: runs
+    type: history
+    title: My work
+    source: run
+    roles:
+    - user
+    - account_handler
+    - team_leader
+    - admin
+  - key: result
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: policies_view
+    type: table
+    title: Policies
+    source: collection:policies
+    export: true
+    columns:
+    - client_name
+    - insurer
+    - policy_number
+    - renewal_date
+    - expiring_premium
+    - handler_email
+    - status
+    data:
+      display: table
+      fields:
+      - key: client_name
+        label: Client
+      - key: insurer
+        label: Insurer
+      - key: policy_number
+        label: Policy
+      - key: renewal_date
+        label: Renewal
+        format: date
+      - key: expiring_premium
+        label: Premium
+        format: money
+      - key: handler_email
+        label: Handler
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: renewal_date
+        dir: asc
+      actions:
+      - type: calendar
+        title: client_name
+        start: renewal_date
+  - key: policy_form
+    type: form
+    title: Add a policy
+    collection: policies
+    submit:
+      label: Save policy
+      message: Policy saved.
+      redirect: policies_view
+  - key: terms_form
+    type: form
+    title: Log insurer terms
+    collection: insurer_terms
+    submit:
+      label: Save terms
+      message: Terms saved.
+  - key: renewals_view
+    type: table
+    title: Renewals
+    source: collection:renewals
+    export: true
+    data:
+      display: table
+      fields:
+      - key: policy_number
+        label: Policy
+      - key: renewal_date
+        label: Renewal
+        format: date
+      - key: expiring_premium
+        label: Expiring
+        format: money
+      - key: renewal_premium
+        label: Renewal
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      - key: outcome
+        label: Outcome
+        format: badge
+      - key: handler_email
+        label: Handler
+      sort:
+        field: renewal_date
+        dir: asc
+  - key: task_form
+    type: form
+    title: Log mid-term adjustment
+    collection: tasks
+    submit:
+      label: Create task
+      message: Task logged.
+      redirect: tasks_view
+  - key: tasks_view
+    type: table
+    title: Tasks
+    source: collection:tasks
+    data:
+      display: table
+      fields:
+      - key: policy_number
+        label: Policy
+      - key: adjustment_type
+        label: Type
+        format: badge
+      - key: description
+        label: Description
+      - key: due_date
+        label: Due
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      - key: handler_email
+        label: Handler
+      sort:
+        field: due_date
+        dir: asc
+  - key: client_update
+    type: form
+    title: Renewal information
+    collection: client_responses
+    nav: false
+    submit:
+      label: Send to my broker
+      message: Thank you. Your broker has received your information.
+  - key: approvals_view
+    type: approvals
+    title: Approvals
+    approvals:
+    - client_release
+    roles:
+    - user
+    - account_handler
+    - team_leader
+    - admin
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - account_handler
+    - team_leader
+    - compliance
+    - admin
+    sections:
+    - type: data
+      title: Renewals pipeline
+      source: collection:renewals
+      display: chart
+      chart: bar
+      groupBy:
+        field: status
+        aggs:
+        - key: premium
+          agg: sum
+          field: renewal_premium
+      fields:
+      - key: status
+      - key: count
+    - type: data
+      title: Retention
+      source: collection:renewals
+      display: chart
+      chart: pie
+      groupBy:
+        field: outcome
+        aggs: []
+      fields:
+      - key: outcome
+      - key: count
+    - type: data
+      title: Renewals by month
+      source: collection:policies
+      display: chart
+      chart: line
+      groupBy:
+        field: renewal_date
+        bucket: month
+        aggs:
+        - key: premium
+          agg: sum
+          field: expiring_premium
+      fields:
+      - key: renewal_date
+      - key: count
+      - key: premium
+    - type: data
+      title: Workload per handler
+      source: collection:policies
+      display: table
+      groupBy:
+        field: handler_email
+        aggs:
+        - key: premium
+          agg: sum
+          field: expiring_premium
+      fields:
+      - key: handler_email
+        label: Handler
+      - key: count
+        label: Policies
+      - key: premium
+        label: Premium
+        format: money
+    - type: data
+      title: Open tasks per handler
+      source: collection:tasks
+      display: table
+      filters:
+      - field: status
+        op: '!='
+        value: done
+      groupBy:
+        field: handler_email
+        aggs: []
+      fields:
+      - key: handler_email
+        label: Handler
+      - key: count
+        label: Open tasks
+  - key: account
+    type: account
+    title: Account
+    roles:
+    - user
+    - account_handler
+    - team_leader
+    - compliance
+    - admin
+  approvals:
+  - key: client_release
+    title: Approve renewal report before it goes to the client
+    decidedBy: requester
+    fields:
+    - policy_number
+    - client_email
+    - report
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: renewal_90_notify
+    description: Ask the client for updated information 90 days before renewal
+    'on':
+      date:
+        collection: policies
+        field: renewal_date
+        offsetDays: -90
+        hour: 7
+    notify:
+      to: record.client_email
+      subject: 'Your {record.class_of_business} insurance renewal: please update your details'
+      body: 'Dear {record.client_name},
+
+
+        Your policy {record.policy_number} renews on {record.renewal_date}. Please confirm or update your information using
+        the form below so we can obtain the best terms for you.'
+      link: client_update
+  - key: renewal_90_start
+    description: Start the renewal workflow 90 days before renewal
+    'on':
+      date:
+        collection: policies
+        field: renewal_date
+        offsetDays: -90
+        hour: 7
+    start:
+      agent: drafter
+    goal: 'Run the renewal for policy {record.policy_number} ({record.client_name}, insurer {record.insurer}, FRN {record.insurer_frn}),
+      renewing on {record.renewal_date}. Handler: {record.handler_email}. Client email: {record.client_email}. Collect the
+      client''s answers and insurer terms available, compare with expiring cover, draft the report and request the handler''s
+      approval.'
+  - key: client_response_in
+    'on':
+      collection: client_responses
+      op: insert
+    notify:
+      to:
+      - role:account_handler
+      subject: Client renewal information received for {record.policy_number}
+      body: A client has submitted renewal information for policy {record.policy_number}.
+      link: renewals_view
+  - key: renewal_released
+    'on':
+      collection: renewals
+      op: update
+      where:
+        status: approved
+    notify:
+      to:
+      - record.client_email
+      subject: Your renewal for policy {record.policy_number}
+      body: Your broker has reviewed and approved your renewal report for policy {record.policy_number}. Please contact your
+        account handler with any questions.
+  - key: task_due
+    'on':
+      date:
+        collection: tasks
+        field: due_date
+        offsetDays: 0
+        hour: 7
+    notify:
+      to: owner
+      subject: 'Task due today: {record.adjustment_type} on {record.policy_number}'
+      body: '{record.description}'
+      link: tasks_view
+  channels:
+  - key: inbound_docs
+    type: email
+    agent: extractor
+    greeting: Forward schedules, wordings, statements of fact and endorsements here.
+  notifications:
+    emailOnRunDone: true
+  egress:
+    hosts:
+    - register.fca.org.uk
+    - '*.acturis.com'
+    notes: FCA Register API (public register, key from the FCA Developer Portal). *.acturis.com is the broker's own broker-management-system
+      host saved with their API key.
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: handler
+      price: 79
+      interval: month
+      label: Per account handler
+      includes:
+      - Document extraction
+      - Automated renewals
+      - Dashboards
+      roles:
+      - admin
+  extensions:
+  - key: oauth_bms
+    description: OAuth connection to the broker management system is not available yet; handlers and admins paste an API key
+      on the Account page. The Acturis API path (/api/v1/policies) and fields must be confirmed against the broker's own API
+      documentation.
+  - key: insurer_portal_logins
+    description: Storing handlers' insurer-portal usernames/passwords and logging into portals to retrieve terms is not available.
+      Terms are logged by upload or the Log insurer terms form.
+  - key: per_seat_billing
+    description: The plan is a monthly fee; quantity-based per-handler billing and brokerage-level tenant isolation (one brokerage
+      never seeing another) need setting up outside this manifest.
+  - key: fca_register_headers
+    description: The FCA Register API also needs an X-Auth-Email header with the key owner's email; this must be added to
+      the tool by an administrator.

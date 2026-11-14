@@ -1,0 +1,1282 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: clearvane
+  displayName: Clearvane
+  tagline:
+    en: AI agents for end-to-end KYC and AML at acquirers and marketplaces.
+  description:
+    en: Clearvane onboards merchants and clears screening alerts. Agents check Companies House, the merchant's website, sanctions
+      lists and adverse media, then draft the note. Analysts decide, the MLRO signs off, and every action is logged.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: pipeline
+  branding:
+    theme: light
+    palette:
+      primary: '#12263f'
+      accent: '#1a8f8a'
+      background: '#f6f8fa'
+      foreground: '#16202b'
+    fonts:
+      body: Inter
+      display: IBM Plex Sans
+    wordmark:
+    - text: Clear
+      color: primary
+    - text: vane
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Controls
+      href: '#controls'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Administrator
+      assignedBy: admin_emails
+    - key: analyst
+      label: Analyst
+      assignedBy: invite
+    - key: senior_reviewer
+      label: Senior reviewer
+      assignedBy: invite
+    - key: mlro
+      label: MLRO
+      assignedBy: invite
+    - key: auditor
+      label: Auditor (read-only)
+      assignedBy: invite
+  agents:
+  - key: kyc_analyst
+    role: main
+    description: 'Merchant onboarding check: Companies House, website review, category consistency, owner screening, adverse
+      media, uploaded documents.'
+    profile:
+      inline:
+        display_name: Clearvane KYC analyst
+        crews:
+        - id: kyc_analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are a KYC analyst at a merchant acquirer. You assess ONE merchant application and write a case
+            note for a human analyst. You recommend; you never decide, and you never approve or reject a merchant yourself.
+
+
+            Steps:
+
+            1. Companies House: call ch_api with path /company/<number> for the profile, then /company/<number>/officers and
+            /company/<number>/persons-with-significant-control. Compare the registered name, status, incorporation date, SIC
+            codes and registered address with the application. If there is no company number, search with path /search/companies
+            and query q=<name>. If the key is not connected, say so and continue.
+
+            2. Website: use the web tools to read the merchant''s site (home, products, terms, contact, refund policy). Summarise
+            the real activity and compare it with the declared category. Flag mismatches, missing legal entity details, and
+            prohibited or high-risk goods or services.
+
+            3. Owners: for each owner or director, call search_watchlist with the name (and aliases). It covers OFSI and UN
+            lists loaded by the admins. Compare name, date of birth and nationality. Report a potential match as potential,
+            never as confirmed. If PEP or commercial watchlist data is not provided in this app, state that PEP screening
+            was not performed. Do not guess.
+
+            4. Adverse media: web-search each owner and the company name with terms such as fraud, scam, sanctions, money
+            laundering, court, regulator. Cite only sources you actually opened, with URL and date. Distinguish name collisions
+            from true hits.
+
+            5. Documents: if file ids are given, call read_upload for each (it reads PDFs and images, OCR included). Check
+            consistency: name, date of birth, address, issue and expiry dates, and whether the utility bill is recent (within
+            3 months) and matches the application. You check CONSISTENCY ONLY. Document authenticity is checked by the approved
+            ID-verification partner; write ''Authenticity check: pending partner result'' and never claim a document is genuine
+            or forged.
+
+            6. Call append_audit once per major step (action, case_ref, a short detail).
+
+
+            Write the note in English. Start with a level-1 title ''# KYC note — <merchant> — <case_ref>''. Sections ## Summary
+            and recommendation, ## Company registry, ## Website and activity vs declared category, ## Owner screening, ##
+            Adverse media, ## Documents, ## Open questions and evidence list. Close with a risk rating (low, medium, high)
+            and a recommendation (approve, manual_review, escalate), each with reasons. Never invent facts, registry numbers
+            or sources; write ''not found'' or ''not checked'' instead. This is decision support for a regulated analyst,
+            not a compliance decision.
+
+
+            After the note, end with a fenced ```json block with: case_ref, kind ("application"), subject (merchant name),
+            recommendation, risk_rating, status ("pending_review"), summary (max 400 characters), note (the full note in Markdown).'
+    goalTemplate: 'Application reference: {app_ref}
+
+      Merchant: {merchant_name}
+
+      {?company_number}Companies House number: {company_number}{/company_number}
+
+      {?website}Website: {website}{/website}
+
+      Declared category: {declared_category_label}
+
+      Country: {country}
+
+      Owners and directors (name, date of birth, nationality):
+
+      {owners}
+
+      {?id_docs}Identity document file ids: {id_docs}
+
+      {id_docs_text}{/id_docs}
+
+      {?address_proof}Proof of address file ids: {address_proof}
+
+      {address_proof_text}{/address_proof}
+
+      Today is {date}. Write the note in English. Use the application reference as case_ref.'
+    output: markdown+json
+    resultSchema:
+      type: object
+      properties:
+        case_ref:
+          type: string
+        kind:
+          type: string
+        subject:
+          type: string
+        recommendation:
+          type: string
+        risk_rating:
+          type: string
+        status:
+          type: string
+        summary:
+          type: string
+        note:
+          type: string
+    writesTo:
+      collection: case_notes
+      parse: json_last
+      keyBy: case_ref
+    appTools:
+    - name: ch_api
+      description: 'Companies House API: path /company/{number}, /company/{number}/officers, /company/{number}/persons-with-significant-control,
+        /search/companies with query q'
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk
+        allowPath: true
+        attribution: Companies House, Open Government Licence v3.0
+        credential:
+          provider: companies_house
+          header: Authorization
+          format: Basic {secret}
+    - name: search_watchlist
+      description: Search the sanctions watchlist records (OFSI and UN lists loaded by the admins) by name or alias
+      action: search
+      collection: watchlist
+      scope: all
+    - name: read_upload
+      description: Read a file the user uploaded (identity document, utility bill)
+      action: read_file
+    - name: append_audit
+      description: Add an entry to the audit log
+      action: append
+      collection: audit_log
+      scope: all
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+  - key: alert_analyst
+    role: helper
+    description: 'Screening alert: gathers evidence, compares identifiers, drafts a remediation note recommending close or
+      escalate.'
+    profile:
+      inline:
+        display_name: Clearvane alert analyst
+        crews:
+        - id: alert_analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are an AML analyst handling ONE sanctions or watchlist screening alert. You gather evidence
+            and draft a remediation note recommending close (false positive) or escalate. A human analyst decides.
+
+
+            1. Read the alert from the goal: subject name, date of birth, nationality, matched list entry, match score.
+
+            2. Call search_watchlist to retrieve the listed entry or entries, including aliases, date of birth and nationality.
+
+            3. Compare name (transliteration, aliases, order), date of birth (exact, year only, missing), nationality and
+            other identifiers. Say for each whether it matches, conflicts or is unavailable.
+
+            4. Call read_cases to see earlier cases on the same subject and reuse earlier conclusions only as context.
+
+            5. Search the web for adverse media or identifying information about the subject. Cite only pages you actually
+            opened.
+
+            6. Call append_audit with what you did.
+
+
+            Recommend close only when at least one strong identifier clearly conflicts (for example date of birth or nationality)
+            or the entities are demonstrably different. When identifiers are missing or consistent, recommend escalate. Never
+            state that a person is sanctioned as a fact beyond what the list entry says.
+
+
+            Start with ''# Alert note — <subject> — <alert_ref>''. Sections: ## Recommendation, ## Identifier comparison (a
+            table), ## Evidence, ## Rationale, ## Open points. End with a fenced ```json block with: case_ref (the alert reference),
+            kind ("alert"), subject, recommendation (close or escalate), risk_rating, status ("pending_review"), summary (max
+            400 characters), note (the full Markdown note).'
+    output: markdown+json
+    resultSchema:
+      type: object
+      properties:
+        case_ref:
+          type: string
+        kind:
+          type: string
+        subject:
+          type: string
+        recommendation:
+          type: string
+        risk_rating:
+          type: string
+        status:
+          type: string
+        summary:
+          type: string
+        note:
+          type: string
+    writesTo:
+      collection: case_notes
+      parse: json_last
+      keyBy: case_ref
+    appTools:
+    - name: search_watchlist
+      description: Search the sanctions watchlist records (OFSI and UN lists loaded by the admins) by name or alias
+      action: search
+      collection: watchlist
+      scope: all
+    - name: read_cases
+      description: Read earlier case notes
+      action: read
+      collection: case_notes
+      scope: all
+    - name: append_audit
+      description: Add an entry to the audit log
+      action: append
+      collection: audit_log
+      scope: all
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 0.8
+  - key: report_drafter
+    role: helper
+    description: Drafts an internal suspicious activity report for an escalated case and asks the MLRO for sign-off. Never
+      files anything.
+    awaits:
+    - mlro_signoff
+    profile:
+      inline:
+        display_name: Clearvane report drafter
+        crews:
+        - id: report_drafter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You help an MLRO. For an escalated case, call read_cases to fetch the case note, then write a DRAFT
+            internal suspicious activity report: subject, facts and evidence with sources, why the activity or match is suspicious,
+            what is not known, and a recommended next step. Use only facts in the case note; never invent details. The draft
+            is internal: you never file anything with an authority and never tell the subject. Mark the first line ''# DRAFT
+            internal report — <subject> — <case_ref>''. Call append_audit, then call request_mlro_signoff with the case reference.
+            End with a fenced ```json block with: case_ref, title, draft (the full Markdown draft), status ("draft").'
+    output: markdown+json
+    resultSchema:
+      type: object
+      properties:
+        case_ref:
+          type: string
+        title:
+          type: string
+        draft:
+          type: string
+        status:
+          type: string
+    writesTo:
+      collection: internal_reports
+      parse: json_last
+      keyBy: case_ref
+    appTools:
+    - name: read_cases
+      description: Read earlier case notes
+      action: read
+      collection: case_notes
+      scope: all
+    - name: append_audit
+      description: Add an entry to the audit log
+      action: append
+      collection: audit_log
+      scope: all
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  - key: digest_agent
+    role: scheduled
+    description: Daily summary of the review queue and SLA breaches, sent by email.
+    profile:
+      inline:
+        display_name: Clearvane daily digest
+        crews:
+        - id: digest_agent
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the daily compliance operations summary. Use read_alerts and read_cases. Start with ''#
+            Clearvane daily summary — <date>''. Sections: ## Queue (counts of cases pending review, escalated, awaiting MLRO),
+            ## Alerts (open alerts by age), ## SLA breaches (every alert whose sla_due is before today and that is not closed:
+            reference, subject, days overdue), ## Oldest items. Use real counts only; if there is nothing, say so. Plain and
+            short, under 300 words.'
+    goalTemplate: Today is {date}. Write the daily summary.
+    output: markdown
+    appTools:
+    - name: read_cases
+      description: Read earlier case notes
+      action: read
+      collection: case_notes
+      scope: all
+    - name: read_alerts
+      description: Read screening alerts
+      action: read
+      collection: alerts
+      scope: all
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.3
+  inputForm:
+    title: New merchant check
+    fields:
+    - name: app_ref
+      type: text
+      required: true
+      label: Application reference
+    - name: merchant_name
+      type: text
+      required: true
+      label: Merchant name
+    - name: company_number
+      type: text
+      label: Companies House number
+    - name: website
+      type: url
+      label: Website
+    - name: declared_category
+      type: select
+      required: true
+      label: Declared category
+      options:
+      - value: retail
+        label: Retail e-commerce
+      - value: digital
+        label: Digital goods and software
+      - value: travel
+        label: Travel and hospitality
+      - value: services
+        label: Professional services
+      - value: food
+        label: Food and beverage
+      - value: gaming
+        label: Gambling and gaming
+      - value: financial
+        label: Crypto and financial services
+      - value: other
+        label: Other
+    - name: country
+      type: country
+      label: Country
+    - name: owners
+      type: textarea
+      required: true
+      maxLength: 2000
+      label: Owners and directors
+      help: 'One per line: name, date of birth, nationality'
+    - name: id_docs
+      type: file
+      accept:
+      - pdf
+      - jpg
+      - png
+      maxMb: 10
+      multiple: true
+      label: Identity documents
+    - name: address_proof
+      type: file
+      accept:
+      - pdf
+      - jpg
+      - png
+      maxMb: 10
+      multiple: true
+      label: Utility bill or proof of address
+  data:
+    collections:
+    - name: watchlist
+      ownedBy: shared
+      description: OFSI and UN sanctions list entries, imported by admins (CSV) and refreshed regularly
+      searchable: true
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: aliases
+        type: textarea
+      - name: dob
+        type: text
+      - name: nationality
+        type: text
+      - name: list
+        type: select
+        options:
+        - OFSI
+        - UN
+      - name: list_ref
+        type: text
+      - name: entity_type
+        type: select
+        options:
+        - individual
+        - entity
+        - vessel
+      - name: listed_on
+        type: date
+    - name: applications
+      ownedBy: org
+      description: Merchant applications (CSV import by admins, webhook, or form)
+      access:
+      - role: analyst
+        can:
+        - read
+        - write
+      - role: senior_reviewer
+        can:
+        - read
+        - write
+      - role: mlro
+        can:
+        - read
+        - write
+      - role: auditor
+      retentionDays: 2555
+      fields:
+      - name: app_ref
+        type: text
+        required: true
+      - name: merchant_name
+        type: text
+        required: true
+      - name: company_number
+        type: text
+      - name: website
+        type: url
+      - name: declared_category
+        type: text
+      - name: country
+        type: text
+      - name: owners
+        type: textarea
+      - name: id_docs
+        type: file
+        accept:
+        - pdf
+        - jpg
+        - png
+        multiple: true
+      - name: address_proof
+        type: file
+        accept:
+        - pdf
+        - jpg
+        - png
+        multiple: true
+      - name: submitted_on
+        type: date
+    - name: alerts
+      ownedBy: org
+      description: Sanctions or watchlist screening alerts (CSV import by admins, webhook, or form)
+      access:
+      - role: analyst
+        can:
+        - read
+        - write
+      - role: senior_reviewer
+        can:
+        - read
+        - write
+      - role: mlro
+        can:
+        - read
+        - write
+      - role: auditor
+      retentionDays: 2555
+      fields:
+      - name: alert_ref
+        type: text
+        required: true
+      - name: subject_name
+        type: text
+        required: true
+      - name: dob
+        type: text
+      - name: nationality
+        type: text
+      - name: matched_entry
+        type: text
+      - name: list
+        type: text
+      - name: match_score
+        type: number
+      - name: received_on
+        type: date
+      - name: sla_due
+        type: date
+      - name: status
+        type: select
+        options:
+        - open
+        - in_review
+        - closed
+        - escalated
+        default: open
+    - name: case_notes
+      ownedBy: org
+      description: Agent-drafted notes awaiting analyst decision, and their outcome
+      access:
+      - role: analyst
+        can:
+        - read
+        - write
+      - role: senior_reviewer
+        can:
+        - read
+        - write
+      - role: mlro
+        can:
+        - read
+        - write
+      - role: auditor
+      retentionDays: 2555
+      fields:
+      - name: case_ref
+        type: text
+      - name: kind
+        type: select
+        options:
+        - application
+        - alert
+      - name: subject
+        type: text
+      - name: recommendation
+        type: text
+      - name: risk_rating
+        type: text
+      - name: summary
+        type: textarea
+      - name: note
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - pending_review
+        - closed
+        - escalated
+        - signed_off
+        - rejected_by_mlro
+        default: pending_review
+      - name: decision_reason
+        type: textarea
+        label: Reason for the decision
+    - name: internal_reports
+      ownedBy: org
+      description: Draft internal suspicious activity reports. Never filed automatically.
+      access:
+      - role: analyst
+      - role: senior_reviewer
+        can:
+        - read
+        - write
+      - role: mlro
+        can:
+        - read
+        - write
+      - role: auditor
+      retentionDays: 2555
+      fields:
+      - name: case_ref
+        type: text
+      - name: title
+        type: text
+      - name: draft
+        type: textarea
+      - name: status
+        type: text
+    - name: audit_log
+      ownedBy: org
+      description: Every action by agents and people
+      access:
+      - role: analyst
+      - role: senior_reviewer
+      - role: mlro
+      - role: auditor
+      retentionDays: 2555
+      fields:
+      - name: case_ref
+        type: text
+      - name: action
+        type: text
+      - name: detail
+        type: textarea
+      - name: actor
+        type: text
+    credentials:
+    - provider: companies_house
+      kind: api_key
+      scope: org
+      label: Companies House API key
+      help: Create a REST API key at developer.company-information.service.gov.uk. Paste it as base64 of '<key>:' (the key
+        followed by a colon).
+  views:
+  - key: home
+    type: page
+    title: Clearvane
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: KYC and AML for acquirers and marketplaces
+      title: Onboard merchants and clear alerts **faster**, with every step on record.
+      text: 'Agents do the legwork: registry, website, sanctions and adverse media checks, and the draft note. Your analysts
+        decide, your MLRO signs off.'
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+      aside: '<div style="padding:16px;border:1px solid #dbe2ea;border-radius:12px;background:#fff"><strong>Alert note — J.
+        Example</strong><br>Recommendation: <b>close</b><br>Date of birth conflicts (1961 vs 1984); nationality differs.<br><small>Pending
+        analyst review</small></div>'
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Import
+        text: Merchant applications and sanctions alerts arrive by CSV, API webhook or form.
+      - title: Agents investigate
+        text: Companies House, website vs declared category, OFSI and UN screening, adverse media, document consistency.
+      - title: Humans decide
+        text: Analysts review each note in a queue. Escalations go to the MLRO for sign-off.
+      - title: Everything is logged
+        text: An audit trail for every action, and read-only access for auditors.
+    - type: cards
+      id: controls
+      title: Controls built in
+      items:
+      - title: No automatic filing
+        text: Suspicious cases get a draft internal report. Nothing goes to an authority automatically.
+      - title: Roles
+        text: Analyst, senior reviewer, MLRO and read-only auditor.
+      - title: Daily summary
+        text: An email with the queue and SLA breaches every morning.
+      - title: Licensed data only
+        text: Commercial PEP and watchlist data is used only if you hold the licence.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: Per item processed
+        text: Charged per application or per alert, with a monthly minimum that includes an allowance.
+    - type: note
+      content: Clearvane supports compliance decisions; it does not make them. Document authenticity is checked by your approved
+        ID-verification partner.
+  - key: new_check
+    type: new_run
+    title: New merchant check
+    roles:
+    - analyst
+    - senior_reviewer
+    - mlro
+    - admin
+  - key: checks
+    type: history
+    title: Check history
+    source: run
+    roles:
+    - analyst
+    - senior_reviewer
+    - mlro
+    - admin
+    - auditor
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: queue
+    type: table
+    title: Review queue
+    source: collection:case_notes
+    export: true
+    roles:
+    - analyst
+    - senior_reviewer
+    - mlro
+    - admin
+    - auditor
+    data:
+      display: table
+      fields:
+      - key: case_ref
+        label: Case
+      - key: kind
+        label: Type
+        format: badge
+      - key: subject
+        label: Subject
+      - key: recommendation
+        label: Recommendation
+        format: badge
+      - key: risk_rating
+        label: Risk
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+      - key: summary
+        label: Summary
+      sort:
+        field: status
+        dir: asc
+      limit: 100
+  - key: decide
+    type: form
+    title: Decide
+    collection: case_notes
+    fields:
+    - status
+    - decision_reason
+    edit: true
+    submit:
+      label: Save decision
+      message: Decision saved and logged.
+      redirect: queue
+    roles:
+    - analyst
+    - senior_reviewer
+    - mlro
+    - admin
+    nav: false
+  - key: mlro_queue
+    type: approvals
+    title: MLRO sign-off
+    approvals:
+    - mlro_signoff
+    roles:
+    - mlro
+  - key: internal_reports
+    type: table
+    title: Draft internal reports
+    source: collection:internal_reports
+    roles:
+    - senior_reviewer
+    - mlro
+    - admin
+    - auditor
+    - analyst
+    data:
+      display: table
+      fields:
+      - key: case_ref
+        label: Case
+      - key: title
+        label: Title
+      - key: status
+        label: Status
+        format: badge
+      - key: draft
+        label: Draft
+      limit: 100
+  - key: applications
+    type: table
+    title: Applications
+    source: collection:applications
+    export: true
+    roles:
+    - analyst
+    - senior_reviewer
+    - mlro
+    - admin
+    - auditor
+    data:
+      display: table
+      fields:
+      - key: app_ref
+        label: Reference
+      - key: merchant_name
+        label: Merchant
+      - key: company_number
+        label: Company no.
+      - key: declared_category
+        label: Category
+      - key: country
+        label: Country
+      - key: submitted_on
+        label: Submitted
+        format: date
+      sort:
+        field: submitted_on
+        dir: desc
+      limit: 100
+  - key: add_application
+    type: form
+    title: Add application
+    collection: applications
+    fields:
+    - app_ref
+    - merchant_name
+    - company_number
+    - website
+    - declared_category
+    - country
+    - owners
+    - id_docs
+    - address_proof
+    - submitted_on
+    submit:
+      label: Save and start check
+      message: Application saved. The agent check has started.
+      redirect: applications
+    roles:
+    - analyst
+    - senior_reviewer
+    - mlro
+    - admin
+  - key: alerts
+    type: table
+    title: Alerts
+    source: collection:alerts
+    export: true
+    roles:
+    - analyst
+    - senior_reviewer
+    - mlro
+    - admin
+    - auditor
+    data:
+      display: table
+      fields:
+      - key: alert_ref
+        label: Alert
+      - key: subject_name
+        label: Subject
+      - key: matched_entry
+        label: Matched entry
+      - key: match_score
+        label: Score
+        format: number
+      - key: sla_due
+        label: SLA due
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: sla_due
+        dir: asc
+      limit: 100
+  - key: add_alert
+    type: form
+    title: Add alert
+    collection: alerts
+    submit:
+      label: Save and start review
+      message: Alert saved. The agent review has started.
+      redirect: alerts
+    roles:
+    - analyst
+    - senior_reviewer
+    - mlro
+    - admin
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - analyst
+    - senior_reviewer
+    - mlro
+    - admin
+    - auditor
+    sections:
+    - type: text
+      title: Operations
+      content: Alert backlog, SLA exposure and false positive rate.
+    - type: data
+      id: backlog
+      title: Alert backlog by status
+      source: collection:alerts
+      display: chart
+      chart: bar
+      fields:
+      - key: status
+        label: Status
+      - key: count
+        label: Alerts
+      groupBy:
+        field: status
+        aggs:
+        - key: avg_score
+          agg: avg
+          field: match_score
+    - type: data
+      id: sla
+      title: Open alerts by SLA due date
+      source: collection:alerts
+      display: table
+      fields:
+      - key: alert_ref
+        label: Alert
+      - key: subject_name
+        label: Subject
+      - key: sla_due
+        label: SLA due
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      filters:
+      - field: status
+        op: '='
+        value: open
+      sort:
+        field: sla_due
+        dir: asc
+      limit: 20
+      empty: No open alerts.
+    - type: data
+      id: fp
+      title: Alert outcomes (closed = false positive)
+      source: collection:case_notes
+      display: chart
+      chart: pie
+      fields:
+      - key: status
+        label: Status
+      - key: count
+        label: Cases
+      filters:
+      - field: kind
+        op: '='
+        value: alert
+      groupBy:
+        field: status
+        aggs:
+        - key: n
+          agg: count
+    - type: data
+      id: alert-total
+      title: Alert cases closed
+      source: collection:case_notes
+      display: kpi
+      filters:
+      - field: kind
+        op: '='
+        value: alert
+      - field: status
+        op: '='
+        value: closed
+      kpis:
+      - label: Closed as false positive
+        agg: count
+  - key: audit
+    type: table
+    title: Audit log
+    source: collection:audit_log
+    export: true
+    roles:
+    - auditor
+    - mlro
+    - senior_reviewer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: case_ref
+        label: Case
+      - key: action
+        label: Action
+      - key: actor
+        label: Actor
+      - key: detail
+        label: Detail
+      limit: 200
+  - key: account
+    type: account
+    title: Billing and connections
+    roles:
+    - admin
+  triggers:
+  - key: ingest_application
+    description: 'API: a new application arrives on the webhook'
+    'on':
+      webhook: true
+    write:
+      collection: applications
+      keyBy: app_ref
+  - key: ingest_alert
+    description: 'API: a new screening alert arrives on the webhook'
+    'on':
+      webhook: true
+    write:
+      collection: alerts
+      keyBy: alert_ref
+  - key: start_kyc
+    description: New application starts the KYC agent
+    'on':
+      collection: applications
+      op: insert
+    start:
+      agent: kyc_analyst
+    asUser: false
+    goal: 'Application reference: {record.app_ref}
+
+      Merchant: {record.merchant_name}
+
+      Companies House number: {record.company_number}
+
+      Website: {record.website}
+
+      Declared category: {record.declared_category}
+
+      Country: {record.country}
+
+      Owners and directors (name, date of birth, nationality):
+
+      {record.owners}
+
+      Identity document file ids: {record.id_docs}
+
+      Proof of address file ids: {record.address_proof}
+
+      Use the application reference as case_ref. Write the note in English.'
+  - key: start_alert_review
+    description: New alert starts the alert agent
+    'on':
+      collection: alerts
+      op: insert
+    start:
+      agent: alert_analyst
+    asUser: false
+    goal: 'Alert reference: {record.alert_ref}
+
+      Subject: {record.subject_name}
+
+      Date of birth: {record.dob}
+
+      Nationality: {record.nationality}
+
+      Matched list entry: {record.matched_entry} ({record.list})
+
+      Match score: {record.match_score}
+
+      SLA due: {record.sla_due}
+
+      Use the alert reference as case_ref. Write the note in English.'
+  - key: draft_internal_report
+    description: 'An analyst escalates: the agent drafts an internal report for the MLRO'
+    'on':
+      collection: case_notes
+      op: update
+      where:
+        status: escalated
+    start:
+      agent: report_drafter
+    asUser: false
+    goal: 'Case {record.case_ref} ({record.subject}) was escalated by an analyst. Reason: {record.decision_reason}. Draft
+      the internal report and ask for MLRO sign-off.'
+  - key: notify_escalation
+    'on':
+      collection: case_notes
+      op: update
+      where:
+        status: escalated
+    notify:
+      to:
+      - role:mlro
+      - role:senior_reviewer
+      subject: Escalated case {record.case_ref}
+      body: Case {record.case_ref} ({record.subject}) has been escalated. A draft internal report will be ready for your sign-off.
+      link: mlro_queue
+  - key: log_decision
+    description: Every decision on a case goes to the audit log
+    'on':
+      collection: case_notes
+      op: update
+    write:
+      collection: audit_log
+      fields:
+        case_ref: case_ref
+        action: status
+        detail: decision_reason
+  - key: signoff_decided
+    'on':
+      approval: mlro_signoff
+      decision: any
+    notify:
+      to:
+      - role:senior_reviewer
+      - role:analyst
+      subject: MLRO decision recorded
+      body: The MLRO has decided on an escalated case. Open the review queue for details.
+      link: queue
+  approvals:
+  - key: mlro_signoff
+    title: MLRO sign-off of escalated case
+    description: Approve or reject the escalation and its draft internal report. Nothing is filed automatically.
+    role: mlro
+    fields:
+    - case_ref
+    - title
+    decidedBy: role
+  schedules:
+  - agent: digest_agent
+    action: run
+    cron: 0 7 * * *
+    owner: app
+    goal: Today is {date}. Write the daily summary of the review queue and SLA breaches.
+    deliver:
+      to:
+      - role:analyst
+      - role:senior_reviewer
+      - role:mlro
+      subject: Clearvane daily summary — {date}
+  egress:
+    hosts:
+    - api.company-information.service.gov.uk
+    notes: Companies House public data API, Open Government Licence v3.0, requires an API key held by the app's admins.
+  limits:
+  - action: run
+    per: user
+    max: 200
+    window: day
+  billing:
+    modes:
+    - credits
+    - subscription
+    currency: eur
+    signupCredits: 200
+    costs:
+      agent:kyc_analyst: 120
+      agent:alert_analyst: 25
+    packs:
+    - key: topup
+      credits: 10000
+      price: 100
+      label: Top-up 10,000 credits
+    plans:
+    - key: monthly_minimum
+      price: 500
+      interval: month
+      label: Monthly minimum (includes 50,000 credits)
+      credits: 50000
+      creditsReset: monthly
+      roles:
+      - admin
+      includes:
+      - About 400 applications or 2,000 alerts per month
+      - Credits beyond the allowance are charged per item
+  notifications:
+    emailOnRunDone: false
+  extensions:
+  - key: id_verification_partner
+    description: 'The approved ID-verification partner''s document authenticity check is not connected: no partner or API
+      is named yet. The agent checks consistency only and marks authenticity as pending. Name the partner to add an http tool
+      with an org credential.'
+  - key: licensed_pep_feed
+    description: Commercial PEP and watchlist data is not connected. Once the customer names its licensed vendor, add an org
+      credential and an http tool. Until then the agents state that PEP screening was not performed.
+  - key: sanctions_list_loading
+    description: OFSI and UN lists are loaded into the shared watchlist collection by admins (CSV on /admin/data). Automatic
+      refresh from the official publications is not set up.
+  - key: per_customer_deployment
+    description: Applications, alerts and cases are in the org back office, shared by the invited roles, so each acquirer
+      should run its own app instance. Several customers in one instance would see each other's cases.
+  - key: decision_segregation
+    description: Who may set which status (for example only the MLRO setting signed_off) and four-eyes rules between analyst
+      and senior reviewer are not enforced by field. MLRO sign-off is enforced through the approval.
+  - key: sla_clock
+    description: SLA breaches are computed by the daily digest agent from the sla_due field. There is no live SLA timer or
+      alert-on-breach trigger.

@@ -1,0 +1,1089 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: carbonly
+  displayName: Carbonly
+  tagline: Carbon accounting and reduction management for companies.
+  description: Upload invoices, energy bills, fuel and travel records. An AI agent maps each line to DESNZ conversion factors,
+    calculates Scope 1, 2 and 3 emissions, flags what it is unsure about for your sustainability manager, and produces SECR
+    and UK SRS reports.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0f3d2e'
+      accent: '#2f9e6b'
+      background: '#f6f8f5'
+      foreground: '#16231d'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Carbon
+      color: primary
+    - text: ly
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how-it-works'
+    - label: Reports
+      href: '#reports'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: manager
+      label: Sustainability manager
+      assignedBy: invite
+    - key: contributor
+      label: Contributor
+      assignedBy: signup
+    - key: supplier
+      label: Supplier
+      assignedBy: invite
+  limits:
+  - action: agent:extractor
+    per: user
+    max: 30
+    window: day
+  agents:
+  - key: extractor
+    role: main
+    description: Reads uploaded bills, invoices and spreadsheets, maps lines to activity data and DESNZ factors, saves emission
+      lines and flags doubtful ones.
+    when: task == 'ingest'
+    profile:
+      inline:
+        display_name: Carbonly data mapper
+        crews:
+        - id: extractor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a UK carbon accounting analyst. You receive spend data, energy bills, fuel records and travel
+            records (invoices, PDFs, CSV, Excel, photos). For each line: (1) identify the activity (electricity kWh, natural
+            gas kWh, fuel litres, vehicle km, flights, rail, waste, purchased goods, etc.), its quantity and unit, and the
+            period; (2) assign GHG Protocol scope: Scope 1 = direct fuel combustion and company vehicles; Scope 2 = purchased
+            electricity, heat and steam; Scope 3 = everything else (travel, commuting, purchased goods and services, waste,
+            upstream); (3) look up the emission factor by calling factors_search (the DESNZ greenhouse gas conversion factors
+            held by the app) and compute kgco2e = quantity x factor. If no matching factor exists, or the activity, quantity
+            or unit is ambiguous, or you had to estimate from spend, set confidence to low or medium and status to needs_review
+            and explain in review_note; otherwise status auto. Never invent factors or quantities. Match the site and department
+            to the user''s sites (given in context); use the site''s members list for the members field. For photos or scans
+            call read_upload with the file id. Save every line with lines_append (one call per line). Finish with a Markdown
+            report starting with a level-1 title ''# Data import — <period>'', then ## Summary (lines saved, tCO2e by scope),
+            ## Needs review (table of flagged lines with the reason), ## Assumptions.'
+    goalTemplate: 'Import and map the uploaded data for site: {site}. Department: {?department}{department}{/department}{!department}not
+      specified{/department}. Period: {period_label}.
+
+      Files: {files}
+
+      {?files_text}File contents:
+
+      {files_text}{/files_text}
+
+      {?notes}Notes from the user: {notes}{/notes}
+
+      Known sites of this company (JSON lines): {sites}
+
+      Today is {date}. Write the report in English.'
+    context:
+    - key: sites
+      from: collection:sites
+    appTools:
+    - name: read_upload
+      description: Read a file the user uploaded (images and scans included)
+      action: read_file
+    - name: factors_search
+      description: Search the DESNZ conversion factors (activity, unit, kgCO2e per unit, year)
+      action: search
+      collection: emission_factors
+      scope: all
+    - name: lines_append
+      description: Save one emission line for the company
+      action: append
+      collection: emission_lines
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+  - key: reporter
+    role: main
+    description: Writes SECR and UK Sustainability Reporting Standards disclosures from the company's confirmed emission lines.
+    when: task == 'report'
+    profile:
+      inline:
+        display_name: Carbonly reporter
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write carbon disclosures for UK companies from the data returned by lines_read, targets_read
+            and actions_read. Use only the stored figures; never invent numbers. Start with a level-1 title ''# <Framework>
+            report — <period>''. For SECR (Streamlined Energy and Carbon Reporting): sections ## Energy use and emissions
+            (UK energy kWh, Scope 1, Scope 2 location-based and market-based if available, selected Scope 3 business travel),
+            ## Intensity ratio (state the denominator given by the user, or say none was given), ## Energy efficiency actions
+            taken, ## Methodology (GHG Protocol, DESNZ conversion factors, year), ## Prior-period comparison. For UK Sustainability
+            Reporting Standards (UK SRS, aligned to IFRS S2 climate-related disclosures): ## Governance, ## Strategy and transition
+            plan (use the targets and actions), ## Risk management, ## Metrics and targets (Scope 1, 2, 3 by category, targets
+            and progress), ## Basis of preparation. Exclude lines with status needs_review from totals and list them in a
+            ## Excluded items section. Add a ```chart block (bar) of emissions by scope. Say clearly where data is missing.'
+    goalTemplate: 'Produce the {framework_label} report for the period {from} to {to}.
+
+      {?intensity}Intensity denominator: {intensity}{/intensity}
+
+      {?notes}Notes: {notes}{/notes}
+
+      Today is {date}. Write in English.'
+    appTools:
+    - name: lines_read
+      description: Read the company's emission lines
+      action: read
+      collection: emission_lines
+      scope: user
+    - name: targets_read
+      description: Read the reduction targets
+      action: read
+      collection: reduction_targets
+      scope: user
+    - name: actions_read
+      description: Read the reduction actions
+      action: read
+      collection: reduction_actions
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 20
+      maxBudgetUsd: 1
+  - key: summariser
+    role: helper
+    description: Writes the quarterly summary of one company for its board contact.
+    profile:
+      inline:
+        display_name: Carbonly quarterly summariser
+        crews:
+        - id: summariser
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write a plain-text quarterly carbon summary for a company''s board. Read the emission lines
+            with lines_read and the reduction actions with actions_read. Cover: total tCO2e for the last completed quarter
+            and by scope, change versus the previous quarter, the three largest categories, items still awaiting review, and
+            progress of the reduction actions. Under 250 words, plain text, no Markdown, never invent figures. Then call summary_append
+            once with quarter (e.g. 2026-Q3), summary (the text), board_email (the board contact email from the goal) and
+            total_kgco2e. Finish with a one-line confirmation titled ''# Quarterly summary''.'
+    appTools:
+    - name: lines_read
+      description: Read the company's emission lines
+      action: read
+      collection: emission_lines
+      scope: user
+    - name: actions_read
+      description: Read the reduction actions
+      action: read
+      collection: reduction_actions
+      scope: user
+    - name: summary_append
+      description: Save the quarterly summary, which emails the board contact
+      action: append
+      collection: quarterly_summaries
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  templates:
+  - key: quarterly_summary
+    title: Quarterly board summary
+    description: Every quarter the board contact gets an emailed summary of your emissions and reduction progress.
+    agent: summariser
+    params:
+    - name: board_email
+      type: email
+      required: true
+      label: Board contact email
+    goal: 'Write the quarterly summary for "{instance}". Board contact email: {board_email}. Today is {date}.'
+    schedule:
+      cron: 0 7 2 1,4,7,10 *
+      userCanChange: false
+    maxPerUser: 1
+  inputForm:
+    title: Carbonly workspace
+    fields:
+    - name: task
+      type: select
+      required: true
+      label: What do you want to do?
+      options:
+      - value: ingest
+        label: Import data (bills, invoices, fuel, travel)
+      - value: report
+        label: Generate a disclosure report
+    - name: site
+      type: text
+      label: Site
+      visibleWhen: task == 'ingest'
+    - name: department
+      type: text
+      label: Department (optional)
+      visibleWhen: task == 'ingest'
+    - name: period
+      type: select
+      label: Data covers
+      visibleWhen: task == 'ingest'
+      options:
+      - value: month
+        label: One month
+      - value: quarter
+        label: One quarter
+      - value: year
+        label: A full year
+      - value: mixed
+        label: Mixed / see file
+    - name: files
+      type: file
+      label: Files
+      accept:
+      - pdf
+      - csv
+      - xlsx
+      - jpg
+      - png
+      - txt
+      maxMb: 15
+      multiple: true
+      visibleWhen: task == 'ingest'
+      help: Invoices, energy bills, fuel cards, travel exports, spend ledgers.
+    - name: framework
+      type: select
+      label: Framework
+      visibleWhen: task == 'report'
+      options:
+      - value: secr
+        label: SECR
+      - value: uksrs
+        label: UK Sustainability Reporting Standards
+    - name: from
+      type: date
+      label: From
+      visibleWhen: task == 'report'
+    - name: to
+      type: date
+      label: To
+      visibleWhen: task == 'report'
+    - name: intensity
+      type: text
+      label: Intensity denominator (e.g. turnover £m, FTE)
+      visibleWhen: task == 'report'
+    - name: notes
+      type: textarea
+      maxLength: 600
+      label: Notes (optional)
+  data:
+    collections:
+    - name: emission_factors
+      ownedBy: shared
+      description: DESNZ greenhouse gas conversion factors, loaded by admins on /admin/data (CSV).
+      searchable: true
+      fields:
+      - name: activity
+        type: text
+        required: true
+      - name: category
+        type: text
+      - name: scope
+        type: select
+        options:
+        - '1'
+        - '2'
+        - '3'
+      - name: unit
+        type: text
+      - name: kgco2e_per_unit
+        type: number
+      - name: year
+        type: number
+      - name: source
+        type: text
+    - name: sites
+      ownedBy: user
+      description: The company's sites and departments
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: address
+        type: text
+      - name: departments
+        type: textarea
+        label: Departments (one per line)
+      - name: members
+        type: array
+        label: Team emails
+      access:
+      - role: manager
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: contributor
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: emission_lines
+      ownedBy: user
+      description: Activity data mapped to emissions
+      retentionDays: 2555
+      fields:
+      - name: period
+        type: date
+      - name: site
+        type: text
+      - name: department
+        type: text
+      - name: source
+        type: text
+      - name: description
+        type: text
+      - name: scope
+        type: select
+        options:
+        - '1'
+        - '2'
+        - '3'
+      - name: category
+        type: text
+      - name: quantity
+        type: number
+      - name: unit
+        type: text
+      - name: factor
+        type: number
+      - name: factor_source
+        type: text
+      - name: kgco2e
+        type: number
+      - name: confidence
+        type: select
+        options:
+        - high
+        - medium
+        - low
+      - name: status
+        type: select
+        options:
+        - auto
+        - needs_review
+        - confirmed
+      - name: review_note
+        type: textarea
+      - name: members
+        type: array
+        label: Team emails
+      access:
+      - role: manager
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: contributor
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: reduction_targets
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: scope
+        type: select
+        options:
+        - '1'
+        - '2'
+        - '3'
+        - all
+      - name: baseline_year
+        type: number
+      - name: baseline_kgco2e
+        type: number
+      - name: target_year
+        type: number
+      - name: reduction_pct
+        type: number
+      - name: members
+        type: array
+        label: Team emails
+      access:
+      - role: manager
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: contributor
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: reduction_actions
+      ownedBy: user
+      fields:
+      - name: title
+        type: text
+        required: true
+      - name: target
+        type: text
+      - name: owner_email
+        type: email
+        required: true
+      - name: expected_saving_kgco2e
+        type: number
+      - name: due
+        type: date
+      - name: status
+        type: select
+        options:
+        - planned
+        - in_progress
+        - done
+        - blocked
+      - name: members
+        type: array
+        label: Team emails
+      access:
+      - role: manager
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: contributor
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: supplier_submissions
+      ownedBy: user
+      description: Emissions data submitted by invited suppliers
+      fields:
+      - name: supplier_name
+        type: text
+        required: true
+      - name: requested_by
+        type: email
+        required: true
+        label: Customer contact who invited you (email)
+      - name: period_year
+        type: number
+        required: true
+        label: Reporting year
+      - name: scope1_kgco2e
+        type: number
+        label: Scope 1 (kgCO2e)
+      - name: scope2_kgco2e
+        type: number
+        label: Scope 2 (kgCO2e)
+      - name: scope3_kgco2e
+        type: number
+        label: Scope 3 (kgCO2e)
+      - name: methodology
+        type: textarea
+        label: Methodology and factors used
+      - name: evidence
+        type: file
+        accept:
+        - pdf
+        - xlsx
+        - csv
+        maxMb: 10
+      access:
+      - role: manager
+        where:
+          requested_by: '{user.email}'
+        can:
+        - read
+    - name: quarterly_summaries
+      ownedBy: user
+      description: Quarterly summaries emailed to the board contact
+      fields:
+      - name: quarter
+        type: text
+      - name: summary
+        type: textarea
+      - name: board_email
+        type: email
+      - name: total_kgco2e
+        type: number
+      access:
+      - role: manager
+        where:
+          board_email: '{user.email}'
+        can:
+        - read
+  views:
+  - key: home
+    type: page
+    title: Carbonly
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: Carbon accounting for UK companies
+      title: Know your **emissions**. Cut them with a plan.
+      text: Upload bills, invoices, fuel and travel records. An AI agent maps every line to DESNZ conversion factors, calculates
+        Scope 1, 2 and 3, and asks your sustainability manager to confirm anything it is unsure about.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      note: From £200 a month.
+    - type: steps
+      id: how-it-works
+      title: How it works
+      items:
+      - title: Upload
+        text: PDF bills, CSV or Excel spend ledgers, fuel cards and travel exports, by site and department.
+        badge: '1'
+      - title: Map and calculate
+        text: Each line becomes activity data with a DESNZ factor and a kgCO2e figure.
+        badge: '2'
+      - title: Confirm
+        text: Doubtful lines are flagged for the sustainability manager.
+        badge: '3'
+      - title: Reduce and report
+        text: Targets, owned actions, SECR and UK SRS reports, quarterly board email.
+        badge: '4'
+    - type: cards
+      id: reports
+      title: Built for UK reporting
+      items:
+      - title: SECR
+        text: Energy and carbon disclosures for your annual report.
+      - title: UK SRS
+        text: Climate disclosures aligned to IFRS S2.
+      - title: Supplier data
+        text: Invite suppliers to submit their own emissions through a form.
+    - type: note
+      content: Carbonly supports reporting decisions; figures depend on the data you provide and should be reviewed before
+        publication.
+  - key: new
+    type: new_run
+    title: Import data / generate report
+    roles:
+    - admin
+    - manager
+    - contributor
+  - key: runs
+    type: history
+    title: My runs
+    source: run
+    roles:
+    - admin
+    - manager
+    - contributor
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: overview
+    type: page
+    title: Dashboard
+    roles:
+    - admin
+    - manager
+    - contributor
+    sections:
+    - type: data
+      title: Totals
+      source: collection:emission_lines
+      display: kpi
+      kpis:
+      - label: Total emissions (kgCO2e)
+        agg: sum
+        field: kgco2e
+        format: number
+      - label: Lines
+        agg: count
+    - type: data
+      title: Lines awaiting review
+      source: collection:emission_lines
+      display: kpi
+      filters:
+      - field: status
+        op: '='
+        value: needs_review
+      kpis:
+      - label: Needs review
+        agg: count
+    - type: data
+      title: Emissions by scope
+      source: collection:emission_lines
+      display: chart
+      chart: bar
+      fields:
+      - key: scope
+        label: Scope
+      - key: kgco2e
+        label: kgCO2e
+      groupBy:
+        field: scope
+        aggs:
+        - key: kgco2e
+          agg: sum
+          field: kgco2e
+    - type: data
+      title: Emissions by site
+      source: collection:emission_lines
+      display: chart
+      chart: bar
+      fields:
+      - key: site
+        label: Site
+      - key: kgco2e
+        label: kgCO2e
+      groupBy:
+        field: site
+        aggs:
+        - key: kgco2e
+          agg: sum
+          field: kgco2e
+    - type: data
+      title: Emissions by category
+      source: collection:emission_lines
+      display: chart
+      chart: pie
+      fields:
+      - key: category
+        label: Category
+      - key: kgco2e
+        label: kgCO2e
+      groupBy:
+        field: category
+        aggs:
+        - key: kgco2e
+          agg: sum
+          field: kgco2e
+    - type: data
+      title: Emissions over time
+      source: collection:emission_lines
+      display: chart
+      chart: line
+      fields:
+      - key: period
+        label: Month
+      - key: kgco2e
+        label: kgCO2e
+      groupBy:
+        field: period
+        bucket: month
+        aggs:
+        - key: kgco2e
+          agg: sum
+          field: kgco2e
+  - key: lines
+    type: table
+    title: Emission lines
+    source: collection:emission_lines
+    export: true
+    roles:
+    - admin
+    - manager
+    - contributor
+    data:
+      display: table
+      fields:
+      - key: period
+        label: Period
+        format: date
+      - key: site
+        label: Site
+      - key: department
+        label: Department
+      - key: description
+        label: Activity
+      - key: scope
+        label: Scope
+        format: badge
+      - key: category
+        label: Category
+      - key: quantity
+        label: Qty
+        format: number
+      - key: unit
+        label: Unit
+      - key: factor
+        label: Factor
+        format: number
+      - key: kgco2e
+        label: kgCO2e
+        format: number
+      - key: confidence
+        label: Confidence
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: period
+        dir: desc
+      limit: 200
+  - key: review
+    type: table
+    title: To confirm
+    source: collection:emission_lines
+    roles:
+    - admin
+    - manager
+    data:
+      display: table
+      fields:
+      - key: period
+        label: Period
+        format: date
+      - key: site
+        label: Site
+      - key: description
+        label: Activity
+      - key: scope
+        label: Scope
+        format: badge
+      - key: kgco2e
+        label: kgCO2e
+        format: number
+      - key: confidence
+        label: Confidence
+        format: badge
+      - key: review_note
+        label: Why flagged
+      filters:
+      - field: status
+        op: '='
+        value: needs_review
+      limit: 200
+  - key: confirm_line
+    type: form
+    title: Confirm or correct a line
+    collection: emission_lines
+    fields:
+    - scope
+    - category
+    - quantity
+    - unit
+    - factor
+    - kgco2e
+    - status
+    - review_note
+    edit: true
+    submit:
+      label: Save
+      message: Line updated.
+      redirect: review
+    roles:
+    - admin
+    - manager
+    nav: false
+  - key: add_site
+    type: form
+    title: Add a site
+    collection: sites
+    submit:
+      label: Save site
+      message: Site saved.
+      redirect: site_list
+    roles:
+    - admin
+    - manager
+    - contributor
+  - key: site_list
+    type: table
+    title: Sites and departments
+    source: collection:sites
+    roles:
+    - admin
+    - manager
+    - contributor
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Site
+      - key: address
+        label: Address
+      - key: departments
+        label: Departments
+  - key: add_target
+    type: form
+    title: Add a target
+    collection: reduction_targets
+    submit:
+      label: Save target
+      message: Target saved.
+      redirect: plan
+    roles:
+    - admin
+    - manager
+  - key: add_action
+    type: form
+    title: Add or update an action
+    collection: reduction_actions
+    edit: true
+    submit:
+      label: Save action
+      message: Action saved.
+      redirect: plan
+    roles:
+    - admin
+    - manager
+    - contributor
+  - key: plan
+    type: page
+    title: Reduction plan
+    roles:
+    - admin
+    - manager
+    - contributor
+    sections:
+    - type: data
+      title: Targets
+      source: collection:reduction_targets
+      display: table
+      fields:
+      - key: name
+        label: Target
+      - key: scope
+        label: Scope
+        format: badge
+      - key: baseline_year
+        label: Baseline year
+      - key: baseline_kgco2e
+        label: Baseline kgCO2e
+        format: number
+      - key: target_year
+        label: Target year
+      - key: reduction_pct
+        label: Reduction %
+        format: percent
+    - type: data
+      title: Actions
+      source: collection:reduction_actions
+      display: table
+      fields:
+      - key: title
+        label: Action
+      - key: owner_email
+        label: Owner
+      - key: expected_saving_kgco2e
+        label: Expected saving kgCO2e
+        format: number
+      - key: due
+        label: Due
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: due
+        dir: asc
+    - type: text
+      content: Add a target at [/v/add_target](/v/add_target). Owners update an action at [/v/add_action](/v/add_action).
+  - key: supplier_form
+    type: form
+    title: Submit your emissions data
+    collection: supplier_submissions
+    submit:
+      label: Send data
+      message: Thank you, your data has been sent.
+    roles:
+    - supplier
+    - admin
+  - key: supplier_data
+    type: table
+    title: Supplier submissions
+    source: collection:supplier_submissions
+    export: true
+    roles:
+    - admin
+    - manager
+    data:
+      display: table
+      fields:
+      - key: supplier_name
+        label: Supplier
+      - key: period_year
+        label: Year
+      - key: scope1_kgco2e
+        label: Scope 1
+        format: number
+      - key: scope2_kgco2e
+        label: Scope 2
+        format: number
+      - key: scope3_kgco2e
+        label: Scope 3
+        format: number
+      - key: methodology
+        label: Methodology
+  - key: summary_setup
+    type: instances
+    template: quarterly_summary
+    title: Quarterly board summary
+    roles:
+    - admin
+    - manager
+  - key: summaries
+    type: table
+    title: Quarterly summaries sent
+    source: collection:quarterly_summaries
+    roles:
+    - admin
+    - manager
+    data:
+      display: table
+      fields:
+      - key: quarter
+        label: Quarter
+      - key: board_email
+        label: Sent to
+      - key: total_kgco2e
+        label: kgCO2e
+        format: number
+      - key: summary
+        label: Summary
+  - key: account
+    type: account
+    title: Subscription
+    roles:
+    - admin
+    - manager
+  triggers:
+  - key: summary_to_board
+    'on':
+      collection: quarterly_summaries
+      op: insert
+    notify:
+      to:
+      - record.board_email
+      subject: Quarterly carbon summary {record.quarter}
+      body: '{record.summary}
+
+
+        Total: {record.total_kgco2e} kgCO2e.'
+      link: summaries
+  - key: supplier_received
+    'on':
+      collection: supplier_submissions
+      op: insert
+    notify:
+      to:
+      - record.requested_by
+      subject: Supplier data received from {record.supplier_name}
+      body: '{record.supplier_name} submitted emissions data for {record.period_year}.'
+      link: supplier_data
+  - key: action_due
+    'on':
+      date:
+        collection: reduction_actions
+        field: due
+        offsetDays: -7
+        hour: 8
+    notify:
+      to:
+      - record.owner_email
+      subject: 'Reduction action due in a week: {record.title}'
+      body: The action "{record.title}" is due on {record.due}. Please update its status.
+      link: plan
+  notifications:
+    emailOnRunDone: true
+  egress:
+    hosts:
+    - example.invalid
+    notes: 'Placeholder: no external API is called yet.'
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    costs:
+      agent:extractor:
+        requiresPlan: standard
+      agent:reporter:
+        requiresPlan: standard
+    plans:
+    - key: standard
+      price: 200
+      interval: month
+      label: Carbonly Standard
+      includes:
+      - Unlimited sites and departments
+      - Data mapping to DESNZ factors
+      - SECR and UK SRS reports
+      - Quarterly board summary
+      - Supplier data forms
+  extensions:
+  - key: accounting_oauth
+    description: Accounting-system connections through OAuth (Xero, QuickBooks, Sage) are not available yet. Until then spend
+      flows in through CSV or Excel exports uploaded in the import form.
+  - key: pdf_export
+    description: PDF export uses the printable report view (print to PDF); CSV export is on the tables.
+  - key: supplier_invites
+    description: Suppliers receive their invitation from the app admins (role supplier by invite) and submit data in the supplier
+      form.

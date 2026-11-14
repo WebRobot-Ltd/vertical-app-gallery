@@ -1,0 +1,1198 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: greenledger
+  displayName: Greenledger
+  tagline: Product-level supply-chain and environmental-impact intelligence for food retailers and brands.
+  description: Import products and recipes, collect supplier data with automatic reminders, calculate carbon, water, land
+    use and biodiversity per product with data-quality scores, find hotspots, review and approve results, and report against
+    targets.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f4d3a'
+      accent: '#c7822b'
+      background: '#f6f8f4'
+      foreground: '#14231b'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Green
+      color: primary
+    - text: Ledger
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Roles
+      href: '#roles'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: manager
+      label: Sustainability manager
+      assignedBy: signup
+    - key: buyer
+      label: Buyer
+      assignedBy: derived
+      from: collection:products.buyer_email
+    - key: supplier
+      label: Supplier
+      assignedBy: derived
+      from: collection:suppliers.contact_email
+  limits:
+  - action: run
+    per: user
+    max: 20
+    window: day
+    roles:
+    - manager
+  slots:
+  - key: impact_calc
+    description: Deterministic sums of impact per product from ingredient weights and factors
+    timeoutMs: 3000
+    example:
+      args:
+        items:
+        - weight_kg: 0.2
+          carbon_per_kg: 2.5
+          water_per_kg: 300
+          land_per_kg: 3.1
+          bio_per_kg: 0.4
+          quality: 3
+    code: "def main(input):\n    args = input.get('args') or {}\n    items = args.get('items') or []\n    tot = {'carbon_kg':\
+      \ 0.0, 'water_l': 0.0, 'land_m2': 0.0, 'biodiversity': 0.0}\n    wq = 0.0\n    w = 0.0\n    for it in items:\n     \
+      \   kg = float(it.get('weight_kg') or 0)\n        tot['carbon_kg'] += kg * float(it.get('carbon_per_kg') or 0)\n   \
+      \     tot['water_l'] += kg * float(it.get('water_per_kg') or 0)\n        tot['land_m2'] += kg * float(it.get('land_per_kg')\
+      \ or 0)\n        tot['biodiversity'] += kg * float(it.get('bio_per_kg') or 0)\n        q = it.get('quality')\n     \
+      \   if q is not None:\n            wq += kg * float(q)\n            w += kg\n    out = {k: round(v, 4) for k, v in tot.items()}\n\
+      \    out['data_quality'] = round(wq / w, 2) if w else None\n    out['total_weight_kg'] = round(sum(float(i.get('weight_kg')\
+      \ or 0) for i in items), 4)\n    return out\n"
+  agents:
+  - key: importer
+    role: main
+    description: Reads an uploaded product list and saves products, ingredients and suppliers.
+    when: task == 'import'
+    profile:
+      inline:
+        display_name: Greenledger importer
+        crews:
+        - id: importer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You import a retailer''s product list. The uploaded file text lists products with SKU, name, category,
+            buyer email, recipe lines (ingredient, weight in grams, origin country, supplier name and supplier contact email).
+            For each distinct product call append_products (sku, name, category, weight_g, buyer_email). For each ingredient
+            line call append_ingredients (sku, ingredient, weight_g, origin_country, supplier_name, supplier_email). For each
+            distinct supplier call append_suppliers (name, contact_email, status pending, due_date 21 days from today as YYYY-MM-DD)
+            — a new supplier triggers an invitation email, so never add the same supplier twice and never invent emails: skip
+            and report lines without a valid email. If the file is an image or scan, open it with read_upload. Never invent
+            weights or origins; leave unknown values empty and list them. Report format: start with ''# Import summary'',
+            then ## Imported (counts), ## Skipped or incomplete (table), ## Next steps.'
+    goalTemplate: 'Import this product list for {user}. Today is {date}.
+
+      {?product_file}Files: {product_file}{/product_file}
+
+      {?product_file_text}File content:
+
+      {product_file_text}{/product_file_text}
+
+      {?notes}Notes: {notes}{/notes}
+
+      Write the summary in the language with ISO code {lang}.'
+    appTools:
+    - name: append_products
+      description: Add a product
+      action: append
+      collection: products
+      scope: user
+    - name: append_ingredients
+      description: Add a recipe ingredient line
+      action: append
+      collection: ingredients
+      scope: user
+    - name: append_suppliers
+      description: Add a supplier (sends an invitation)
+      action: append
+      collection: suppliers
+      scope: user
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
+    output: markdown
+  - key: analyst
+    role: main
+    description: Calculates carbon, water, land use and biodiversity per product with data-quality scores. Saves drafts for
+      review.
+    when: task == 'calculate'
+    profile:
+      inline:
+        display_name: Greenledger impact analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 2.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a life-cycle-assessment analyst for food products. For each product in scope: read its ingredients
+            (read_ingredients), the accepted supplier responses (read_responses; only review_status accepted counts as supplier-specific
+            data), and the factor library (read_factors: licensed LCA and agri-food factors loaded by the admins). Pick for
+            each ingredient the factor matching ingredient and origin region; adjust for supplier data (farming practice,
+            processing energy, packaging, transport) only when a figure is in the response, and state the adjustment. Never
+            invent a factor: if none exists, mark the ingredient as a data gap and exclude it from the totals. Do all arithmetic
+            with calc_impact (items with weight_kg, carbon_per_kg, water_per_kg, land_per_kg, bio_per_kg, quality 1-5 where
+            1 is best and 5 is generic/proxy data). Add packaging and transport impacts as separate items when data exists.
+            Save one draft per product with append_results (sku, product_name, category, supplier, buyer_email, period, carbon_kg,
+            water_l, land_m2, biodiversity, data_quality, coverage_pct, method_note, status draft). Results are drafts until
+            a sustainability manager approves them; say so. Report: ''# Impact calculation — <scope>'', ## Results (table),
+            ## Data quality and gaps, ## Assumptions, ## Needs review. Real figures only.'
+    goalTemplate: 'Calculate the environmental impact per product. Scope: {?scope}{scope}{/scope}{!scope}all products{/scope}.
+      Period: {?period}{period}{/period}{!period}current year{/period}. Today is {date}.
+
+      {?notes}Notes: {notes}{/notes}
+
+      Write in the language with ISO code {lang}.'
+    appTools:
+    - name: read_products
+      description: Read the products
+      action: read
+      collection: products
+      scope: user
+    - name: read_ingredients
+      description: Read the recipe ingredient lines
+      action: read
+      collection: ingredients
+      scope: user
+    - name: read_responses
+      description: Read supplier questionnaire responses
+      action: read
+      collection: supplier_responses
+      scope: user
+    - name: read_factors
+      description: Read the impact factor library
+      action: search
+      collection: emission_factors
+      scope: all
+    - name: calc_impact
+      description: Sum impacts from items with weights and factors
+      action: call
+      slot: impact_calc
+    - name: append_results
+      description: Save a draft impact result
+      action: append
+      collection: impact_results
+      scope: user
+    output: markdown
+  - key: advisor
+    role: main
+    description: Finds hotspots in approved results and proposes changes with estimated reductions.
+    when: task == 'hotspots'
+    profile:
+      inline:
+        display_name: Greenledger hotspot advisor
+        crews:
+        - id: advisor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You find impact hotspots and propose practical changes. Read approved results (read_results, status
+            approved only), recipes (read_ingredients) and the factor library (read_factors). Rank hotspots by share of carbon,
+            water, land use and biodiversity across the portfolio and per product. For the top hotspots propose changes: another
+            sourcing region, a different supplier practice, a recipe or packaging change, a transport mode change. Estimate
+            the reduction using factors from the library only (state the factor and the arithmetic; use calc_impact for sums)
+            and give a confidence level. If no factor supports a change, say it cannot be quantified. Save each proposal with
+            append_recs (sku, buyer_email, hotspot, change, est_reduction_pct, est_reduction_kg, metric, confidence, status
+            proposed). Report: ''# Hotspots and reduction options — <scope>'', ## Top hotspots (table), ## Proposed changes
+            (table with estimated reduction), ## Trade-offs and risks, ## Data to improve first. Estimates are not claims.'
+    goalTemplate: 'Find the hotspots and suggest reductions. Scope: {?scope}{scope}{/scope}{!scope}all approved products{/scope}.
+      Today is {date}.
+
+      {?notes}Notes: {notes}{/notes}
+
+      Write in the language with ISO code {lang}.'
+    appTools:
+    - name: read_results
+      description: Read impact results
+      action: read
+      collection: impact_results
+      scope: user
+    - name: read_ingredients
+      description: Read the recipe ingredient lines
+      action: read
+      collection: ingredients
+      scope: user
+    - name: read_factors
+      description: Read the impact factor library
+      action: search
+      collection: emission_factors
+      scope: all
+    - name: calc_impact
+      description: Sum impacts from items with weights and factors
+      action: call
+      slot: impact_calc
+    - name: append_recs
+      description: Save a reduction proposal
+      action: append
+      collection: recommendations
+      scope: user
+    output: markdown
+  - key: reporter
+    role: main
+    description: Writes net-zero disclosure reports from approved results only.
+    when: task == 'disclosure'
+    profile:
+      inline:
+        display_name: Greenledger disclosure writer
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write sustainability disclosure reports supporting net-zero reporting. Use ONLY approved impact
+            results (read_results, status approved), targets (read_targets) and accepted reduction proposals (read_recs).
+            Never use drafts or invent figures. Structure for the chosen framework: ''# <Framework> disclosure — <period>'',
+            ## Scope and method, ## Product-footprint summary (table by category), ## Supplier data coverage and quality,
+            ## Targets and progress, ## Reduction actions, ## Limitations and assurance notes. Add a chart for category carbon
+            as a fenced chart block: ```chart then JSON {"type":"bar","title":"...","labels":[...],"series":[{"name":"kg CO2e","values":[...]}]}.
+            State the share of data that is supplier-specific versus generic. Do not make on-pack claims or give assurance;
+            flag what needs verification. This is decision support, not legal advice.'
+    goalTemplate: 'Write a {framework_label} disclosure report for {?period}{period}{/period}{!period}the current year{/period}.
+      Scope: {?scope}{scope}{/scope}{!scope}all approved products{/scope}. Today is {date}.
+
+      {?notes}Notes: {notes}{/notes}
+
+      Write in the language with ISO code {lang}.'
+    appTools:
+    - name: read_results
+      description: Read impact results
+      action: read
+      collection: impact_results
+      scope: user
+    - name: read_targets
+      description: Read the targets
+      action: read
+      collection: targets
+      scope: user
+    - name: read_recs
+      description: Read reduction proposals
+      action: read
+      collection: recommendations
+      scope: user
+    output: markdown
+  inputForm:
+    title: Workbench
+    fields:
+    - name: task
+      type: select
+      required: true
+      label: What do you want to do?
+      options:
+      - value: import
+        label: Import a product list
+      - value: calculate
+        label: Calculate product impacts
+      - value: hotspots
+        label: Find hotspots and reductions
+      - value: disclosure
+        label: Write a disclosure report
+    - name: product_file
+      type: file
+      label: Product list (recipes, weights, origins, suppliers)
+      accept:
+      - csv
+      - xlsx
+      - pdf
+      - txt
+      maxMb: 15
+      visibleWhen: task == 'import'
+    - name: scope
+      type: text
+      label: Product SKU or category (blank = all)
+      visibleWhen: task != 'import'
+    - name: period
+      type: text
+      label: Reporting period
+      visibleWhen: task != 'import'
+    - name: framework
+      type: select
+      label: Framework
+      visibleWhen: task == 'disclosure'
+      options:
+      - value: esrs
+        label: CSRD / ESRS E1
+      - value: ghg
+        label: GHG Protocol Scope 3
+      - value: sbti
+        label: SBTi progress
+    - name: notes
+      type: textarea
+      maxLength: 600
+      label: Notes (optional)
+  data:
+    collections:
+    - name: products
+      ownedBy: user
+      description: The retailer's products
+      retentionDays: 3650
+      fields:
+      - name: sku
+        type: text
+        required: true
+        label: SKU
+      - name: name
+        type: text
+        required: true
+        label: Product
+      - name: category
+        type: text
+        label: Category
+      - name: weight_g
+        type: number
+        label: Weight (g)
+      - name: buyer_email
+        type: email
+        label: Buyer email
+      access:
+      - role: buyer
+        where:
+          buyer_email: '{user.email}'
+        can:
+        - read
+    - name: ingredients
+      ownedBy: user
+      description: Recipe lines
+      fields:
+      - name: sku
+        type: text
+        required: true
+      - name: ingredient
+        type: text
+        required: true
+      - name: weight_g
+        type: number
+      - name: origin_country
+        type: country
+      - name: supplier_name
+        type: text
+      - name: supplier_email
+        type: email
+      access:
+      - role: supplier
+        where:
+          supplier_email: '{user.email}'
+        can:
+        - read
+    - name: suppliers
+      ownedBy: user
+      description: Suppliers invited to the portal
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: contact_email
+        type: email
+        required: true
+      - name: status
+        type: select
+        options:
+        - pending
+        - in_progress
+        - completed
+        default: pending
+      - name: due_date
+        type: date
+        label: Data due
+      access:
+      - role: supplier
+        where:
+          contact_email: '{user.email}'
+        can:
+        - read
+    - name: supplier_responses
+      ownedBy: user
+      description: Supplier questionnaire answers
+      retentionDays: 1825
+      fields:
+      - name: retailer_email
+        type: email
+        required: true
+        label: Retailer sustainability contact email
+        help: The email of the person who invited you
+      - name: supplier
+        type: select
+        required: true
+        optionsFrom: collection:suppliers
+        label: Your company
+      - name: product_sku
+        type: text
+        required: true
+        label: Product SKU
+      - name: farming_practice
+        type: textarea
+        label: Farming practice (tillage, rotation, cover crops, livestock feed)
+      - name: fertiliser_kg_per_ha
+        type: number
+        label: Fertiliser (kg N per ha)
+      - name: irrigation
+        type: boolean
+        label: Irrigated
+      - name: processing_energy_kwh
+        type: number
+        label: Processing energy (kWh per tonne)
+      - name: energy_source
+        type: select
+        options:
+        - grid
+        - renewable
+        - gas
+        - other
+        label: Energy source
+      - name: packaging_material
+        type: text
+        label: Packaging material
+      - name: packaging_weight_g
+        type: number
+        label: Packaging weight (g per unit)
+      - name: transport_mode
+        type: select
+        options:
+        - road
+        - rail
+        - sea
+        - air
+        label: Transport mode
+      - name: transport_km
+        type: number
+        label: Transport distance (km)
+      - name: evidence
+        type: file
+        accept:
+        - pdf
+        - jpg
+        - png
+        - xlsx
+        maxMb: 10
+        multiple: true
+        label: Evidence (certificates, bills)
+      - name: review_status
+        type: select
+        options:
+        - pending
+        - accepted
+        - rejected
+        default: pending
+        label: Review
+      - name: reviewer_notes
+        type: textarea
+        label: Reviewer notes
+      access:
+      - role: manager
+        where:
+          retailer_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: emission_factors
+      ownedBy: shared
+      description: Impact factor library. Admins load licensed datasets (e.g. ecoinvent) here only with a valid licence.
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: category
+        type: text
+      - name: region
+        type: text
+      - name: carbon_kg_per_kg
+        type: number
+      - name: water_l_per_kg
+        type: number
+      - name: land_m2_per_kg
+        type: number
+      - name: biodiversity_per_kg
+        type: number
+      - name: quality
+        type: number
+        help: 1 best to 5 generic
+      - name: source
+        type: text
+      - name: licence
+        type: text
+      - name: year
+        type: number
+    - name: impact_results
+      ownedBy: user
+      description: Per-product impact results, draft until approved
+      fields:
+      - name: sku
+        type: text
+      - name: product_name
+        type: text
+      - name: category
+        type: text
+      - name: supplier
+        type: text
+      - name: buyer_email
+        type: email
+      - name: period
+        type: text
+      - name: carbon_kg
+        type: number
+        label: Carbon (kg CO2e)
+      - name: water_l
+        type: number
+        label: Water (L)
+      - name: land_m2
+        type: number
+        label: Land use (m2)
+      - name: biodiversity
+        type: number
+        label: Biodiversity pressure
+      - name: data_quality
+        type: number
+        label: Data quality (1 best-5)
+      - name: coverage_pct
+        type: number
+      - name: method_note
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - draft
+        - approved
+        - rejected
+        default: draft
+      - name: reviewer_notes
+        type: textarea
+      access:
+      - role: buyer
+        where:
+          buyer_email: '{user.email}'
+          status: approved
+        can:
+        - read
+    - name: recommendations
+      ownedBy: user
+      description: Hotspot-driven reduction proposals
+      fields:
+      - name: sku
+        type: text
+      - name: buyer_email
+        type: email
+      - name: hotspot
+        type: text
+      - name: change
+        type: textarea
+      - name: metric
+        type: text
+      - name: est_reduction_pct
+        type: number
+      - name: est_reduction_kg
+        type: number
+      - name: confidence
+        type: select
+        options:
+        - low
+        - medium
+        - high
+      - name: status
+        type: select
+        options:
+        - proposed
+        - accepted
+        - rejected
+        default: proposed
+      access:
+      - role: buyer
+        where:
+          buyer_email: '{user.email}'
+        can:
+        - read
+    - name: targets
+      ownedBy: user
+      description: Reduction targets
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: metric
+        type: select
+        options:
+        - carbon_kg
+        - water_l
+        - land_m2
+        - biodiversity
+      - name: scope_category
+        type: text
+        label: Category (blank = all)
+      - name: baseline_year
+        type: number
+      - name: baseline_value
+        type: number
+      - name: target_year
+        type: number
+      - name: target_value
+        type: number
+      - name: current_value
+        type: number
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Greenledger
+    sections:
+    - type: hero
+      title: Know the **footprint of every product** you sell.
+      text: Import your recipes, invite suppliers to share real farming and processing data, get carbon, water, land use and
+        biodiversity per product with data-quality scores, then approve results before they reach a report or a label.
+      eyebrow: For food retailers and brands
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Import
+        text: Upload products, recipes, weights, origins and suppliers.
+      - title: Collect
+        text: Suppliers get an email invitation and reminders until their forms are done.
+      - title: Calculate
+        text: An agent computes impacts from your licensed factor library and supplier data.
+      - title: Approve
+        text: Sustainability managers review supplier data and results first.
+      - title: Improve
+        text: Hotspots, sourcing changes with estimated reductions, targets and disclosure reports.
+    - type: cards
+      id: roles
+      title: Roles
+      items:
+      - title: Sustainability manager
+        text: Imports, reviews, approves, reports.
+      - title: Buyer
+        text: Sees approved impacts and reduction options for their products.
+      - title: Supplier
+        text: Fills in farming, processing, packaging and transport forms.
+      - title: Admin
+        text: Loads the factor library and manages the account.
+    - type: note
+      content: Greenledger provides the workflow around impact data. Licensed datasets such as ecoinvent are used only where
+        your organisation holds a licence. Decision support, not assurance or legal advice.
+  - key: workbench
+    type: new_run
+    title: Workbench
+    roles:
+    - manager
+    - admin
+  - key: runs
+    type: history
+    title: My runs
+    source: run
+    roles:
+    - manager
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - manager
+    - buyer
+    - admin
+    sections:
+    - type: data
+      title: Approved portfolio
+      source: collection:impact_results
+      display: kpi
+      filters:
+      - field: status
+        op: '='
+        value: approved
+      kpis:
+      - label: Products approved
+        agg: count
+      - label: Total carbon (kg CO2e)
+        agg: sum
+        field: carbon_kg
+        format: number
+      - label: Total water (L)
+        agg: sum
+        field: water_l
+        format: number
+      - label: Avg data quality
+        agg: avg
+        field: data_quality
+        format: number
+    - type: data
+      title: Carbon by category
+      source: collection:impact_results
+      display: chart
+      chart: bar
+      filters:
+      - field: status
+        op: '='
+        value: approved
+      groupBy:
+        field: category
+        aggs:
+        - key: carbon_total
+          agg: sum
+          field: carbon_kg
+      fields:
+      - key: category
+        label: Category
+      - key: carbon_total
+        label: kg CO2e
+    - type: data
+      title: Carbon by supplier
+      source: collection:impact_results
+      display: chart
+      chart: bar
+      filters:
+      - field: status
+        op: '='
+        value: approved
+      groupBy:
+        field: supplier
+        aggs:
+        - key: carbon_total
+          agg: sum
+          field: carbon_kg
+      fields:
+      - key: supplier
+        label: Supplier
+      - key: carbon_total
+        label: kg CO2e
+    - type: data
+      title: Highest-impact products
+      source: collection:impact_results
+      display: table
+      filters:
+      - field: status
+        op: '='
+        value: approved
+      sort:
+        field: carbon_kg
+        dir: desc
+      limit: 20
+      fields:
+      - key: product_name
+        label: Product
+      - key: category
+        label: Category
+      - key: carbon_kg
+        format: number
+        label: kg CO2e
+      - key: water_l
+        format: number
+        label: Water L
+      - key: land_m2
+        format: number
+        label: Land m2
+      - key: data_quality
+        format: number
+        label: Quality
+    - type: data
+      title: Progress against targets
+      source: collection:targets
+      display: table
+      fields:
+      - key: name
+        label: Target
+      - key: metric
+        format: badge
+      - key: baseline_value
+        format: number
+        label: Baseline
+      - key: current_value
+        format: number
+        label: Current
+      - key: target_value
+        format: number
+        label: Target
+      - key: target_year
+        label: By
+  - key: products
+    type: table
+    title: Products
+    source: collection:products
+    export: true
+    roles:
+    - manager
+    - buyer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: sku
+      - key: name
+      - key: category
+      - key: weight_g
+        format: number
+      - key: buyer_email
+  - key: product_add
+    type: form
+    title: Add a product
+    collection: products
+    edit: true
+    roles:
+    - manager
+    - admin
+    submit:
+      label: Save
+      message: Product saved
+      redirect: products
+  - key: suppliers
+    type: table
+    title: Suppliers
+    source: collection:suppliers
+    roles:
+    - manager
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+      - key: contact_email
+      - key: status
+        format: badge
+      - key: due_date
+        format: date
+  - key: supplier_add
+    type: form
+    title: Invite a supplier
+    collection: suppliers
+    edit: true
+    roles:
+    - manager
+    - admin
+    submit:
+      label: Save and invite
+      message: Supplier saved; the invitation email is on its way
+      redirect: suppliers
+  - key: supplier_form
+    type: form
+    title: Supplier data form
+    collection: supplier_responses
+    fields:
+    - retailer_email
+    - supplier
+    - product_sku
+    - farming_practice
+    - fertiliser_kg_per_ha
+    - irrigation
+    - processing_energy_kwh
+    - energy_source
+    - packaging_material
+    - packaging_weight_g
+    - transport_mode
+    - transport_km
+    - evidence
+    roles:
+    - supplier
+    submit:
+      label: Submit
+      message: Thank you, your data has been sent for review
+  - key: responses
+    type: table
+    title: Supplier responses
+    source: collection:supplier_responses
+    export: true
+    roles:
+    - manager
+    - supplier
+    - admin
+    data:
+      display: table
+      fields:
+      - key: supplier
+      - key: product_sku
+      - key: energy_source
+      - key: transport_mode
+      - key: transport_km
+        format: number
+      - key: review_status
+        format: badge
+  - key: review_response
+    type: form
+    title: Review supplier data
+    collection: supplier_responses
+    edit: true
+    fields:
+    - review_status
+    - reviewer_notes
+    roles:
+    - manager
+    - admin
+    nav: false
+    submit:
+      label: Save review
+      message: Review saved
+      redirect: responses
+  - key: results
+    type: table
+    title: Impact results
+    source: collection:impact_results
+    export: true
+    roles:
+    - manager
+    - buyer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: product_name
+      - key: carbon_kg
+        format: number
+      - key: water_l
+        format: number
+      - key: land_m2
+        format: number
+      - key: biodiversity
+        format: number
+      - key: data_quality
+        format: number
+      - key: status
+        format: badge
+      sort:
+        field: carbon_kg
+        dir: desc
+  - key: review_result
+    type: form
+    title: Approve or reject a result
+    collection: impact_results
+    edit: true
+    fields:
+    - status
+    - reviewer_notes
+    roles:
+    - manager
+    - admin
+    nav: false
+    submit:
+      label: Save decision
+      message: Decision saved
+      redirect: results
+  - key: recs
+    type: table
+    title: Reduction options
+    source: collection:recommendations
+    roles:
+    - manager
+    - buyer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: sku
+      - key: hotspot
+      - key: change
+      - key: est_reduction_pct
+        format: percent
+      - key: confidence
+        format: badge
+      - key: status
+        format: badge
+  - key: targets
+    type: table
+    title: Targets
+    source: collection:targets
+    roles:
+    - manager
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+      - key: metric
+        format: badge
+      - key: baseline_value
+        format: number
+      - key: current_value
+        format: number
+      - key: target_value
+        format: number
+      - key: target_year
+  - key: target_form
+    type: form
+    title: Set a target
+    collection: targets
+    edit: true
+    roles:
+    - manager
+    - admin
+    submit:
+      label: Save
+      message: Target saved
+      redirect: targets
+  - key: account
+    type: account
+    title: Licence
+    roles:
+    - manager
+    - admin
+  triggers:
+  - key: supplier_invite
+    description: Invite a new supplier to the portal
+    'on':
+      collection: suppliers
+      op: insert
+    notify:
+      to: record.contact_email
+      subject: '{record.name}: please share your product sustainability data'
+      body: You have been invited to provide farming, processing, packaging and transport data for the products you supply.
+        Sign in with this email address and complete the supplier data form.
+      link: supplier_form
+  - key: reminder_before
+    'on':
+      date:
+        collection: suppliers
+        field: due_date
+        offsetDays: -3
+        hour: 8
+      where:
+        status: pending
+    notify:
+      to: record.contact_email
+      subject: 'Reminder: supplier data due in 3 days'
+      body: Your sustainability data for {record.name} is due in 3 days. Please complete the supplier data form.
+      link: supplier_form
+  - key: reminder_due
+    'on':
+      date:
+        collection: suppliers
+        field: due_date
+        offsetDays: 0
+        hour: 8
+      where:
+        status: pending
+    notify:
+      to: record.contact_email
+      subject: Supplier data is due today
+      body: Your sustainability data for {record.name} is due today. Please complete the supplier data form.
+      link: supplier_form
+  - key: reminder_overdue
+    'on':
+      date:
+        collection: suppliers
+        field: due_date
+        offsetDays: 7
+        hour: 8
+      where:
+        status: pending
+    notify:
+      to: record.contact_email
+      subject: Supplier data is overdue
+      body: Your sustainability data for {record.name} is a week overdue. Please complete the supplier data form as soon as
+        you can.
+      link: supplier_form
+  - key: response_received
+    'on':
+      collection: supplier_responses
+      op: insert
+    notify:
+      to: record.retailer_email
+      subject: New supplier data for {record.product_sku}
+      body: A supplier submitted data for product {record.product_sku}. Please review it.
+      link: responses
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: annual
+      price: 50000
+      interval: year
+      label: Greenledger annual licence (from £50,000)
+      includes:
+      - Unlimited supplier invitations and reminders
+      - Impact calculation, hotspots and disclosure reports
+      - Manager, buyer and supplier roles
+      roles:
+      - manager
+  notifications:
+    emailOnRunDone: true
+  extensions:
+  - key: licensed_lca_datasets
+    description: The proprietary datasets and impact models (ecoinvent and agri-food LCA databases) are not part of the app.
+      With a licence, admins load the factors into the emission_factors library on /admin/data; the agent only computes with
+      what is there and flags gaps.
+  - key: onpack_claims
+    description: 'On-pack claims are not generated: the app supports approval of results and disclosure reports only; claim
+      substantiation needs external verification.'
+  - key: multi_user_retailer_teams
+    description: Several managers of one retailer sharing the same records, and enterprise SSO, are not available yet.

@@ -1,0 +1,833 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: paystride
+  displayName: Paystride
+  tagline:
+    en: Pay your suppliers now. Repay in 30 to 120 days.
+  description:
+    en: Paystride is the software around supplier-payment finance for small businesses. Apply, upload supplier invoices, see
+      the fee upfront, and track your limit, balance and repayments. Lending and payments are provided by our regulated partners.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12304a'
+      accent: '#0f8b8d'
+      background: '#f6f8fa'
+      foreground: '#16212c'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Pay
+      color: primary
+    - text: stride
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Apply
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: Business owner
+      assignedBy: signup
+    - key: finance
+      label: Finance user
+      assignedBy: derived
+      from: collection:applications.finance_email
+    - key: partner_credit
+      label: Partner credit
+      assignedBy: invite
+  limits:
+  - action: agent:payment_checker
+    per: user
+    max: 30
+    window: day
+  egress:
+    hosts:
+    - api.company-information.service.gov.uk
+    notes: Companies House public API (Open Government Licence). Used for company profile and officers of applicants.
+  slots:
+  - key: fee_quote
+    description: 'Fee percentage per financed payment by repayment term. Illustrative rates: the owner must set the real ones.'
+    timeoutMs: 2000
+    example:
+      values:
+        term_days: '60'
+      lang: en
+    code: "RATES = {\"30\": 1.5, \"60\": 2.5, \"90\": 3.5, \"120\": 4.5}\n\ndef main(input):\n    values = input.get(\"values\"\
+      ) or {}\n    term = str(values.get(\"term_days\") or \"30\")\n    return {\"fee_pct\": RATES.get(term, 1.5)}\n"
+  agents:
+  - key: underwriter_prep
+    role: helper
+    description: 'Prepares the credit file: Companies House data and a bank transaction summary, then hands it to partner
+      credit.'
+    profile:
+      inline:
+        display_name: Paystride file preparer
+        crews:
+        - id: prep
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare a credit file for a lending partner''s credit team. You do NOT decide credit and never
+            suggest a limit. Steps: 1) Call companies_house with path /company/<company number> and then /company/<company
+            number>/officers. Summarise status, incorporation date, SIC codes, accounts and confirmation statement overdue
+            flags, charges or insolvency flags, and whether the directors given by the applicant match the officers (names
+            only). 2) If a bank statement file id is given, open it with read_statement and summarise: average monthly credit
+            turnover, average monthly outflow, lowest balance, number of returned or failed payments, large irregular items,
+            and top 5 payees. Compare with the declared turnover and supplier spend and note differences. 3) Call update_application
+            once with the application id, ch_summary, bank_summary, flags (short list of concerns, or ''none'') and status
+            ''screened''. Never invent figures; write ''not available'' when data is missing. Answer with a short markdown
+            note starting with ''# Credit file prepared''.'
+    goalTemplate: 'Prepare the credit file for application {record.id}. Company number: {record.company_number}. Company name:
+      {record.company_name}. Declared annual turnover: {record.turnover}. Declared monthly supplier spend: {record.monthly_supplier_spend}.
+      Directors: {record.directors}. {?record.bank_statement}Bank statement file ids: {record.bank_statement}.{/record.bank_statement}
+      Today is {date}.'
+    appTools:
+    - name: companies_house
+      description: Companies House API (GET). Path e.g. /company/12345678 or /company/12345678/officers
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk
+        allowPath: true
+        attribution: Companies House, Open Government Licence v3.0
+        credential:
+          provider: companies_house
+          header: Authorization
+          format: Basic {secret}
+    - name: read_statement
+      description: Read an uploaded bank statement or export by file id
+      action: read_file
+    - name: update_application
+      description: Update the application record with the prepared file
+      action: write
+      collection: applications
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  - key: payment_checker
+    role: main
+    description: Reads a supplier invoice, extracts the payment details, checks duplicates and bank detail changes, quotes
+      the fee and saves the payment request.
+    profile:
+      inline:
+        display_name: Paystride invoice checker
+        crews:
+        - id: checker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You check supplier invoices for a business that wants to finance a payment. Steps: 1) Read the invoice:
+            use the provided text, or call read_upload with the file id for photos and scans. Extract supplier name, invoice
+            number, invoice date, due date, currency, total amount, sort code and account number (or IBAN). 2) Call past_payments
+            to list this business''s earlier payment requests. Flag DUPLICATE if the same supplier and invoice number, or
+            the same supplier and amount and date, already exists. Flag BANK_DETAILS_CHANGED if the supplier was paid before
+            with different bank details (high risk: say so clearly). Flag MISSING_DATA for unreadable fields, and DUE_DATE_PASSED
+            or an unusual amount when relevant. 3) Compute the fee: fee = amount x fee_pct / 100 using exactly the fee_pct
+            given; total to repay = amount + fee; the term is the chosen term_days. Never change the rates. 4) Call save_payment
+            once with supplier, invoice_ref, amount, currency, sort_code, account_number, due_date, term_days, fee, total_repay,
+            owner_email, finance_email, flags (list or ''none''), status ''flagged'' if any flag else ''ready'', confirmed
+            false, repay_status ''none''. 5) Write the report. Start with ''# Payment request — <supplier> <amount>''. Sections:
+            ## Extracted details (table), ## Checks (each check pass or flag), ## Fee upfront (amount, fee %, fee, total to
+            repay, term), ## Next step (the business confirms the payment in My payments; flagged requests are reviewed by
+            the partner''s credit team; the partner approves and pays the supplier directly). This is not financial advice;
+            credit and payment decisions belong to the lending partner. Never invent data.'
+    context:
+    - key: fee_pct
+      from: slot:fee_quote
+    - key: owner_email
+      from: collection:applications.owner_email
+    - key: finance_email
+      from: collection:applications.finance_email
+    goalTemplate: 'Check this supplier invoice and prepare the payment request. File: {invoice}. {?invoice_text}Invoice text:
+      {invoice_text}{/invoice_text} Repayment term: {term_days} days. fee_pct: {fee_pct}. owner_email: {owner_email}. finance_email:
+      {finance_email}. {?note}Note from the user: {note}{/note} Today is {date}. Write the report in the language with ISO
+      code {lang}.'
+    appTools:
+    - name: read_upload
+      description: Read a file the user uploaded (images and scans included)
+      action: read_file
+    - name: past_payments
+      description: Search the business's earlier payment requests
+      action: search
+      collection: invoices
+      scope: user
+    - name: save_payment
+      description: Save the payment request
+      action: append
+      collection: invoices
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 14
+      maxBudgetUsd: 0.6
+  inputForm:
+    title: New payment request
+    fields:
+    - name: invoice
+      type: file
+      required: true
+      label: Supplier invoice
+      accept:
+      - pdf
+      - jpg
+      - jpeg
+      - png
+      - docx
+      maxMb: 10
+      multiple: false
+    - name: term_days
+      type: select
+      required: true
+      label: Repayment term
+      default: '60'
+      options:
+      - value: '30'
+        label: 30 days
+      - value: '60'
+        label: 60 days
+      - value: '90'
+        label: 90 days
+      - value: '120'
+        label: 120 days
+    - name: note
+      type: textarea
+      maxLength: 400
+      label: Note (optional)
+  data:
+    credentials:
+    - provider: companies_house
+      kind: api_key
+      scope: org
+      label: Companies House API key
+      help: 'Admins: create a REST API key at developer.company-information.service.gov.uk and paste it here base64-encoded
+        as ''key:'' (the key followed by a colon).'
+    collections:
+    - name: applications
+      ownedBy: user
+      description: Credit applications and the credit file sent to the partner
+      fields:
+      - name: company_number
+        type: text
+        required: true
+        label: Company number
+        maxLength: 10
+      - name: company_name
+        type: text
+        required: true
+        label: Company name
+      - name: turnover
+        type: number
+        required: true
+        label: Annual turnover (GBP)
+      - name: monthly_supplier_spend
+        type: number
+        required: true
+        label: Monthly supplier spend (GBP)
+      - name: directors
+        type: array
+        required: true
+        label: Directors
+        fields:
+        - name: full_name
+          type: text
+          label: Full name
+        - name: date_of_birth
+          type: date
+          label: Date of birth
+        - name: email
+          type: email
+          label: Email
+      - name: owner_email
+        type: email
+        required: true
+        label: Your email
+      - name: finance_email
+        type: email
+        label: Finance user email (optional)
+        help: This person can see and manage your payments.
+      - name: bank_statement
+        type: file
+        label: Bank statements (last 6 months, CSV or PDF)
+        accept:
+        - csv
+        - pdf
+        maxMb: 15
+        multiple: true
+        help: Used until direct bank connection is available.
+      - name: ch_summary
+        type: textarea
+        label: Companies House summary
+      - name: bank_summary
+        type: textarea
+        label: Bank transaction summary
+      - name: flags
+        type: text
+        label: Flags
+      - name: status
+        type: select
+        label: Status
+        default: submitted
+        options:
+        - submitted
+        - screened
+        - limit_set
+        - declined
+      - name: credit_limit
+        type: number
+        label: Credit limit (GBP)
+      - name: decision_note
+        type: textarea
+        label: Decision note
+      access:
+      - role: partner_credit
+        can:
+        - read
+        - write
+      - role: finance
+        where:
+          finance_email: '{user.email}'
+        can:
+        - read
+    - name: invoices
+      ownedBy: user
+      description: Payment requests for supplier invoices
+      fields:
+      - name: supplier
+        type: text
+        label: Supplier
+      - name: invoice_ref
+        type: text
+        label: Invoice no.
+      - name: amount
+        type: number
+        label: Amount
+      - name: currency
+        type: text
+        label: Currency
+      - name: sort_code
+        type: text
+        label: Sort code
+      - name: account_number
+        type: text
+        label: Account number / IBAN
+      - name: due_date
+        type: date
+        label: Invoice due date
+      - name: term_days
+        type: number
+        label: Term (days)
+      - name: fee
+        type: number
+        label: Fee
+      - name: total_repay
+        type: number
+        label: Total to repay
+      - name: flags
+        type: text
+        label: Flags
+      - name: owner_email
+        type: email
+        label: Owner email
+      - name: finance_email
+        type: email
+        label: Finance email
+      - name: confirmed
+        type: boolean
+        label: I confirm this payment and the fee shown
+      - name: status
+        type: select
+        label: Status
+        default: ready
+        options:
+        - ready
+        - flagged
+        - approved
+        - paid
+        - rejected
+      - name: decision_note
+        type: textarea
+        label: Decision note
+      - name: repay_date
+        type: date
+        label: Repayment date
+      - name: repay_status
+        type: select
+        label: Repayment
+        default: none
+        options:
+        - none
+        - scheduled
+        - collected
+        - failed
+      access:
+      - role: partner_credit
+        can:
+        - read
+        - write
+      - role: finance
+        where:
+          finance_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: user
+        where:
+          owner_email: '{user.email}'
+        can:
+        - read
+        - write
+  views:
+  - key: home
+    type: page
+    title: Paystride
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: Supplier payment finance
+      title: Pay suppliers **now**. Repay over 30 to 120 days.
+      text: Apply once, upload supplier invoices, see the fee before you confirm, and follow your limit and repayments in
+        one place. Lending and payments are provided by our regulated partners.
+      actions:
+      - label: Apply now
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Apply
+        text: Company number, turnover, supplier spend, directors and your bank statements. We pull Companies House data and
+          summarise your transactions.
+      - title: Get a limit
+        text: Our lending partner's credit team reviews the file and sets your credit limit.
+      - title: Upload an invoice
+        text: An AI agent reads it, checks for duplicates and changed bank details, and shows the fee upfront.
+      - title: Confirm and repay
+        text: The partner pays your supplier directly. You repay by Direct Debit, with email reminders.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: One fee per financed payment
+        text: Shown upfront for the term you choose (30, 60, 90 or 120 days). No other charges in the app.
+    - type: note
+      content: Paystride is software. Credit, the debt facility and payments are provided by regulated partners, who make
+        every lending decision. Not financial advice.
+  - key: apply
+    type: form
+    title: Apply for a limit
+    collection: applications
+    fields:
+    - company_number
+    - company_name
+    - turnover
+    - monthly_supplier_spend
+    - directors
+    - owner_email
+    - finance_email
+    - bank_statement
+    submit:
+      label: Send application
+      message: Application received. We are preparing your file for our partner's credit team.
+      redirect: my_applications
+    roles:
+    - user
+  - key: my_applications
+    type: table
+    title: My application
+    source: collection:applications
+    roles:
+    - user
+    - finance
+    data:
+      display: table
+      fields:
+      - key: company_name
+        label: Company
+      - key: status
+        label: Status
+        format: badge
+      - key: credit_limit
+        label: Credit limit
+        format: money
+      - key: decision_note
+        label: Note
+      sort:
+        field: company_name
+        dir: asc
+  - key: new_payment
+    type: new_run
+    title: Pay a supplier
+    roles:
+    - user
+    - finance
+  - key: payments
+    type: table
+    title: My payments
+    source: collection:invoices
+    roles:
+    - user
+    - finance
+    export: true
+    data:
+      display: table
+      fields:
+      - key: supplier
+        label: Supplier
+      - key: amount
+        label: Amount
+        format: money
+      - key: fee
+        label: Fee
+        format: money
+      - key: total_repay
+        label: To repay
+        format: money
+      - key: term_days
+        label: Term
+      - key: status
+        label: Status
+        format: badge
+      - key: flags
+        label: Flags
+      - key: repay_date
+        label: Repay on
+        format: date
+      - key: repay_status
+        label: Repayment
+        format: badge
+      sort:
+        field: repay_date
+        dir: asc
+  - key: confirm_payment
+    type: form
+    title: Confirm payment
+    collection: invoices
+    fields:
+    - confirmed
+    edit: true
+    submit:
+      label: Confirm
+      message: Sent to our partner for approval.
+      redirect: payments
+    nav: false
+    roles:
+    - user
+    - finance
+  - key: history
+    type: history
+    title: Invoice checks
+    source: run
+    roles:
+    - user
+    - finance
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: overview
+    type: page
+    title: Dashboard
+    roles:
+    - user
+    - finance
+    sections:
+    - type: data
+      title: Your credit limit
+      source: collection:applications
+      display: kpi
+      filters:
+      - field: status
+        op: '='
+        value: limit_set
+      kpis:
+      - label: Credit limit
+        agg: last
+        field: credit_limit
+        format: money
+    - type: data
+      title: Outstanding balance
+      source: collection:invoices
+      display: kpi
+      filters:
+      - field: repay_status
+        op: '='
+        value: scheduled
+      kpis:
+      - label: Outstanding
+        agg: sum
+        field: total_repay
+        format: money
+      - label: Open repayments
+        agg: count
+    - type: data
+      title: Upcoming repayments
+      source: collection:invoices
+      display: table
+      filters:
+      - field: repay_status
+        op: '='
+        value: scheduled
+      fields:
+      - key: repay_date
+        label: Due
+        format: date
+      - key: supplier
+        label: Supplier
+      - key: total_repay
+        label: Amount
+        format: money
+      sort:
+        field: repay_date
+        dir: asc
+      limit: 20
+      empty: No repayments due.
+  - key: review_applications
+    type: table
+    title: Applications to review
+    source: collection:applications
+    roles:
+    - partner_credit
+    - admin
+    data:
+      display: table
+      fields:
+      - key: company_name
+        label: Company
+      - key: company_number
+        label: No.
+      - key: turnover
+        label: Turnover
+        format: money
+      - key: flags
+        label: Flags
+      - key: status
+        label: Status
+        format: badge
+      - key: credit_limit
+        label: Limit
+        format: money
+  - key: decide_application
+    type: form
+    title: Set credit limit
+    collection: applications
+    fields:
+    - status
+    - credit_limit
+    - decision_note
+    edit: true
+    submit:
+      label: Save decision
+      message: Decision saved.
+      redirect: review_applications
+    nav: false
+    roles:
+    - partner_credit
+    - admin
+  - key: review_payments
+    type: table
+    title: Payment requests
+    source: collection:invoices
+    roles:
+    - partner_credit
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: supplier
+        label: Supplier
+      - key: amount
+        label: Amount
+        format: money
+      - key: sort_code
+        label: Sort code
+      - key: account_number
+        label: Account
+      - key: flags
+        label: Flags
+      - key: confirmed
+        label: Confirmed
+      - key: status
+        label: Status
+        format: badge
+      - key: repay_status
+        label: Repayment
+        format: badge
+      filters:
+      - field: confirmed
+        op: '='
+        value: true
+  - key: decide_payment
+    type: form
+    title: Decide payment
+    collection: invoices
+    fields:
+    - status
+    - repay_date
+    - repay_status
+    - decision_note
+    edit: true
+    submit:
+      label: Save decision
+      message: Saved.
+      redirect: review_payments
+    nav: false
+    roles:
+    - partner_credit
+    - admin
+  - key: admin_data
+    type: admin
+    title: Admin
+    roles:
+    - admin
+  triggers:
+  - key: screen_application
+    'on':
+      collection: applications
+      op: insert
+    start:
+      agent: underwriter_prep
+    goal: 'Prepare the credit file for application {record.id}. Company number: {record.company_number}. Company name: {record.company_name}.
+      Declared annual turnover: {record.turnover}. Declared monthly supplier spend: {record.monthly_supplier_spend}. Directors:
+      {record.directors}. Bank statement file ids: {record.bank_statement}.'
+  - key: file_ready
+    'on':
+      collection: applications
+      op: update
+      where:
+        status: screened
+    notify:
+      to: role:partner_credit
+      subject: 'Application ready for credit review: {record.company_name}'
+      body: The credit file for {record.company_name} is ready. Please review it and set a limit.
+      link: review_applications
+  - key: limit_decided
+    'on':
+      collection: applications
+      op: update
+      where:
+        status: limit_set
+    notify:
+      to:
+      - owner
+      - record.finance_email
+      subject: Your Paystride credit limit is set
+      body: Your application for {record.company_name} has been reviewed. Your credit limit is now available on your dashboard.
+      link: overview
+  - key: payment_confirmed
+    'on':
+      collection: invoices
+      op: update
+      where:
+        confirmed: true
+    notify:
+      to: role:partner_credit
+      subject: 'New payment request: {record.supplier}'
+      body: 'A payment request of {record.amount} to {record.supplier} awaits review. Flags: {record.flags}.'
+      link: review_payments
+  - key: payment_paid
+    'on':
+      collection: invoices
+      op: update
+      where:
+        status: paid
+    notify:
+      to:
+      - owner
+      - record.finance_email
+      subject: 'Supplier paid: {record.supplier}'
+      body: Our partner has paid {record.supplier}. You repay {record.total_repay} on {record.repay_date} by Direct Debit.
+      link: payments
+  - key: repay_reminder
+    'on':
+      date:
+        collection: invoices
+        field: repay_date
+        offsetDays: -3
+        hour: 8
+    notify:
+      to:
+      - owner
+      - record.finance_email
+      subject: 'Repayment due in 3 days: {record.total_repay}'
+      body: A Direct Debit of {record.total_repay} for the payment to {record.supplier} will be collected on {record.repay_date}.
+        Please make sure the funds are available.
+      link: overview
+  billing:
+    modes:
+    - free
+  extensions:
+  - key: open_banking
+    description: Connecting the bank through Open Banking needs OAuth/consent, which is not available yet. Applicants upload
+      bank statements (CSV or PDF) instead; the agent summarises them.
+  - key: accounting_oauth
+    description: Connecting accounting software by OAuth (Xero, QuickBooks, Sage) is not available yet. Users upload or select
+      invoices as files.
+  - key: partner_exchange
+    description: 'No direct API to the lending partner: partner credit staff work inside the app (sign-in by invite) to set
+      limits, review flagged requests, approve and mark payments paid.'
+  - key: direct_debit
+    description: Direct Debit collection and payment execution stay with the partners; staff record the repayment date and
+      status, and the app sends email reminders.
+  - key: fee_rates
+    description: Fee per financed payment is the fee_quote slot (illustrative 1.5/2.5/3.5/4.5 percent for 30/60/90/120 days);
+      set the real rates before launch. The fee is collected in the repayment, not billed through the app.
+  - key: finance_user_runs
+    description: Invoices created by a finance user are stored under that user, so owner and finance email fields on the record
+      decide who sees them.

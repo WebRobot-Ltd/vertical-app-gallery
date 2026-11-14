@@ -1,0 +1,850 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: planscan
+  displayName: Planscan
+  tagline:
+    en: From building scans to reviewed floor plans and models.
+  description:
+    en: 'Cloud platform for surveyors, architects and contractors: jobs, scan uploads from the Planscan handheld scanner,
+      automatic scan checks, senior review, and client delivery of DWG, PDF and IFC files.'
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/Rome
+spec:
+  pattern: pipeline
+  branding:
+    theme: light
+    palette:
+      primary: '#12263a'
+      accent: '#e8590c'
+      background: '#f6f8fa'
+      foreground: '#15202b'
+    fonts:
+      body: Inter
+      display: Space Grotesk
+    wordmark:
+    - text: Plan
+      color: primary
+    - text: scan
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Organisation admin
+      assignedBy: admin_emails
+    - key: user
+      label: Organisation member
+      assignedBy: signup
+    - key: surveyor
+      label: Surveyor
+      assignedBy: invite
+    - key: reviewer
+      label: Senior reviewer
+      assignedBy: invite
+    - key: client
+      label: Client
+      assignedBy: derived
+      from: collection:jobs.client_email
+  agents:
+  - key: qa_checker
+    role: main
+    description: Checks each uploaded scan for gaps and inconsistencies, flags rooms to rescan and asks the senior reviewer
+      to approve the outputs.
+    awaits:
+    - release_outputs
+    profile:
+      inline:
+        display_name: Planscan scan checker
+        crews:
+        - id: qa_checker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a quality checker for building scans. A scan upload arrives with metadata: floor, coverage
+            percentage, point density, point count and the list of detected rooms (JSON). Use read_jobs to get the job (scope,
+            floors, building type) and read_scans to see all scans of the job, and read_rooms for rooms already known.
+
+            Check: (1) every floor in the job has a scan; (2) coverage below 90% or low density means gaps; (3) rooms with
+            implausible area, missing walls, doors that lead nowhere, or areas that do not add up between floors; (4) the
+            scope (plans, sections, elevations) is supported by the data.
+
+            For each room call save_room with job_id, name, floor, area_m2 (only if given in the data, never invent), status
+            (ok or rescan) and a note giving the reason. Do not invent measurements.
+
+            When done, write a short Markdown report starting with a level-1 title "# Scan check — <site address>", then sections
+            ## Summary, ## Rooms to rescan, ## Inconsistencies, ## Ready for review. If there is nothing that blocks release,
+            call request_release_outputs with job_id and a one-paragraph summary; otherwise do not request approval and say
+            what must be rescanned first.'
+    appTools:
+    - name: read_jobs
+      description: Read the user's jobs
+      action: read
+      collection: jobs
+      scope: user
+    - name: read_scans
+      description: Read the scans uploaded to jobs
+      action: read
+      collection: scans
+      scope: user
+    - name: read_rooms
+      description: Read the rooms of jobs
+      action: read
+      collection: rooms
+      scope: user
+    - name: save_room
+      description: Save a room with its check result
+      action: append
+      collection: rooms
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.6
+  - key: releaser
+    role: helper
+    description: After approval, marks the job's outputs as released so the client is notified.
+    profile:
+      inline:
+        display_name: Planscan release
+        crews:
+        - id: releaser
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You release approved outputs. Given a job id, call read_outputs for that job, then call update_output
+            for each output with status pending_review, setting status to released. Finally call update_job setting the job
+            status to released. Write a one-line report starting with "# Released — <job id>".
+    appTools:
+    - name: read_outputs
+      description: Read the outputs of jobs
+      action: read
+      collection: outputs
+      scope: user
+    - name: update_output
+      description: Update an output record
+      action: write
+      collection: outputs
+      scope: user
+    - name: update_job
+      description: Update a job record
+      action: write
+      collection: jobs
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.2
+  approvals:
+  - key: release_outputs
+    title: Release outputs to the client
+    description: A senior reviewer checks plans, schedule and model before the client receives them.
+    role: reviewer
+    fields:
+    - job_id
+    - summary
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: scan_upload
+    description: The device uploads a scan to a job
+    'on':
+      webhook: true
+    write:
+      collection: scans
+      fields:
+        scan_id: scan_id
+        job_id: job_id
+        floor: floor
+        device_serial: device
+        surveyor_email: surveyor_email
+        coverage_pct: coverage_pct
+        density: density
+        points_count: points
+        rooms_detected: rooms
+        status: status
+      keyBy: scan_id
+  - key: device_heartbeat
+    description: The device reports firmware and usage
+    'on':
+      webhook: true
+    write:
+      collection: devices
+      fields:
+        serial: serial
+        owner_email: owner_email
+        firmware: firmware
+        latest_firmware: latest_firmware
+        status: status
+        scans_count: scans_count
+        battery_pct: battery
+        last_seen: seen_at
+      keyBy: serial
+  - key: processing_done
+    description: The processing service delivers a generated file
+    'on':
+      webhook: true
+    write:
+      collection: outputs
+      fields:
+        job_id: job_id
+        kind: kind
+        format: format
+        file: file
+        surveyor_email: surveyor_email
+        client_email: client_email
+        status: status
+  - key: check_scan
+    description: Check every new scan
+    'on':
+      collection: scans
+      op: insert
+    start:
+      agent: qa_checker
+    goal: 'A new scan was uploaded. Job: {record.job_id}, scan: {record.scan_id}, floor: {record.floor}, coverage: {record.coverage_pct}%,
+      density: {record.density}, points: {record.points_count}, rooms detected: {record.rooms_detected}. Check it for gaps
+      and inconsistencies.'
+  - key: release_after_approval
+    'on':
+      approval: release_outputs
+      decision: approved
+    start:
+      agent: releaser
+    goal: 'The reviewer approved the release. Event: {event}. Release all pending outputs of that job.'
+  - key: client_release_email
+    description: Email the client when an output is released
+    'on':
+      collection: outputs
+      op: update
+      where:
+        status: released
+    notify:
+      to:
+      - record.client_email
+      subject: Your building plans are ready
+      body: The reviewed {record.kind} ({record.format}) for your job is ready. Open the viewer to explore the model, download
+        DWG, PDF and IFC files, and leave comments on specific rooms.
+      link: viewer
+  - key: comment_notice
+    'on':
+      collection: comments
+      op: insert
+    notify:
+      to:
+      - admins
+      - role:reviewer
+      subject: New client comment on {record.room}
+      body: 'A client commented on room {record.room}: {record.text}'
+      link: comments
+  data:
+    collections:
+    - name: jobs
+      description: Survey jobs created by surveyors
+      ownedBy: user
+      retentionDays: 3650
+      fields:
+      - name: site_address
+        type: text
+        required: true
+        label: Site address
+      - name: building_type
+        type: select
+        required: true
+        label: Building type
+        options:
+        - residential
+        - commercial
+        - industrial
+        - heritage
+        - public
+      - name: floors
+        type: number
+        required: true
+        label: Floors
+      - name: scope
+        type: multiselect
+        required: true
+        label: Scope
+        options:
+        - plans
+        - sections
+        - elevations
+      - name: client_name
+        type: text
+        required: true
+        label: Client
+      - name: client_email
+        type: email
+        required: true
+        label: Client email
+      - name: deadline
+        type: date
+        required: true
+        label: Deadline
+      - name: surveyor_email
+        type: email
+        label: Surveyor email
+      - name: status
+        type: select
+        label: Status
+        default: scanning
+        options:
+        - scanning
+        - processing
+        - review
+        - released
+      access:
+      - role: reviewer
+        can:
+        - read
+        - write
+      - role: client
+        where:
+          client_email: '{user.email}'
+        can:
+        - read
+    - name: scans
+      description: Point clouds and images uploaded by the device
+      ownedBy: user
+      retentionDays: 730
+      fields:
+      - name: scan_id
+        type: text
+        label: Scan
+      - name: job_id
+        type: text
+        label: Job
+      - name: floor
+        type: text
+        label: Floor
+      - name: device_serial
+        type: text
+        label: Device
+      - name: surveyor_email
+        type: email
+      - name: coverage_pct
+        type: number
+        label: Coverage %
+      - name: density
+        type: number
+        label: Density
+      - name: points_count
+        type: number
+        label: Points
+      - name: rooms_detected
+        type: textarea
+        label: Rooms detected
+      - name: status
+        type: text
+        default: uploaded
+      access:
+      - role: surveyor
+        where:
+          surveyor_email: '{user.email}'
+        can:
+        - read
+      - role: reviewer
+    - name: rooms
+      description: Room schedule with areas and check results
+      ownedBy: user
+      fields:
+      - name: job_id
+        type: text
+        label: Job
+      - name: name
+        type: text
+        label: Room
+      - name: floor
+        type: text
+        label: Floor
+      - name: area_m2
+        type: number
+        label: Area m²
+      - name: status
+        type: select
+        label: Check
+        options:
+        - ok
+        - rescan
+      - name: note
+        type: textarea
+        label: Note
+      access:
+      - role: reviewer
+        can:
+        - read
+        - write
+    - name: outputs
+      description: 'Generated files: plans, room schedules, 3D models'
+      ownedBy: user
+      fields:
+      - name: job_id
+        type: text
+        label: Job
+      - name: kind
+        type: select
+        label: Kind
+        options:
+        - floor_plan
+        - section
+        - elevation
+        - room_schedule
+        - model_3d
+      - name: format
+        type: select
+        label: Format
+        options:
+        - dwg
+        - pdf
+        - ifc
+        - glb
+      - name: file
+        type: file
+        label: File
+        accept:
+        - pdf
+        - json
+        - xml
+        - txt
+      - name: surveyor_email
+        type: email
+      - name: client_email
+        type: email
+      - name: status
+        type: select
+        label: Status
+        default: pending_review
+        options:
+        - pending_review
+        - released
+        - changes_requested
+      access:
+      - role: surveyor
+        where:
+          surveyor_email: '{user.email}'
+        can:
+        - read
+      - role: reviewer
+        can:
+        - read
+        - write
+      - role: client
+        where:
+          client_email: '{user.email}'
+          status: released
+        can:
+        - read
+    - name: comments
+      description: Client comments on specific rooms
+      ownedBy: user
+      fields:
+      - name: job_id
+        type: select
+        required: true
+        label: Job
+        optionsFrom: collection:jobs
+      - name: room
+        type: text
+        required: true
+        label: Room
+      - name: text
+        type: textarea
+        required: true
+        label: Comment
+      access:
+      - role: reviewer
+    - name: devices
+      description: Scanner fleet, firmware status and usage
+      ownedBy: user
+      fields:
+      - name: serial
+        type: text
+        label: Serial
+      - name: owner_email
+        type: email
+      - name: firmware
+        type: text
+        label: Firmware
+      - name: latest_firmware
+        type: text
+        label: Latest firmware
+      - name: status
+        type: select
+        label: Status
+        options:
+        - online
+        - offline
+        - updating
+        - fault
+      - name: scans_count
+        type: number
+        label: Scans
+      - name: battery_pct
+        type: number
+        label: Battery %
+      - name: last_seen
+        type: date
+        label: Last seen
+      access:
+      - role: surveyor
+        where:
+          owner_email: '{user.email}'
+        can:
+        - read
+  views:
+  - key: home
+    type: page
+    title: Planscan
+    nav: false
+    sections:
+    - type: hero
+      title: From **scan** to reviewed floor plans and 3D models
+      text: Capture buildings with the Planscan handheld scanner. The cloud turns the point clouds into floor plans, room
+        schedules and models, checks them for gaps, and a senior surveyor approves them before your client gets them.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Create a job
+        text: Site address, building type, floors, scope, client and deadline.
+      - title: Scan and upload
+        text: The device uploads point clouds and images straight to the job.
+      - title: Automatic check
+        text: An agent looks for gaps and inconsistencies and lists rooms to rescan.
+      - title: Review and release
+        text: A senior surveyor approves; the client gets a viewer link and DWG, PDF and IFC files.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: Device lease
+        text: The scanner is leased monthly with firmware updates included.
+      - title: Subscription
+        text: Monthly plan with processing credits per square metre.
+    - type: note
+      content: Outputs are released only after review by a senior surveyor.
+  - key: new_job
+    type: form
+    title: New job
+    collection: jobs
+    fields:
+    - site_address
+    - building_type
+    - floors
+    - scope
+    - client_name
+    - client_email
+    - deadline
+    - surveyor_email
+    submit:
+      label: Create job
+      message: Job created. Upload from the device to start.
+      redirect: jobs
+    roles:
+    - user
+    - surveyor
+    - admin
+  - key: jobs
+    type: table
+    title: Jobs
+    source: collection:jobs
+    export: true
+    data:
+      display: table
+      fields:
+      - key: site_address
+        label: Site
+      - key: building_type
+        label: Type
+        format: badge
+      - key: floors
+        label: Floors
+      - key: client_name
+        label: Client
+      - key: deadline
+        label: Deadline
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: deadline
+        dir: asc
+      actions:
+      - type: directions
+        field: site_address
+      - type: calendar
+        title: site_address
+        start: deadline
+  - key: scans
+    type: table
+    title: Scans
+    source: collection:scans
+    roles:
+    - user
+    - surveyor
+    - reviewer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: job_id
+        label: Job
+      - key: floor
+        label: Floor
+      - key: coverage_pct
+        label: Coverage
+        format: number
+      - key: points_count
+        label: Points
+        format: number
+      - key: status
+        format: badge
+  - key: rooms
+    type: table
+    title: Rooms
+    source: collection:rooms
+    roles:
+    - user
+    - surveyor
+    - reviewer
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: job_id
+        label: Job
+      - key: floor
+        label: Floor
+      - key: name
+        label: Room
+      - key: area_m2
+        label: Area m²
+        format: number
+      - key: status
+        label: Check
+        format: badge
+      - key: note
+        label: Note
+  - key: viewer
+    type: cards
+    title: Viewer and downloads
+    source: collection:outputs
+    data:
+      display: cards
+      fields:
+      - key: kind
+        label: Output
+        format: badge
+      - key: format
+        label: Format
+        format: badge
+      - key: file
+        label: Download
+        format: link
+      - key: status
+        format: badge
+      empty: Nothing released yet.
+  - key: comment
+    type: form
+    title: Comment on a room
+    collection: comments
+    submit:
+      label: Send comment
+      message: Comment sent.
+      redirect: comments
+  - key: comments
+    type: table
+    title: Comments
+    source: collection:comments
+    data:
+      display: table
+      fields:
+      - key: job_id
+        label: Job
+      - key: room
+        label: Room
+      - key: text
+        label: Comment
+  - key: reviews
+    type: approvals
+    title: Reviews
+    roles:
+    - reviewer
+    - admin
+    approvals:
+    - release_outputs
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - admin
+    - surveyor
+    - reviewer
+    - user
+    sections:
+    - type: data
+      title: Jobs
+      source: collection:jobs
+      display: kpi
+      kpis:
+      - label: Jobs
+        agg: count
+      - label: Floors
+        agg: sum
+        field: floors
+        format: number
+    - type: data
+      title: Jobs by status
+      source: collection:jobs
+      display: chart
+      chart: bar
+      fields:
+      - key: status
+      - key: n
+      groupBy:
+        field: status
+        aggs:
+        - key: n
+          agg: count
+    - type: data
+      title: Devices and firmware
+      source: collection:devices
+      display: table
+      fields:
+      - key: serial
+        label: Device
+      - key: firmware
+        label: Firmware
+      - key: latest_firmware
+        label: Latest
+      - key: status
+        format: badge
+      - key: scans_count
+        label: Scans
+        format: number
+      - key: battery_pct
+        label: Battery %
+        format: number
+      - key: last_seen
+        label: Last seen
+        format: date
+      empty: No devices have reported yet.
+  - key: check_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: checks
+    type: history
+    title: Scan checks
+    source: run
+    roles:
+    - user
+    - surveyor
+    - reviewer
+    - admin
+  - key: account
+    type: account
+    title: Plan and credits
+  notifications:
+    emailOnRunDone: false
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 100
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+      - storage
+    costs:
+      agent:qa_checker:
+        estimate: 10
+        metered: true
+    packs:
+    - key: credits_1000
+      credits: 1000
+      price: 15
+      label: 1,000 processing credits
+    plans:
+    - key: studio
+      price: 149
+      interval: month
+      label: Studio
+      credits: 3000
+      creditsReset: monthly
+      includes:
+      - 1 device lease
+      - 3,000 processing credits per month
+    - key: practice
+      price: 449
+      interval: month
+      label: Practice
+      credits: 12000
+      creditsReset: monthly
+      includes:
+      - 3 device leases
+      - 12,000 processing credits per month
+  extensions:
+  - key: point_cloud_processing
+    description: Generating floor plans, room schedules, the 3D model and DWG/PDF/IFC files from point clouds is done by the
+      Planscan processing service, which delivers files through the processing_done webhook. The 3D viewer itself is a custom
+      component; here the viewer view lists released files for download.
+  - key: credits_per_sqm
+    description: Charging credits per square metre of scanned area needs the area at job level; for now processing is metered
+      per run and plans include monthly credits. Device lease is billed as part of the subscription plan.
+  - key: organisation_teams
+    description: 'Several members of one organisation sharing all its jobs is not modelled: surveyors see jobs they own or
+      are listed on, reviewers see all.'

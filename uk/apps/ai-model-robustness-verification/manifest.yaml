@@ -1,0 +1,500 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: steadfast
+  displayName: Steadfast
+  tagline: Prove how your AI models behave when inputs change.
+  description: A workspace for ML teams to register models, define robustness properties, review verification results per
+    model version, track regressions and obtain risk officer sign-off with an audit trail.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#10243e'
+      accent: '#1f7a6d'
+      background: '#f6f8fa'
+      foreground: '#16202c'
+    fonts:
+      body: Inter
+      display: IBM Plex Sans
+    wordmark:
+    - text: Stead
+      color: primary
+    - text: fast
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Audit
+      href: '#audit'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: ml_engineer
+      label: ML engineer
+      assignedBy: signup
+    - key: risk_officer
+      label: Risk officer
+      assignedBy: invite
+  agents:
+  - key: explainer
+    role: main
+    description: Explains verification results in plain language, compares versions, suggests augmentation or retraining,
+      and asks the risk officer for sign-off.
+    awaits:
+    - version_signoff
+    profile:
+      inline:
+        display_name: Steadfast results explainer
+        crews:
+        - id: explainer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a model robustness analyst. Use the tools to read the registered models, the properties
+            defined and the verification results (verified, falsified with counter-example, unknown) produced by the verification
+            engine. You never run or invent verification results and never claim a model is safe beyond the properties actually
+            checked. Start with a level-1 title "# Robustness report — <model> <version>". Sections (## headings): Summary
+            (counts of verified / falsified / unknown and an overall reading), Results by property (table), Counter-examples
+            explained in plain language, Comparison with the previous version and regressions (properties that were verified
+            before and are now falsified or unknown), Recommended next steps (data augmentation, adversarial training, property
+            relaxation, extra checks), Audit note (what was and was not covered). Add a chart block for verdict counts per
+            version when two or more versions exist: ```chart {"type":"stacked","title":"Verdicts by version","labels":[...],"series":[{"name":"verified","values":[...]}]}```
+            with real figures only. Only if the user asks for sign-off and no property is falsified, call request_version_signoff
+            with a short summary so a risk officer can decide. Unknown results must be flagged, not treated as passes. Write
+            in English.'
+    goalTemplate: 'Model record: {model}
+
+      {?focus}Focus requested: {focus}{/focus}
+
+      Produce the robustness report for this model version, compare it with earlier versions and list regressions. {?signoff}The
+      user asks to request risk officer sign-off if the evidence allows it.{/signoff}
+
+      Today is {date}.'
+    appTools:
+    - name: read_models
+      description: Read the user's registered models and versions
+      action: read
+      collection: models
+      scope: user
+    - name: read_properties
+      description: Read the properties defined for the user's models
+      action: read
+      collection: properties
+      scope: user
+    - name: read_results
+      description: Read verification results for the user's models
+      action: read
+      collection: check_results
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.6
+  inputForm:
+    title: New robustness report
+    fields:
+    - name: model
+      type: select
+      required: true
+      label: Model version
+      optionsFrom: collection:models
+    - name: focus
+      type: textarea
+      maxLength: 500
+      label: Focus (optional)
+      help: e.g. why did the brightness property regress?
+    - name: signoff
+      type: boolean
+      label: Request risk officer sign-off if eligible
+  data:
+    collections:
+    - name: models
+      ownedBy: user
+      description: Registered models and versions
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Model name
+      - name: version
+        type: text
+        required: true
+        label: Version
+      - name: task
+        type: select
+        required: true
+        label: Task
+        options:
+        - image classification
+        - object detection
+        - tabular classification
+        - regression
+        - text classification
+        - other
+      - name: input_format
+        type: text
+        required: true
+        label: Input format
+        help: e.g. 224x224 RGB image, float32 vector of 40 features
+      - name: owner_email
+        type: email
+        required: true
+        label: Owner email
+      - name: model_file
+        type: file
+        accept:
+        - json
+        - txt
+        - csv
+        maxMb: 15
+        label: Model file (or model card/export)
+      - name: endpoint_url
+        type: url
+        label: Model endpoint you own (optional)
+      access:
+      - role: risk_officer
+    - name: properties
+      ownedBy: user
+      description: Robustness properties to verify
+      fields:
+      - name: model
+        type: text
+        required: true
+        label: Model name and version
+      - name: template
+        type: select
+        required: true
+        label: Template
+        options:
+        - value: brightness
+          label: Prediction unchanged if brightness varies by up to X%
+        - value: noise
+          label: Prediction unchanged under noise of up to X
+        - value: lp_ball
+          label: Prediction unchanged within an Lp ball of radius X
+        - value: feature_range
+          label: Output stays within range when feature varies by X
+        - value: monotonic
+          label: Output monotonic in a chosen feature
+      - name: tolerance
+        type: number
+        required: true
+        label: Tolerance X
+        default: 5
+      - name: description
+        type: textarea
+        maxLength: 500
+        label: Description
+      access:
+      - role: risk_officer
+    - name: check_results
+      ownedBy: user
+      description: Verdicts returned by the verification engine
+      fields:
+      - name: run_id
+        type: text
+      - name: model_name
+        type: text
+      - name: version
+        type: text
+      - name: property
+        type: text
+      - name: verdict
+        type: select
+        options:
+        - verified
+        - falsified
+        - unknown
+      - name: counterexample
+        type: textarea
+      - name: owner_email
+        type: email
+      - name: date
+        type: date
+      access:
+      - role: risk_officer
+  views:
+  - key: home
+    type: page
+    nav: false
+    sections:
+    - type: hero
+      eyebrow: Model robustness workspace
+      title: Know how your models behave when inputs **change**.
+      text: Register models, define properties, review verified, falsified and unknown verdicts per version, catch regressions
+        and get risk officer sign-off with an audit trail.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Register
+        text: Add a model version with its task, input format and owner, and upload the file or connect your endpoint.
+      - title: Define properties
+        text: Pick a template such as brightness within 5% and set the tolerance.
+      - title: Review
+        text: See verdicts, counter-examples, version comparison and a plain-language explanation with next steps.
+      - title: Sign off
+        text: A risk officer approves a version before deployment.
+    - type: cards
+      id: audit
+      title: Built for audit
+      items:
+      - title: Per-version reports
+        text: Printable reports kept for regulators.
+      - title: Decision trail
+        text: Every sign-off is recorded with who decided and when.
+      - title: Email alerts
+        text: Owners are notified when checks finish.
+    - type: note
+      content: Steadfast enterprise licence from £25,000 a year. Results reflect only the properties checked.
+  - key: new_model
+    type: form
+    title: Register model
+    collection: models
+    roles:
+    - ml_engineer
+    - admin
+    submit:
+      label: Register
+      message: Model registered.
+      redirect: models
+  - key: models
+    type: table
+    title: Models
+    source: collection:models
+    roles:
+    - ml_engineer
+    - risk_officer
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Model
+      - key: version
+        label: Version
+      - key: task
+        label: Task
+      - key: owner_email
+        label: Owner
+  - key: new_property
+    type: form
+    title: Define property
+    collection: properties
+    roles:
+    - ml_engineer
+    - admin
+    submit:
+      label: Save property
+      message: Property saved. The engine will check it.
+      redirect: properties
+  - key: properties
+    type: table
+    title: Properties
+    source: collection:properties
+    roles:
+    - ml_engineer
+    - risk_officer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: model
+        label: Model
+      - key: template
+        label: Template
+      - key: tolerance
+        label: Tolerance
+        format: number
+  - key: results
+    type: table
+    title: Verification results
+    source: collection:check_results
+    roles:
+    - ml_engineer
+    - risk_officer
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: model_name
+        label: Model
+      - key: version
+        label: Version
+      - key: property
+        label: Property
+      - key: verdict
+        label: Verdict
+        format: badge
+      - key: counterexample
+        label: Counter-example
+      - key: date
+        label: Date
+        format: date
+      sort:
+        field: date
+        dir: desc
+  - key: regressions
+    type: table
+    title: Falsified checks
+    source: collection:check_results
+    roles:
+    - ml_engineer
+    - risk_officer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: model_name
+        label: Model
+      - key: version
+        label: Version
+      - key: property
+        label: Property
+      - key: counterexample
+        label: Counter-example
+      - key: date
+        label: Date
+        format: date
+      filters:
+      - field: verdict
+        op: '='
+        value: falsified
+      sort:
+        field: date
+        dir: desc
+  - key: new_report
+    type: new_run
+    title: New robustness report
+    roles:
+    - ml_engineer
+    - admin
+  - key: reports
+    type: history
+    title: Reports
+    source: run
+    roles:
+    - ml_engineer
+    - risk_officer
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: signoffs
+    type: approvals
+    title: Sign-offs
+    roles:
+    - risk_officer
+    - admin
+  - key: account
+    type: account
+    title: Licence
+    roles:
+    - admin
+  approvals:
+  - key: version_signoff
+    title: Approve model version for deployment
+    description: A risk officer reviews the robustness report and approves or rejects the version.
+    role: risk_officer
+    fields:
+    - summary
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: engine_result
+    description: The verification engine posts each verdict here
+    'on':
+      webhook: true
+    write:
+      collection: check_results
+      fields:
+        run_id: run_id
+        model_name: model
+        version: version
+        property: property
+        verdict: verdict
+        counterexample: counterexample
+        owner_email: owner_email
+        date: date
+      keyBy: run_id
+  - key: checks_done
+    'on':
+      collection: check_results
+      op: insert
+    notify:
+      to:
+      - record.owner_email
+      subject: 'Check finished: {record.model_name} {record.version}'
+      body: 'The verification of property {record.property} returned: {record.verdict}. Open Steadfast to see the results
+        and the report.'
+      link: results
+  - key: signoff_decided
+    'on':
+      approval: version_signoff
+      decision: any
+    notify:
+      to:
+      - owner
+      - admins
+      subject: Sign-off decision for your model version
+      body: A risk officer has decided on the deployment approval request. See the decision in Steadfast.
+      link: signoffs
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: enterprise
+      price: 25000
+      interval: year
+      label: Enterprise licence
+      includes:
+      - Unlimited models and versions
+      - Risk officer sign-off and audit trail
+      - Email notifications
+  notifications:
+    emailOnRunDone: true
+  extensions:
+  - key: verification_engine
+    description: The proprietary formal-verification engine is outside this app. It must POST each verdict (run_id, model,
+      version, property, verdict verified|falsified|unknown, counterexample, owner_email, date) to the webhook /api/hooks/engine_result
+      with the app's hook secret. Model files and endpoints are stored for the engine to fetch.
+  - key: approved_status
+    description: The approved-for-deployment state is the recorded decision of the version_signoff approval; there is no automatic
+      status field on models yet.

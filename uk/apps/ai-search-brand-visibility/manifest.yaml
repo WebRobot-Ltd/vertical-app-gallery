@@ -1,0 +1,973 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: answerlens
+  displayName: Answerlens
+  tagline: See how your brand appears in AI answers, and how to improve.
+  description: Answerlens runs your buyer questions every week against the AI models you choose, using your own API keys and
+    web search APIs. It records whether your brand is mentioned, where, with what sentiment, which sources are cited and which
+    competitors appear. Then it recommends what to fix.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12343b'
+      accent: '#e07a1f'
+      background: '#f7f8f6'
+      foreground: '#17212b'
+    fonts:
+      body: Inter
+      display: Sora
+    wordmark:
+    - text: Answer
+      color: primary
+    - text: lens
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Coverage
+      href: '#coverage'
+    cta:
+      label: Start monitoring
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: Brand or agency
+      assignedBy: signup
+  limits:
+  - action: create:brands
+    max: 1
+    window: total
+    plans:
+      starter: 1
+      growth: 3
+      agency: 25
+  - action: create:questions
+    max: 5
+    window: total
+    plans:
+      starter: 25
+      growth: 100
+      agency: 500
+  - action: agent:monitor
+    max: 4
+    window: month
+    plans:
+      starter: 8
+      growth: 30
+      agency: 120
+  - action: agent:setup
+    max: 3
+    window: day
+  agents:
+  - key: monitor
+    role: scheduled
+    description: 'Weekly: asks each buyer question to the chosen AI models and web search with the customer''s own keys, records
+      the findings, writes recommendations and asks the brand manager to approve them.'
+    memory: instance
+    awaits:
+    - share_recs
+    writesTo:
+      collection: weekly_reports
+      parse: whole
+    profile:
+      inline:
+        display_name: Answerlens monitor
+        crews:
+        - id: monitor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 150
+          max_budget_usd: 3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the Answerlens monitor: you measure how one brand appears in AI answers and recommend how
+            to improve.
+
+
+            STEPS
+
+            1. Call find_brand to read the brand record named in the goal (name, products, competitors, markets, team_emails).
+            Call list_questions to get the active buyer questions of that brand.
+
+            2. For EACH question and EACH selected model, ask the question through the matching tool, exactly as a buyer would
+            write it (add the market only if the question names none). Tools: ask_openai (POST /v1/responses; body {"model":"gpt-4.1","input":"<question>","tools":[{"type":"web_search_preview"}]}),
+            ask_anthropic (POST /v1/messages; body {"model":"claude-sonnet-4-5","max_tokens":1500,"messages":[{"role":"user","content":"<question>"}],"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":3}]}),
+            ask_gemini (POST; body {"contents":[{"parts":[{"text":"<question>"}]}],"tools":[{"google_search":{}}]}), web_search
+            (GET; query q=<question>&count=10; analyse the top results: titles, snippets, domains). If the tool says the user
+            has not connected the key, skip that model, say so in the report and do not invent anything.
+
+            3. For every question x model call save_result once: brand, question, model, date (today), mentioned_n (1 if the
+            brand or one of its products is named, else 0), position (rank of the brand among the brands recommended, 1 =
+            first; empty if absent), sentiment (positive|neutral|negative|not_mentioned), excerpt (max 200 chars quoting the
+            answer). Call save_citation for each cited source (brand, model, date, domain, url). Call save_competitor for
+            the brand itself and for each competitor that appears (brand, competitor, model, date, present_n 1, is_own true
+            for the brand). Use only what the answers contain.
+
+            4. Compare with your memory of last week and write recommendations with save_recommendation (brand, week = today,
+            type page_to_create | claim_to_fix | source_to_list, title, detail with the evidence, priority high|medium|low,
+            status draft, members = the brand''s team_emails). Base each on observed gaps: questions where the brand is absent
+            or ranked behind competitors, wrong or outdated claims, domains that are cited often and where the brand is not
+            listed. At most 10.
+
+            5. Call request_share_recs once, summarising the drafts, so the brand manager can approve sharing them with the
+            team.
+
+            6. Call remember with the 5 key figures of this week (mention rate per model, top competitor, top source).
+
+
+            REPORT (your final answer, markdown): first line "# <Brand> — AI visibility, week of <date>". Sections: ## Summary
+            (mention rate overall and per model, vs last week), ## Where you appear, ## Competitors, ## Sources cited, ##
+            Recommendations, ## Not covered (models skipped). Add a ```chart block with the mention rate per model (bar, unit
+            %). Never invent figures, never claim to measure Google AI Overviews or Amazon Rufus: they are not queried.'
+    appTools:
+    - name: find_brand
+      description: Read the user's brand records
+      action: search
+      collection: brands
+      scope: user
+    - name: list_questions
+      description: List the user's buyer questions
+      action: search
+      collection: questions
+      scope: user
+    - name: save_result
+      description: Record one answer analysis
+      action: append
+      collection: results
+      scope: user
+    - name: save_citation
+      description: Record one cited source
+      action: append
+      collection: citations
+      scope: user
+    - name: save_competitor
+      description: Record one brand or competitor appearance
+      action: append
+      collection: competitor_mentions
+      scope: user
+    - name: save_recommendation
+      description: Save a draft recommendation
+      action: append
+      collection: recommendations
+      scope: user
+    - name: ask_openai
+      description: Ask a question to OpenAI with the user's own key
+      action: http
+      http:
+        method: POST
+        url: https://api.openai.com/v1/responses
+        maxBytes: 300000
+        attribution: OpenAI API, customer's own key
+        credential:
+          provider: openai
+    - name: ask_anthropic
+      description: Ask a question to Anthropic Claude with the user's own key
+      action: http
+      http:
+        method: POST
+        url: https://api.anthropic.com/v1/messages
+        maxBytes: 300000
+        headers:
+          anthropic-version: '2023-06-01'
+        attribution: Anthropic API, customer's own key
+        credential:
+          provider: anthropic
+          header: x-api-key
+          format: '{secret}'
+    - name: ask_gemini
+      description: Ask a question to Google Gemini with the user's own key
+      action: http
+      http:
+        method: POST
+        url: https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent
+        maxBytes: 300000
+        attribution: Gemini API, customer's own key
+        credential:
+          provider: gemini
+          header: x-goog-api-key
+          format: '{secret}'
+    - name: web_search
+      description: Run a web search through the Brave Search API with the user's own key
+      action: http
+      http:
+        method: GET
+        url: https://api.search.brave.com/res/v1/web/search
+        maxBytes: 200000
+        attribution: Brave Search API, customer's own key
+        credential:
+          provider: brave
+          header: X-Subscription-Token
+          format: '{secret}'
+    limits:
+      maxTurns: 150
+      maxBudgetUsd: 3
+      timeoutSeconds: 3000
+  - key: publisher
+    role: helper
+    description: After the brand manager approves, marks the draft recommendations as shared with the team.
+    profile:
+      inline:
+        display_name: Answerlens publisher
+        crews:
+        - id: publisher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You publish approved recommendations. Call find_recs to list the user's recommendations with status
+            draft, for the brand named in the goal. For each one call update_rec to set status to shared. Change nothing else.
+            Answer with a markdown report whose first line is "# Recommendations shared" and a short list of the titles shared.
+    appTools:
+    - name: find_recs
+      description: List the user's recommendations
+      action: search
+      collection: recommendations
+      scope: user
+    - name: update_rec
+      description: Update a recommendation (status)
+      action: write
+      collection: recommendations
+      scope: user
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 0.3
+  - key: setup
+    role: setup
+    description: Creates starter buyer questions for a brand from the industry templates.
+    profile:
+      inline:
+        display_name: Answerlens question starter
+        crews:
+        - id: setup
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare the list of buyer questions a brand wants to track in AI answers. Call find_brand_setup
+            to read the brand (products, competitors, markets). Call read_templates to read the industry question templates,
+            filtered on the industry in the goal. Adapt the templates to the brand''s real products and markets and write
+            natural questions a buyer would ask an AI assistant (best X for Y, X vs Y, alternatives to Z, is X worth it).
+            Do not put the brand name in most questions: the point is to see whether it appears unprompted. Save each with
+            add_question (brand, text, market, industry, active true). Create no duplicates and no more than the requested
+            number. Answer with markdown starting with "# Starter questions for <brand>" and the list.'
+    appTools:
+    - name: find_brand_setup
+      description: Read the user's brand records
+      action: search
+      collection: brands
+      scope: user
+    - name: read_templates
+      description: Read the industry question templates
+      action: search
+      collection: question_templates
+      scope: all
+    - name: add_question
+      description: Save a buyer question
+      action: append
+      collection: questions
+      scope: user
+    goalTemplate: 'Brand record: {brand}
+
+      Industry: {industry_label}
+
+      Create {count} questions.'
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 0.5
+  inputForm:
+    title: Starter questions
+    fields:
+    - name: brand
+      type: select
+      required: true
+      label: Brand
+      optionsFrom: collection:brands
+    - name: industry
+      type: select
+      required: true
+      label: Industry
+      options:
+      - value: retail
+        label: Retail and e-commerce
+      - value: saas
+        label: Software (SaaS)
+      - value: travel
+        label: Travel and hospitality
+      - value: finance
+        label: Finance and insurance
+      - value: health
+        label: Health and wellness
+      - value: consumer
+        label: Consumer goods
+    - name: count
+      type: number
+      required: true
+      default: 15
+      label: How many questions
+      help: For example 15
+  templates:
+  - key: brand_monitor
+    title: Brand monitor
+    description: Every week the buyer questions of a brand are run against the AI models you choose; you get findings, a report
+      and recommendations.
+    agent: monitor
+    params:
+    - name: brand
+      type: select
+      required: true
+      label: Brand
+      optionsFrom: collection:brands
+    - name: models
+      type: multiselect
+      required: true
+      label: Sources to query
+      help: Each uses your own API key from the Connections page
+      options:
+      - value: openai
+        label: OpenAI (ChatGPT)
+      - value: web_search
+        label: Web search (Brave)
+      - value: anthropic
+        label: Anthropic (Claude)
+        gatedBy: growth
+      - value: gemini
+        label: Google Gemini
+        gatedBy: growth
+    goal: 'Run the weekly Answerlens monitor for the brand record {brand} (monitor "{instance}"). Query these sources: {models}.
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    schedule:
+      cron: 0 6 * * 1
+      userCanChange: true
+    maxPerUser: 25
+    deliver:
+      to: owner
+      subject: Your weekly AI visibility digest — {title}
+      onlyIfNew: true
+  triggers:
+  - key: recs_approved
+    description: When the brand manager approves, share the draft recommendations with the team
+    'on':
+      approval: share_recs
+      decision: approved
+    start:
+      agent: publisher
+    goal: 'The brand manager approved sharing the recommendations. Event: {event}. Set status shared on the draft recommendations
+      of the brand named in the event.'
+    asUser: true
+  approvals:
+  - key: share_recs
+    title: Share recommendations with the team
+    description: The brand manager reviews the draft recommendations before the team sees them.
+    decidedBy: requester
+    fields:
+    - summary
+  data:
+    collections:
+    - name: brands
+      ownedBy: user
+      description: The brands a customer (or an agency) monitors
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Brand name
+      - name: website
+        type: url
+        label: Website
+      - name: industry
+        type: select
+        label: Industry
+        options:
+        - retail
+        - saas
+        - travel
+        - finance
+        - health
+        - consumer
+      - name: products
+        type: textarea
+        label: Products (one per line)
+      - name: competitors
+        type: textarea
+        label: Competitors (one per line)
+      - name: markets
+        type: textarea
+        label: Markets (countries or languages)
+      - name: team_emails
+        type: array
+        label: Team emails (who sees approved recommendations)
+        help: People who have signed up to Answerlens with this email
+    - name: questions
+      ownedBy: user
+      description: Buyer questions tracked for a brand
+      fields:
+      - name: brand
+        type: text
+        required: true
+        label: Brand
+      - name: text
+        type: text
+        required: true
+        label: Buyer question
+        maxLength: 300
+      - name: market
+        type: text
+        label: Market
+      - name: industry
+        type: text
+        label: Industry
+      - name: active
+        type: boolean
+        default: true
+        label: Active
+    - name: question_templates
+      ownedBy: shared
+      description: Industry question templates kept by the admins
+      fields:
+      - name: industry
+        type: select
+        required: true
+        options:
+        - retail
+        - saas
+        - travel
+        - finance
+        - health
+        - consumer
+      - name: pattern
+        type: text
+        required: true
+        label: Question pattern
+      - name: intent
+        type: text
+        label: Buyer intent
+    - name: results
+      ownedBy: user
+      description: One analysed AI answer per question and model
+      fields:
+      - name: brand
+        type: text
+        label: Brand
+      - name: question
+        type: text
+        label: Question
+      - name: model
+        type: text
+        label: Model
+      - name: date
+        type: date
+        label: Date
+      - name: mentioned_n
+        type: number
+        label: Mentioned (1/0)
+      - name: position
+        type: number
+        label: Position
+      - name: sentiment
+        type: select
+        label: Sentiment
+        options:
+        - positive
+        - neutral
+        - negative
+        - not_mentioned
+      - name: excerpt
+        type: textarea
+        label: Excerpt
+      retentionDays: 730
+    - name: citations
+      ownedBy: user
+      description: Sources cited by AI answers
+      fields:
+      - name: brand
+        type: text
+      - name: model
+        type: text
+      - name: date
+        type: date
+      - name: domain
+        type: text
+        label: Domain
+      - name: url
+        type: url
+        label: URL
+      retentionDays: 730
+    - name: competitor_mentions
+      ownedBy: user
+      description: Which brands appear in the answers
+      fields:
+      - name: brand
+        type: text
+      - name: competitor
+        type: text
+        label: Brand or competitor
+      - name: model
+        type: text
+      - name: date
+        type: date
+      - name: present_n
+        type: number
+        label: Present (1/0)
+      - name: is_own
+        type: boolean
+        label: Own brand
+      retentionDays: 730
+    - name: recommendations
+      ownedBy: user
+      description: 'Recommendations: draft until the brand manager approves, then shared with the team'
+      fields:
+      - name: brand
+        type: text
+        label: Brand
+      - name: week
+        type: date
+        label: Week
+      - name: type
+        type: select
+        label: Type
+        options:
+        - page_to_create
+        - claim_to_fix
+        - source_to_list
+      - name: title
+        type: text
+        label: Recommendation
+      - name: detail
+        type: textarea
+        label: Evidence and detail
+      - name: priority
+        type: select
+        label: Priority
+        options:
+        - high
+        - medium
+        - low
+      - name: status
+        type: select
+        label: Status
+        options:
+        - draft
+        - shared
+        default: draft
+      - name: members
+        type: array
+        label: Team emails
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+          status: shared
+        can:
+        - read
+    - name: weekly_reports
+      ownedBy: instance
+      description: The weekly report of each brand monitor
+    credentials:
+    - provider: openai
+      kind: api_key
+      scope: user
+      label: OpenAI API key
+      help: platform.openai.com, API keys
+    - provider: anthropic
+      kind: api_key
+      scope: user
+      label: Anthropic API key
+      help: console.anthropic.com, API keys
+    - provider: gemini
+      kind: api_key
+      scope: user
+      label: Google Gemini API key
+      help: aistudio.google.com, Get API key
+    - provider: brave
+      kind: api_key
+      scope: user
+      label: Brave Search API key
+      help: brave.com/search/api
+  egress:
+    hosts:
+    - api.openai.com
+    - api.anthropic.com
+    - generativelanguage.googleapis.com
+    - api.search.brave.com
+    notes: Official APIs of OpenAI, Anthropic, Google Gemini and Brave Search, called only with the customer's own key under
+      their own terms. No interface of any AI product is scraped.
+  views:
+  - key: home
+    type: page
+    title: Answerlens
+    nav: false
+    sections:
+    - type: hero
+      title: See how your brand shows up in **AI answers**
+      text: Add your brand, competitors and the questions buyers ask. Answerlens asks them every week to the AI models and
+        web search, and tells you where you appear, who beats you and what to fix.
+      actions:
+      - label: Start monitoring
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+      band: true
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Set up your brand
+        text: Name, products, competitors, markets, and buyer questions started from industry templates.
+      - title: Weekly monitors
+        text: Questions are run through the official APIs with your own keys, plus web search.
+      - title: Findings and share of voice
+        text: Mention, position, sentiment, cited sources and competitors for every answer.
+      - title: Approved recommendations
+        text: Pages to create, claims to fix, sources to get listed on. You approve before the team sees them.
+    - type: cards
+      id: coverage
+      title: Coverage
+      items:
+      - title: OpenAI, Anthropic, Gemini
+        text: Through their official APIs, with the customer's own keys.
+      - title: Web search
+        text: Through a web search API, to see which sources AI answers can draw on.
+      - title: Google AI Overviews and Amazon Rufus
+        text: 'Not queried: no official access that allows it, and we never scrape their interfaces.'
+    - type: note
+      content: Answerlens measures samples of AI answers, which vary from one run to another. Treat figures as trends, not
+        absolutes.
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - user
+    - admin
+    sections:
+    - type: data
+      title: Overview
+      source: collection:results
+      display: kpi
+      kpis:
+      - label: Answers analysed
+        agg: count
+      - label: Mention rate
+        agg: avg
+        field: mentioned_n
+        format: percent
+      - label: Average position
+        agg: avg
+        field: position
+        format: number
+    - type: data
+      title: Share of voice per model
+      source: collection:results
+      display: chart
+      chart: bar
+      groupBy:
+        field: model
+        aggs:
+        - key: share
+          agg: avg
+          field: mentioned_n
+      fields:
+      - key: model
+        label: Model
+      - key: share
+        label: Mention rate
+        format: percent
+    - type: data
+      title: Trend over time
+      source: collection:results
+      display: chart
+      chart: line
+      groupBy:
+        field: date
+        bucket: week
+        aggs:
+        - key: share
+          agg: avg
+          field: mentioned_n
+      fields:
+      - key: date
+        label: Week
+      - key: share
+        label: Mention rate
+        format: percent
+    - type: data
+      title: Top cited sources
+      source: collection:citations
+      display: bar
+      groupBy:
+        field: domain
+        aggs: []
+      fields:
+      - key: domain
+        label: Domain
+      - key: count
+        label: Citations
+      sort:
+        field: count
+        dir: desc
+      limit: 15
+    - type: data
+      title: Competitor comparison
+      source: collection:competitor_mentions
+      display: chart
+      chart: bar
+      groupBy:
+        field: competitor
+        aggs:
+        - key: appearances
+          agg: sum
+          field: present_n
+      fields:
+      - key: competitor
+        label: Brand
+      - key: appearances
+        label: Appearances
+      sort:
+        field: appearances
+        dir: desc
+      limit: 12
+  - key: brands
+    type: table
+    title: Brands
+    source: collection:brands
+    columns:
+    - name
+    - website
+    - industry
+    - markets
+    roles:
+    - user
+    - admin
+  - key: brand_form
+    type: form
+    title: Add or edit a brand
+    collection: brands
+    edit: true
+    submit:
+      label: Save brand
+      message: Brand saved.
+      redirect: brands
+    roles:
+    - user
+    - admin
+  - key: questions
+    type: table
+    title: Buyer questions
+    source: collection:questions
+    columns:
+    - brand
+    - text
+    - market
+    - active
+    export: true
+    roles:
+    - user
+    - admin
+  - key: question_form
+    type: form
+    title: Add a question
+    collection: questions
+    edit: true
+    submit:
+      label: Save question
+      message: Question saved.
+      redirect: questions
+    roles:
+    - user
+    - admin
+  - key: question_templates
+    type: table
+    title: Industry templates
+    source: collection:question_templates
+    columns:
+    - industry
+    - pattern
+    - intent
+    roles:
+    - user
+    - admin
+  - key: starter
+    type: new_run
+    title: Starter questions
+    roles:
+    - user
+    - admin
+  - key: monitors
+    type: instances
+    template: brand_monitor
+    title: Monitors
+    roles:
+    - user
+    - admin
+  - key: results
+    type: table
+    title: Answer findings
+    source: collection:results
+    columns:
+    - date
+    - brand
+    - question
+    - model
+    - mentioned_n
+    - position
+    - sentiment
+    export: true
+    roles:
+    - user
+    - admin
+  - key: sources
+    type: table
+    title: Cited sources
+    source: collection:citations
+    columns:
+    - date
+    - brand
+    - model
+    - domain
+    - url
+    export: true
+    roles:
+    - user
+    - admin
+  - key: competitors
+    type: table
+    title: Competitor appearances
+    source: collection:competitor_mentions
+    columns:
+    - date
+    - brand
+    - competitor
+    - model
+    - present_n
+    export: true
+    roles:
+    - user
+    - admin
+  - key: recommendations
+    type: table
+    title: Recommendations
+    source: collection:recommendations
+    columns:
+    - week
+    - brand
+    - type
+    - title
+    - priority
+    - status
+    export: true
+    roles:
+    - user
+    - admin
+  - key: approvals
+    type: approvals
+    title: Approvals
+    approvals:
+    - share_recs
+    roles:
+    - user
+    - admin
+  - key: history
+    type: history
+    title: Reports
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: account
+    type: account
+    title: Plan and API keys
+    roles:
+    - user
+    - admin
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: starter
+      price: 49
+      interval: month
+      label: Starter
+      includes:
+      - 1 brand
+      - 25 questions
+      - OpenAI and web search
+    - key: growth
+      price: 149
+      interval: month
+      label: Growth
+      includes:
+      - 3 brands
+      - 100 questions
+      - OpenAI, Anthropic, Gemini and web search
+    - key: agency
+      price: 399
+      interval: month
+      label: Agency
+      includes:
+      - 25 brands
+      - 500 questions
+      - All models
+      - Several brands in one account
+  extensions:
+  - key: ai_overviews_rufus
+    description: 'Google AI Overviews and Amazon Rufus are not covered: no official API allows reuse and their interfaces
+      must not be scraped. Add only if a licensed data source appears.'
+  - key: dashboard_brand_filter
+    description: Dashboards show all of a user's brands together; a per-brand filter selector is not expressible yet.
+  - key: question_quota_by_model
+    description: Plan quotas count questions and brands; models are gated by plan in the monitor form.

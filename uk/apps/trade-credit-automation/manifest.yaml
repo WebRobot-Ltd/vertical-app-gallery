@@ -1,0 +1,988 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: credora
+  displayName: Credora
+  tagline:
+    en: Trade credit automation for B2B wholesalers.
+  description:
+    en: Onboard trade customers with a branded credit application, get an AI-proposed limit and terms, approve in one click,
+      then monitor exposure and chase overdue invoices automatically.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#0f2a43'
+      accent: '#14907a'
+      background: '#f6f8fa'
+      foreground: '#16222e'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Cred
+      color: primary
+    - text: ora
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Apply for a credit account
+      href: /v/apply
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+      - apply
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: credit_controller
+      label: Credit controller
+      assignedBy: invite
+    - key: sales_rep
+      label: Sales rep
+      assignedBy: derived
+      from: collection:accounts.rep_email
+    - key: trade_customer
+      label: Trade customer
+      assignedBy: derived
+      from: collection:accounts.customer_email
+  agents:
+  - key: underwriter
+    role: main
+    description: Checks a new applicant on Companies House and The Gazette (and the credit bureau when licensed) and proposes
+      a limit and terms.
+    profile:
+      inline:
+        display_name: Credora underwriter
+        crews:
+        - id: underwriter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a trade credit analyst for a B2B wholesaler. For one credit application you: (1) call ch_company
+            with path /company/<number> for status, incorporation date, accounts and overdue flags; (2) ch_filings with path
+            /company/<number>/filing-history for recent filings (late accounts, charges, change of registered office, director
+            changes); (3) ch_officers with path /company/<number>/officers for directors and resignations; (4) gazette_search
+            with query text=<company name> and categorycode=G205000000 (insolvency notices) and read whether any notice matches
+            this exact company number; (5) call bureau_score ONLY if the tool reports the licence is connected; otherwise
+            state that no bureau score was used. Then compare the requested monthly spend, trade references and company age/size.
+            Propose a credit limit in GBP and payment terms in days (14, 30, 45 or 60), conservative when data is thin; decline-recommend
+            if the company is dissolved, in administration/liquidation, or has Gazette insolvency notices. Never invent figures:
+            only cite what the sources returned and say when something could not be checked. Save the proposal by calling
+            update_application with the application''s company_number and fields proposed_limit, proposed_terms, rationale
+            (max 120 words) and status ''review''. Final answer: start with a level-1 title ''# Credit assessment — <company
+            name>'', then sections ## Findings, ## Proposal, ## Rationale, ## Not checked. You decide nothing: the credit
+            controller approves, adjusts or declines. Bank details are never repeated in your output.'
+          mcp_servers: []
+    appTools:
+    - name: ch_company
+      description: 'Companies House: company profile (path /company/<number>)'
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk
+        allowPath: true
+        credential:
+          provider: companies_house
+          format: Basic {secret}
+        attribution: Companies House, Open Government Licence v3.0
+    - name: ch_filings
+      description: 'Companies House: filing history (path /company/<number>/filing-history)'
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk
+        allowPath: true
+        credential:
+          provider: companies_house
+          format: Basic {secret}
+        attribution: Companies House, Open Government Licence v3.0
+    - name: ch_officers
+      description: 'Companies House: officers (path /company/<number>/officers)'
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk
+        allowPath: true
+        credential:
+          provider: companies_house
+          format: Basic {secret}
+        attribution: Companies House, Open Government Licence v3.0
+    - name: gazette_search
+      description: 'The Gazette: search insolvency notices (query text, categorycode)'
+      action: http
+      http:
+        method: GET
+        url: https://www.thegazette.co.uk/all-notices/notice/data.json
+        attribution: The Gazette, Open Government Licence v3.0
+    - name: bureau_score
+      description: Credit bureau score and limit recommendation (only with the wholesaler's licence)
+      action: http
+      http:
+        method: GET
+        url: https://connect.creditsafe.com/v1/companies
+        allowPath: true
+        credential:
+          provider: credit_bureau
+        attribution: Credit bureau data under the wholesaler's own licence
+    - name: update_application
+      description: Save the proposal on the application record
+      action: write
+      collection: applications
+      scope: all
+  - key: monitor
+    role: scheduled
+    description: 'Weekly review of every credit account: overdue invoices, limit usage, new filings and Gazette notices; writes
+      alerts and a snapshot.'
+    profile:
+      inline:
+        display_name: Credora account monitor
+        crews:
+        - id: monitor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You run the weekly credit risk review. Read all accounts (read_accounts) and all invoices (read_invoices).
+            For each active account compute outstanding balance, overdue amount (unpaid invoices past due_date), limit usage
+            % (balance / credit_limit) and oldest overdue days. Check Companies House filing history (ch_filings, path /company/<number>/filing-history)
+            and The Gazette insolvency notices (gazette_search, text=<name>, categorycode=G205000000); compare with last_filing_date
+            and gazette_flag on the account to spot what is NEW. Update each account with update_account (balance, overdue,
+            usage_pct, risk low|medium|high, last_filing_date, gazette_flag). For every account whose risk rose or is high
+            (overdue > 30 days, usage > 90%, new adverse filing such as late accounts, charge, director resignations, or any
+            insolvency notice) call add_alert with date, company_number, name, severity (medium|high) and a one-sentence summary.
+            Never invent data; say when a check failed. Report: ''# Weekly credit risk review — <date>'' then ## Alerts, ##
+            Exposure, ## Ageing, plus a ```chart block (stacked bar of ageing buckets). The LAST thing in your answer is a
+            JSON object on its own with keys date (YYYY-MM-DD), exposure, overdue, dso, accounts_active, b_current, b_1_30,
+            b_31_60, b_61_90, b_90_plus (numbers, GBP). DSO = outstanding / credit sales of the last 90 days * 90, from the
+            invoices read.'
+    output: markdown+json
+    writesTo:
+      collection: snapshots
+      parse: json_last
+      keyBy: date
+    appTools:
+    - name: read_accounts
+      description: All credit accounts
+      action: read
+      collection: accounts
+      scope: all
+    - name: read_invoices
+      description: All invoices
+      action: read
+      collection: invoices
+      scope: all
+    - name: update_account
+      description: Update an account's monitoring fields
+      action: write
+      collection: accounts
+      scope: all
+    - name: add_alert
+      description: Record a risk alert
+      action: append
+      collection: risk_alerts
+      scope: all
+    - name: ch_filings
+      description: 'Companies House: filing history (path /company/<number>/filing-history)'
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk
+        allowPath: true
+        credential:
+          provider: companies_house
+          format: Basic {secret}
+        attribution: Companies House, Open Government Licence v3.0
+    - name: gazette_search
+      description: 'The Gazette: search insolvency notices (query text, categorycode)'
+      action: http
+      http:
+        method: GET
+        url: https://www.thegazette.co.uk/all-notices/notice/data.json
+        attribution: The Gazette, Open Government Licence v3.0
+  egress:
+    hosts:
+    - api.company-information.service.gov.uk
+    - www.thegazette.co.uk
+    - connect.creditsafe.com
+    notes: Companies House API (OGL v3.0, free key); The Gazette data API (OGL v3.0, insolvency notices); Creditsafe only
+      when the wholesaler connects its own licensed key.
+  data:
+    credentials:
+    - provider: companies_house
+      kind: api_key
+      scope: org
+      label: Companies House API key
+      help: Create a free key at developer.company-information.service.gov.uk, then paste base64 of "<your key>:" (key followed
+        by a colon).
+      required: true
+    - provider: credit_bureau
+      kind: api_key
+      scope: org
+      label: Credit bureau access token (optional, needs your licence)
+      help: Only if your company holds a bureau licence. Without it, no bureau score is pulled.
+      required: false
+    collections:
+    - name: applications
+      ownedBy: org
+      retentionDays: 730
+      description: Credit applications from trade customers, with the agent's proposal and the controller's decision
+      access:
+      - role: credit_controller
+        can:
+        - read
+        - write
+      fields:
+      - name: company_number
+        type: text
+        required: true
+        label: Company number
+      - name: company_name
+        type: text
+        required: true
+        label: Company name
+      - name: trading_address
+        type: textarea
+        required: true
+        label: Trading address
+      - name: director_name
+        type: text
+        required: true
+        label: Director's name
+      - name: director_email
+        type: email
+        required: true
+        label: Director's email
+      - name: director_phone
+        type: text
+        label: Director's phone
+      - name: monthly_spend
+        type: number
+        required: true
+        label: Expected monthly spend (GBP)
+      - name: trade_references
+        type: textarea
+        label: Trade references (name, contact, how long)
+      - name: bank_account_name
+        type: text
+        label: Bank account holder
+      - name: sort_code
+        type: text
+        label: Sort code
+      - name: account_number
+        type: text
+        label: Account number
+      - name: dd_consent
+        type: boolean
+        label: I agree to pay by Direct Debit
+      - name: status
+        type: select
+        label: Status
+        options:
+        - new
+        - review
+        - approved
+        - declined
+        default: new
+      - name: proposed_limit
+        type: number
+        label: Proposed limit (GBP)
+      - name: proposed_terms
+        type: number
+        label: Proposed terms (days)
+      - name: rationale
+        type: textarea
+        label: Agent rationale
+      - name: final_limit
+        type: number
+        label: Approved limit (GBP)
+      - name: final_terms
+        type: number
+        label: Approved terms (days)
+      - name: decision_note
+        type: textarea
+        label: Decision note
+    - name: accounts
+      ownedBy: org
+      description: Active trade credit accounts
+      access:
+      - role: credit_controller
+        can:
+        - read
+        - write
+      - role: sales_rep
+        where:
+          rep_email: '{user.email}'
+      - role: trade_customer
+        where:
+          customer_email: '{user.email}'
+      fields:
+      - name: company_number
+        type: text
+        label: Company number
+      - name: company_name
+        type: text
+        label: Customer
+      - name: customer_email
+        type: email
+        label: Customer login email
+      - name: rep_email
+        type: email
+        label: Sales rep email
+      - name: credit_limit
+        type: number
+        label: Credit limit
+      - name: terms_days
+        type: number
+        label: Terms (days)
+      - name: balance
+        type: number
+        label: Balance
+      - name: overdue
+        type: number
+        label: Overdue
+      - name: usage_pct
+        type: number
+        label: Limit used %
+      - name: risk
+        type: select
+        label: Risk
+        options:
+        - low
+        - medium
+        - high
+      - name: last_filing_date
+        type: date
+        label: Last filing seen
+      - name: gazette_flag
+        type: boolean
+        label: Gazette notice
+    - name: invoices
+      ownedBy: org
+      description: Invoices and payment status from the accounting ledger
+      access:
+      - role: credit_controller
+        can:
+        - read
+        - write
+      - role: sales_rep
+        where:
+          rep_email: '{user.email}'
+      - role: trade_customer
+        where:
+          customer_email: '{user.email}'
+      fields:
+      - name: number
+        type: text
+        label: Invoice
+      - name: company_number
+        type: text
+        label: Company number
+      - name: company_name
+        type: text
+        label: Customer
+      - name: customer_email
+        type: email
+        label: Customer email
+      - name: rep_email
+        type: email
+        label: Sales rep email
+      - name: issue_date
+        type: date
+        label: Issued
+      - name: due_date
+        type: date
+        label: Due
+      - name: amount
+        type: number
+        label: Amount
+      - name: outstanding
+        type: number
+        label: Outstanding
+      - name: status
+        type: select
+        label: Status
+        options:
+        - unpaid
+        - paid
+    - name: risk_alerts
+      ownedBy: org
+      description: Alerts raised by the weekly review
+      access:
+      - role: credit_controller
+      fields:
+      - name: date
+        type: date
+        label: Date
+      - name: company_number
+        type: text
+        label: Company number
+      - name: name
+        type: text
+        label: Customer
+      - name: severity
+        type: select
+        label: Severity
+        options:
+        - medium
+        - high
+      - name: summary
+        type: textarea
+        label: What changed
+    - name: snapshots
+      ownedBy: org
+      description: Weekly portfolio figures for the dashboards
+      access:
+      - role: credit_controller
+      fields:
+      - name: date
+        type: date
+      - name: exposure
+        type: number
+      - name: overdue
+        type: number
+      - name: dso
+        type: number
+      - name: accounts_active
+        type: number
+      - name: b_current
+        type: number
+      - name: b_1_30
+        type: number
+      - name: b_31_60
+        type: number
+      - name: b_61_90
+        type: number
+      - name: b_90_plus
+        type: number
+  triggers:
+  - key: new_application
+    'on':
+      collection: applications
+      op: insert
+      where:
+        status: new
+    start:
+      agent: underwriter
+    asUser: false
+    goal: 'Assess this credit application. Company number {record.company_number}, name {record.company_name}, trading address
+      {record.trading_address}, director {record.director_name}, expected monthly spend GBP {record.monthly_spend}, trade
+      references: {record.trade_references}. Today is {date}.'
+  - key: notify_controller
+    'on':
+      collection: applications
+      op: insert
+    notify:
+      to: role:credit_controller
+      subject: 'New credit application: {record.company_name}'
+      body: A new application from {record.company_name} ({record.company_number}) was received. The assessment is being prepared;
+        review it and approve, adjust or decline.
+      link: review
+  - key: app_approved
+    'on':
+      collection: applications
+      op: update
+      where:
+        status: approved
+    notify:
+      to:
+      - record.director_email
+      subject: Your credit account is approved
+      body: 'Good news: the credit account for {record.company_name} has been approved with a limit of GBP {record.final_limit}
+        and payment terms of {record.final_terms} days. {record.decision_note}'
+  - key: app_declined
+    'on':
+      collection: applications
+      op: update
+      where:
+        status: declined
+    notify:
+      to:
+      - record.director_email
+      subject: Your credit application
+      body: Thank you for applying. We are unable to offer a credit account to {record.company_name} at this time. {record.decision_note}
+        You are welcome to order with payment upfront.
+  - key: open_account
+    'on':
+      collection: applications
+      op: update
+      where:
+        status: approved
+    write:
+      collection: accounts
+      fields:
+        company_number: company_number
+        company_name: company_name
+        customer_email: director_email
+        credit_limit: final_limit
+        terms_days: final_terms
+      keyBy: company_number
+  - key: ledger_invoice
+    'on':
+      webhook: true
+    write:
+      collection: invoices
+      keyBy: number
+  - key: alert_high
+    'on':
+      collection: risk_alerts
+      op: insert
+      where:
+        severity: high
+    notify:
+      to: role:credit_controller
+      subject: 'High credit risk: {record.name}'
+      body: '{record.summary}'
+      link: alerts
+  - key: chase_1
+    'on':
+      date:
+        collection: invoices
+        field: due_date
+        offsetDays: 1
+        hour: 8
+      where:
+        status: unpaid
+    notify:
+      to: record.customer_email
+      subject: 'Friendly reminder: invoice {record.number} was due yesterday'
+      body: Hello, invoice {record.number} for GBP {record.outstanding} was due on {record.due_date}. If you have already
+        paid, thank you; otherwise please arrange payment at your earliest convenience.
+      link: statements
+  - key: chase_2
+    'on':
+      date:
+        collection: invoices
+        field: due_date
+        offsetDays: 7
+        hour: 8
+      where:
+        status: unpaid
+    notify:
+      to: record.customer_email
+      subject: 'Second notice: invoice {record.number} is overdue'
+      body: Invoice {record.number} for GBP {record.outstanding} is now 7 days overdue. Please pay today or contact us if
+        there is a problem, so your credit terms are not affected.
+      link: statements
+  - key: chase_3
+    'on':
+      date:
+        collection: invoices
+        field: due_date
+        offsetDays: 21
+        hour: 8
+      where:
+        status: unpaid
+    notify:
+      to:
+      - record.customer_email
+      - role:credit_controller
+      subject: 'Final notice: invoice {record.number} is 21 days overdue'
+      body: Invoice {record.number} for GBP {record.outstanding} is 21 days overdue. Unless payment is received immediately,
+        your credit account may be suspended and further action taken.
+      link: statements
+  schedules:
+  - agent: monitor
+    cron: 0 6 * * 1
+    action: run
+    owner: app
+    goal: Run the weekly credit risk review for all active accounts. Today is {date}.
+    deliver:
+      to: role:credit_controller
+      subject: Credora weekly credit risk review
+      onlyIfNew: true
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Credora
+    sections:
+    - type: hero
+      title: Trade credit, **automated** from application to collection.
+      text: Let trade customers apply online, get an AI-assisted credit limit in minutes, and keep exposure under control
+        with weekly monitoring and automatic reminders.
+      actions:
+      - label: Apply for a credit account
+        href: /v/apply
+        style: primary
+      - label: Sign in
+        href: /login
+        style: ghost
+      band: true
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Apply
+        text: 'Trade customers complete a branded application: company number, directors, spend, references, Direct Debit
+          details.'
+      - title: Assess
+        text: An agent checks Companies House and The Gazette (and your bureau, if licensed) and proposes a limit, terms and
+          rationale.
+      - title: Decide
+        text: Your credit controller approves, adjusts or declines. The applicant is emailed the outcome.
+      - title: Monitor
+        text: Weekly checks on overdue invoices, limit usage, new filings and insolvency notices, with escalating reminder
+          emails.
+    - type: cards
+      id: pricing
+      title: Pricing by active accounts
+      items:
+      - title: Starter
+        text: Up to 25 active accounts
+        badge: £49/mo
+      - title: Growth
+        text: Up to 100 active accounts
+        badge: £149/mo
+      - title: Scale
+        text: Up to 500 active accounts
+        badge: £399/mo
+    - type: note
+      content: Credit proposals are decision support; the credit controller always makes the final decision. Data from Companies
+        House and The Gazette under the Open Government Licence v3.0.
+  - key: apply
+    type: form
+    title: Apply for a credit account
+    collection: applications
+    fields:
+    - company_number
+    - company_name
+    - trading_address
+    - director_name
+    - director_email
+    - director_phone
+    - monthly_spend
+    - trade_references
+    - bank_account_name
+    - sort_code
+    - account_number
+    - dd_consent
+    submit:
+      label: Submit application
+      message: Thank you. We will email you the outcome shortly.
+    edit: false
+    nav: false
+  - key: review
+    type: table
+    title: Applications
+    source: collection:applications
+    roles:
+    - admin
+    - credit_controller
+    export: true
+    data:
+      display: table
+      fields:
+      - key: company_name
+        label: Company
+      - key: company_number
+        label: Number
+      - key: monthly_spend
+        label: Monthly spend
+        format: money
+      - key: proposed_limit
+        label: Proposed limit
+        format: money
+      - key: proposed_terms
+        label: Terms
+      - key: status
+        label: Status
+        format: badge
+      - key: rationale
+        label: Rationale
+      sort:
+        field: status
+        dir: asc
+      limit: 100
+  - key: decide
+    type: form
+    title: Decision
+    collection: applications
+    fields:
+    - status
+    - final_limit
+    - final_terms
+    - decision_note
+    submit:
+      label: Save decision
+      message: Decision saved. The applicant is notified by email.
+      redirect: review
+    edit: true
+    roles:
+    - admin
+    - credit_controller
+    nav: false
+  - key: accounts
+    type: table
+    title: Credit accounts
+    source: collection:accounts
+    roles:
+    - admin
+    - credit_controller
+    - sales_rep
+    - trade_customer
+    export: true
+    data:
+      display: table
+      fields:
+      - key: company_name
+        label: Customer
+      - key: credit_limit
+        label: Limit
+        format: money
+      - key: terms_days
+        label: Terms
+      - key: balance
+        label: Balance
+        format: money
+      - key: overdue
+        label: Overdue
+        format: money
+      - key: usage_pct
+        label: Used
+        format: percent
+      - key: risk
+        label: Risk
+        format: badge
+      actions:
+      - type: call
+        field: customer_email
+        label: Contact
+      limit: 200
+  - key: statements
+    type: table
+    title: Invoices and statements
+    source: collection:invoices
+    roles:
+    - admin
+    - credit_controller
+    - sales_rep
+    - trade_customer
+    export: true
+    data:
+      display: table
+      fields:
+      - key: number
+        label: Invoice
+      - key: company_name
+        label: Customer
+      - key: issue_date
+        label: Issued
+        format: date
+      - key: due_date
+        label: Due
+        format: date
+      - key: amount
+        label: Amount
+        format: money
+      - key: outstanding
+        label: Outstanding
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: due_date
+        dir: asc
+      limit: 200
+  - key: alerts
+    type: table
+    title: Risk alerts
+    source: collection:risk_alerts
+    roles:
+    - admin
+    - credit_controller
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: name
+        label: Customer
+      - key: severity
+        label: Severity
+        format: badge
+      - key: summary
+        label: What changed
+      sort:
+        field: date
+        dir: desc
+      limit: 100
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - admin
+    - credit_controller
+    sections:
+    - type: data
+      title: Exposure
+      source: collection:invoices
+      display: kpi
+      kpis:
+      - label: Open exposure
+        agg: sum
+        field: outstanding
+        format: money
+      - label: Invoices
+        agg: count
+    - type: data
+      title: Latest portfolio
+      source: collection:snapshots
+      display: kpi
+      kpis:
+      - label: Overdue
+        agg: last
+        field: overdue
+        format: money
+      - label: DSO (days)
+        agg: last
+        field: dso
+        format: number
+      - label: Active accounts
+        agg: last
+        field: accounts_active
+        format: number
+    - type: data
+      title: Ageing by week
+      source: collection:snapshots
+      display: chart
+      chart: stacked
+      fields:
+      - key: date
+        label: Week
+      - key: b_current
+        label: Current
+      - key: b_1_30
+        label: 1-30 days
+      - key: b_31_60
+        label: 31-60 days
+      - key: b_61_90
+        label: 61-90 days
+      - key: b_90_plus
+        label: 90+ days
+      sort:
+        field: date
+        dir: asc
+      limit: 26
+    - type: data
+      title: DSO trend
+      source: collection:snapshots
+      display: chart
+      chart: line
+      fields:
+      - key: date
+        label: Week
+      - key: dso
+        label: DSO
+      sort:
+        field: date
+        dir: asc
+      limit: 26
+    - type: data
+      title: Outstanding by due month
+      source: collection:invoices
+      display: chart
+      chart: bar
+      fields:
+      - key: due_date
+        label: Month
+      - key: outstanding
+        label: Outstanding
+      groupBy:
+        field: due_date
+        bucket: month
+        aggs:
+        - key: outstanding
+          agg: sum
+          field: outstanding
+  - key: account
+    type: account
+    title: Subscription and connections
+    roles:
+    - admin
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: starter
+      price: 49
+      interval: month
+      label: Starter — up to 25 active accounts
+      roles:
+      - admin
+      includes:
+      - Up to 25 active credit accounts
+      - Weekly monitoring and reminders
+    - key: growth
+      price: 149
+      interval: month
+      label: Growth — up to 100 active accounts
+      roles:
+      - admin
+      includes:
+      - Up to 100 active credit accounts
+      - Weekly monitoring and reminders
+    - key: scale
+      price: 399
+      interval: month
+      label: Scale — up to 500 active accounts
+      roles:
+      - admin
+      includes:
+      - Up to 500 active credit accounts
+      - Weekly monitoring and reminders
+  extensions:
+  - key: ledger_oauth
+    description: 'OAuth connection to Xero, QuickBooks or Sage is not available yet. Interim: invoices and payments arrive
+      through the ledger_invoice webhook (POST /api/hooks/ledger_invoice, e.g. from the ledger''s own automation) or by CSV
+      upload on /admin/data.'
+  - key: payment_collection
+    description: Card and Direct Debit collection through a licensed payment partner (mandates, payment links, reconciliation)
+      is not available yet. Bank details are captured on the application for the partner to set up the mandate.
+  - key: multi_tenant_wholesalers
+    description: This design assumes one deployment per wholesaler (the owner is the wholesaler; the credit controller and
+      sales reps are invited; the trade customer's login email is the account's customer_email). Sales reps are set through
+      rep_email on each account (admin data page). A SaaS serving many wholesalers in one deployment needs per-wholesaler
+      separation not expressible here.
+  - key: account_quota
+    description: The plan limit on active accounts (25/100/500) is described in the plans but not enforced automatically,
+      because accounts are created by a trigger rather than by a user tool.

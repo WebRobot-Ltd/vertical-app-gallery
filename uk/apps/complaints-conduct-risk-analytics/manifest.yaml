@@ -1,0 +1,785 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: fairline
+  displayName: Fairline
+  tagline: Consumer Duty conduct-risk analysis for complaints and customer conversations.
+  description: Fairline classifies complaints, chats, emails and call transcripts against a versioned Consumer Duty rule library,
+    routes high-risk items to human reviewers with a full audit trail, and produces a board-ready monthly report that the
+    compliance lead approves.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#12284a'
+      accent: '#0f7b6c'
+      background: '#f6f8fb'
+      foreground: '#142033'
+    fonts:
+      body: Inter
+      display: Source Serif 4
+    wordmark:
+    - text: Fair
+      color: primary
+    - text: line
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Roles
+      href: '#roles'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: compliance_lead
+      label: Compliance lead
+      assignedBy: invite
+    - key: reviewer
+      label: Reviewer
+      assignedBy: invite
+    - key: auditor
+      label: Read-only auditor
+      assignedBy: invite
+    - key: user
+      label: Data contributor
+      assignedBy: signup
+  agents:
+  - key: classifier
+    role: main
+    description: Classifies one interaction against the Consumer Duty rule library.
+    profile:
+      inline:
+        display_name: Fairline classifier
+        crews:
+        - id: classifier
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a conduct-risk analyst for a UK FCA-regulated firm. For ONE customer interaction (complaint,
+            chat, email or call transcript) you: 1) call read_rules to load the current rule library (four Consumer Duty outcomes:
+            products and services, price and value, consumer understanding, consumer support; vulnerability indicators; unfair
+            treatment; poor communication; potential redress); 2) decide which rules apply, quoting short evidence from the
+            text; 3) set risk_level low, medium or high, vulnerable true/false, duty_outcome, labels (comma-separated rule
+            codes), rationale (concise, evidence-based) and rule_version; 4) call update_interaction with the record id and
+            those fields, setting status to needs_review when risk_level is high, otherwise classified. Never invent facts,
+            never give legal advice; when unsure, choose the higher risk level and say why. Finish with a one-paragraph summary
+            starting with ''# Classification''.'
+    goalTemplate: 'Classify this interaction and save the result: {event}'
+    appTools:
+    - name: read_rules
+      description: Read the current Consumer Duty rule library
+      action: read
+      collection: rule_library
+      scope: all
+    - name: update_interaction
+      description: Write the classification onto the interaction record
+      action: write
+      collection: interactions
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.2
+  - key: trend_watcher
+    role: helper
+    description: Weekly check of which risk themes are rising by product.
+    profile:
+      inline:
+        display_name: Fairline trend watcher
+        crews:
+        - id: trend_watcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You monitor conduct-risk themes. Use read_interactions to compare the last 4 weeks with the 4 weeks
+            before, by product and label. Report only real figures from the data. Start with ''# Theme watch — <date>''. Give
+            a short markdown summary, then end with ONE fenced JSON block: {"theme":"<label>","product":"<product>","change_pct":<number>,"rises":"yes"|"no","summary":"<one
+            sentence>"} for the single most significant theme. Use rises "yes" only if the increase is at least 25% and at
+            least 5 items in the recent window.'
+    memory: instance
+    appTools:
+    - name: read_interactions
+      description: Read classified interactions the user may see
+      action: read
+      collection: interactions
+      scope: user
+    output: markdown+json
+    writesTo:
+      collection: theme_alerts
+      parse: json_last
+  - key: report_writer
+    role: helper
+    description: Drafts the monthly board Consumer Duty report and asks the compliance lead to approve it.
+    profile:
+      inline:
+        display_name: Fairline board report writer
+        crews:
+        - id: report_writer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the monthly Consumer Duty board report for a UK regulated firm. Use read_interactions
+            and read_reviews for the month. Start with ''# Consumer Duty report — <month>''. Sections (##): Executive summary,
+            Risk themes by product, Trends vs previous month, Vulnerable-customer cases, Time to resolution, Reviewer overrides
+            and audit points, Recommended actions. Use only real figures from the data; say plainly when data is thin. Add
+            at least one chart as a fenced block ```chart {"type":"bar","title":"…","labels":[…],"series":[{"name":"…","values":[…]}]}```.
+            No legal advice. When the draft is complete, call request_board_report with the report; the compliance lead must
+            approve before it goes to the board.'
+    awaits:
+    - board_report
+    appTools:
+    - name: read_interactions
+      description: Read classified interactions the user may see
+      action: read
+      collection: interactions
+      scope: user
+    - name: read_reviews
+      description: Read the review decisions (audit trail)
+      action: read
+      collection: reviews
+      scope: user
+    output: markdown
+    writesTo:
+      collection: monthly_reports
+      parse: whole
+  data:
+    collections:
+    - name: rule_library
+      ownedBy: shared
+      description: Versioned UK regulatory rule library (Consumer Duty outcomes, vulnerability, unfair treatment, poor communication,
+        redress). Maintained by compliance staff on the data page.
+      fields:
+      - name: code
+        type: text
+        required: true
+      - name: category
+        type: select
+        options:
+        - products_services
+        - price_value
+        - consumer_understanding
+        - consumer_support
+        - vulnerability
+        - unfair_treatment
+        - poor_communication
+        - potential_redress
+      - name: title
+        type: text
+      - name: guidance
+        type: textarea
+      - name: source_reference
+        type: text
+      - name: version
+        type: text
+      - name: effective_from
+        type: date
+    - name: interactions
+      ownedBy: user
+      description: Complaints, chats, emails and call transcripts with their classification
+      fields:
+      - name: interaction_date
+        type: date
+        required: true
+        label: Date
+      - name: product
+        type: text
+        required: true
+      - name: channel
+        type: select
+        required: true
+        options:
+        - complaint
+        - chat
+        - email
+        - call_transcript
+      - name: outcome
+        type: text
+        label: Outcome
+      - name: text
+        type: textarea
+        required: true
+      - name: attachment
+        type: file
+        accept:
+        - pdf
+        - docx
+        - txt
+        - csv
+        maxMb: 15
+      - name: risk_level
+        type: select
+        options:
+        - low
+        - medium
+        - high
+      - name: duty_outcome
+        type: text
+      - name: labels
+        type: text
+      - name: vulnerable
+        type: boolean
+      - name: rationale
+        type: textarea
+      - name: rule_version
+        type: text
+      - name: status
+        type: select
+        default: new
+        options:
+        - new
+        - classified
+        - needs_review
+        - reviewed
+      - name: final_label
+        type: text
+      - name: resolved_date
+        type: date
+      - name: days_to_resolve
+        type: number
+      access:
+      - role: reviewer
+        can:
+        - read
+        - write
+      - role: compliance_lead
+        can:
+        - read
+        - write
+      - role: auditor
+        can:
+        - read
+    - name: reviews
+      ownedBy: user
+      description: 'Audit trail: every human decision on a flagged item'
+      fields:
+      - name: interaction_id
+        type: text
+        required: true
+      - name: decision
+        type: select
+        required: true
+        options:
+        - confirmed
+        - overridden
+      - name: final_label
+        type: text
+        required: true
+      - name: notes
+        type: textarea
+      access:
+      - role: reviewer
+      - role: compliance_lead
+      - role: auditor
+    - name: theme_alerts
+      ownedBy: instance
+      description: Weekly theme-rise findings
+      fields:
+      - name: theme
+        type: text
+      - name: product
+        type: text
+      - name: change_pct
+        type: number
+      - name: rises
+        type: text
+      - name: summary
+        type: text
+    - name: monthly_reports
+      ownedBy: instance
+      description: Drafted monthly board reports
+      fields:
+      - name: title
+        type: text
+      - name: body
+        type: textarea
+  approvals:
+  - key: board_report
+    title: Board Consumer Duty report
+    description: The compliance lead approves the monthly report before it goes to the board.
+    role: compliance_lead
+    timeoutMinutes: 10080
+    onTimeout: reject
+  templates:
+  - key: monthly_report
+    title: Monthly board report
+    description: Drafts the Consumer Duty report on the 1st of each month.
+    agent: report_writer
+    params:
+    - name: scope
+      type: text
+      label: Scope (e.g. whole firm)
+    goal: 'Write the Consumer Duty board report for the previous calendar month. Today is {date}. Scope: {scope}.'
+    schedule:
+      cron: 0 7 1 * *
+      userCanChange: false
+    maxPerUser: 1
+    roles:
+    - compliance_lead
+    - admin
+  - key: theme_watch
+    title: Theme watch
+    description: Weekly check for rising risk themes.
+    agent: trend_watcher
+    params:
+    - name: scope
+      type: text
+      label: Scope (e.g. whole firm)
+    goal: 'Check which risk themes are rising. Today is {date}. Scope: {scope}.'
+    schedule:
+      cron: 0 7 * * 1
+      userCanChange: true
+    maxPerUser: 1
+    roles:
+    - compliance_lead
+    - admin
+    deliver:
+      to: owner
+      onlyIfNew: true
+  triggers:
+  - key: classify_new
+    'on':
+      collection: interactions
+      op: insert
+      where:
+        status: new
+    start:
+      agent: classifier
+    goal: 'Classify interaction {record.id} dated {record.interaction_date}, product {record.product}, channel {record.channel},
+      outcome {record.outcome}. Text: {record.text}'
+  - key: high_risk_flag
+    'on':
+      collection: interactions
+      op: update
+      where:
+        status: needs_review
+    notify:
+      to:
+      - role:reviewer
+      subject: 'Fairline: high-risk item awaiting review'
+      body: An item on {record.product} ({record.channel}) was flagged high risk and needs a human review.
+      link: review_queue
+  - key: theme_rising
+    'on':
+      collection: theme_alerts
+      op: insert
+      where:
+        rises: 'yes'
+    notify:
+      to:
+      - owner
+      - role:compliance_lead
+      - role:reviewer
+      subject: 'Fairline alert: theme rising — {record.theme}'
+      body: '{record.theme} on {record.product} is up {record.change_pct}%. {record.summary}'
+      link: alerts
+  - key: report_decided
+    'on':
+      approval: board_report
+      decision: approved
+    notify:
+      to:
+      - owner
+      - admins
+      subject: Board Consumer Duty report approved
+      body: The monthly report has been approved by the compliance lead and is ready for the board.
+      link: reports
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Fairline
+    sections:
+    - type: hero
+      title: Spot **conduct risk** before it becomes redress.
+      text: Upload complaints, chats, emails and call transcripts. Fairline classifies each against a versioned Consumer Duty
+        rule library, routes high-risk items to your reviewers and produces a board-ready monthly report.
+      eyebrow: For UK FCA-regulated firms
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Upload
+        text: Complaints, logs, emails and transcripts with date, product, channel and outcome.
+      - title: Classify
+        text: An agent applies the Consumer Duty outcomes, vulnerability, unfair treatment, communication and redress rules.
+      - title: Review
+        text: High-risk items go to a human who confirms or overrides, with notes and a full audit trail.
+      - title: Report
+        text: Dashboards, theme alerts and a monthly board report approved by the compliance lead.
+    - type: cards
+      id: roles
+      title: Roles
+      items:
+      - title: Compliance lead
+        text: Maintains the rule library and approves the board report.
+      - title: Reviewer
+        text: Confirms or overrides high-risk labels.
+      - title: Auditor
+        text: Read-only access to items, decisions and the audit trail.
+    - type: note
+      content: Decision support, not legal advice. Customer data only; UK hosting. Annual licence from £30,000.
+  - key: upload
+    type: form
+    title: Add interaction
+    collection: interactions
+    fields:
+    - interaction_date
+    - product
+    - channel
+    - outcome
+    - text
+    - attachment
+    submit:
+      label: Submit for classification
+      message: Saved. Fairline is classifying it.
+      redirect: items
+    roles:
+    - user
+    - compliance_lead
+    - admin
+  - key: items
+    type: table
+    title: Interactions
+    source: collection:interactions
+    export: true
+    data:
+      display: table
+      fields:
+      - key: interaction_date
+        label: Date
+        format: date
+      - key: product
+      - key: channel
+        format: badge
+      - key: risk_level
+        format: badge
+      - key: duty_outcome
+      - key: labels
+      - key: vulnerable
+      - key: status
+        format: badge
+      sort:
+        field: interaction_date
+        dir: desc
+      limit: 200
+    roles:
+    - user
+    - reviewer
+    - compliance_lead
+    - auditor
+    - admin
+  - key: review_queue
+    type: table
+    title: Review queue
+    source: collection:interactions
+    data:
+      display: table
+      fields:
+      - key: interaction_date
+        label: Date
+        format: date
+      - key: product
+      - key: channel
+      - key: labels
+      - key: rationale
+      - key: status
+        format: badge
+      filters:
+      - field: status
+        op: '='
+        value: needs_review
+      sort:
+        field: interaction_date
+        dir: desc
+      limit: 100
+    roles:
+    - reviewer
+    - compliance_lead
+    - admin
+  - key: review
+    type: form
+    title: Record review decision
+    collection: reviews
+    submit:
+      label: Save decision
+      message: Decision recorded in the audit trail.
+      redirect: review_queue
+    roles:
+    - reviewer
+    - compliance_lead
+  - key: override
+    type: form
+    title: Update item label
+    collection: interactions
+    fields:
+    - final_label
+    - status
+    edit: true
+    nav: false
+    roles:
+    - reviewer
+    - compliance_lead
+  - key: audit
+    type: table
+    title: Audit trail
+    source: collection:reviews
+    export: true
+    data:
+      display: table
+      fields:
+      - key: interaction_id
+      - key: decision
+        format: badge
+      - key: final_label
+      - key: notes
+      - key: createdAt
+        label: Decided
+        format: date
+      sort:
+        field: createdAt
+        dir: desc
+      limit: 200
+    roles:
+    - auditor
+    - compliance_lead
+    - reviewer
+    - admin
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - compliance_lead
+    - reviewer
+    - auditor
+    - admin
+    sections:
+    - type: data
+      title: Risk themes by product
+      source: collection:interactions
+      display: chart
+      chart: stacked
+      fields:
+      - key: product
+      - key: count
+        label: Items
+      groupBy:
+        field: product
+        aggs: []
+    - type: data
+      title: Trend by month
+      source: collection:interactions
+      display: chart
+      chart: line
+      fields:
+      - key: interaction_date
+      - key: count
+        label: Items
+      - key: avg_days
+        label: Avg days to resolve
+      groupBy:
+        field: interaction_date
+        bucket: month
+        aggs:
+        - key: avg_days
+          agg: avg
+          field: days_to_resolve
+    - type: data
+      title: Vulnerable-customer cases
+      source: collection:interactions
+      display: table
+      fields:
+      - key: interaction_date
+        format: date
+      - key: product
+      - key: channel
+      - key: risk_level
+        format: badge
+      - key: status
+        format: badge
+      filters:
+      - field: vulnerable
+        op: '='
+        value: true
+      limit: 50
+      empty: No vulnerable-customer cases flagged.
+    - type: data
+      title: Time to resolution
+      source: collection:interactions
+      display: kpi
+      kpis:
+      - label: Average days to resolve
+        agg: avg
+        field: days_to_resolve
+        format: number
+      - label: Items
+        agg: count
+  - key: rules
+    type: table
+    title: Rule library
+    source: collection:rule_library
+    data:
+      display: table
+      fields:
+      - key: code
+      - key: category
+        format: badge
+      - key: title
+      - key: version
+      - key: effective_from
+        format: date
+      limit: 200
+    roles:
+    - compliance_lead
+    - reviewer
+    - auditor
+    - admin
+  - key: alerts
+    type: table
+    title: Theme alerts
+    source: collection:theme_alerts
+    data:
+      display: table
+      fields:
+      - key: theme
+      - key: product
+      - key: change_pct
+        format: number
+      - key: rises
+        format: badge
+      - key: summary
+      limit: 100
+    roles:
+    - compliance_lead
+    - reviewer
+    - auditor
+    - admin
+  - key: reports
+    type: table
+    title: Monthly reports
+    source: collection:monthly_reports
+    printable: true
+    data:
+      display: table
+      fields:
+      - key: title
+      - key: createdAt
+        format: date
+      limit: 60
+    roles:
+    - compliance_lead
+    - auditor
+    - admin
+  - key: approvals
+    type: approvals
+    title: Approvals
+    roles:
+    - compliance_lead
+    - admin
+  - key: watches
+    type: instances
+    template: theme_watch
+    title: Theme watch
+    roles:
+    - compliance_lead
+    - admin
+  - key: monthly
+    type: instances
+    template: monthly_report
+    title: Board report schedule
+    roles:
+    - compliance_lead
+    - admin
+  - key: account
+    type: account
+    title: Licence
+    roles:
+    - admin
+    - compliance_lead
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: licence
+      price: 30000
+      interval: year
+      label: Fairline annual licence
+      includes:
+      - All roles
+      - Rule library versioning
+      - Monthly board report
+      - Audit trail
+  notifications:
+    emailOnRunDone: false
+  extensions:
+  - key: crm_oauth
+    description: OAuth connection to CRM and contact-centre systems is not available yet; data comes in by upload (files and
+      pasted text) or a webhook trigger.
+  - key: audio_transcription
+    description: Call recording ingestion and audio transcription is not available yet; upload transcripts (pdf, docx, txt,
+      csv). Audio files are not accepted.
+  - key: uk_data_residency
+    description: UK-only data hosting is a deployment/contract setting of the platform, not expressible in the manifest; confirm
+      UK region before publishing.
+  - key: single_firm_deployment
+    description: Staff roles (reviewer, compliance lead, auditor) see all records of the app, so deploy one app per licensed
+      firm.
+  - key: rule_library_maintenance
+    description: Compliance staff maintain and version the rule library on the built-in admin data page (new version = new
+      records with version and effective_from).

@@ -1,0 +1,1396 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: meterwise
+  displayName: Meterwise
+  tagline: Meter, price and invoice your AI agents by outcome.
+  description: 'Billing and monetisation for companies that sell AI agents: usage and outcome events in, charges, AI cost
+    and margin per customer out, invoices in Stripe, and a portal for your end customers.'
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/Rome
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#0f2a43'
+      accent: '#12a37f'
+      background: '#f6f8fa'
+      foreground: '#14202e'
+    fonts:
+      body: Inter
+      display: Space Grotesk
+    wordmark:
+    - text: Meter
+      color: primary
+    - text: wise
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Send events
+      href: '#sdk'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      assignedBy: signup
+    - key: customer
+      label: End customer
+      assignedBy: derived
+      from: collection:end_customers.email
+  limits:
+  - action: agent:analyst
+    per: user
+    max: 10
+    window: day
+    roles:
+    - user
+  agents:
+  - key: rater
+    role: helper
+    description: 'Rates new usage events: revenue from the price model, AI cost from the cost rates, spike alerts.'
+    profile:
+      inline:
+        display_name: Meterwise rater
+        crews:
+        - id: rater
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You rate usage events for one company that sells AI agents. Steps: 1) read_workspace to get the
+            members list; copy it into every record you create. 2) read_events and take events with status ''new'' (at most
+            50 per run). 3) For each event find its end customer (read_customers, match customer_ref to external_id) and the
+            price model (read_prices: the customer''s price_model_product matching the event''s unit; if none, mark the event
+            status ''unpriced'' with save_event and add one alert). 4) Find the cost rate for the event''s model in read_rates
+            (missing model: use zeros and say so in the alert). 5) Compute used_before = sum of quantity of existing charges
+            (read_charges) for the same customer, agent, unit in the same calendar month. 6) Call price_event with quantity,
+            used_before, unit_price, included_qty, tiers, tokens_in, tokens_out, tool_calls, input_per_mtok, output_per_mtok,
+            tool_call_cost. Never compute money yourself. 7) add_charge with event_id, customer_ref, customer_email, agent,
+            unit, outcome, quantity, revenue, ai_cost, margin, date (YYYY-MM-DD of the event), members. 8) save_event with
+            the same event_id and status ''rated''. 9) Spikes: if a customer''s quantity today is more than 3 times their
+            daily average of the last 14 days, or a charge has ai_cost greater than revenue, add_alert (kind spike or margin,
+            message, customer_ref, severity, members). Never invent events or figures. End with a short markdown summary starting
+            with a level-1 ''# '' title: events rated, revenue, AI cost, alerts.'
+          mcp_servers: []
+    appTools:
+    - name: read_workspace
+      description: Read the company workspace (members, currency)
+      action: read
+      collection: workspaces
+      scope: user
+    - name: read_events
+      description: Read usage events
+      action: read
+      collection: usage_events
+      scope: user
+    - name: save_event
+      description: Update a usage event (status) by event_id
+      action: write
+      collection: usage_events
+      scope: user
+    - name: read_customers
+      description: Read end customers
+      action: read
+      collection: end_customers
+      scope: user
+    - name: read_prices
+      description: Read price models
+      action: read
+      collection: price_models
+      scope: user
+    - name: read_rates
+      description: Read AI cost rates per model
+      action: read
+      collection: cost_rates
+      scope: user
+    - name: read_charges
+      description: Read charges already calculated
+      action: read
+      collection: charges
+      scope: user
+    - name: add_charge
+      description: Record the charge of one event
+      action: append
+      collection: charges
+      scope: user
+    - name: add_alert
+      description: Record an alert (emailed to the owner)
+      action: append
+      collection: alerts
+      scope: user
+    - name: price_event
+      description: Compute revenue, AI cost and margin of one event with tiers and included quantity
+      action: call
+      slot: pricing
+    goalTemplate: Rate the new usage events of the last {lookback_days} days. Today is {date}. Write in {lang}.
+    output: markdown
+    limits:
+      maxTurns: 60
+      maxBudgetUsd: 1.0
+  - key: analyst
+    role: main
+    description: Explains margins per customer and per agent, flags customers whose cost exceeds revenue, proposes price changes
+      for approval.
+    profile:
+      inline:
+        display_name: Meterwise margin analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a pricing and margin analyst for a company that sells AI agents. Use read_charges, read_customers
+            and read_prices for the requested period; use only real figures. Produce a report starting with a level-1 title
+            ''# Margin review — <period>''. Sections: ## Summary (revenue, AI cost, margin %), ## By agent, ## By customer
+            (table: customer, revenue, AI cost, margin %), ## Customers below cost (those whose cost exceeds revenue, with
+            the likely driver: model, tokens per outcome, tool calls, included quantity too generous), ## Suggested price
+            changes. Add one chart block for margin by agent: ```chart {"type":"bar","title":"Margin by agent","labels":[...],"series":[{"name":"Margin","values":[...]}],"unit":"EUR"}```.
+            For each concrete price change, call add_suggestion (customer_ref, agent, current_price, suggested_price, rationale,
+            expected_margin_pct, status ''pending'', members from read_workspace), then call request_price_change once with
+            a summary of all pending suggestions and wait for the decision. Never change a price yourself, never invent numbers,
+            say plainly when data is thin.'
+          mcp_servers: []
+    appTools:
+    - name: read_workspace
+      description: Read the company workspace (members)
+      action: read
+      collection: workspaces
+      scope: user
+    - name: read_charges
+      description: Read charges (revenue, AI cost, margin)
+      action: read
+      collection: charges
+      scope: user
+    - name: read_customers
+      description: Read end customers
+      action: read
+      collection: end_customers
+      scope: user
+    - name: read_prices
+      description: Read price models
+      action: read
+      collection: price_models
+      scope: user
+    - name: add_suggestion
+      description: Record a price change suggestion
+      action: append
+      collection: price_suggestions
+      scope: user
+    awaits:
+    - price_change
+    goalTemplate: 'Review period: {period_label}.
+
+      {?focus}Focus: {focus}{/focus}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 1.0
+  - key: invoicer
+    role: scheduled
+    description: Builds the monthly invoice of each end customer and drafts it in Stripe.
+    profile:
+      inline:
+        display_name: Meterwise invoicer
+        crews:
+        - id: invoicer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare last month''s invoices for one company. Steps: read_workspace (members, currency); read_customers;
+            read_charges for the previous calendar month; read_prices for min_commitment. For each customer: amount = sum
+            of charge revenue, raised to the minimum commitment if higher (state the top-up as its own line). Skip customers
+            with amount 0 and no minimum. Look up the Stripe customer with stripe_customers (use stripe_customer_id of the
+            record if present). Create a DRAFT invoice with stripe_invoice_item lines and stripe_invoice (collection_method
+            send_invoice, auto_advance false); if the user has not connected Stripe, still save the invoice with status ''draft''
+            and say so. Save every invoice with add_invoice (customer_ref, customer_email, period YYYY-MM, amount, currency,
+            lines summary, stripe_invoice_id, status ''ready'', members). Start with a level-1 ''# '' title; end with a table
+            of invoices created. Never invent amounts; amounts come only from charges and minimum commitments.'
+          mcp_servers: []
+    appTools:
+    - name: read_workspace
+      description: Read the company workspace
+      action: read
+      collection: workspaces
+      scope: user
+    - name: read_customers
+      description: Read end customers
+      action: read
+      collection: end_customers
+      scope: user
+    - name: read_charges
+      description: Read charges
+      action: read
+      collection: charges
+      scope: user
+    - name: read_prices
+      description: Read price models
+      action: read
+      collection: price_models
+      scope: user
+    - name: add_invoice
+      description: Record an invoice
+      action: append
+      collection: invoices
+      scope: user
+    - name: stripe_customers
+      description: List customers in the user's Stripe account
+      action: http
+      http:
+        method: GET
+        url: https://api.stripe.com/v1/customers
+        credential:
+          provider: stripe
+        attribution: Stripe API
+    - name: stripe_invoice_item
+      description: Add a line to a draft invoice in the user's Stripe account
+      action: http
+      http:
+        method: POST
+        url: https://api.stripe.com/v1/invoiceitems
+        credential:
+          provider: stripe
+        attribution: Stripe API
+    - name: stripe_invoice
+      description: Create a draft invoice in the user's Stripe account
+      action: http
+      http:
+        method: POST
+        url: https://api.stripe.com/v1/invoices
+        credential:
+          provider: stripe
+        attribution: Stripe API
+    goalTemplate: Prepare the invoices for the previous month. Today is {date}. Write in {lang}.
+    output: markdown
+    limits:
+      maxTurns: 60
+      maxBudgetUsd: 1.0
+  templates:
+  - key: meter_run
+    title: Daily metering
+    description: 'Rates new events every day: charges, AI cost, spike and margin alerts.'
+    agent: rater
+    params:
+    - name: lookback_days
+      type: number
+      default: 2
+      label: Days to look back
+    goal: Rate the new usage events of the last {lookback_days} days. Today is {date}. Write in {lang}.
+    schedule:
+      cron: 0 5 * * *
+      userCanChange: true
+    maxPerUser: 1
+    cost:
+      perRun: 5
+  - key: invoice_run
+    title: Monthly invoicing
+    description: On the 1st of each month drafts the invoices in Stripe.
+    agent: invoicer
+    params:
+    - name: note
+      type: text
+      label: Note (optional)
+    goal: Prepare the invoices for the previous month. Today is {date}. Write in {lang}.
+    schedule:
+      cron: 0 6 1 * *
+      userCanChange: true
+    maxPerUser: 1
+    cost:
+      perRun: 10
+    deliver:
+      to: owner
+      onlyIfNew: true
+  approvals:
+  - key: price_change
+    title: Price change proposals
+    description: Review the price changes suggested by the margin analyst.
+    decidedBy: requester
+    timeoutMinutes: 10080
+    onTimeout: reject
+  inputForm:
+    title: New margin review
+    fields:
+    - name: period
+      type: select
+      required: true
+      label: Period
+      options:
+      - value: last_30
+        label: Last 30 days
+      - value: last_90
+        label: Last 90 days
+      - value: ytd
+        label: Year to date
+    - name: focus
+      type: textarea
+      maxLength: 400
+      label: Focus (optional)
+      help: e.g. the support agent, customer Acme
+  data:
+    collections:
+    - name: workspaces
+      description: 'The company account: currency and the team (members'' emails: finance, engineering)'
+      ownedBy: user
+      fields:
+      - name: company
+        type: text
+        required: true
+        label: Company
+      - name: currency
+        type: select
+        required: true
+        label: Currency
+        options:
+        - eur
+        - usd
+        - gbp
+      - name: members
+        type: array
+        label: Team members (emails)
+        help: Finance and engineering colleagues who may see and edit this workspace
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: products
+      description: 'What the company sells: an agent and its billing unit'
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Product / agent
+      - name: unit
+        type: select
+        required: true
+        label: Billing unit
+        options:
+        - value: conversation
+          label: Conversation
+        - value: resolved_ticket
+          label: Resolved ticket
+        - value: document_processed
+          label: Document processed
+        - value: meeting_booked
+          label: Meeting booked
+        - value: task
+          label: Task
+        - value: seat
+          label: Seat
+      - name: description
+        type: textarea
+        label: Description
+      - name: members
+        type: array
+        label: Members (emails)
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: price_models
+      description: 'Price model per product: per outcome, per task or per seat, with tiers and commitment'
+      ownedBy: user
+      fields:
+      - name: product
+        type: text
+        required: true
+        label: Product (name)
+      - name: unit
+        type: text
+        required: true
+        label: Unit key (as sent in events)
+      - name: model
+        type: select
+        required: true
+        label: Model
+        options:
+        - value: per_outcome
+          label: Per outcome
+        - value: per_task
+          label: Per task
+        - value: per_seat
+          label: Per seat
+      - name: unit_price
+        type: number
+        required: true
+        label: Unit price
+      - name: included_qty
+        type: number
+        label: Included quantity per month
+      - name: tiers
+        type: json
+        label: Tiers
+        help: '[{"up_to":1000,"price":0.5},{"up_to":null,"price":0.3}] — overrides the unit price'
+      - name: min_commitment
+        type: number
+        label: Minimum monthly commitment
+      - name: customer_ref
+        type: text
+        label: Only for end customer (external id, empty = everyone)
+      - name: members
+        type: array
+        label: Members (emails)
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: cost_rates
+      description: 'AI cost per model: tokens and tool calls'
+      ownedBy: user
+      fields:
+      - name: model
+        type: text
+        required: true
+        label: Model name
+      - name: input_per_mtok
+        type: number
+        required: true
+        label: Input cost per million tokens
+      - name: output_per_mtok
+        type: number
+        required: true
+        label: Output cost per million tokens
+      - name: tool_call_cost
+        type: number
+        label: Cost per tool call
+      - name: members
+        type: array
+        label: Members (emails)
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: end_customers
+      description: The company's own customers, matched to events by external id
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Name
+      - name: external_id
+        type: text
+        required: true
+        label: Customer id sent in events
+      - name: email
+        type: email
+        required: true
+        label: Portal / billing email
+      - name: stripe_customer_id
+        type: text
+        label: Stripe customer id
+      - name: members
+        type: array
+        label: Members (emails)
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: usage_events
+      description: Usage and outcome events received from the SDK
+      ownedBy: user
+      fields:
+      - name: event_id
+        type: text
+        required: true
+      - name: customer_ref
+        type: text
+        required: true
+      - name: agent
+        type: text
+      - name: unit
+        type: text
+      - name: quantity
+        type: number
+      - name: outcome
+        type: text
+      - name: model
+        type: text
+      - name: tokens_in
+        type: number
+      - name: tokens_out
+        type: number
+      - name: tool_calls
+        type: number
+      - name: timestamp
+        type: date
+      - name: status
+        type: select
+        default: new
+        options:
+        - new
+        - rated
+        - unpriced
+      retentionDays: 730
+    - name: charges
+      description: Revenue, AI cost and margin of each rated event
+      ownedBy: user
+      fields:
+      - name: event_id
+        type: text
+      - name: customer_ref
+        type: text
+      - name: customer_email
+        type: email
+      - name: agent
+        type: text
+      - name: unit
+        type: text
+      - name: outcome
+        type: text
+      - name: quantity
+        type: number
+      - name: revenue
+        type: number
+      - name: ai_cost
+        type: number
+      - name: margin
+        type: number
+      - name: date
+        type: date
+      - name: members
+        type: array
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: customer
+        where:
+          customer_email: '{user.email}'
+        can:
+        - read
+    - name: invoices
+      description: Monthly invoices per end customer, drafted in Stripe
+      ownedBy: user
+      fields:
+      - name: customer_ref
+        type: text
+      - name: customer_email
+        type: email
+      - name: period
+        type: text
+      - name: amount
+        type: number
+      - name: currency
+        type: text
+      - name: lines
+        type: textarea
+      - name: stripe_invoice_id
+        type: text
+      - name: status
+        type: select
+        options:
+        - draft
+        - ready
+        - sent
+        - paid
+      - name: members
+        type: array
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: customer
+        where:
+          customer_email: '{user.email}'
+        can:
+        - read
+    - name: alerts
+      description: Usage spikes and margin alerts
+      ownedBy: user
+      fields:
+      - name: kind
+        type: select
+        options:
+        - spike
+        - margin
+        - unpriced
+      - name: message
+        type: textarea
+      - name: customer_ref
+        type: text
+      - name: severity
+        type: select
+        options:
+        - info
+        - warning
+        - critical
+      - name: members
+        type: array
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: price_suggestions
+      description: Price changes proposed by the analyst, decided by finance
+      ownedBy: user
+      fields:
+      - name: customer_ref
+        type: text
+      - name: agent
+        type: text
+      - name: current_price
+        type: number
+      - name: suggested_price
+        type: number
+      - name: expected_margin_pct
+        type: number
+      - name: rationale
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - pending
+        - approved
+        - rejected
+      - name: members
+        type: array
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    credentials:
+    - provider: stripe
+      kind: api_key
+      scope: user
+      required: true
+      label: Stripe restricted API key
+      help: Stripe Dashboard → Developers → API keys → create a restricted key with write access to Customers, Invoices and
+        Invoice items.
+  views:
+  - key: home
+    type: page
+    title: Meterwise
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: Billing for AI agents
+      title: Bill your agents by **outcome**, and know your margin on every customer.
+      text: Send usage and outcome events from your agent code. Meterwise attributes them to your customers, prices them,
+        adds up the AI cost behind each one, drafts the invoices in Stripe and tells you where you lose money.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+      aside: '<div style="padding:16px"><b>Acme Support</b><br>Resolved tickets: 1,240<br>Revenue: €1,860<br>AI cost: €412<br><b>Margin:
+        77.9%</b></div>'
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Connect and define
+        text: Connect Stripe, invite finance and engineering, define products, units, tiers, included quantity and minimum
+          commitment.
+      - title: Send events
+        text: Your agent code posts usage and outcome events with the customer, model, tokens and tool calls.
+      - title: Charges and invoices
+        text: Every event is priced and its AI cost computed; monthly invoices are drafted in Stripe.
+      - title: Margins and approvals
+        text: An agent explains margin by customer and agent and proposes price changes that finance approves.
+    - type: text
+      id: sdk
+      title: Send events
+      content: 'POST JSON to `/api/hooks/usage_events` with the app''s hook secret:
+
+
+        `{"event_id":"evt_123","customer":"acme","agent":"support","unit":"resolved_ticket","quantity":1,"outcome":"resolved","model":"claude-sonnet-5-5","tokens_in":5200,"tokens_out":800,"tool_calls":3,"timestamp":"2026-11-12"}`
+
+
+        Events with the same event_id are never counted twice.'
+    - type: cards
+      title: For everyone in the company
+      items:
+      - title: Finance
+        text: Revenue, cost and margin dashboards, invoices, price approvals.
+      - title: Engineering
+        text: Event feed, cost rates per model, alerts on spikes.
+      - title: Your customers
+        text: A portal with the value delivered and their usage.
+    - type: note
+      content: Meterwise is decision support for pricing; amounts are computed from your own price models and cost rates.
+        Check invoices before sending.
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - user
+    - admin
+    sections:
+    - type: data
+      title: Totals
+      source: collection:charges
+      display: kpi
+      kpis:
+      - label: Revenue
+        agg: sum
+        field: revenue
+        format: money
+      - label: AI cost
+        agg: sum
+        field: ai_cost
+        format: money
+      - label: Margin
+        agg: sum
+        field: margin
+        format: money
+      - label: Outcomes
+        agg: sum
+        field: quantity
+        format: number
+    - type: data
+      title: Revenue, cost and margin by month
+      source: collection:charges
+      display: chart
+      chart: bar
+      groupBy:
+        field: date
+        bucket: month
+        aggs:
+        - key: revenue
+          agg: sum
+          field: revenue
+        - key: cost
+          agg: sum
+          field: ai_cost
+        - key: margin
+          agg: sum
+          field: margin
+      fields:
+      - key: date
+      - key: revenue
+      - key: cost
+      - key: margin
+    - type: data
+      title: Margin by agent
+      source: collection:charges
+      display: table
+      groupBy:
+        field: agent
+        aggs:
+        - key: revenue
+          agg: sum
+          field: revenue
+        - key: cost
+          agg: sum
+          field: ai_cost
+        - key: margin
+          agg: sum
+          field: margin
+      fields:
+      - key: agent
+      - key: revenue
+        format: money
+      - key: cost
+        format: money
+      - key: margin
+        format: money
+    - type: data
+      title: Margin by customer
+      source: collection:charges
+      display: table
+      groupBy:
+        field: customer_ref
+        aggs:
+        - key: revenue
+          agg: sum
+          field: revenue
+        - key: cost
+          agg: sum
+          field: ai_cost
+        - key: margin
+          agg: sum
+          field: margin
+      fields:
+      - key: customer_ref
+      - key: revenue
+        format: money
+      - key: cost
+        format: money
+      - key: margin
+        format: money
+      sort:
+        field: margin
+        dir: asc
+    - type: data
+      title: Outcomes by type
+      source: collection:charges
+      display: bar
+      groupBy:
+        field: outcome
+        aggs:
+        - key: qty
+          agg: sum
+          field: quantity
+      fields:
+      - key: outcome
+      - key: qty
+    - type: data
+      title: Recent alerts
+      source: collection:alerts
+      display: list
+      fields:
+      - key: kind
+        format: badge
+      - key: customer_ref
+      - key: message
+      limit: 10
+      empty: No alerts.
+  - key: workspace_form
+    type: form
+    title: Company & team
+    collection: workspaces
+    roles:
+    - user
+    - admin
+    submit:
+      label: Save
+      message: Saved.
+      redirect: dashboard
+    edit: true
+  - key: product_form
+    type: form
+    title: New product
+    collection: products
+    roles:
+    - user
+    - admin
+    submit:
+      label: Add product
+      message: Product added.
+      redirect: products
+  - key: products
+    type: cards
+    title: Products
+    source: collection:products
+    roles:
+    - user
+    - admin
+    data:
+      display: cards
+      fields:
+      - key: name
+      - key: unit
+        format: badge
+      - key: description
+  - key: price_form
+    type: form
+    title: New price model
+    collection: price_models
+    roles:
+    - user
+    - admin
+    submit:
+      label: Save price model
+      message: Price model saved.
+      redirect: prices
+  - key: prices
+    type: table
+    title: Price models
+    source: collection:price_models
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: product
+      - key: unit
+      - key: model
+        format: badge
+      - key: unit_price
+        format: money
+      - key: included_qty
+        format: number
+      - key: min_commitment
+        format: money
+      - key: customer_ref
+  - key: rates_form
+    type: form
+    title: AI cost rate
+    collection: cost_rates
+    roles:
+    - user
+    - admin
+    submit:
+      label: Save rate
+      message: Rate saved.
+  - key: customer_form
+    type: form
+    title: New end customer
+    collection: end_customers
+    roles:
+    - user
+    - admin
+    submit:
+      label: Add customer
+      message: Customer added.
+      redirect: customers
+  - key: customers
+    type: table
+    title: End customers
+    source: collection:end_customers
+    roles:
+    - user
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: name
+      - key: external_id
+      - key: email
+      - key: stripe_customer_id
+  - key: events
+    type: table
+    title: Event feed
+    source: collection:usage_events
+    roles:
+    - user
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: timestamp
+        format: date
+      - key: customer_ref
+      - key: agent
+      - key: unit
+      - key: quantity
+        format: number
+      - key: model
+      - key: tokens_in
+        format: number
+      - key: tokens_out
+        format: number
+      - key: tool_calls
+        format: number
+      - key: status
+        format: badge
+      sort:
+        field: timestamp
+        dir: desc
+      limit: 200
+  - key: charges_table
+    type: table
+    title: Charges
+    source: collection:charges
+    roles:
+    - user
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: date
+        format: date
+      - key: customer_ref
+      - key: agent
+      - key: outcome
+      - key: quantity
+        format: number
+      - key: revenue
+        format: money
+      - key: ai_cost
+        format: money
+      - key: margin
+        format: money
+      sort:
+        field: date
+        dir: desc
+      limit: 200
+  - key: invoices_table
+    type: table
+    title: Invoices
+    source: collection:invoices
+    roles:
+    - user
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: period
+      - key: customer_ref
+      - key: amount
+        format: money
+      - key: currency
+      - key: status
+        format: badge
+      - key: stripe_invoice_id
+      sort:
+        field: period
+        dir: desc
+  - key: alerts_table
+    type: table
+    title: Alerts
+    source: collection:alerts
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: kind
+        format: badge
+      - key: severity
+        format: badge
+      - key: customer_ref
+      - key: message
+  - key: margin_new
+    type: new_run
+    title: Margin review
+    roles:
+    - user
+    - admin
+  - key: margin_history
+    type: history
+    title: My reviews
+    source: run
+    roles:
+    - user
+    - admin
+  - key: margin_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: suggestions
+    type: table
+    title: Price suggestions
+    source: collection:price_suggestions
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: customer_ref
+      - key: agent
+      - key: current_price
+        format: money
+      - key: suggested_price
+        format: money
+      - key: expected_margin_pct
+        format: percent
+      - key: rationale
+      - key: status
+        format: badge
+  - key: approvals_view
+    type: approvals
+    title: Approvals
+    approvals:
+    - price_change
+    roles:
+    - user
+    - admin
+  - key: metering_watch
+    type: instances
+    title: Daily metering
+    template: meter_run
+    roles:
+    - user
+    - admin
+  - key: invoicing_watch
+    type: instances
+    title: Monthly invoicing
+    template: invoice_run
+    roles:
+    - user
+    - admin
+  - key: portal
+    type: page
+    title: My usage
+    roles:
+    - customer
+    sections:
+    - type: data
+      title: Value delivered
+      source: collection:charges
+      display: kpi
+      kpis:
+      - label: Outcomes delivered
+        agg: sum
+        field: quantity
+        format: number
+      - label: Billed so far
+        agg: sum
+        field: revenue
+        format: money
+    - type: data
+      title: Usage by month
+      source: collection:charges
+      display: chart
+      chart: bar
+      groupBy:
+        field: date
+        bucket: month
+        aggs:
+        - key: outcomes
+          agg: sum
+          field: quantity
+      fields:
+      - key: date
+      - key: outcomes
+    - type: data
+      title: Outcomes
+      source: collection:charges
+      display: table
+      fields:
+      - key: date
+        format: date
+      - key: agent
+      - key: outcome
+      - key: quantity
+        format: number
+      - key: revenue
+        format: money
+      sort:
+        field: date
+        dir: desc
+      limit: 100
+    - type: data
+      title: My invoices
+      source: collection:invoices
+      display: table
+      fields:
+      - key: period
+      - key: amount
+        format: money
+      - key: status
+        format: badge
+  - key: account
+    type: account
+    title: Plan & Stripe
+    roles:
+    - user
+  slots:
+  - key: pricing
+    description: Revenue (included quantity, tiers) and AI cost of one event
+    timeoutMs: 2000
+    example:
+      args:
+        quantity: 1
+        used_before: 999
+        unit_price: 0.5
+        included_qty: 1000
+        tiers: []
+        tokens_in: 5000
+        tokens_out: 800
+        tool_calls: 3
+        input_per_mtok: 3
+        output_per_mtok: 15
+        tool_call_cost: 0.002
+      userId: u1
+    code: "def main(input):\n    a = input.get('args') or {}\n    def f(k):\n        try:\n            return float(a.get(k)\
+      \ or 0)\n        except Exception:\n            return 0.0\n    qty = f('quantity')\n    used = f('used_before')\n \
+      \   price = f('unit_price')\n    inc = f('included_qty')\n    tiers = a.get('tiers') or []\n    start = max(used, inc)\n\
+      \    end = used + qty\n    revenue = 0.0\n    if end > start:\n        if tiers:\n            lo = 0.0\n           \
+      \ for t in tiers:\n                up = t.get('up_to')\n                p = float(t.get('price') or 0)\n           \
+      \     hi = float(up) if up is not None else float('inf')\n                s = max(start, lo)\n                e = min(end,\
+      \ hi)\n                if e > s:\n                    revenue += (e - s) * p\n                lo = hi\n        else:\n\
+      \            revenue = (end - start) * price\n    cost = f('tokens_in') * f('input_per_mtok') / 1e6 + f('tokens_out')\
+      \ * f('output_per_mtok') / 1e6 + f('tool_calls') * f('tool_call_cost')\n    return {'revenue': round(revenue, 6), 'ai_cost':\
+      \ round(cost, 6), 'margin': round(revenue - cost, 6), 'billable_qty': max(0.0, end - start)}\n"
+  triggers:
+  - key: usage_events
+    description: Events from the SDK saved as records
+    'on':
+      webhook: true
+    write:
+      collection: usage_events
+      fields:
+        event_id: event_id
+        customer_ref: customer
+        agent: agent
+        unit: unit
+        quantity: quantity
+        outcome: outcome
+        model: model
+        tokens_in: tokens_in
+        tokens_out: tokens_out
+        tool_calls: tool_calls
+        timestamp: timestamp
+      keyBy: event_id
+  - key: alert_email
+    description: Email the owner when an alert is raised
+    'on':
+      collection: alerts
+      op: insert
+    notify:
+      to: owner
+      subject: 'Meterwise alert: {record.kind} {record.customer_ref}'
+      body: '{record.message}
+
+
+        Severity: {record.severity}'
+      link: alerts_table
+  - key: invoice_ready
+    description: Email when an invoice is ready
+    'on':
+      collection: invoices
+      op: any
+      where:
+        status: ready
+    notify:
+      to:
+      - owner
+      subject: 'Invoice ready: {record.customer_ref} {record.period}'
+      body: The invoice for {record.customer_ref}, period {record.period}, amount {record.amount} {record.currency}, is ready
+        to review.
+      link: invoices_table
+  - key: customer_invoice
+    description: Tell the end customer that the invoice is sent
+    'on':
+      collection: invoices
+      op: any
+      where:
+        status: sent
+    notify:
+      to:
+      - record.customer_email
+      subject: Your invoice for {record.period}
+      body: Your invoice for {record.period} ({record.amount} {record.currency}) is available in your usage portal.
+      link: portal
+  - key: price_decided
+    description: Tell the owner a price change was approved
+    'on':
+      approval: price_change
+      decision: approved
+    notify:
+      to: owner
+      subject: Price changes approved
+      body: The proposed price changes were approved. Update the price models and notify your customers.
+      link: suggestions
+  egress:
+    hosts:
+    - api.stripe.com
+    notes: Stripe API called with the user's own restricted key to read customers and draft invoices in their account.
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 200
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:analyst:
+        estimate: 10
+        metered: true
+    packs:
+    - key: topup
+      credits: 1000
+      price: 10
+      label: 1,000 credits
+    plans:
+    - key: platform
+      price: 199
+      interval: month
+      label: Meterwise platform (monthly minimum)
+      credits: 2000
+      creditsReset: monthly
+      includes:
+      - Metering and invoicing
+      - Margin analyst
+      - End-customer portal
+  extensions:
+  - key: revenue_percentage
+    description: Pricing is a percentage of the revenue billed through Meterwise with a monthly minimum (the 199 EUR plan).
+      The percentage fee on billed revenue is not expressible in the manifest and must be configured by WebRobot platform
+      billing.
+  - key: per_tenant_api_keys
+    description: Events arrive on one webhook protected by the app's hook secret. Per-company API keys that attribute each
+      event to its company, and the SDK packages themselves, are not available yet.
+  - key: stripe_oauth_and_form_bodies
+    description: Stripe is connected with a restricted API key, not OAuth (Connect). Stripe's write endpoints expect form-encoded
+      bodies, which the http tool does not send yet; invoices are recorded in Meterwise and drafted in Stripe only when supported.
+  - key: team_roles
+    description: Finance and engineering colleagues are team members listed on the workspace; separate finance/engineering
+      roles per company, and a finance-only approver, are not available. Price changes are approved by the account that ran
+      the review.

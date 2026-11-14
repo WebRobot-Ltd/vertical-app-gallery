@@ -1,0 +1,1244 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: carendo
+  displayName: Carendo
+  tagline:
+    en: Daily care records for care homes, and families who are always in the loop.
+  description:
+    en: 'Carendo digitises care-home operations: carers record notes on their phones, managers see overdue records and incidents,
+      families get approved updates, photos and visit booking, and AI drafts weekly family summaries and CQC evidence packs.'
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f4e5f'
+      accent: '#e07a5f'
+      background: '#f8f6f2'
+      foreground: '#1c2b33'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Care
+      color: primary
+    - text: ndo
+      color: accent
+    width: wide
+  header:
+    links:
+    - label:
+        en: How it works
+      href: '#how'
+    - label:
+        en: Pricing
+      href: '#pricing'
+    cta:
+      label:
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Group admin
+      assignedBy: admin_emails
+    - key: manager
+      label: Home manager
+      assignedBy: invite
+    - key: nurse
+      label: Nurse
+      assignedBy: invite
+    - key: carer
+      label: Carer
+      assignedBy: invite
+    - key: activities
+      label: Activities coordinator
+      assignedBy: invite
+    - key: family
+      label: Family member
+      assignedBy: derived
+      from: collection:residents.family_email
+    - key: user
+      assignedBy: signup
+  agents:
+  - key: summariser
+    role: main
+    when: mode == 'summary'
+    description: Drafts the weekly family summary of one resident from the care notes and asks the manager to approve it before
+      families see it.
+    awaits:
+    - summary_ok
+    profile:
+      inline:
+        display_name: Carendo family summary writer
+        crews:
+        - id: summariser
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write warm, plain-English weekly summaries for the family of one care-home resident. Use read_residents
+            to get the resident''s record (name, family_email), read_notes for the care notes of the period and read_incidents
+            for incidents. Start with a level-1 title "# Weekly update: <first name> — week of <date>". Sections (## headings):
+            How the week went, Meals and wellbeing, Activities and visits, Anything to know. Be kind, factual and brief (under
+            300 words). Never invent events or figures. Do NOT include other residents'' names or details. Mention incidents
+            gently and only in the factual terms recorded; if one is serious, tell the manager in a final line ''Manager note:''
+            rather than the family text. First produce the draft and call request_summary_ok with the draft text. Only when
+            the goal says the summary is approved, call write_update once with resident, family_email, title, body and week,
+            then confirm.'
+    goalTemplate: '{?resident}Resident record: {resident}.{/resident}
+
+      Period: the last {period_days} days up to {date}.
+
+      If the approval has not been given yet, write the draft and request approval. Write in the language with ISO code {lang}.'
+    appTools:
+    - name: read_residents
+      description: Read resident records
+      action: read
+      collection: residents
+      scope: user
+    - name: read_notes
+      description: Read care notes
+      action: read
+      collection: care_notes
+      scope: user
+    - name: read_incidents
+      description: Read incident records
+      action: read
+      collection: incidents
+      scope: user
+    - name: write_update
+      description: Publish an approved family update
+      action: write
+      collection: family_updates
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  - key: evidence
+    role: main
+    when: mode == 'evidence'
+    description: Builds a CQC evidence pack mapped to the Single Assessment Framework quality statements.
+    profile:
+      inline:
+        display_name: Carendo CQC evidence pack builder
+        crews:
+        - id: evidence
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare evidence packs for a care home manager, mapped to the CQC Single Assessment Framework.
+            Key questions: Safe, Effective, Caring, Responsive, Well-led; each has quality statements (e.g. Safe: Learning
+            culture, Safe systems pathways and transitions, Safeguarding, Involving people to manage risks, Safe environments,
+            Safe and effective staffing, Infection prevention and control, Medicines optimisation). Use read_notes, read_incidents
+            and read_tasks to gather the records of the period. Start with "# CQC evidence pack — <home> — <key question>".
+            For each relevant quality statement: ## <statement>, then what the records show (counts, dates, examples with
+            record references), strengths, gaps and suggested actions. Add a ```chart block (bar) of incidents or overdue
+            tasks by month when data allows. Anonymise residents (initials only). Use only the recorded data; say plainly
+            where evidence is missing. This is a preparation aid, not a CQC judgement or legal advice.'
+    goalTemplate: 'Home: {?home}{home}{/home}{!home}all homes{/home}.
+
+      Key question: {quality_area_label}.
+
+      Period: the last {period_days} days up to {date}.
+
+      Write in the language with ISO code {lang}.'
+    appTools:
+    - name: read_notes
+      description: Read care notes
+      action: read
+      collection: care_notes
+      scope: user
+    - name: read_incidents
+      description: Read incident records
+      action: read
+      collection: incidents
+      scope: user
+    - name: read_tasks
+      description: Read care tasks and reviews
+      action: read
+      collection: care_tasks
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 14
+      maxBudgetUsd: 0.8
+  - key: cqc_checker
+    role: helper
+    description: Fetches a home's current CQC rating and inspection dates every week.
+    memory: instance
+    writesTo:
+      collection: cqc_ratings
+      parse: json_last
+    profile:
+      inline:
+        display_name: Carendo CQC checker
+        crews:
+        - id: cqc_checker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 5
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You look up one care location in the CQC public API with the cqc_location tool, calling it with
+            path /<locationId>. Read the location name, currentRatings.overall.rating, the report date and lastInspection.date.
+            Answer with a short markdown line starting "# CQC status — <name>" and end with ONE json code block: {"location_name":"…","overall_rating":"…","last_inspection":"YYYY-MM-DD","report_date":"YYYY-MM-DD","checked":"<today>"}.
+            Use only what the API returns; if a value is missing leave it empty.'
+    appTools:
+    - name: cqc_location
+      description: Get a CQC location by id (GET /locations/{id})
+      action: http
+      http:
+        method: GET
+        url: https://api.service.cqc.org.uk/public/v1/locations
+        allowPath: true
+        attribution: Care Quality Commission, Open Government Licence v3.0
+        credential:
+          provider: cqc
+          header: Ocp-Apim-Subscription-Key
+          format: '{secret}'
+    output: markdown+json
+  inputForm:
+    title:
+      en: New AI report
+    fields:
+    - name: mode
+      type: select
+      required: true
+      label:
+        en: What do you need?
+      options:
+      - value: summary
+        label:
+          en: Weekly family summary (draft)
+      - value: evidence
+        label:
+          en: CQC evidence pack
+    - name: resident
+      type: select
+      optionsFrom: collection:residents
+      visibleWhen: mode == 'summary'
+      label:
+        en: Resident
+    - name: home
+      type: text
+      visibleWhen: mode == 'evidence'
+      label:
+        en: Home (optional)
+    - name: quality_area
+      type: select
+      visibleWhen: mode == 'evidence'
+      label:
+        en: CQC key question
+      options:
+      - value: safe
+        label: Safe
+      - value: effective
+        label: Effective
+      - value: caring
+        label: Caring
+      - value: responsive
+        label: Responsive
+      - value: well_led
+        label: Well-led
+    - name: period_days
+      type: number
+      required: true
+      default: 7
+      label:
+        en: Days to cover
+  data:
+    collections:
+    - name: homes
+      description: Care homes of the group
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: address
+        type: text
+      - name: beds
+        type: number
+      - name: cqc_location_id
+        type: text
+        help: CQC location id, e.g. 1-123456789
+      access:
+      - role: manager
+        can:
+        - read
+        - write
+      - role: nurse
+      - role: carer
+      - role: activities
+    - name: rooms
+      description: Rooms and beds
+      ownedBy: user
+      fields:
+      - name: home
+        type: select
+        optionsFrom: collection:homes
+        required: true
+      - name: number
+        type: text
+        required: true
+      - name: beds
+        type: number
+      access:
+      - role: manager
+        can:
+        - read
+        - write
+      - role: nurse
+      - role: carer
+      - role: activities
+    - name: staff
+      description: Staff directory
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: email
+        type: email
+        required: true
+      - name: job_role
+        type: select
+        options:
+        - manager
+        - nurse
+        - carer
+        - activities
+      - name: home
+        type: select
+        optionsFrom: collection:homes
+      access:
+      - role: manager
+        can:
+        - read
+        - write
+    - name: residents
+      description: Residents
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: home
+        type: select
+        optionsFrom: collection:homes
+        required: true
+      - name: room
+        type: text
+      - name: date_of_birth
+        type: date
+      - name: family_name
+        type: text
+      - name: family_email
+        type: email
+        help: The relative who may see updates
+      - name: family_phone
+        type: text
+      access:
+      - role: manager
+        can:
+        - read
+        - write
+      - role: nurse
+      - role: carer
+      - role: activities
+      - role: family
+        where:
+          family_email: '{user.email}'
+    - name: care_notes
+      description: Daily care notes
+      ownedBy: user
+      retentionDays: 3650
+      fields:
+      - name: resident
+        type: select
+        optionsFrom: collection:residents
+        required: true
+      - name: category
+        type: select
+        required: true
+        options:
+        - value: meals_fluids
+          label: Meals and fluids
+        - value: personal_care
+          label: Personal care
+        - value: mobility
+          label: Mobility
+        - value: mood
+          label: Mood
+        - value: activity
+          label: Activity joined
+        - value: visit
+          label: Visit
+      - name: date
+        type: date
+        required: true
+      - name: detail
+        type: textarea
+        required: true
+      - name: amount
+        type: number
+        help: ml of fluid, or % of meal eaten
+      - name: mood
+        type: select
+        options:
+        - happy
+        - calm
+        - anxious
+        - low
+        - agitated
+      access:
+      - role: manager
+        can:
+        - read
+        - write
+      - role: nurse
+        can:
+        - read
+        - write
+      - role: activities
+    - name: incidents
+      description: Incidents with photo
+      ownedBy: user
+      fields:
+      - name: resident
+        type: select
+        optionsFrom: collection:residents
+        required: true
+      - name: date
+        type: date
+        required: true
+      - name: type
+        type: select
+        required: true
+        options:
+        - fall
+        - injury
+        - medication
+        - behaviour
+        - safeguarding
+        - other
+      - name: severity
+        type: select
+        options:
+        - low
+        - medium
+        - high
+      - name: description
+        type: textarea
+        required: true
+      - name: photo
+        type: file
+        accept:
+        - jpg
+        - png
+        capture: true
+        maxMb: 8
+      - name: status
+        type: select
+        options:
+        - open
+        - reviewed
+        - closed
+        default: open
+      access:
+      - role: manager
+        can:
+        - read
+        - write
+      - role: nurse
+        can:
+        - read
+        - write
+    - name: photos
+      description: Photos for families, released after manager review
+      ownedBy: user
+      fields:
+      - name: resident
+        type: select
+        optionsFrom: collection:residents
+        required: true
+      - name: photo
+        type: file
+        accept:
+        - jpg
+        - png
+        capture: true
+        required: true
+        maxMb: 8
+      - name: caption
+        type: text
+      - name: others_visible
+        type: select
+        options:
+        - 'no'
+        - 'yes'
+        help: Are other residents visible?
+      - name: family_email
+        type: email
+        help: Set by the manager when approving
+      - name: status
+        type: select
+        options:
+        - pending
+        - approved
+        - rejected
+        default: pending
+      access:
+      - role: manager
+        can:
+        - read
+        - write
+      - role: nurse
+      - role: activities
+      - role: family
+        where:
+          family_email: '{user.email}'
+          status: approved
+    - name: family_updates
+      description: Approved updates for families
+      ownedBy: user
+      fields:
+      - name: resident
+        type: text
+      - name: family_email
+        type: email
+      - name: title
+        type: text
+      - name: body
+        type: textarea
+      - name: week
+        type: text
+      access:
+      - role: manager
+        can:
+        - read
+        - write
+      - role: family
+        where:
+          family_email: '{user.email}'
+    - name: care_tasks
+      description: Reviews and records due
+      ownedBy: user
+      fields:
+      - name: resident
+        type: select
+        optionsFrom: collection:residents
+        required: true
+      - name: task
+        type: text
+        required: true
+      - name: due_date
+        type: date
+        required: true
+      - name: status
+        type: select
+        options:
+        - open
+        - done
+        default: open
+      access:
+      - role: manager
+        can:
+        - read
+        - write
+      - role: nurse
+        can:
+        - read
+        - write
+      - role: carer
+    - name: visits
+      description: Family visit bookings
+      ownedBy: user
+      fields:
+      - name: resident
+        type: select
+        optionsFrom: collection:residents
+      - name: notes
+        type: text
+      access:
+      - role: manager
+      - role: nurse
+      - role: carer
+      - role: activities
+    - name: visit_areas
+      description: Places where visits happen (lounge, garden, room)
+      ownedBy: shared
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: home
+        type: text
+    - name: cqc_ratings
+      description: Weekly CQC rating checks
+      ownedBy: instance
+      fields:
+      - name: location_name
+        type: text
+      - name: overall_rating
+        type: text
+      - name: last_inspection
+        type: date
+      - name: report_date
+        type: date
+      - name: checked
+        type: date
+    credentials:
+    - provider: cqc
+      kind: api_key
+      scope: org
+      label:
+        en: CQC API subscription key
+      help:
+        en: From the CQC API developer portal; set by the group admin.
+  egress:
+    hosts:
+    - api.service.cqc.org.uk
+    notes: 'CQC public API: ratings and inspection dates, Open Government Licence v3.0.'
+  templates:
+  - key: cqc_watch
+    title:
+      en: CQC rating watch
+    description:
+      en: Weekly check of a home's CQC rating and inspection dates.
+    agent: cqc_checker
+    params:
+    - name: location_id
+      type: text
+      required: true
+      label:
+        en: CQC location id
+    goal: Look up CQC location {location_id} for "{instance}". Today is {date}.
+    schedule:
+      cron: 0 6 * * 1
+      userCanChange: false
+    maxPerUser: 20
+  approvals:
+  - key: summary_ok
+    title:
+      en: Approve weekly family summary
+    decidedBy: requester
+    description: The manager checks the drafted summary before families see it.
+  triggers:
+  - key: summary_approved
+    'on':
+      approval: summary_ok
+      decision: approved
+    start:
+      agent: summariser
+    goal: 'The manager approved the summary draft: publish it now with write_update. Event: {event}'
+  - key: update_shared
+    'on':
+      collection: family_updates
+      op: insert
+    notify:
+      to: record.family_email
+      subject:
+        en: A new update about your relative
+      body:
+        en: 'A new update has been shared on Carendo: {record.title}. Open the app to read it.'
+      link: family_feed
+  - key: photo_pending
+    'on':
+      collection: photos
+      op: insert
+    notify:
+      to: role:manager
+      subject:
+        en: Photo waiting for approval
+      body:
+        en: A photo is waiting for your review before families can see it.
+      link: photo_review
+  - key: photo_approved
+    'on':
+      collection: photos
+      op: update
+      where:
+        status: approved
+    notify:
+      to: record.family_email
+      subject:
+        en: A new photo has been shared
+      body:
+        en: A new photo of your relative has been shared on Carendo.
+      link: family_feed
+  - key: incident_logged
+    'on':
+      collection: incidents
+      op: insert
+    notify:
+      to: role:manager
+      subject:
+        en: 'Incident recorded: {record.type}'
+      body:
+        en: A {record.severity} severity incident was recorded on {record.date}.
+      link: incidents_dash
+  - key: task_due
+    'on':
+      date:
+        collection: care_tasks
+        field: due_date
+        offsetDays: 0
+        hour: 7
+    notify:
+      to: role:manager
+      subject:
+        en: 'Care task due today: {record.task}'
+      body:
+        en: 'A record or review is due today: {record.task}.'
+      link: overdue
+  - key: visit_booked
+    'on':
+      collection: visits
+      op: insert
+    notify:
+      to:
+      - owner
+      - role:manager
+      subject:
+        en: Visit booked
+      body:
+        en: A visit has been booked for {record.date}.
+      link: book_visit
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Carendo
+    sections:
+    - type: hero
+      title:
+        en: Care records done at the bedside. **Families** always in the loop.
+      text:
+        en: Carendo digitises daily care notes, incidents and reviews for care-home groups, gives families approved updates,
+          photos and visit booking, and prepares CQC evidence with AI.
+      actions:
+      - label:
+          en: Sign in
+        href: /login
+        style: primary
+      - label:
+          en: See pricing
+        href: '#pricing'
+        style: ghost
+    - type: steps
+      id: how
+      title:
+        en: How it works
+      items:
+      - title:
+          en: Record
+        text:
+          en: Carers log meals, fluids, personal care, mobility, mood, activities, visits and incidents with photos on the
+            mobile app.
+      - title:
+          en: Review
+        text:
+          en: Managers see overdue records and incidents, approve photos and weekly summaries, and export to CSV.
+      - title:
+          en: Share
+        text:
+          en: Families get approved updates and photos, book visits, and are notified by push and email.
+    - type: cards
+      id: pricing
+      title:
+        en: Pricing
+      items:
+      - title:
+          en: £3 per bed per month
+        text:
+          en: 'Everything included: staff apps, family app, AI summaries and CQC evidence packs.'
+        badge: £
+    - type: note
+      content:
+        en: Carendo supports record keeping and does not replace clinical judgement. AI drafts are always checked by a manager
+          before families see them.
+  - key: add_home
+    type: form
+    collection: homes
+    title:
+      en: Add home
+    roles:
+    - admin
+    - manager
+    submit:
+      label:
+        en: Save home
+      message:
+        en: Home saved.
+  - key: add_room
+    type: form
+    collection: rooms
+    title:
+      en: Add room
+    roles:
+    - admin
+    - manager
+    submit:
+      label:
+        en: Save room
+      message:
+        en: Room saved.
+  - key: add_resident
+    type: form
+    collection: residents
+    title:
+      en: Add resident
+    roles:
+    - admin
+    - manager
+    edit: true
+    submit:
+      label:
+        en: Save resident
+      message:
+        en: Resident saved.
+  - key: add_staff
+    type: form
+    collection: staff
+    title:
+      en: Add staff
+    roles:
+    - admin
+    - manager
+    submit:
+      label:
+        en: Save
+      message:
+        en: Saved. Invite them from the admin page.
+  - key: residents_list
+    type: table
+    title:
+      en: Residents
+    source: collection:residents
+    roles:
+    - admin
+    - manager
+    - nurse
+    - carer
+    - activities
+    export: true
+    data:
+      display: table
+      fields:
+      - key: name
+      - key: home
+      - key: room
+      - key: family_email
+      - key: family_phone
+        format: text
+      actions:
+      - type: call
+        field: family_phone
+        label:
+          en: Call family
+  - key: care_note
+    type: form
+    collection: care_notes
+    title:
+      en: Care note
+    roles:
+    - admin
+    - manager
+    - nurse
+    - carer
+    - activities
+    submit:
+      label:
+        en: Save note
+      message:
+        en: Note saved.
+  - key: incident
+    type: form
+    collection: incidents
+    title:
+      en: Report incident
+    roles:
+    - admin
+    - manager
+    - nurse
+    - carer
+    - activities
+    submit:
+      label:
+        en: Submit incident
+      message:
+        en: Incident recorded. The manager was notified.
+  - key: photo_upload
+    type: form
+    collection: photos
+    fields:
+    - resident
+    - photo
+    - caption
+    - others_visible
+    title:
+      en: Share a photo
+    roles:
+    - admin
+    - manager
+    - nurse
+    - carer
+    - activities
+    submit:
+      label:
+        en: Send for approval
+      message:
+        en: Photo sent to the manager for approval.
+  - key: photo_review
+    type: table
+    title:
+      en: Photos to review
+    source: collection:photos
+    roles:
+    - admin
+    - manager
+    data:
+      display: table
+      fields:
+      - key: resident
+      - key: caption
+      - key: others_visible
+        format: badge
+      - key: status
+        format: badge
+      filters:
+      - field: status
+        op: '='
+        value: pending
+  - key: photo_decide
+    type: form
+    collection: photos
+    fields:
+    - status
+    - family_email
+    - caption
+    edit: true
+    title:
+      en: Approve photo
+    roles:
+    - admin
+    - manager
+    nav: false
+    submit:
+      label:
+        en: Save decision
+      message:
+        en: Decision saved.
+  - key: family_feed
+    type: cards
+    title:
+      en: Updates
+    source: collection:family_updates
+    roles:
+    - family
+    - admin
+    - manager
+    data:
+      display: cards
+      fields:
+      - key: title
+      - key: body
+      - key: week
+        format: badge
+      sort:
+        field: week
+        dir: desc
+      limit: 50
+      empty:
+        en: No updates yet.
+  - key: family_photos
+    type: cards
+    title:
+      en: Photos
+    source: collection:photos
+    roles:
+    - family
+    data:
+      display: cards
+      fields:
+      - key: photo
+      - key: caption
+      filters:
+      - field: status
+        op: '='
+        value: approved
+      limit: 50
+      empty:
+        en: No photos yet.
+  - key: book_visit
+    type: booking
+    title:
+      en: Book a visit
+    collection: visits
+    resources: collection:visit_areas
+    fields:
+    - resident
+    - notes
+    roles:
+    - family
+    - admin
+    - manager
+    slots:
+      days:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      - 7
+      from: '10:00'
+      to: '17:00'
+      minutes: 60
+      tz: Europe/London
+      aheadDays: 21
+      minNoticeHours: 4
+      capacity: 2
+  - key: overdue
+    type: table
+    title:
+      en: Overdue records
+    source: collection:care_tasks
+    roles:
+    - admin
+    - manager
+    - nurse
+    export: true
+    data:
+      display: table
+      fields:
+      - key: resident
+      - key: task
+      - key: due_date
+        format: date
+      - key: status
+        format: badge
+      filters:
+      - field: status
+        op: '='
+        value: open
+      sort:
+        field: due_date
+        dir: asc
+      limit: 100
+      empty:
+        en: Nothing overdue.
+  - key: add_task
+    type: form
+    collection: care_tasks
+    title:
+      en: Add task
+    roles:
+    - admin
+    - manager
+    - nurse
+    edit: true
+    submit:
+      label:
+        en: Save task
+      message:
+        en: Task saved.
+  - key: incidents_dash
+    type: table
+    title:
+      en: Incidents
+    source: collection:incidents
+    roles:
+    - admin
+    - manager
+    - nurse
+    export: true
+    data:
+      display: table
+      fields:
+      - key: date
+        format: date
+      - key: resident
+      - key: type
+        format: badge
+      - key: severity
+        format: badge
+      - key: status
+        format: badge
+      sort:
+        field: date
+        dir: desc
+      limit: 100
+  - key: incident_trend
+    type: chart
+    title:
+      en: Incidents by month
+    source: collection:incidents
+    roles:
+    - admin
+    - manager
+    data:
+      display: chart
+      chart: bar
+      fields:
+      - key: date
+      - key: count
+      groupBy:
+        field: date
+        bucket: month
+        aggs: []
+  - key: cqc_dash
+    type: table
+    title:
+      en: CQC ratings
+    source: collection:cqc_ratings
+    roles:
+    - admin
+    - manager
+    data:
+      display: table
+      fields:
+      - key: location_name
+      - key: overall_rating
+        format: badge
+      - key: last_inspection
+        format: date
+      - key: report_date
+        format: date
+      - key: checked
+        format: date
+  - key: watches
+    type: instances
+    template: cqc_watch
+    title:
+      en: CQC watch
+    roles:
+    - admin
+    - manager
+  - key: manager_dash
+    type: dashboard
+    title:
+      en: Dashboard
+    children:
+    - cqc_dash
+    - overdue
+    - incidents_dash
+    - incident_trend
+    roles:
+    - admin
+    - manager
+  - key: new_report
+    type: new_run
+    title:
+      en: AI reports
+    roles:
+    - admin
+    - manager
+  - key: reports
+    type: history
+    title:
+      en: My reports
+    source: run
+    roles:
+    - admin
+    - manager
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: approvals_v
+    type: approvals
+    title:
+      en: Approvals
+    roles:
+    - admin
+    - manager
+  - key: account
+    type: account
+    title:
+      en: Plan
+    roles:
+    - admin
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: beds_25
+      price: 75
+      interval: month
+      label: Up to 25 beds (£3/bed)
+    - key: beds_50
+      price: 150
+      interval: month
+      label: Up to 50 beds (£3/bed)
+    - key: beds_100
+      price: 300
+      interval: month
+      label: Up to 100 beds (£3/bed)
+  mobile:
+    appId: com.carendo.care
+    appName: Carendo
+    capabilities:
+    - name: camera
+      reason:
+        en: To photograph incidents and share moments with families
+    - name: push
+  extensions:
+  - key: sms_for_families
+    description: SMS to families without the app is not available yet; they receive email, and phone numbers are stored so
+      staff can call.
+  - key: per_bed_pricing
+    description: Billing is a flat subscription tier per bed band (£3 per bed); exact per-bed metering from the number of
+      beds is not available.
+  - key: home_scoping
+    description: Staff roles are scoped to the group, not to a single home inside it; per-home visibility needs one app per
+      group or a home-based role rule. Run one Carendo app per care-home group.
+  - key: photo_visibility_check
+    description: Every photo waits for manager approval (stricter than only photos showing other residents).

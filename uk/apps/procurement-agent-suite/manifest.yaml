@@ -1,0 +1,1219 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: buyquill
+  displayName: Buyquill
+  tagline:
+    en: 'AI procurement for mid-sized companies: from request to purchase order.'
+  description:
+    en: 'Buyquill gives mid-sized companies a team of AI agents for sourcing, purchasing and supplier management: request
+      intake, supplier and contract check, RFQs, quote comparison, supplier risk checks on Companies House and The Gazette,
+      approvals and purchase orders.'
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#16324f'
+      accent: '#0f8b8d'
+      background: '#f6f8fa'
+      foreground: '#17212b'
+    fonts:
+      body: Inter
+      display: Source Serif 4
+    wordmark:
+    - text: Buy
+      color: primary
+    - text: quill
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: requester
+      label: Requester
+      assignedBy: signup
+    - key: buyer
+      label: Buyer
+      assignedBy: invite
+    - key: budget_holder
+      label: Budget holder
+      assignedBy: invite
+    - key: finance
+      label: Finance
+      assignedBy: invite
+  limits:
+  - action: agent:buyer_check
+    per: app
+    max: 300
+    window: month
+    plans:
+      growth: 1500
+      scale: -1
+  agents:
+  - key: buyer_check
+    role: main
+    description: Checks a new purchase request against the supplier list and existing contracts.
+    profile:
+      inline:
+        display_name: Buyquill buyer agent
+        crews:
+        - id: buyer_check
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the buyer agent of a procurement team. A new purchase request has arrived. Use find_suppliers
+            and find_contracts to check whether approved suppliers or running contracts already cover the item or service,
+            and whether the preferred supplier is on the list. Classify the request into one category (e.g. IT, facilities,
+            services, marketing, travel, raw materials, other). Then call update_request once with the record id, the category,
+            a short check_summary and status "checked". Never invent suppliers or contract terms: only use what the tools
+            return. Reply with a report starting with a level-1 title "# Request check — <item>", then sections ## Existing
+            suppliers, ## Existing contracts, ## Recommendation (use an existing contract, run an RFQ, or both). Under 250
+            words.'
+    appTools:
+    - name: find_suppliers
+      description: Search the approved supplier list
+      action: search
+      collection: suppliers
+      scope: all
+    - name: find_contracts
+      description: Search the existing contracts
+      action: search
+      collection: contracts
+      scope: all
+    - name: update_request
+      description: Update a purchase request (status, category, check_summary, supplier_shortlist)
+      action: write
+      collection: purchase_requests
+      scope: user
+    goalTemplate: 'New purchase request. Record: {event}
+
+      Item: {record.item}; quantity {record.quantity}; budget {record.budget}; need by {record.need_by}; cost centre {record.cost_centre};
+      preferred supplier: {record.preferred_supplier}.
+
+      Today is {date}. Write in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.4
+  - key: sourcing
+    role: helper
+    description: Drafts the RFQ and creates one invite per suggested supplier; the platform emails each invite.
+    profile:
+      inline:
+        display_name: Buyquill sourcing agent
+        crews:
+        - id: sourcing
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the sourcing agent. For a checked purchase request, use find_suppliers to pick 3 to 5 suitable
+            suppliers from the supplier list (those with an email address and a matching category; include the preferred supplier
+            if it is on the list). Draft one clear plain-text request for quotation: what is needed, quantity, need-by date,
+            what the quote must contain (unit and total price, delivery time, payment terms, validity, warranty) and to reply
+            by email within 5 working days. Do not disclose the budget to suppliers. For each chosen supplier call add_rfq
+            with request_id, item, supplier_name, supplier_email, company_number, rfq_text, status "sent", sent_date today
+            and reminder_date = 3 working days from today (YYYY-MM-DD). Finally call update_request with status "rfq_sent"
+            and supplier_shortlist. Never invent suppliers or email addresses. Reply with a report starting with "# RFQ —
+            <item>" listing the RFQ text and the suppliers invited.'
+    appTools:
+    - name: find_suppliers
+      description: Search the approved supplier list
+      action: search
+      collection: suppliers
+      scope: all
+    - name: add_rfq
+      description: Create an RFQ invite for one supplier (the platform emails it)
+      action: append
+      collection: rfq_invites
+      scope: user
+    - name: update_request
+      description: Update a purchase request (status, category, check_summary, supplier_shortlist)
+      action: write
+      collection: purchase_requests
+      scope: user
+    goalTemplate: 'Draft and send the RFQ for this request. Record: {event}
+
+      Item: {record.item}; quantity {record.quantity}; need by {record.need_by}; category {record.category}; check summary:
+      {record.check_summary}; preferred supplier: {record.preferred_supplier}.
+
+      Today is {date}. Write in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  - key: risk
+    role: helper
+    description: Checks each invited supplier on Companies House and The Gazette.
+    profile:
+      inline:
+        display_name: Buyquill supplier-risk agent
+        crews:
+        - id: risk
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the supplier-risk agent. For one supplier, find the company on Companies House: if no company
+            number is given use ch_search with query q=<name>; then ch_company with path "/<number>" (company status, type,
+            incorporation date, accounts and confirmation-statement overdue flags), "/<number>/officers" (count active officers)
+            and "/<number>/filing-history" (recent filings, late or missing accounts). Then use gazette_notices with a text
+            query for the company name or number and look for insolvency-type notices (winding-up petition, administration,
+            liquidation, CVA, strike-off). Rate risk low, medium or high with reasons grounded only in what the tools returned;
+            if a tool says the key is not connected or fails, say the check is incomplete and never guess. Call add_check
+            once with request_id, supplier_name, company_number, company_status, filings, officers_count, insolvency, risk_level,
+            summary. Reply with a report starting "# Supplier risk — <supplier>" and sections ## Company, ## Filings, ## Officers,
+            ## Gazette notices, ## Verdict. This is decision support, not legal or credit advice.'
+    appTools:
+    - name: ch_search
+      description: Search Companies House companies by name (query q)
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk/search/companies
+        attribution: Companies House, Open Government Licence v3.0
+        credential:
+          provider: companies_house
+          header: Authorization
+          format: Basic {secret}
+    - name: ch_company
+      description: 'Companies House company data: path /<number>, /<number>/officers, /<number>/filing-history, /<number>/insolvency'
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk/company
+        allowPath: true
+        attribution: Companies House, Open Government Licence v3.0
+        credential:
+          provider: companies_house
+          header: Authorization
+          format: Basic {secret}
+    - name: gazette_notices
+      description: Search The Gazette notices as JSON (query text=<company name or number>)
+      action: http
+      http:
+        method: GET
+        url: https://www.thegazette.co.uk/all-notices/notice/data.json
+        attribution: The Gazette, Open Government Licence v3.0
+    - name: add_check
+      description: Save the risk check of one supplier
+      action: append
+      collection: supplier_checks
+      scope: user
+    goalTemplate: 'Check this supplier for the purchase request. Record: {event}
+
+      Supplier: {record.supplier_name}; company number: {record.company_number}; request: {record.request_id}.
+
+      Today is {date}. Write in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 14
+      maxBudgetUsd: 0.5
+  - key: comparison
+    role: analyst
+    description: Scores the quotes on price, delivery and terms, with the supplier risk, and asks the budget holder for approval.
+    awaits:
+    - po_approval
+    profile:
+      inline:
+        display_name: Buyquill comparison agent
+        crews:
+        - id: comparison
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the quote comparison agent. A quote has just been entered. With find_quotes get all quotes
+            of the same request, with find_checks the supplier risk checks, and with find_requests the request (budget, need-by
+            date). Score each quote 0-100: price 50%, delivery against the need-by date 25%, payment terms and validity 25%,
+            and subtract points for medium (-10) or high (-30) supplier risk or for a missing risk check (-5, say so). Only
+            use figures from the quotes; if a figure is missing, say so. Save each score with update_quote (score, rank).
+            Write a report starting with "# Quote comparison — <item>", sections ## Summary table (supplier, price, delivery,
+            terms, risk, score), ## Recommendation, ## Risks and open points. Add a chart block:
+
+            ```chart
+
+            {"type":"bar","title":"Score by supplier","labels":["A","B"],"series":[{"name":"Score","values":[80,70]}]}
+
+            ```
+
+            with real scores. If the recommended total is above 5000 (company threshold, GBP), call request_po_approval with
+            the supplier, amount and reasoning; the budget holder decides. Below the threshold say the buyer can issue the
+            PO directly. Never award by yourself.'
+    appTools:
+    - name: find_quotes
+      description: Search the quotes of a request
+      action: search
+      collection: quotes
+      scope: user
+    - name: find_checks
+      description: Search supplier risk checks
+      action: search
+      collection: supplier_checks
+      scope: user
+    - name: find_requests
+      description: Search purchase requests
+      action: search
+      collection: purchase_requests
+      scope: user
+    - name: update_quote
+      description: Save score and rank on a quote
+      action: write
+      collection: quotes
+      scope: user
+    goalTemplate: 'A quote was added. Record: {event}
+
+      Request: {record.request_id}; supplier {record.supplier_name}; price {record.price}.
+
+      Compare all quotes of this request. Today is {date}. Write in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 14
+      maxBudgetUsd: 0.6
+  data:
+    collections:
+    - name: purchase_requests
+      description: Purchase requests; requesters see only their own
+      ownedBy: user
+      fields:
+      - name: item
+        type: text
+        required: true
+        label: Item or service
+      - name: quantity
+        type: number
+        required: true
+        label: Quantity
+      - name: budget
+        type: number
+        required: true
+        label: Budget (GBP)
+      - name: need_by
+        type: date
+        required: true
+        label: Need-by date
+      - name: cost_centre
+        type: text
+        required: true
+        label: Cost centre
+      - name: preferred_supplier
+        type: text
+        label: Preferred supplier
+      - name: notes
+        type: textarea
+        label: Notes
+        maxLength: 800
+      - name: category
+        type: text
+        label: Category
+      - name: check_summary
+        type: textarea
+        label: Check summary
+      - name: supplier_shortlist
+        type: textarea
+        label: Suppliers invited
+      - name: status
+        type: select
+        label: Status
+        default: new
+        options:
+        - new
+        - checked
+        - rfq_sent
+        - quoted
+        - awaiting_approval
+        - approved
+        - ordered
+      access:
+      - role: buyer
+        can:
+        - read
+        - write
+      - role: budget_holder
+      - role: finance
+    - name: suppliers
+      description: Approved supplier list, kept by admins
+      ownedBy: shared
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: company_number
+        type: text
+      - name: email
+        type: email
+      - name: categories
+        type: text
+      - name: status
+        type: select
+        options:
+        - approved
+        - probation
+        - blocked
+      - name: notes
+        type: text
+    - name: contracts
+      description: Existing supplier contracts, kept by admins
+      ownedBy: shared
+      fields:
+      - name: supplier
+        type: text
+        required: true
+      - name: category
+        type: text
+      - name: annual_value
+        type: number
+      - name: start_date
+        type: date
+      - name: end_date
+        type: date
+        required: true
+      - name: owner_email
+        type: email
+      - name: terms
+        type: text
+    - name: rfq_invites
+      description: One RFQ sent to one supplier
+      ownedBy: user
+      fields:
+      - name: request_id
+        type: text
+      - name: item
+        type: text
+      - name: supplier_name
+        type: text
+      - name: supplier_email
+        type: email
+      - name: company_number
+        type: text
+      - name: rfq_text
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - sent
+        - quoted
+        - declined
+        default: sent
+      - name: sent_date
+        type: date
+      - name: reminder_date
+        type: date
+      access:
+      - role: buyer
+        can:
+        - read
+        - write
+    - name: quotes
+      description: Quotes received from suppliers (entered by the buyer from the supplier's email)
+      ownedBy: user
+      fields:
+      - name: request_id
+        type: select
+        required: true
+        label: Request
+        optionsFrom: collection:purchase_requests
+      - name: supplier_name
+        type: text
+        required: true
+        label: Supplier
+      - name: price
+        type: number
+        required: true
+        label: Total price (GBP)
+      - name: delivery_days
+        type: number
+        label: Delivery (days)
+      - name: payment_terms
+        type: text
+        label: Payment terms
+      - name: validity
+        type: text
+        label: Valid until
+      - name: notes
+        type: textarea
+        label: Notes
+      - name: score
+        type: number
+      - name: rank
+        type: number
+      access:
+      - role: buyer
+        can:
+        - read
+        - write
+      - role: budget_holder
+      - role: finance
+    - name: supplier_checks
+      description: Supplier risk checks (Companies House, The Gazette)
+      ownedBy: user
+      fields:
+      - name: request_id
+        type: text
+      - name: supplier_name
+        type: text
+      - name: company_number
+        type: text
+      - name: company_status
+        type: text
+      - name: filings
+        type: text
+      - name: officers_count
+        type: number
+      - name: insolvency
+        type: text
+      - name: risk_level
+        type: select
+        options:
+        - low
+        - medium
+        - high
+      - name: summary
+        type: textarea
+      access:
+      - role: buyer
+        can:
+        - read
+        - write
+      - role: budget_holder
+      - role: finance
+    - name: purchase_orders
+      description: Purchase orders issued by buyers
+      ownedBy: user
+      fields:
+      - name: request_id
+        type: select
+        required: true
+        label: Request
+        optionsFrom: collection:purchase_requests
+      - name: po_number
+        type: text
+        required: true
+        label: PO number
+      - name: supplier_name
+        type: text
+        required: true
+        label: Supplier
+      - name: category
+        type: text
+        required: true
+        label: Category
+      - name: cost_centre
+        type: text
+        label: Cost centre
+      - name: amount
+        type: number
+        required: true
+        label: Amount (GBP)
+      - name: savings
+        type: number
+        label: Savings vs budget or baseline (GBP)
+      - name: cycle_days
+        type: number
+        label: Days from request to PO
+      - name: issued_date
+        type: date
+        required: true
+        label: Issue date
+      access:
+      - role: buyer
+        can:
+        - read
+        - write
+      - role: budget_holder
+      - role: finance
+    credentials:
+    - provider: companies_house
+      kind: api_key
+      scope: org
+      label: Companies House API key
+      help: Create a REST key at developer.company-information.service.gov.uk, then paste it as base64 of "<key>:" (key, colon,
+        empty password).
+  approvals:
+  - key: po_approval
+    title: Purchase above threshold
+    role: budget_holder
+    fields:
+    - item
+    - supplier_name
+    - amount
+    timeoutMinutes: 4320
+    onTimeout: reject
+  triggers:
+  - key: check_new_request
+    'on':
+      collection: purchase_requests
+      op: insert
+    start:
+      agent: buyer_check
+    goal: 'New purchase request. Record: {event}
+
+      Item: {record.item}; quantity {record.quantity}; budget {record.budget}; need by {record.need_by}; cost centre {record.cost_centre};
+      preferred supplier: {record.preferred_supplier}.
+
+      Write in the language with ISO code {lang}.'
+  - key: source_checked
+    'on':
+      collection: purchase_requests
+      op: update
+      where:
+        status: checked
+    start:
+      agent: sourcing
+    goal: 'Draft and send the RFQ for this request. Record: {event}
+
+      Item: {record.item}; quantity {record.quantity}; need by {record.need_by}; category {record.category}; check summary:
+      {record.check_summary}; preferred supplier: {record.preferred_supplier}.
+
+      Write in the language with ISO code {lang}.'
+  - key: risk_on_invite
+    'on':
+      collection: rfq_invites
+      op: insert
+    start:
+      agent: risk
+    goal: 'Check this supplier. Record: {event}
+
+      Supplier: {record.supplier_name}; company number: {record.company_number}; request: {record.request_id}.
+
+      Write in the language with ISO code {lang}.'
+  - key: rfq_email
+    'on':
+      collection: rfq_invites
+      op: insert
+    notify:
+      to: record.supplier_email
+      subject:
+        en: 'Request for quotation: {record.item}'
+      body:
+        en: 'Dear {record.supplier_name},
+
+
+          {record.rfq_text}
+
+
+          Please reply to this email with your quotation.
+
+
+          Kind regards,
+
+          Procurement team'
+  - key: rfq_reminder
+    'on':
+      date:
+        collection: rfq_invites
+        field: reminder_date
+        offsetDays: 0
+        hour: 8
+      where:
+        status: sent
+    notify:
+      to: record.supplier_email
+      subject:
+        en: 'Reminder: quotation for {record.item}'
+      body:
+        en: 'Dear {record.supplier_name},
+
+
+          We have not yet received your quotation for: {record.item}. Please reply with your quote or let us know if you will
+          not be quoting.
+
+
+          Kind regards,
+
+          Procurement team'
+  - key: compare_quotes
+    'on':
+      collection: quotes
+      op: insert
+    start:
+      agent: comparison
+    goal: 'A quote was added. Record: {event}
+
+      Request: {record.request_id}; supplier {record.supplier_name}; price {record.price}.
+
+      Compare all quotes of this request. Write in the language with ISO code {lang}.'
+  - key: contract_renewal
+    'on':
+      date:
+        collection: contracts
+        field: end_date
+        offsetDays: -90
+        hour: 7
+    notify:
+      to:
+      - role:buyer
+      - admins
+      subject:
+        en: 'Contract renewal in 90 days: {record.supplier}'
+      body:
+        en: The contract with {record.supplier} ({record.category}) ends on {record.end_date}. Review, renegotiate or re-tender
+          before then.
+  - key: po_approved
+    'on':
+      approval: po_approval
+      decision: approved
+    notify:
+      to: role:buyer
+      subject:
+        en: 'Purchase approved: issue the PO'
+      body:
+        en: The budget holder approved a purchase. Open the app and issue the purchase order.
+      link: issue_po
+  - key: po_rejected
+    'on':
+      approval: po_approval
+      decision: rejected
+    notify:
+      to:
+      - owner
+      - role:buyer
+      subject:
+        en: Purchase not approved
+      body:
+        en: The budget holder did not approve a purchase request. See the request in the app.
+      link: my_requests
+  - key: po_issued
+    'on':
+      collection: purchase_orders
+      op: insert
+    notify:
+      to: role:finance
+      subject:
+        en: New purchase order {record.po_number}
+      body:
+        en: PO {record.po_number} to {record.supplier_name} for {record.amount} GBP was issued (cost centre {record.cost_centre}).
+      link: orders
+  views:
+  - key: home
+    type: page
+    title: Buyquill
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: AI procurement
+      title: From purchase request to purchase order, with **a team of AI agents**.
+      text: Requesters ask, agents check suppliers and contracts, send RFQs, compare quotes and check supplier risk. Budget
+        holders approve, buyers order.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Request
+        text: Anyone in the company submits what they need, the budget, the date and the cost centre.
+      - title: Check and source
+        text: The buyer agent checks suppliers and contracts; the sourcing agent emails an RFQ to suggested suppliers and
+          reminders follow.
+      - title: Compare and de-risk
+        text: The comparison agent scores quotes on price, delivery and terms; the risk agent checks Companies House and The
+          Gazette.
+      - title: Approve and order
+        text: The budget holder approves above the threshold and the buyer issues the PO.
+    - type: cards
+      id: pricing
+      title: Pricing
+      intro: Annual subscription by spend under management.
+      items:
+      - title: Starter
+        text: Up to £2M spend under management
+      - title: Growth
+        text: Up to £10M spend under management
+      - title: Scale
+        text: Above £10M, unlimited requests
+    - type: note
+      content: Decision support, not legal or credit advice. Supplier data from Companies House and The Gazette (Open Government
+        Licence v3.0).
+  - key: new_request
+    type: form
+    title: New purchase request
+    collection: purchase_requests
+    fields:
+    - item
+    - quantity
+    - budget
+    - need_by
+    - cost_centre
+    - preferred_supplier
+    - notes
+    submit:
+      label: Send request
+      message: Request sent. The buyer agent is checking it.
+      redirect: my_requests
+    roles:
+    - requester
+    - buyer
+    - admin
+  - key: my_requests
+    type: table
+    title: Purchase requests
+    source: collection:purchase_requests
+    data:
+      display: table
+      fields:
+      - key: item
+        label: Item
+      - key: quantity
+        label: Qty
+        format: number
+      - key: budget
+        label: Budget
+        format: money
+      - key: need_by
+        label: Need by
+        format: date
+      - key: cost_centre
+        label: Cost centre
+      - key: category
+        label: Category
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: need_by
+        dir: asc
+    roles:
+    - requester
+    - buyer
+    - budget_holder
+    - finance
+    - admin
+  - key: rfqs
+    type: table
+    title: RFQs sent
+    source: collection:rfq_invites
+    data:
+      display: table
+      fields:
+      - key: item
+        label: Item
+      - key: supplier_name
+        label: Supplier
+      - key: supplier_email
+        label: Email
+      - key: status
+        label: Status
+        format: badge
+      - key: sent_date
+        label: Sent
+        format: date
+      - key: reminder_date
+        label: Reminder
+        format: date
+      sort:
+        field: sent_date
+        dir: desc
+    roles:
+    - buyer
+    - admin
+  - key: enter_quote
+    type: form
+    title: Enter a supplier quote
+    collection: quotes
+    fields:
+    - request_id
+    - supplier_name
+    - price
+    - delivery_days
+    - payment_terms
+    - validity
+    - notes
+    submit:
+      label: Save quote
+      message: Quote saved. The comparison agent is scoring it.
+      redirect: quotes_table
+    roles:
+    - buyer
+    - admin
+  - key: quotes_table
+    type: table
+    title: Quotes
+    source: collection:quotes
+    data:
+      display: table
+      fields:
+      - key: supplier_name
+        label: Supplier
+      - key: price
+        label: Price
+        format: money
+      - key: delivery_days
+        label: Delivery days
+        format: number
+      - key: payment_terms
+        label: Terms
+      - key: score
+        label: Score
+        format: number
+      - key: rank
+        label: Rank
+        format: number
+      sort:
+        field: score
+        dir: desc
+    roles:
+    - buyer
+    - budget_holder
+    - finance
+    - admin
+  - key: supplier_risk
+    type: table
+    title: Supplier risk
+    source: collection:supplier_checks
+    data:
+      display: table
+      fields:
+      - key: supplier_name
+        label: Supplier
+      - key: company_number
+        label: Company no.
+      - key: company_status
+        label: Status
+      - key: officers_count
+        label: Officers
+        format: number
+      - key: insolvency
+        label: Gazette
+      - key: risk_level
+        label: Risk
+        format: badge
+      - key: summary
+        label: Summary
+    roles:
+    - buyer
+    - budget_holder
+    - finance
+    - admin
+  - key: reports
+    type: history
+    title: Agent reports
+    source: run
+    roles:
+    - requester
+    - buyer
+    - budget_holder
+    - finance
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: approvals
+    type: approvals
+    title: Approvals
+    approvals:
+    - po_approval
+    roles:
+    - budget_holder
+    - admin
+  - key: issue_po
+    type: form
+    title: Issue purchase order
+    collection: purchase_orders
+    fields:
+    - request_id
+    - po_number
+    - supplier_name
+    - category
+    - cost_centre
+    - amount
+    - savings
+    - cycle_days
+    - issued_date
+    submit:
+      label: Issue PO
+      message: Purchase order recorded. Finance has been notified.
+      redirect: orders
+    roles:
+    - buyer
+    - admin
+  - key: orders
+    type: table
+    title: Purchase orders
+    source: collection:purchase_orders
+    data:
+      display: table
+      fields:
+      - key: po_number
+        label: PO
+      - key: supplier_name
+        label: Supplier
+      - key: category
+        label: Category
+      - key: cost_centre
+        label: Cost centre
+      - key: amount
+        label: Amount
+        format: money
+      - key: savings
+        label: Savings
+        format: money
+      - key: issued_date
+        label: Issued
+        format: date
+      sort:
+        field: issued_date
+        dir: desc
+    export: true
+    roles:
+    - buyer
+    - budget_holder
+    - finance
+    - admin
+  - key: suppliers_list
+    type: table
+    title: Suppliers
+    source: collection:suppliers
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Supplier
+      - key: company_number
+        label: Company no.
+      - key: email
+        label: Email
+      - key: categories
+        label: Categories
+      - key: status
+        label: Status
+        format: badge
+    roles:
+    - buyer
+    - budget_holder
+    - finance
+    - admin
+  - key: contracts_list
+    type: table
+    title: Contracts
+    source: collection:contracts
+    data:
+      display: table
+      fields:
+      - key: supplier
+        label: Supplier
+      - key: category
+        label: Category
+      - key: annual_value
+        label: Annual value
+        format: money
+      - key: end_date
+        label: Ends
+        format: date
+      - key: owner_email
+        label: Owner
+      sort:
+        field: end_date
+        dir: asc
+    roles:
+    - buyer
+    - budget_holder
+    - finance
+    - admin
+  - key: dashboard
+    type: page
+    title: Spend dashboard
+    roles:
+    - buyer
+    - budget_holder
+    - finance
+    - admin
+    sections:
+    - type: data
+      id: kpis
+      title: Overview
+      source: collection:purchase_orders
+      display: kpi
+      kpis:
+      - label: Spend under management
+        agg: sum
+        field: amount
+        format: money
+      - label: Savings
+        agg: sum
+        field: savings
+        format: money
+      - label: Average cycle time (days)
+        agg: avg
+        field: cycle_days
+        format: number
+      - label: Orders
+        agg: count
+    - type: data
+      id: spend-category
+      title: Spend by category
+      source: collection:purchase_orders
+      display: chart
+      chart: bar
+      groupBy:
+        field: category
+        aggs:
+        - key: spend
+          agg: sum
+          field: amount
+      fields:
+      - key: category
+        label: Category
+      - key: spend
+        label: Spend
+    - type: data
+      id: savings-month
+      title: Savings by month
+      source: collection:purchase_orders
+      display: chart
+      chart: line
+      groupBy:
+        field: issued_date
+        bucket: month
+        aggs:
+        - key: savings
+          agg: sum
+          field: savings
+      fields:
+      - key: issued_date
+        label: Month
+      - key: savings
+        label: Savings
+    - type: data
+      id: cycle-month
+      title: Cycle time by month (days)
+      source: collection:purchase_orders
+      display: chart
+      chart: line
+      groupBy:
+        field: issued_date
+        bucket: month
+        aggs:
+        - key: cycle
+          agg: avg
+          field: cycle_days
+      fields:
+      - key: issued_date
+        label: Month
+      - key: cycle
+        label: Avg days
+  - key: account
+    type: account
+    title: Subscription and integrations
+    roles:
+    - admin
+    - finance
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: starter
+      price: 4800
+      interval: year
+      label: Starter — up to £2M spend under management
+      includes:
+      - Up to 300 agent-checked requests a month
+      - All five roles
+    - key: growth
+      price: 14400
+      interval: year
+      label: Growth — up to £10M spend under management
+      includes:
+      - Up to 1,500 agent-checked requests a month
+      - Dashboards and exports
+    - key: scale
+      price: 36000
+      interval: year
+      label: Scale — above £10M spend under management
+      includes:
+      - Unlimited requests
+      - Priority support
+  egress:
+    hosts:
+    - api.company-information.service.gov.uk
+    - www.thegazette.co.uk
+    notes: Companies House API (company profile, officers, filing history, insolvency; Open Government Licence v3.0, free
+      API key) and The Gazette notices data (Open Government Licence v3.0) for supplier risk checks.
+  extensions:
+  - key: inbound_supplier_email
+    description: 'Not available yet: reading supplier replies from an inbox. For now suppliers reply to the sender address
+      and the buyer enters each quote in the quote form (agents then score it).'
+  - key: erp_p2p_oauth
+    description: 'Not available yet: OAuth connection to the company''s ERP and purchase-to-pay system (orders, invoices,
+      budgets). For now POs, savings and cycle times are entered in the app; budgets are checked by the budget holder.'
+  - key: spend_tier_billing
+    description: Plan is chosen by the customer; automatic tier selection from measured spend under management needs the ERP
+      connection.
+  - key: single_company_workspace
+    description: 'Assumes one company per app deployment: suppliers, contracts and staff roles are not separated between different
+      signed-up companies.'

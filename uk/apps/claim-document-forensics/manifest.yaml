@@ -1,0 +1,801 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: tamperlens
+  displayName: Tamperlens
+  tagline: Catch manipulated claim documents and photos before you pay.
+  description: 'Tamperlens gives insurers'' claims and fraud teams a workflow around a forensic detection model: claims intake,
+    per-file manipulation scoring, cross-document consistency checks, supplier verification against Companies House, an investigator
+    queue, and dashboards.'
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12263a'
+      accent: '#d1495b'
+      background: '#f6f7f9'
+      foreground: '#1a2230'
+    fonts:
+      body: Inter
+      display: Space Grotesk
+    wordmark:
+    - text: Tamper
+      color: primary
+    - text: lens
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Checks
+      href: '#checks'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: handler
+      label: Claims handler
+      assignedBy: signup
+    - key: investigator
+      label: Fraud investigator
+      assignedBy: invite
+    - key: manager
+      label: Manager
+      assignedBy: invite
+  agents:
+  - key: analyst
+    role: main
+    description: Runs the forensic model on each uploaded file, cross-checks documents, verifies suppliers and raises alerts.
+    context:
+    - key: handler_email
+      from: user.email
+    profile:
+      inline:
+        display_name: Tamperlens claim analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a forensic document analyst assisting an insurer''s fraud team. You review ONE new claim.
+            Workflow:
+
+            1. For every uploaded file id, call detect_document with a JSON body {"file_id": <id>, "claim_ref": <policy number>}.
+            The detection model returns a manipulation score 0-100, highlighted regions, metadata and compression findings,
+            font and layout anomalies and a perceptual hash. Never invent or adjust these values; if the call fails, say so
+            and mark the file as not analysed.
+
+            2. For each file call save_finding with claim_id, file_name, doc_type, score, regions (short text), signals.
+
+            3. Duplicate images: call fingerprint_search with the perceptual hash; a match on another claim is a strong indicator.
+            Then call fingerprint_add for this file.
+
+            4. Consistency: use read_upload to read invoices, receipts and estimates (OCR included) and compare dates (after
+            date of loss, before policy start), amounts (totals vs claim amount, arithmetic), supplier names, addresses, VAT
+            and company numbers, and document numbering between files.
+
+            5. Suppliers: for each supplier with a UK company name or number, call companies_search (query q) and companies_profile
+            (path / followed by the company number). Flag: not found, dissolved or dormant, incorporated after the invoice
+            date, name or address mismatch with the document.
+
+            6. Risk score 0-100 for the claim: start from the highest document score, add weight for duplicates, inconsistencies
+            and supplier flags. Call update_claim with the claim''s status (cleared if risk < 40, review if 40-69, escalated
+            if 70 or more), risk_score and ai_summary.
+
+            7. If risk is 70 or more, or there is a duplicate image across claims, call raise_alert with the claim fields,
+            handler_email, risk_score, top_signals, supplier_flags, status open and today''s date as alert_date.
+
+            Tone: these are indicators for a human investigator, not proof of fraud; never accuse anyone. Never invent figures.
+
+            Output a Markdown report starting with a level-1 title "# Claim <policy number> — forensic review", then sections
+            ## Verdict, ## Document scores (table: file, type, score, key signals), ## Cross-document consistency, ## Suppliers,
+            ## Recommended next steps. Under 500 words.'
+          mcp_servers: []
+    appTools:
+    - name: read_upload
+      description: Read a file attached to the claim (OCR for images)
+      action: read_file
+    - name: detect_document
+      description: Send one uploaded file to the Tamperlens detection model; returns manipulation score, highlighted regions,
+        metadata and layout findings, perceptual hash
+      action: http
+      http:
+        method: POST
+        url: https://model.tamperlens.eu/v1/analyze
+        allowPath: false
+        timeoutMs: 30000
+        credential:
+          provider: tamperlens_model
+          header: Authorization
+          format: Bearer {secret}
+        attribution: Tamperlens detection model
+    - name: companies_search
+      description: Search Companies House by company name (query q)
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk/search/companies
+        credential:
+          provider: companies_house
+          header: Authorization
+          format: Basic {secret}
+        attribution: Companies House, Open Government Licence v3.0
+    - name: companies_profile
+      description: 'Companies House profile by number: path /<company number>'
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk/company
+        allowPath: true
+        credential:
+          provider: companies_house
+          header: Authorization
+          format: Basic {secret}
+        attribution: Companies House, Open Government Licence v3.0
+    - name: save_finding
+      description: Record the result for one document
+      action: append
+      collection: document_findings
+      scope: user
+    - name: fingerprint_search
+      description: Find earlier files with the same perceptual hash
+      action: search
+      collection: doc_fingerprints
+      scope: all
+    - name: fingerprint_add
+      description: Store the perceptual hash of a file
+      action: append
+      collection: doc_fingerprints
+      scope: all
+    - name: update_claim
+      description: Set status, risk score and summary on the claim
+      action: write
+      collection: claims
+      scope: user
+    - name: raise_alert
+      description: Send the claim to the fraud investigators' queue
+      action: append
+      collection: alerts
+      scope: all
+    output: markdown
+  - key: digest
+    role: scheduled
+    description: Writes the daily summary of alerts for managers.
+    profile:
+      inline:
+        display_name: Tamperlens daily digest
+        crews:
+        - id: digest
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the daily summary for fraud and claims managers. Read the alerts with read_alerts. Start
+            with "# Tamperlens daily summary — <date>". Sections: ## New alerts (last 24h: count, claim type, amount, risk
+            score), ## Open queue (count and oldest), ## Decisions (confirmed fraud and cleared in the last 24h), ## Savings
+            (sum of amount_saved confirmed this month). Plain text friendly, under 250 words, real figures only; say so if
+            there is no activity.'
+    appTools:
+    - name: read_alerts
+      description: Read the alerts
+      action: read
+      collection: alerts
+      scope: all
+    output: markdown
+  data:
+    collections:
+    - name: claims
+      description: Claims opened by handlers, with their documents
+      ownedBy: user
+      access:
+      - role: investigator
+        can:
+        - read
+      - role: manager
+        can:
+        - read
+      retentionDays: 2555
+      fields:
+      - name: policy_number
+        type: text
+        required: true
+        label: Policy number
+      - name: claim_type
+        type: select
+        required: true
+        label: Claim type
+        options:
+        - motor
+        - property
+        - liability
+        - travel
+        - health
+        - other
+      - name: date_of_loss
+        type: date
+        required: true
+        label: Date of loss
+      - name: amount
+        type: number
+        required: true
+        label: Claimed amount
+      - name: description
+        type: textarea
+        maxLength: 1500
+        label: Description
+      - name: documents
+        type: file
+        required: true
+        accept:
+        - pdf
+        - jpg
+        - jpeg
+        - png
+        maxMb: 15
+        multiple: true
+        label: Invoices, receipts, estimates, photos
+      - name: status
+        type: select
+        default: submitted
+        options:
+        - submitted
+        - cleared
+        - review
+        - escalated
+      - name: risk_score
+        type: number
+      - name: ai_summary
+        type: textarea
+    - name: document_findings
+      description: Detection result per document
+      ownedBy: user
+      access:
+      - role: investigator
+        can:
+        - read
+      - role: manager
+        can:
+        - read
+      fields:
+      - name: claim_id
+        type: text
+      - name: file_name
+        type: text
+      - name: doc_type
+        type: text
+      - name: score
+        type: number
+      - name: regions
+        type: textarea
+      - name: signals
+        type: textarea
+    - name: doc_fingerprints
+      description: Perceptual hashes of files, to find images reused across claims (no content, no personal data)
+      ownedBy: app
+      fields:
+      - name: phash
+        type: text
+      - name: claim_id
+        type: text
+      - name: file_name
+        type: text
+    - name: alerts
+      description: High-risk claims waiting for a fraud investigator
+      ownedBy: org
+      access:
+      - role: investigator
+        can:
+        - read
+        - write
+      - role: manager
+        can:
+        - read
+      fields:
+      - name: claim_id
+        type: text
+      - name: policy_number
+        type: text
+        label: Policy
+      - name: claim_type
+        type: text
+        label: Type
+      - name: amount
+        type: number
+        label: Claimed amount
+      - name: risk_score
+        type: number
+        label: Risk score
+      - name: top_signals
+        type: textarea
+        label: Top signals
+      - name: supplier_flags
+        type: textarea
+        label: Supplier flags
+      - name: handler_email
+        type: email
+      - name: alert_date
+        type: date
+        label: Alert date
+      - name: status
+        type: select
+        default: open
+        label: Decision
+        options:
+        - value: open
+          label: Open
+        - value: in_review
+          label: In review
+        - value: confirmed_fraud
+          label: Confirmed fraud
+        - value: cleared
+          label: Cleared
+      - name: investigator_notes
+        type: textarea
+        label: Outcome notes
+      - name: amount_saved
+        type: number
+        label: Amount saved
+    credentials:
+    - provider: tamperlens_model
+      kind: api_key
+      scope: org
+      label: Tamperlens detection model API key
+      help: The bearer key for your detection model endpoint, set by the app admins.
+    - provider: companies_house
+      kind: api_key
+      scope: org
+      label: Companies House API key
+      help: Register an application at developer.company-information.service.gov.uk; paste the key followed by a colon, base64-encoded
+        (HTTP Basic).
+  egress:
+    hosts:
+    - model.tamperlens.eu
+    - api.company-information.service.gov.uk
+    notes: 'model.tamperlens.eu: the customer''s own forensic detection model API (placeholder host, set to the real endpoint).
+      api.company-information.service.gov.uk: Companies House public API, Open Government Licence v3.0.'
+  triggers:
+  - key: analyse_claim
+    description: Analyse every new claim
+    'on':
+      collection: claims
+      op: insert
+      where:
+        status: submitted
+    start:
+      agent: analyst
+    goal: 'Review this new claim. Policy number: {record.policy_number}. Claim type: {record.claim_type}. Date of loss: {record.date_of_loss}.
+      Claimed amount: {record.amount}. Description: {record.description}. Uploaded file ids: {record.documents}. Handler email:
+      {handler_email}. Today is {date}.'
+  - key: new_alert
+    description: Email investigators on a new alert
+    'on':
+      collection: alerts
+      op: insert
+    notify:
+      to: role:investigator
+      subject: 'New fraud alert: {record.policy_number} (risk {record.risk_score})'
+      body: 'A claim was flagged: policy {record.policy_number}, type {record.claim_type}, amount {record.amount}, risk score
+        {record.risk_score}.
+
+
+        Signals: {record.top_signals}'
+      link: alerts_queue
+  - key: alert_confirmed
+    'on':
+      collection: alerts
+      op: update
+      where:
+        status: confirmed_fraud
+    notify:
+      to:
+      - record.handler_email
+      - role:manager
+      subject: 'Claim {record.policy_number}: fraud confirmed'
+      body: 'The fraud investigator confirmed fraud on claim {record.policy_number}. Notes: {record.investigator_notes}'
+      link: claims
+  - key: alert_cleared
+    'on':
+      collection: alerts
+      op: update
+      where:
+        status: cleared
+    notify:
+      to: record.handler_email
+      subject: 'Claim {record.policy_number}: cleared by investigation'
+      body: 'The investigator reviewed claim {record.policy_number} and cleared it. Notes: {record.investigator_notes}'
+      link: claims
+  schedules:
+  - agent: digest
+    action: run
+    cron: 0 7 * * *
+    owner: app
+    goal: Write the daily alert summary for managers. Today is {date}.
+    deliver:
+      to: role:manager
+      subject: Tamperlens daily summary {date}
+  views:
+  - key: home
+    type: page
+    title: Tamperlens
+    nav: false
+    sections:
+    - type: hero
+      title: Catch **manipulated** claim documents before you pay.
+      text: Every invoice, receipt, estimate and photo is scored by a forensic model, cross-checked against the rest of the
+        claim and its suppliers, and high-risk claims go straight to your fraud investigators.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Open a claim
+        text: Policy number, claim type, date of loss, amount and the documents.
+      - title: Forensic analysis
+        text: Each file gets a manipulation score and highlighted regions.
+      - title: Cross-checks
+        text: Dates, amounts, suppliers, duplicated images across claims and Companies House.
+      - title: Investigate
+        text: High scores reach the investigators' queue with an email alert.
+    - type: cards
+      id: checks
+      title: What is checked
+      items:
+      - title: Pixels and metadata
+        text: Edited regions, compression and metadata inconsistencies.
+      - title: Fonts and layout
+        text: Anomalies in documents that were altered.
+      - title: Suppliers
+        text: Verified against Companies House.
+    - type: note
+      content: Tamperlens produces indicators for human review, not proof of fraud.
+  - key: new_claim
+    type: form
+    title: Open a claim
+    collection: claims
+    fields:
+    - policy_number
+    - claim_type
+    - date_of_loss
+    - amount
+    - description
+    - documents
+    submit:
+      label: Submit for analysis
+      message: Claim received. Analysis has started.
+      redirect: claims
+    roles:
+    - handler
+    - admin
+  - key: claims
+    type: table
+    title: My claims
+    source: collection:claims
+    roles:
+    - handler
+    - admin
+    data:
+      display: table
+      fields:
+      - key: policy_number
+        label: Policy
+      - key: claim_type
+        label: Type
+      - key: date_of_loss
+        label: Date of loss
+        format: date
+      - key: amount
+        label: Amount
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      - key: risk_score
+        label: Risk
+      - key: ai_summary
+        label: Summary
+      sort:
+        field: date_of_loss
+        dir: desc
+  - key: all_claims
+    type: table
+    title: All claims
+    source: collection:claims
+    roles:
+    - investigator
+    - manager
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: policy_number
+        label: Policy
+      - key: claim_type
+        label: Type
+      - key: amount
+        label: Amount
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      - key: risk_score
+        label: Risk
+      - key: ai_summary
+        label: Summary
+  - key: findings
+    type: table
+    title: Document findings
+    source: collection:document_findings
+    roles:
+    - handler
+    - investigator
+    - manager
+    - admin
+    data:
+      display: table
+      fields:
+      - key: claim_id
+        label: Claim
+      - key: file_name
+        label: File
+      - key: doc_type
+        label: Type
+      - key: score
+        label: Manipulation score
+      - key: regions
+        label: Highlighted regions
+      - key: signals
+        label: Signals
+      sort:
+        field: score
+        dir: desc
+  - key: alerts_queue
+    type: cards
+    title: Alert queue
+    source: collection:alerts
+    roles:
+    - investigator
+    - admin
+    data:
+      display: cards
+      fields:
+      - key: policy_number
+        label: Policy
+      - key: claim_type
+        label: Type
+      - key: amount
+        label: Amount
+        format: money
+      - key: risk_score
+        label: Risk
+      - key: top_signals
+        label: Signals
+      - key: supplier_flags
+        label: Suppliers
+      - key: status
+        label: Status
+        format: badge
+      filters:
+      - field: status
+        op: '='
+        value: open
+      sort:
+        field: risk_score
+        dir: desc
+  - key: alert_decision
+    type: form
+    title: Record decision
+    collection: alerts
+    fields:
+    - status
+    - investigator_notes
+    - amount_saved
+    edit: true
+    submit:
+      label: Save decision
+      message: Decision recorded.
+      redirect: alerts_queue
+    roles:
+    - investigator
+    - admin
+    nav: false
+  - key: all_alerts
+    type: table
+    title: All alerts
+    source: collection:alerts
+    roles:
+    - investigator
+    - manager
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: alert_date
+        label: Date
+        format: date
+      - key: policy_number
+        label: Policy
+      - key: amount
+        label: Amount
+        format: money
+      - key: risk_score
+        label: Risk
+      - key: status
+        label: Decision
+        format: badge
+      - key: amount_saved
+        label: Saved
+        format: money
+      sort:
+        field: alert_date
+        dir: desc
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - manager
+    - investigator
+    - admin
+    sections:
+    - type: data
+      title: Open alerts
+      source: collection:alerts
+      display: kpi
+      filters:
+      - field: status
+        op: '='
+        value: open
+      kpis:
+      - label: Open alerts
+        agg: count
+      - label: Value at stake
+        agg: sum
+        field: amount
+        format: money
+    - type: data
+      title: Confirmed fraud and savings
+      source: collection:alerts
+      display: kpi
+      filters:
+      - field: status
+        op: '='
+        value: confirmed_fraud
+      kpis:
+      - label: Confirmed fraud cases
+        agg: count
+      - label: Savings
+        agg: sum
+        field: amount_saved
+        format: money
+    - type: data
+      title: Alerts and savings by month
+      source: collection:alerts
+      display: chart
+      chart: bar
+      fields:
+      - key: alert_date
+        label: Month
+      - key: count
+        label: Alerts
+      - key: saved
+        label: Saved
+      groupBy:
+        field: alert_date
+        bucket: month
+        aggs:
+        - key: saved
+          agg: sum
+          field: amount_saved
+    - type: data
+      title: Alerts by outcome
+      source: collection:alerts
+      display: chart
+      chart: pie
+      fields:
+      - key: status
+        label: Outcome
+      - key: count
+        label: Alerts
+      groupBy:
+        field: status
+        aggs: []
+  - key: account
+    type: account
+    title: Billing
+    roles:
+    - handler
+    - investigator
+    - manager
+    - admin
+  billing:
+    modes:
+    - credits
+    - subscription
+    currency: eur
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:analyst:
+        estimate: 10
+        metered: true
+    packs:
+    - key: docs_500
+      credits: 1000
+      price: 50
+      label: 'Pay as you go: 1,000 credits'
+    plans:
+    - key: insurer
+      price: 500
+      interval: month
+      label: 'Insurer: monthly minimum'
+      credits: 6000
+      creditsReset: monthly
+      roles:
+      - admin
+      - manager
+    - key: enterprise
+      price: 2000
+      interval: month
+      label: 'Enterprise: monthly minimum'
+      credits: 30000
+      creditsReset: monthly
+      roles:
+      - admin
+      - manager
+  extensions:
+  - key: detection_model_files
+    description: The detection model is plugged in as an HTTP app tool (detect_document, host model.tamperlens.eu, bearer
+      key set by the admins). The runtime tool sends a JSON body only, so the model endpoint must fetch the file by its id
+      (for example through a signed URL exchange). Sending raw file bytes to the model is not available yet. Set the real
+      endpoint and its request and response format in the analyst's prompt.
+  - key: per_document_pricing
+    description: Pricing is pay per use (AI usage plus markup) with monthly-minimum plans that include credits. A strict price
+      per document analysed, billed on a claim created by a form, is not available yet.
+  - key: queue_row_links
+    description: The alert queue lists alerts; opening the decision form for one alert is done at /v/alert_decision?id=<alert>.
+      A per-row link button is not available yet.

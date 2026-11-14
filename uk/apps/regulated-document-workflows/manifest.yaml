@@ -1,0 +1,1063 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: stepproof
+  displayName: Stepproof
+  tagline:
+    en: Reliable multi-step checks on case files, with a human wherever the AI is unsure.
+  description:
+    en: 'Stepproof runs the checks your firm defines on every case file: it extracts fields from the documents, has a second
+      agent validate each step, sends low-confidence or failed steps to a person, and keeps a full audit trail through to
+      reviewer sign-off.'
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f3a5f'
+      accent: '#0f766e'
+      background: '#f7f8fa'
+      foreground: '#18212b'
+    fonts:
+      body: Inter
+      display: Source Serif 4
+    wordmark:
+    - text: Step
+      color: primary
+    - text: proof
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Controls
+      href: '#controls'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: handler
+      label: Case handler
+      assignedBy: signup
+    - key: reviewer
+      label: Reviewer
+      assignedBy: derived
+      from: collection:cases.reviewer_email
+    - key: manager
+      label: Manager
+      assignedBy: invite
+  limits:
+  - action: agent:extractor
+    per: user
+    max: 50
+    window: day
+    roles:
+    - handler
+  agents:
+  - key: extractor
+    role: main
+    description: 'Works one case through the chosen workflow step by step: reads the documents, extracts fields, checks rules
+      and the lender criteria, asks the validator to check each step and records the results.'
+    memory: none
+    delegates:
+    - validator
+    profile:
+      inline:
+        display_name: Stepproof case processor
+        crews:
+        - id: extractor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Stepproof, a careful case-file checker for regulated firms (mortgage brokers, solicitors,
+            compliance teams). You never invent values: if a document does not show something, say it is missing.
+
+
+            PROCESS
+
+            1. Open every uploaded document with read_upload (call it with the file id; it also reads scans and photos with
+            OCR). Text of PDF/Word/Excel files may already be in the goal.
+
+            2. Go through the workflow steps in order. Each step defines: the document expected, the fields to extract, the
+            rule to check and a minimum confidence. For each step: extract the fields, note the document name and page where
+            each value was found, then apply the rule.
+
+            3. Cross-document checks: compare names, addresses, employer, income and dates across documents and flag inconsistencies.
+            For a mortgage workflow, extract income, outgoings and employment details, recompute affordability using ONLY
+            the lender criteria supplied in the goal (cite the criterion used) and flag gaps (missing months, unexplained
+            deposits, expired ID, income below the criterion).
+
+            4. After each step call ask_validator with the step, the extracted values and the file ids: a second agent independently
+            re-checks them and returns passed/failed, a confidence 0-100 and a reason. Use the lower of your confidence and
+            the validator''s.
+
+            5. Save each step with save_step: case_ref, workflow, step_key, step_title, document, source (document name +
+            page), extracted (a short list of field: value), confidence (0-100), check_status (passed|failed), failure_reason
+            (none|missing_document|unreadable_scan|field_mismatch|rule_failed|low_confidence|other), needs_human (yes if check_status
+            is failed OR confidence is below the step minimum OR the document is unreadable; otherwise no), reviewer_email,
+            handler_note empty, resolved no.
+
+            6. When all steps are done call save_case once: case_ref, workflow, handler_email, reviewer_email, case_date (today,
+            YYYY-MM-DD), status (needs_attention if any step needs a human, otherwise in_review is NOT allowed: use draft
+            so the handler confirms and sends it to the reviewer), overall_confidence, flags (count of steps needing a human),
+            summary (3 sentences).
+
+            7. Write an audit entry with save_audit: case_ref, subject "processed", detail (steps run, how many need a human).
+
+
+            FINAL REPORT (the answer): start with a level-1 title "# Case <case_ref> — <workflow name>". Then ## Summary,
+            ## Steps (a table: step, result, confidence, source), ## Cross-document checks, ## Affordability (only if criteria
+            apply: show the calculation line by line), ## Needs a human (each item with why), ## Sources. This is decision
+            support: never state a regulatory or legal conclusion as fact, and never approve a case: only the reviewer signs
+            off.'
+          mcp_servers: []
+    goalTemplate: 'Case reference: {case_ref}
+
+      Workflow: {workflow_name}
+
+      Handler: {email}
+
+      Reviewer: {reviewer_email}
+
+      Workflow steps (JSON):
+
+      {workflow_steps}
+
+      Lender criteria and firm rules (one JSON line each):
+
+      {criteria}
+
+      Documents uploaded (names and file ids): {documents}
+
+      {?documents_text}Extracted text of the documents:
+
+      {documents_text}{/documents_text}
+
+      {?notes}Handler notes: {notes}{/notes}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    context:
+    - key: workflow_name
+      from: collection:workflows.name
+    - key: workflow_steps
+      from: collection:workflows.steps
+    - key: criteria
+      from: collection:criteria
+    - key: email
+      from: user.email
+    appTools:
+    - name: read_upload
+      description: Read a file the user uploaded by its file id (OCR for scans and photos)
+      action: read_file
+    - name: save_step
+      description: Record the result of one workflow step for this case
+      action: append
+      collection: step_results
+      scope: user
+    - name: save_case
+      description: Record the case with its overall status and summary
+      action: append
+      collection: cases
+      scope: user
+    - name: save_audit
+      description: Add an entry to the audit trail
+      action: append
+      collection: audit_log
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 60
+      maxBudgetUsd: 2
+  - key: validator
+    role: helper
+    description: 'Second agent: independently re-checks one step''s extracted values against the source documents.'
+    profile:
+      inline:
+        display_name: Stepproof validator
+        crews:
+        - id: validator
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the independent validator of a case-checking step. You receive a step definition, the values
+            another agent extracted, and file ids. Open the files with read_upload and verify each value yourself WITHOUT
+            assuming it is right: check the figure, the name, the date and the page it was taken from, and check that the
+            step rule was applied correctly. Answer with a short JSON object only: {"result":"passed"|"failed","confidence":0-100,"reason":"one
+            sentence, empty if passed","failure_reason":"none|missing_document|unreadable_scan|field_mismatch|rule_failed|low_confidence|other"}.
+            If a scan is hard to read, lower the confidence rather than guess.'
+    appTools:
+    - name: read_upload
+      description: Read a file the user uploaded by its file id (OCR for scans and photos)
+      action: read_file
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  - key: summarizer
+    role: scheduled
+    description: Writes the weekly summary for managers from anonymised case and step metrics.
+    writesTo:
+      collection: weekly_summaries
+      parse: whole
+    profile:
+      inline:
+        display_name: Stepproof weekly summariser
+        crews:
+        - id: summarizer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the weekly operations summary for the managers of a regulated firm using the case metrics
+            and step metrics you can read. Start with "# Stepproof weekly summary — week of <date>". Sections: ## Throughput
+            (cases by status this week vs. before), ## Where checks fail (top failure reasons and workflows), ## Time per
+            case, ## Actions for managers (max 3). Under 300 words. Use only figures from the tools; if data is thin say so.
+            You may add one chart as a fenced chart block (JSON: type, title, labels, series). Never invent numbers.'
+    goalTemplate: 'Write the weekly summary. Today is {date}. Language: {lang}.'
+    appTools:
+    - name: read_case_metrics
+      description: Read the anonymised case metrics (workflow, status, case date, handling minutes)
+      action: read
+      collection: case_metrics
+      scope: all
+    - name: read_step_metrics
+      description: Read the anonymised step metrics (workflow, step, check status, failure reason)
+      action: read
+      collection: step_metrics
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.4
+  inputForm:
+    title:
+      en: New case
+    fields:
+    - name: case_ref
+      type: text
+      required: true
+      maxLength: 60
+      label:
+        en: Case reference
+    - name: workflow
+      type: select
+      required: true
+      optionsFrom: collection:workflows
+      label:
+        en: Workflow
+    - name: reviewer_email
+      type: email
+      required: true
+      label:
+        en: Reviewer's email
+      help:
+        en: The person who will sign the case off.
+    - name: documents
+      type: file
+      required: true
+      multiple: true
+      accept:
+      - pdf
+      - docx
+      - xlsx
+      - csv
+      - jpg
+      - jpeg
+      - png
+      maxMb: 15
+      label:
+        en: Case documents
+      help:
+        en: Payslips, bank statements, ID, application form… Scans are read with text recognition.
+    - name: notes
+      type: textarea
+      maxLength: 600
+      label:
+        en: Notes (optional)
+  data:
+    collections:
+    - name: workflows
+      ownedBy: shared
+      description: 'Workflows built by the admins: each is a list of steps (document, fields, rule). Filled on the admin data
+        page.'
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Name
+      - name: sector
+        type: select
+        label: Sector
+        options:
+        - mortgage
+        - legal
+        - compliance
+        - other
+      - name: description
+        type: textarea
+        label: Description
+      - name: steps
+        type: array
+        label: Steps
+        fields:
+        - name: step_key
+          type: text
+          required: true
+          label: Key
+        - name: title
+          type: text
+          required: true
+          label: Title
+        - name: document_type
+          type: text
+          label: Document expected
+        - name: fields_to_extract
+          type: textarea
+          label: Fields to extract
+        - name: rule
+          type: textarea
+          label: Rule to check
+        - name: min_confidence
+          type: number
+          label: Minimum confidence (0-100)
+    - name: criteria
+      ownedBy: shared
+      description: Lender criteria and firm rules the agent checks against. Filled by the admins.
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Name
+      - name: lender
+        type: text
+        label: Lender / rule owner
+      - name: effective_date
+        type: date
+        label: Effective from
+      - name: criteria_text
+        type: textarea
+        required: true
+        label: Criteria (text)
+      - name: document
+        type: file
+        accept:
+        - pdf
+        - docx
+        - txt
+        label: Source document
+    - name: cases
+      ownedBy: user
+      description: One record per case, owned by the handler it is assigned to.
+      access:
+      - role: reviewer
+        where:
+          reviewer_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: manager
+      fields:
+      - name: case_ref
+        type: text
+        required: true
+        label: Case
+      - name: workflow
+        type: text
+        label: Workflow
+      - name: handler_email
+        type: email
+        label: Handler
+      - name: reviewer_email
+        type: email
+        label: Reviewer
+      - name: case_date
+        type: date
+        label: Date
+      - name: status
+        type: select
+        label: Status
+        options:
+        - draft
+        - needs_attention
+        - in_review
+        - approved
+        - rejected
+      - name: overall_confidence
+        type: number
+        label: Confidence
+      - name: flags
+        type: number
+        label: Steps needing a human
+      - name: summary
+        type: textarea
+        label: Summary
+      - name: handling_minutes
+        type: number
+        label: Handling time (minutes)
+      - name: reviewer_notes
+        type: textarea
+        label: Reviewer notes
+    - name: step_results
+      ownedBy: user
+      description: Result of each workflow step of each case, with the validator's check and the handler's corrections.
+      access:
+      - role: reviewer
+        where:
+          reviewer_email: '{user.email}'
+      - role: manager
+      fields:
+      - name: case_ref
+        type: text
+        label: Case
+      - name: workflow
+        type: text
+        label: Workflow
+      - name: step_key
+        type: text
+        label: Step key
+      - name: step_title
+        type: text
+        label: Step
+      - name: document
+        type: text
+        label: Document
+      - name: source
+        type: text
+        label: Source (document, page)
+      - name: extracted
+        type: textarea
+        label: Extracted values
+      - name: confidence
+        type: number
+        label: Confidence
+      - name: check_status
+        type: select
+        label: Check
+        options:
+        - passed
+        - failed
+      - name: failure_reason
+        type: select
+        label: Failure reason
+        options:
+        - none
+        - missing_document
+        - unreadable_scan
+        - field_mismatch
+        - rule_failed
+        - low_confidence
+        - other
+      - name: needs_human
+        type: select
+        label: Needs a human
+        options:
+        - 'yes'
+        - 'no'
+      - name: corrected_value
+        type: textarea
+        label: Corrected values
+      - name: handler_note
+        type: textarea
+        label: Handler note
+      - name: resolved
+        type: select
+        label: Resolved
+        options:
+        - 'yes'
+        - 'no'
+      - name: reviewer_email
+        type: email
+        label: Reviewer
+    - name: audit_log
+      ownedBy: user
+      description: 'Audit trail: processing, corrections and status changes, written by agents and triggers.'
+      access:
+      - role: manager
+      fields:
+      - name: case_ref
+        type: text
+        label: Case
+      - name: subject
+        type: text
+        label: Event
+      - name: detail
+        type: textarea
+        label: Detail
+    - name: case_metrics
+      ownedBy: app
+      description: Anonymised per-case metrics for dashboards and the weekly summary, written by a trigger.
+      fields:
+      - name: case_ref
+        type: text
+      - name: workflow
+        type: text
+      - name: status
+        type: text
+      - name: case_date
+        type: date
+      - name: handling_minutes
+        type: number
+      - name: flags
+        type: number
+    - name: step_metrics
+      ownedBy: app
+      description: Anonymised per-step metrics for failure-reason dashboards, written by a trigger.
+      fields:
+      - name: workflow
+        type: text
+      - name: step_title
+        type: text
+      - name: check_status
+        type: text
+      - name: failure_reason
+        type: text
+      - name: needs_human
+        type: text
+    - name: weekly_summaries
+      ownedBy: app
+      description: Weekly manager summaries written by the scheduled agent.
+      fields:
+      - name: title
+        type: text
+      - name: content
+        type: textarea
+  views:
+  - key: home
+    type: page
+    title: Stepproof
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: For mortgage brokers, solicitors and compliance teams
+      title: Case checks you can **prove**, step by step.
+      text: Define the checks once. Stepproof reads each case file, extracts and cross-checks the data, has a second agent
+        validate every step and puts a person on anything it is not sure about.
+      actions:
+      - label: Start a case
+        href: /v/new_case
+        style: primary
+      - label: Sign in
+        href: /login
+        style: ghost
+      aside: <div style="padding:16px"><strong>Case MB-1042 · Mortgage file</strong><br>✔ Payslips — income £4,120/mo (98%)<br>✔
+        ID — valid to 2031 (96%)<br>⚠ Bank statements — unexplained deposit, p.3 (61%) → sent to handler<br>⏳ Awaiting reviewer
+        sign-off</div>
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Admins build workflows
+        text: Each step says which document to expect, which fields to extract and which rule to check, against the lender
+          criteria the firm uploads.
+        badge: 🧩
+      - title: Handlers upload the file
+        text: Documents, including scans, are read with text recognition. Results appear step by step with the source page.
+        badge: 📄
+      - title: A second agent validates
+        text: Low confidence or a failed check goes to a human, who corrects the values.
+        badge: 🔍
+      - title: Reviewer signs off
+        text: The reviewer sees only the cases assigned to them and approves or rejects, with a full audit trail.
+        badge: ✅
+    - type: cards
+      id: controls
+      title: Built for regulated work
+      items:
+      - title: Assigned access
+        text: Handlers see only their own cases; reviewers only those assigned to them.
+      - title: Audit trail
+        text: Every processing, correction and status change is recorded.
+      - title: Email alerts
+        text: When a case needs attention or is complete, plus a weekly summary for managers.
+      - title: Dashboards
+        text: Throughput, failure reasons and time per case.
+    - type: note
+      content: Stepproof supports your review; it is not regulatory or legal advice. A person signs off every case.
+  - key: new_case
+    type: new_run
+    title: New case
+    roles:
+    - handler
+    - admin
+  - key: case_report
+    type: report
+    title: Case report
+    source: run
+    printable: true
+    nav: false
+  - key: runs
+    type: history
+    title: Processing runs
+    source: run
+    roles:
+    - handler
+    - admin
+    nav: false
+  - key: cases
+    type: table
+    title: Cases
+    source: collection:cases
+    roles:
+    - handler
+    - reviewer
+    - manager
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: case_ref
+        label: Case
+      - key: workflow
+        label: Workflow
+      - key: case_date
+        label: Date
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      - key: overall_confidence
+        label: Confidence
+        format: number
+      - key: flags
+        label: Needs a human
+        format: number
+      - key: reviewer_email
+        label: Reviewer
+      sort:
+        field: case_date
+        dir: desc
+      limit: 100
+      empty: No cases yet.
+  - key: steps
+    type: table
+    title: Steps and results
+    source: collection:step_results
+    roles:
+    - handler
+    - reviewer
+    - manager
+    - admin
+    data:
+      display: table
+      fields:
+      - key: case_ref
+        label: Case
+      - key: step_title
+        label: Step
+      - key: extracted
+        label: Extracted
+      - key: corrected_value
+        label: Corrected
+      - key: source
+        label: Source page
+      - key: confidence
+        label: Confidence
+        format: number
+      - key: check_status
+        label: Check
+        format: badge
+      - key: failure_reason
+        label: Reason
+        format: badge
+      - key: needs_human
+        label: Needs human
+        format: badge
+      - key: resolved
+        label: Resolved
+        format: badge
+      limit: 200
+      empty: No steps yet.
+  - key: correct_step
+    type: form
+    title: Correct a step
+    collection: step_results
+    fields:
+    - corrected_value
+    - handler_note
+    - resolved
+    edit: true
+    submit:
+      label: Save correction
+      message: Correction saved and added to the audit trail.
+      redirect: steps
+    roles:
+    - handler
+    - admin
+    nav: false
+  - key: send_case
+    type: form
+    title: Send to reviewer
+    collection: cases
+    fields:
+    - status
+    - handling_minutes
+    edit: true
+    submit:
+      label: Save
+      message: Case updated. The reviewer is notified when it is sent for review.
+      redirect: cases
+    roles:
+    - handler
+    - admin
+    nav: false
+  - key: review_case
+    type: form
+    title: Review and sign off
+    collection: cases
+    fields:
+    - status
+    - reviewer_notes
+    edit: true
+    submit:
+      label: Record decision
+      message: Decision recorded.
+      redirect: cases
+    roles:
+    - reviewer
+    - admin
+    nav: false
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - manager
+    - admin
+    sections:
+    - type: data
+      title: Cases
+      source: collection:case_metrics
+      display: kpi
+      kpis:
+      - label: Cases processed
+        agg: count
+      - label: Avg handling minutes
+        agg: avg
+        field: handling_minutes
+        format: number
+      - label: Steps needing a human (total)
+        agg: sum
+        field: flags
+        format: number
+    - type: data
+      title: Throughput per week
+      source: collection:case_metrics
+      display: chart
+      chart: line
+      fields:
+      - key: case_date
+        label: Week
+      - key: count
+        label: Cases
+      groupBy:
+        field: case_date
+        bucket: week
+        aggs: []
+    - type: data
+      title: Cases by status
+      source: collection:case_metrics
+      display: chart
+      chart: pie
+      fields:
+      - key: status
+        label: Status
+      - key: count
+        label: Cases
+      groupBy:
+        field: status
+        aggs: []
+    - type: data
+      title: Failure reasons
+      source: collection:step_metrics
+      display: chart
+      chart: bar
+      fields:
+      - key: failure_reason
+        label: Reason
+      - key: count
+        label: Steps
+      filters:
+      - field: check_status
+        op: '='
+        value: failed
+      groupBy:
+        field: failure_reason
+        aggs: []
+    - type: data
+      title: Time per case by workflow (minutes)
+      source: collection:case_metrics
+      display: chart
+      chart: bar
+      fields:
+      - key: workflow
+        label: Workflow
+      - key: avg_minutes
+        label: Avg minutes
+      groupBy:
+        field: workflow
+        aggs:
+        - key: avg_minutes
+          agg: avg
+          field: handling_minutes
+  - key: audit
+    type: table
+    title: Audit trail
+    source: collection:audit_log
+    roles:
+    - manager
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: case_ref
+        label: Case
+      - key: subject
+        label: Event
+      - key: detail
+        label: Detail
+      limit: 200
+      empty: No audit entries yet.
+  - key: weekly
+    type: table
+    title: Weekly summaries
+    source: collection:weekly_summaries
+    roles:
+    - manager
+    - admin
+    data:
+      display: list
+      fields:
+      - key: title
+        label: Summary
+      - key: content
+        label: Content
+      limit: 20
+      empty: The first summary arrives on Monday.
+  - key: account
+    type: account
+    title: Plan and credits
+    roles:
+    - handler
+    - admin
+    - manager
+  triggers:
+  - key: step_needs_human
+    description: A step needs a human
+    'on':
+      collection: step_results
+      op: insert
+      where:
+        needs_human: 'yes'
+    notify:
+      to: owner
+      subject: Case {record.case_ref} needs attention
+      body: The step "{record.step_title}" of case {record.case_ref} failed its check or has low confidence. Please review
+        and correct it.
+      link: steps
+  - key: case_in_review
+    description: Case sent to the reviewer
+    'on':
+      collection: cases
+      op: update
+      where:
+        status: in_review
+    notify:
+      to:
+      - record.reviewer_email
+      subject: Case {record.case_ref} is ready for your review
+      body: Case {record.case_ref} ({record.workflow}) has been sent for your sign-off.
+      link: cases
+  - key: case_approved
+    description: Case approved
+    'on':
+      collection: cases
+      op: update
+      where:
+        status: approved
+    notify:
+      to: owner
+      subject: Case {record.case_ref} is complete
+      body: Case {record.case_ref} has been approved by the reviewer.
+      link: cases
+  - key: case_rejected
+    description: Case rejected
+    'on':
+      collection: cases
+      op: update
+      where:
+        status: rejected
+    notify:
+      to: owner
+      subject: Case {record.case_ref} needs attention
+      body: 'The reviewer rejected case {record.case_ref}. Notes: {record.reviewer_notes}'
+      link: cases
+  - key: metrics_case
+    description: Copy anonymised case metrics
+    'on':
+      collection: cases
+      op: any
+    write:
+      collection: case_metrics
+      fields:
+        case_ref: case_ref
+        workflow: workflow
+        status: status
+        case_date: case_date
+        handling_minutes: handling_minutes
+        flags: flags
+      keyBy: case_ref
+  - key: metrics_step
+    description: Copy anonymised step metrics
+    'on':
+      collection: step_results
+      op: insert
+    write:
+      collection: step_metrics
+      fields:
+        workflow: workflow
+        step_title: step_title
+        check_status: check_status
+        failure_reason: failure_reason
+        needs_human: needs_human
+  - key: audit_status
+    description: Audit every status change
+    'on':
+      collection: cases
+      op: update
+    write:
+      collection: audit_log
+      fields:
+        case_ref: case_ref
+        subject: status
+        detail: reviewer_notes
+  - key: audit_correction
+    description: Audit every correction of a step
+    'on':
+      collection: step_results
+      op: update
+    write:
+      collection: audit_log
+      fields:
+        case_ref: case_ref
+        subject: step_title
+        detail: corrected_value
+  schedules:
+  - agent: summarizer
+    cron: 0 7 * * 1
+    action: run
+    owner: app
+    goal: Write the weekly operations summary for the managers.
+    deliver:
+      to:
+      - role:manager
+      - admins
+      subject: Stepproof weekly summary
+      onlyIfNew: true
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 20
+    metering:
+      creditEur: 0.2
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:extractor:
+        estimate: 20
+        metered: true
+    packs:
+    - key: cases_500
+      credits: 500
+      price: 100
+      label: 500 case credits
+    - key: cases_2500
+      credits: 2500
+      price: 450
+      label: 2,500 case credits
+    plans:
+    - key: firm
+      price: 299
+      interval: month
+      label: Firm
+      credits: 100
+      creditsReset: monthly
+      includes:
+      - Unlimited seats
+      - Workflows, dashboards, audit trail
+      - 100 case credits a month
+    - key: firm_plus
+      price: 799
+      interval: month
+      label: Firm Plus
+      credits: 600
+      creditsReset: monthly
+      includes:
+      - Everything in Firm
+      - 600 case credits a month
+  extensions:
+  - key: per_firm_tenancy
+    description: Each firm is intended to be its own app instance (one subscription and one set of admins per firm); a single
+      instance shared by several firms is not isolated between them.
+  - key: source_page_links
+    description: Source pages are recorded as document name and page text in each step; clickable deep links into the page
+      image are not available yet.
+  - key: case_assignment_by_admin
+    description: A case is assigned to the handler who creates it; reassigning a case to another handler is not supported
+      yet.

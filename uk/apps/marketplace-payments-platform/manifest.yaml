@@ -1,0 +1,1383 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: splitwave
+  displayName: Splitwave
+  tagline:
+    en: Split payments for marketplaces and platforms, with onboarding, KYB and risk control built in.
+  description:
+    en: Splitwave is the software layer on top of an FCA-authorised payment partner. Platforms onboard sellers through a hosted
+      KYB form, split every payment by their own rules, follow balances, payouts, refunds and disputes, and let an AI agent
+      flag unusual transactions for the risk team. Sellers get their own portal and email notifications.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#0b1f3a'
+      accent: '#00a88f'
+      background: '#f6f9fb'
+      foreground: '#10212f'
+    fonts:
+      body: Inter
+      display: Space Grotesk
+    wordmark:
+    - text: Split
+      color: primary
+    - text: wave
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how-it-works'
+    - label: Features
+      href: '#features'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Splitwave admin
+      assignedBy: admin_emails
+    - key: user
+      label: Platform admin
+      assignedBy: signup
+    - key: finance
+      label: Finance
+      assignedBy: invite
+    - key: risk
+      label: Risk
+      assignedBy: invite
+    - key: seller
+      label: Seller
+      assignedBy: derived
+      from:
+      - collection:transactions.seller_email
+      - collection:payouts.seller_email
+  agents:
+  - key: kyb_checker
+    role: helper
+    description: Checks a submitted seller application against Companies House and sanctions lists and records the outcome.
+    profile:
+      inline:
+        display_name: Splitwave KYB checker
+        crews:
+        - id: kyb_checker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a KYB analyst for a payments platform. You receive a seller application. Steps: 1) read
+            the application with read_application. 2) If a company_number is given, call companies_house with path /company/<number>
+            and then /company/<number>/officers; compare legal name, status (must be active) and registered address with the
+            application. 3) Call sanctions_match with POST body {"queries":{"q1":{"schema":"Company","properties":{"name":["<legal
+            name>"],"country":["<country>"]}}}} and also one query per director found, schema Person. Treat any result with
+            a high score as a potential match. 4) If an identity document or proof of address was uploaded, open it with read_upload
+            using the file id and check that the name matches. 5) Call update_application once with kyb_status (verified only
+            if every check is clean; otherwise needs_review, and rejected only for a dissolved company or a confirmed sanctions
+            match), sanctions_status (clear or possible_match), and kyb_notes (short, factual list of what was checked and
+            what did not match). Never invent registry data, never approve when a source could not be reached: use needs_review.
+            You do not make the final decision, a human reviews needs_review cases. Finish with a report starting with a level-1
+            title "# KYB check — <legal name>".'
+          mcp_servers: []
+    appTools:
+    - name: read_application
+      description: Read the seller applications of this account
+      action: read
+      collection: seller_applications
+      scope: user
+    - name: update_application
+      description: Update the KYB and sanctions status of a seller application
+      action: write
+      collection: seller_applications
+      scope: user
+    - name: read_upload
+      description: Read a file the seller uploaded (identity document, proof of address)
+      action: read_file
+    - name: companies_house
+      description: Query the Companies House public data API (company profile, officers)
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk
+        allowPath: true
+        attribution: Contains public sector information licensed under the Open Government Licence v3.0
+        credential:
+          provider: companies_house
+          header: Authorization
+          format: Basic {secret}
+    - name: sanctions_match
+      description: Screen a company or person against sanctions and PEP lists
+      action: http
+      http:
+        method: POST
+        url: https://api.opensanctions.org/match/default
+        attribution: OpenSanctions
+        credential:
+          provider: opensanctions
+          header: Authorization
+          format: ApiKey {secret}
+    output: markdown
+    limits:
+      maxTurns: 14
+      maxBudgetUsd: 0.6
+  - key: risk_monitor
+    role: scheduled
+    description: Scans a platform's recent transactions, payouts and disputes for unusual patterns and raises flags for the
+      risk team.
+    profile:
+      inline:
+        display_name: Splitwave risk monitor
+        crews:
+        - id: risk_monitor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a transaction-risk analyst for a marketplace payments platform. Read the recent transactions,
+            payouts and disputes with the tools. Look for: sudden volume or average-ticket spikes per seller versus their
+            own history; many identical amounts; rapid repeated small payments (card testing); high refund or dispute ratios
+            per seller; a new seller with large volume right after onboarding; payouts requested right after unusual volume;
+            round-number amounts just under thresholds. For each concrete finding call raise_flag once with: transaction_ref
+            (or the seller email if several), seller_email, severity (low, medium, high), reason (one or two factual sentences
+            with the figures), status "open", created (today''s date). Only flag what the data shows; do not accuse, do not
+            invent figures, do not duplicate flags already open. You only flag: the risk team decides to approve or hold payouts.
+            Finish with a report: a level-1 title "# Risk review — <date>", then ## Summary (counts by severity), ## Flags
+            raised (table), ## Seller trends, ## Nothing unusual (if applicable). Add a chart block when comparing sellers:
+            ```chart {"type":"bar","title":"...","labels":[...],"series":[{"name":"...","values":[...]}]} ``` with real figures
+            only.'
+    appTools:
+    - name: read_transactions
+      description: Read the transactions of this platform
+      action: read
+      collection: transactions
+      scope: user
+    - name: read_payouts
+      description: Read the payouts of this platform
+      action: read
+      collection: payouts
+      scope: user
+    - name: read_disputes
+      description: Read refunds and disputes of this platform
+      action: read
+      collection: disputes
+      scope: user
+    - name: read_flags
+      description: Read the risk flags already raised
+      action: read
+      collection: risk_flags
+      scope: user
+    - name: raise_flag
+      description: Create a risk flag for the risk team
+      action: append
+      collection: risk_flags
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  templates:
+  - key: risk_watch
+    title: Risk monitor
+    description: A daily review of your transactions for unusual patterns, with flags for your risk team.
+    agent: risk_monitor
+    params:
+    - name: sensitivity
+      type: select
+      required: true
+      label: Sensitivity
+      options:
+      - value: balanced
+        label: Balanced
+      - value: strict
+        label: Strict (more flags)
+      - value: relaxed
+        label: Relaxed (only clear cases)
+    - name: lookback_days
+      type: number
+      label: Days to review
+      default: 7
+    goal: 'Review the last {lookback_days} days of this platform''s transactions, payouts and disputes. Sensitivity: {sensitivity}.
+      Today is {date}. Write the report in English.'
+    schedule:
+      cron: 0 6 * * *
+      userCanChange: true
+    maxPerUser: 1
+    deliver:
+      to: owner
+      onlyIfNew: true
+  data:
+    collections:
+    - name: seller_applications
+      description: 'Hosted seller onboarding: business, bank and identity details, with KYB and sanctions results'
+      ownedBy: user
+      retentionDays: 1825
+      access:
+      - role: user
+        where:
+          platform_email: '{user.email}'
+        can:
+        - read
+        - write
+      fields:
+      - name: platform_email
+        type: email
+        required: true
+        label: Email of the platform you sell on
+      - name: legal_name
+        type: text
+        required: true
+        label: Legal business name
+      - name: trading_name
+        type: text
+        label: Trading name
+      - name: company_number
+        type: text
+        label: Companies House number
+        help: UK companies only, e.g. 01234567
+      - name: country
+        type: country
+        required: true
+        label: Country
+      - name: address
+        type: textarea
+        required: true
+        label: Registered address
+      - name: contact_name
+        type: text
+        required: true
+        label: Contact person
+      - name: seller_email
+        type: email
+        required: true
+        label: Email used to sign in and receive notifications
+      - name: phone
+        type: text
+        label: Phone
+      - name: account_holder
+        type: text
+        required: true
+        label: Bank account holder
+      - name: sort_code
+        type: text
+        label: Sort code
+      - name: account_number
+        type: text
+        label: Account number
+      - name: iban
+        type: text
+        label: IBAN (non-UK)
+      - name: id_document
+        type: file
+        required: true
+        accept:
+        - pdf
+        - jpg
+        - png
+        maxMb: 10
+        capture: true
+        label: Identity document of the director
+      - name: proof_of_address
+        type: file
+        accept:
+        - pdf
+        - jpg
+        - png
+        maxMb: 10
+        label: Proof of address
+      - name: kyb_status
+        type: select
+        label: KYB status
+        default: submitted
+        options:
+        - value: submitted
+          label: Submitted
+        - value: needs_review
+          label: Needs review
+        - value: verified
+          label: Verified
+        - value: rejected
+          label: Rejected
+      - name: sanctions_status
+        type: select
+        label: Sanctions screening
+        options:
+        - value: clear
+          label: Clear
+        - value: possible_match
+          label: Possible match
+      - name: kyb_notes
+        type: textarea
+        label: KYB notes
+    - name: split_rules
+      description: 'The platform''s split rules: commission, fixed fee, payout delay'
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Rule name
+      - name: commission_pct
+        type: number
+        required: true
+        label: Commission %
+      - name: fixed_fee
+        type: number
+        label: Fixed fee per payment
+      - name: currency
+        type: select
+        label: Currency
+        options:
+        - value: GBP
+          label: GBP
+        - value: EUR
+          label: EUR
+        - value: USD
+          label: USD
+      - name: payout_delay_days
+        type: number
+        label: Delay before payout (days)
+    - name: transactions
+      description: Payments received through the platform's checkout, with their split
+      ownedBy: user
+      retentionDays: 1825
+      searchable: true
+      access:
+      - role: finance
+        where:
+          team: '{user.email}'
+      - role: risk
+        where:
+          team: '{user.email}'
+      - role: seller
+        where:
+          seller_email: '{user.email}'
+      fields:
+      - name: reference
+        type: text
+        required: true
+        label: Reference
+      - name: created
+        type: date
+        label: Date
+      - name: seller_email
+        type: email
+        required: true
+        label: Seller
+      - name: amount
+        type: number
+        required: true
+        label: Gross amount
+      - name: currency
+        type: text
+        label: Currency
+      - name: commission
+        type: number
+        label: Platform commission
+      - name: fee
+        type: number
+        label: Fixed fee
+      - name: net
+        type: number
+        label: Net to seller
+      - name: status
+        type: select
+        label: Status
+        options:
+        - authorised
+        - captured
+        - refunded
+        - disputed
+        - failed
+      - name: rule
+        type: text
+        label: Split rule
+      - name: team
+        type: array
+        label: Finance and risk team emails
+    - name: payouts
+      description: Payouts to sellers, with the risk team's approve or hold decision
+      ownedBy: user
+      retentionDays: 1825
+      access:
+      - role: finance
+        where:
+          team: '{user.email}'
+      - role: risk
+        where:
+          team: '{user.email}'
+        can:
+        - read
+        - write
+      - role: seller
+        where:
+          seller_email: '{user.email}'
+      fields:
+      - name: seller_email
+        type: email
+        required: true
+        label: Seller
+      - name: amount
+        type: number
+        required: true
+        label: Amount
+      - name: currency
+        type: text
+        label: Currency
+      - name: due_date
+        type: date
+        label: Due date
+      - name: status
+        type: select
+        label: Status
+        options:
+        - scheduled
+        - approved
+        - held
+        - paid
+      - name: hold_reason
+        type: textarea
+        label: Reason for hold
+      - name: team
+        type: array
+        label: Finance and risk team emails
+    - name: disputes
+      description: Refunds and card disputes
+      ownedBy: user
+      retentionDays: 1825
+      access:
+      - role: finance
+        where:
+          team: '{user.email}'
+      - role: risk
+        where:
+          team: '{user.email}'
+      - role: seller
+        where:
+          seller_email: '{user.email}'
+      fields:
+      - name: transaction_ref
+        type: text
+        required: true
+        label: Transaction
+      - name: seller_email
+        type: email
+        label: Seller
+      - name: kind
+        type: select
+        label: Type
+        options:
+        - refund
+        - dispute
+      - name: amount
+        type: number
+        label: Amount
+      - name: status
+        type: select
+        label: Status
+        options:
+        - open
+        - won
+        - lost
+        - refunded
+      - name: opened
+        type: date
+        label: Opened
+      - name: reason
+        type: text
+        label: Reason
+      - name: team
+        type: array
+        label: Finance and risk team emails
+    - name: risk_flags
+      description: Unusual patterns flagged by the risk monitor, decided by the risk team
+      ownedBy: user
+      retentionDays: 1825
+      access:
+      - role: risk
+        where:
+          team: '{user.email}'
+        can:
+        - read
+        - write
+      - role: finance
+        where:
+          team: '{user.email}'
+      fields:
+      - name: transaction_ref
+        type: text
+        label: Transaction or seller
+      - name: seller_email
+        type: email
+        label: Seller
+      - name: severity
+        type: select
+        label: Severity
+        options:
+        - low
+        - medium
+        - high
+      - name: reason
+        type: textarea
+        label: Why it was flagged
+      - name: created
+        type: date
+        label: Date
+      - name: status
+        type: select
+        label: Status
+        default: open
+        options:
+        - open
+        - approved
+        - held
+        - dismissed
+      - name: decision_note
+        type: textarea
+        label: Decision note
+      - name: team
+        type: array
+        label: Finance and risk team emails
+    credentials:
+    - provider: companies_house
+      kind: api_key
+      scope: org
+      label: Companies House API
+      help: Create a key at developer.company-information.service.gov.uk, then paste base64 of "<key>:" (the key followed
+        by a colon).
+    - provider: opensanctions
+      kind: api_key
+      scope: org
+      label: Sanctions screening API (OpenSanctions)
+      help: API key from opensanctions.org with a commercial licence.
+  egress:
+    hosts:
+    - api.company-information.service.gov.uk
+    - api.opensanctions.org
+    notes: Companies House public data API (Open Government Licence v3.0) for KYB; OpenSanctions match API for sanctions and
+      PEP screening (commercial licence needed).
+  views:
+  - key: home
+    type: page
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: Payments for marketplaces
+      title: Take payments and **split them** between sellers.
+      text: Onboard sellers with built-in KYB, split every payment by your own rules, watch balances and payouts, and let
+        an AI agent flag unusual activity for your risk team. Regulated payment services are provided by our FCA-authorised
+        partner.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how-it-works'
+        style: ghost
+    - type: steps
+      id: how-it-works
+      title: How it works
+      items:
+      - title: Onboard sellers
+        text: Sellers fill a hosted form with business details, bank account and identity documents. Companies House and sanctions
+          checks run automatically.
+      - title: Split every payment
+        text: 'Your checkout calls the API; each payment is split by your rules: commission, fixed fee, delayed payout.'
+      - title: Pay out with control
+        text: The risk monitor flags unusual patterns; your risk team approves or holds payouts.
+    - type: cards
+      id: features
+      title: Features
+      items:
+      - title: Dashboard
+        text: Transactions, balances per seller, payouts, refunds and disputes, with CSV exports and reconciliation reports.
+        badge: 📊
+      - title: Risk monitoring
+        text: A daily agent reviews your transactions and raises flags with the reasons.
+        badge: 🛡️
+      - title: Seller portal
+        text: Sellers see their sales and payouts and get email notifications.
+        badge: 🧾
+      - title: Roles
+        text: Platform admin, finance, risk and seller, each sees only what they need.
+        badge: 🔑
+      - title: Developer docs
+        text: API and webhook documentation inside the portal.
+        badge: 💻
+    - type: cards
+      id: pricing
+      title: Pricing
+      intro: A monthly platform fee plus a small fee on each transaction.
+      items:
+      - title: Platform
+        text: £99 per month + 0.4% per transaction
+        badge: £
+      - title: Scale
+        text: £299 per month + 0.25% per transaction
+        badge: £
+    - type: note
+      content: Splitwave is software. E-money and payment services, safeguarding of funds, card acquiring and payouts are
+        provided by our FCA-authorised payment partner.
+  - key: overview
+    type: page
+    title: Overview
+    roles:
+    - user
+    - finance
+    - risk
+    - admin
+    sections:
+    - type: data
+      id: kpis
+      title: Payments
+      source: collection:transactions
+      display: kpi
+      kpis:
+      - label: Transactions
+        agg: count
+      - label: Gross volume
+        agg: sum
+        field: amount
+        format: money
+      - label: Commission earned
+        agg: sum
+        field: commission
+        format: money
+      - label: Net to sellers
+        agg: sum
+        field: net
+        format: money
+    - type: data
+      id: monthly
+      title: Volume by month
+      source: collection:transactions
+      display: chart
+      chart: bar
+      groupBy:
+        field: created
+        bucket: month
+        aggs:
+        - key: gross
+          agg: sum
+          field: amount
+        - key: commission_total
+          agg: sum
+          field: commission
+      fields:
+      - key: created
+        label: Month
+      - key: gross
+        label: Gross
+      - key: commission_total
+        label: Commission
+    - type: data
+      id: open-flags
+      title: Open risk flags
+      source: collection:risk_flags
+      display: table
+      filters:
+      - field: status
+        op: '='
+        value: open
+      fields:
+      - key: created
+        label: Date
+        format: date
+      - key: seller_email
+        label: Seller
+      - key: severity
+        label: Severity
+        format: badge
+      - key: reason
+        label: Why
+      limit: 10
+      empty: No open flags.
+  - key: transactions
+    type: table
+    title: Transactions
+    source: collection:transactions
+    export: true
+    roles:
+    - user
+    - finance
+    - risk
+    - admin
+    data:
+      display: table
+      fields:
+      - key: created
+        label: Date
+        format: date
+      - key: reference
+        label: Reference
+      - key: seller_email
+        label: Seller
+      - key: amount
+        label: Gross
+        format: money
+      - key: commission
+        label: Commission
+        format: money
+      - key: fee
+        label: Fixed fee
+        format: money
+      - key: net
+        label: Net
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: created
+        dir: desc
+      limit: 200
+  - key: balances
+    type: table
+    title: Balances per seller
+    source: collection:transactions
+    export: true
+    roles:
+    - user
+    - finance
+    - admin
+    data:
+      display: table
+      groupBy:
+        field: seller_email
+        aggs:
+        - key: gross
+          agg: sum
+          field: amount
+        - key: commission_total
+          agg: sum
+          field: commission
+        - key: balance
+          agg: sum
+          field: net
+      fields:
+      - key: seller_email
+        label: Seller
+      - key: count
+        label: Payments
+        format: number
+      - key: gross
+        label: Gross
+        format: money
+      - key: commission_total
+        label: Commission
+        format: money
+      - key: balance
+        label: Net balance
+        format: money
+  - key: payouts
+    type: table
+    title: Payouts
+    source: collection:payouts
+    export: true
+    roles:
+    - user
+    - finance
+    - risk
+    - admin
+    data:
+      display: table
+      fields:
+      - key: due_date
+        label: Due
+        format: date
+      - key: seller_email
+        label: Seller
+      - key: amount
+        label: Amount
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      - key: hold_reason
+        label: Hold reason
+      sort:
+        field: due_date
+        dir: desc
+      limit: 200
+  - key: disputes
+    type: table
+    title: Refunds and disputes
+    source: collection:disputes
+    export: true
+    roles:
+    - user
+    - finance
+    - risk
+    - admin
+    data:
+      display: table
+      fields:
+      - key: opened
+        label: Opened
+        format: date
+      - key: transaction_ref
+        label: Transaction
+      - key: seller_email
+        label: Seller
+      - key: kind
+        label: Type
+        format: badge
+      - key: amount
+        label: Amount
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: opened
+        dir: desc
+      limit: 200
+  - key: reconciliation
+    type: table
+    title: Reconciliation
+    source: collection:transactions
+    export: true
+    roles:
+    - user
+    - finance
+    - admin
+    data:
+      display: table
+      groupBy:
+        field: created
+        bucket: day
+        aggs:
+        - key: gross
+          agg: sum
+          field: amount
+        - key: commission_total
+          agg: sum
+          field: commission
+        - key: fees
+          agg: sum
+          field: fee
+        - key: net_total
+          agg: sum
+          field: net
+      fields:
+      - key: created
+        label: Day
+        format: date
+      - key: count
+        label: Payments
+        format: number
+      - key: gross
+        label: Gross
+        format: money
+      - key: commission_total
+        label: Commission
+        format: money
+      - key: fees
+        label: Fixed fees
+        format: money
+      - key: net_total
+        label: Net to sellers
+        format: money
+      sort:
+        field: created
+        dir: desc
+      limit: 90
+  - key: rules
+    type: form
+    title: Split rules
+    collection: split_rules
+    submit:
+      label: Save rule
+      message: Rule saved.
+    roles:
+    - user
+    - admin
+  - key: rules_list
+    type: table
+    title: My split rules
+    source: collection:split_rules
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Rule
+      - key: commission_pct
+        label: Commission %
+        format: number
+      - key: fixed_fee
+        label: Fixed fee
+        format: money
+      - key: payout_delay_days
+        label: Payout delay (days)
+        format: number
+  - key: applications
+    type: table
+    title: Seller applications
+    source: collection:seller_applications
+    export: true
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: legal_name
+        label: Business
+      - key: company_number
+        label: Company no.
+      - key: seller_email
+        label: Email
+      - key: kyb_status
+        label: KYB
+        format: badge
+      - key: sanctions_status
+        label: Sanctions
+        format: badge
+      - key: kyb_notes
+        label: Notes
+      limit: 200
+  - key: review_application
+    type: form
+    title: Review application
+    collection: seller_applications
+    edit: true
+    fields:
+    - kyb_status
+    - kyb_notes
+    submit:
+      label: Save decision
+      message: Decision saved.
+      redirect: applications
+    roles:
+    - user
+    - admin
+    nav: false
+  - key: flags
+    type: table
+    title: Risk flags
+    source: collection:risk_flags
+    export: true
+    roles:
+    - user
+    - risk
+    - finance
+    - admin
+    data:
+      display: table
+      fields:
+      - key: created
+        label: Date
+        format: date
+      - key: transaction_ref
+        label: Transaction
+      - key: seller_email
+        label: Seller
+      - key: severity
+        label: Severity
+        format: badge
+      - key: reason
+        label: Why
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: created
+        dir: desc
+      limit: 200
+  - key: review_flag
+    type: form
+    title: Decide on a flag
+    collection: risk_flags
+    edit: true
+    fields:
+    - status
+    - decision_note
+    submit:
+      label: Save decision
+      message: Decision saved.
+      redirect: flags
+    roles:
+    - risk
+    - user
+    nav: false
+  - key: review_payout
+    type: form
+    title: Approve or hold a payout
+    collection: payouts
+    edit: true
+    fields:
+    - status
+    - hold_reason
+    submit:
+      label: Save
+      message: Payout updated.
+      redirect: payouts
+    roles:
+    - risk
+    - user
+    nav: false
+  - key: monitors
+    type: instances
+    title: Risk monitor
+    template: risk_watch
+    roles:
+    - user
+    - admin
+  - key: docs
+    type: page
+    title: Developer docs
+    roles:
+    - user
+    - finance
+    - risk
+    - admin
+    sections:
+    - type: text
+      title: Integration overview
+      content: Splitwave sits on top of our FCA-authorised payment partner. Your checkout creates the payment with the partner;
+        every payment event is then delivered to Splitwave as a webhook and appears in your dashboard with its split.
+    - type: text
+      title: Payment webhook
+      content: '`POST /api/hooks/payment_in` with the app''s hook secret. JSON body: `id`, `created` (YYYY-MM-DD), `seller_email`,
+        `amount`, `currency`, `commission`, `fee`, `net`, `status` (authorised | captured | refunded | disputed | failed),
+        `rule`, `team` (list of finance and risk emails). The `id` makes the call idempotent.'
+    - type: text
+      title: Split rules
+      content: Define commission %, fixed fee and payout delay under Split rules. Name the rule in the `rule` field of your
+        checkout request.
+    - type: text
+      title: Exports
+      content: Transactions are also available as CSV at `/api/transactions.csv` with a token, for your reconciliation tooling.
+    - type: note
+      content: Never put API secrets in client-side code. Rotate keys from the account page.
+  - key: onboarding
+    type: form
+    title: Seller onboarding
+    collection: seller_applications
+    fields:
+    - platform_email
+    - legal_name
+    - trading_name
+    - company_number
+    - country
+    - address
+    - contact_name
+    - seller_email
+    - phone
+    - account_holder
+    - sort_code
+    - account_number
+    - iban
+    - id_document
+    - proof_of_address
+    submit:
+      label: Submit for verification
+      message: Thanks. We are verifying your business and will email you the result.
+    nav: true
+  - key: my_sales
+    type: table
+    title: My sales
+    source: collection:transactions
+    export: true
+    roles:
+    - seller
+    data:
+      display: table
+      fields:
+      - key: created
+        label: Date
+        format: date
+      - key: reference
+        label: Reference
+      - key: amount
+        label: Gross
+        format: money
+      - key: commission
+        label: Commission
+        format: money
+      - key: net
+        label: Net
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: created
+        dir: desc
+      limit: 200
+  - key: my_payouts
+    type: table
+    title: My payouts
+    source: collection:payouts
+    export: true
+    roles:
+    - seller
+    data:
+      display: table
+      fields:
+      - key: due_date
+        label: Due
+        format: date
+      - key: amount
+        label: Amount
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: due_date
+        dir: desc
+      limit: 200
+  - key: my_disputes
+    type: table
+    title: My refunds and disputes
+    source: collection:disputes
+    roles:
+    - seller
+    data:
+      display: table
+      fields:
+      - key: opened
+        label: Opened
+        format: date
+      - key: transaction_ref
+        label: Transaction
+      - key: kind
+        label: Type
+        format: badge
+      - key: amount
+        label: Amount
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      limit: 100
+  - key: account
+    type: account
+    title: Account and plan
+    roles:
+    - user
+  triggers:
+  - key: payment_in
+    description: A payment event from the payment partner, saved as a transaction
+    'on':
+      webhook: true
+    write:
+      collection: transactions
+      fields:
+        reference: id
+        created: created
+        seller_email: seller_email
+        amount: amount
+        currency: currency
+        commission: commission
+        fee: fee
+        net: net
+        status: status
+        rule: rule
+        team: team
+      keyBy: reference
+  - key: kyb_on_submit
+    description: Run KYB and sanctions checks when a seller submits the form
+    'on':
+      collection: seller_applications
+      op: insert
+      where:
+        kyb_status: submitted
+    start:
+      agent: kyb_checker
+    goal: 'Check this seller application: {event}. Business: {record.legal_name}, company number {record.company_number},
+      country {record.country}. Today is {date}.'
+  - key: seller_verified
+    'on':
+      collection: seller_applications
+      op: update
+      where:
+        kyb_status: verified
+    notify:
+      to:
+      - record.seller_email
+      - record.platform_email
+      subject: 'Seller verified: {record.legal_name}'
+      body: The business {record.legal_name} has passed verification and can now receive payouts.
+  - key: seller_rejected
+    'on':
+      collection: seller_applications
+      op: update
+      where:
+        kyb_status: rejected
+    notify:
+      to:
+      - record.seller_email
+      - record.platform_email
+      subject: 'Seller application not approved: {record.legal_name}'
+      body: The application of {record.legal_name} could not be approved. Please contact the platform for details.
+  - key: seller_needs_review
+    'on':
+      collection: seller_applications
+      op: update
+      where:
+        kyb_status: needs_review
+    notify:
+      to:
+      - record.platform_email
+      subject: 'Seller application needs your review: {record.legal_name}'
+      body: 'Automatic checks on {record.legal_name} need a human decision. Notes: {record.kyb_notes}'
+      link: applications
+  - key: payout_paid
+    'on':
+      collection: payouts
+      op: update
+      where:
+        status: paid
+    notify:
+      to:
+      - record.seller_email
+      subject: 'Payout sent: {record.amount} {record.currency}'
+      body: Your payout of {record.amount} {record.currency} has been sent.
+      link: my_payouts
+  - key: payout_held
+    'on':
+      collection: payouts
+      op: update
+      where:
+        status: held
+    notify:
+      to:
+      - record.seller_email
+      - owner
+      subject: 'Payout on hold: {record.amount} {record.currency}'
+      body: 'A payout of {record.amount} {record.currency} is on hold for review. Reason: {record.hold_reason}'
+      link: my_payouts
+  - key: payout_due
+    description: Reminder to the platform on the day a payout is due
+    'on':
+      date:
+        collection: payouts
+        field: due_date
+        offsetDays: 0
+        hour: 7
+      where:
+        status: scheduled
+    notify:
+      to:
+      - owner
+      subject: 'Payout due today: {record.amount} {record.currency}'
+      body: A payout to {record.seller_email} is due today and still waiting for approval.
+      link: payouts
+  - key: dispute_opened
+    'on':
+      collection: disputes
+      op: insert
+    notify:
+      to:
+      - record.seller_email
+      - owner
+      subject: '{record.kind} opened on {record.transaction_ref}'
+      body: 'A {record.kind} of {record.amount} was opened on transaction {record.transaction_ref}. Reason: {record.reason}'
+      link: my_disputes
+  - key: flag_raised
+    'on':
+      collection: risk_flags
+      op: insert
+      where:
+        severity: high
+    notify:
+      to:
+      - owner
+      subject: High-severity risk flag
+      body: 'The risk monitor raised a high-severity flag for {record.seller_email}: {record.reason}'
+      link: flags
+  exports:
+  - path: /api/transactions.csv
+    source: collection:transactions
+    format: csv
+    access: token
+  billing:
+    modes:
+    - subscription
+    - per_transaction
+    currency: gbp
+    transactionFeePct: 0.4
+    plans:
+    - key: platform
+      price: 99
+      interval: month
+      label: Platform
+      transactionFeePct: 0.4
+      includes:
+      - Seller onboarding with KYB
+      - Split payments
+      - Dashboard and exports
+      - Risk monitor
+      roles:
+      - user
+    - key: scale
+      price: 299
+      interval: month
+      label: Scale
+      transactionFeePct: 0.25
+      includes:
+      - Everything in Platform
+      - Lower per-transaction fee
+      roles:
+      - user
+  notifications:
+    emailOnRunDone: false
+  extensions:
+  - key: checkout_api_and_keys
+    description: 'The checkout/payment API, the issuing and rotation of per-platform API keys, and per-platform webhook authentication
+      are not available in the manifest: payments are created with the payment partner and delivered here by webhook. Each
+      webhook must carry the platform''s team emails so the right records are shared.'
+  - key: split_engine
+    description: The split calculation (commission %, fixed fee, delayed payout date) runs in the checkout/partner integration;
+      Splitwave stores the computed commission, fee and net. Automatic payout creation from rules and payout execution at
+      the partner are not available yet.
+  - key: fixed_fee_per_transaction
+    description: The platform's own price has a per-transaction percentage fee; a fixed amount per transaction (e.g. 20p)
+      cannot be expressed in billing yet.
+  - key: seller_deep_links
+    description: Sellers open onboarding from the menu; a personalised invite link with a pre-filled platform email is not
+      available.
+  - key: safeguarding_and_licences
+    description: E-money and payment institution authorisation, safeguarding, card acquiring and payouts remain with the FCA-authorised
+      partner; the app holds no client money.

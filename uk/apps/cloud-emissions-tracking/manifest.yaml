@@ -1,0 +1,849 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: cloudleaf
+  displayName: Cloudleaf
+  tagline:
+    en: The energy, emissions and cost of your cloud and AI workloads.
+  description:
+    en: Cloudleaf turns cloud billing exports into energy and emissions figures, breaks them down by team, project and tag,
+      proposes greener and cheaper choices, and sends monthly ESG reports.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#12372a'
+      accent: '#2f9e6b'
+      background: '#f6f8f5'
+      foreground: '#16231d'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Cloud
+      color: primary
+    - text: leaf
+      color: accent
+  header:
+    links:
+    - label:
+        en: How it works
+      href: '#how'
+    - label:
+        en: Pricing
+      href: '#pricing'
+    cta:
+      label:
+        en: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      label: Member
+      assignedBy: signup
+    - key: sustainability
+      label: Sustainability team
+      assignedBy: invite
+    - key: lead
+      label: Engineering lead
+      assignedBy: derived
+      from: collection:emissions.lead_email
+  limits:
+  - action: chat
+    per: user
+    max: 60
+    window: day
+  agents:
+  - key: converter
+    role: main
+    description: Reads an uploaded billing export, converts usage into energy and emissions, flags waste and greener regions,
+      and forecasts budget breaches.
+    profile:
+      inline:
+        display_name: Cloudleaf converter
+        crews:
+        - id: converter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a cloud carbon analyst. You receive a billing export (AWS CUR, Azure Cost Management or
+            Google Cloud billing export) as an uploaded file: open it with read_upload. For each billing line (or aggregate
+            by service, region, team, project and tag when the file is very large) do this: 1) append a row to billing_lines
+            with the raw line. 2) estimate energy (kWh) from usage using a published methodology (Cloud Carbon Footprint coefficients:
+            vCPU-hours, memory, storage, networking, GPU) and look up the grid intensity of the region in grid_intensity (read).
+            Emissions kgCO2e = kWh x intensity / 1000, plus PUE as published for the provider. Append the result to emissions
+            with the method used. If a region has no grid intensity, say so in method and leave kgco2e empty; never invent
+            figures. 3) Read budgets for each team, then append one row to forecasts per team with the month''s forecast cost
+            and emissions and breach ''yes'' or ''no'' (yes if the forecast exceeds the budget or emissions target). 4) Propose
+            waste reductions (idle or oversized resources, always-on dev environments) and greener regions with similar latency;
+            append each to recommendations with status ''proposed'' and citations of the billing line ids. Recommendations
+            are proposals only: you never change any cloud resource and you have no way to. Finish with a short markdown summary
+            starting with a level-1 ''# '' title.'
+          mcp_servers: []
+    appTools:
+    - name: read_upload
+      description: Read a billing export the user uploaded
+      action: read_file
+    - name: read_grid_intensity
+      description: Grid carbon intensity per provider region
+      action: read
+      collection: grid_intensity
+      scope: all
+    - name: read_budgets
+      description: Budgets and emissions targets per team
+      action: read
+      collection: budgets
+      scope: user
+    - name: append_billing_line
+      description: Store a billing line
+      action: append
+      collection: billing_lines
+      scope: user
+    - name: append_emission
+      description: Store an energy and emissions figure
+      action: append
+      collection: emissions
+      scope: user
+    - name: append_forecast
+      description: Store a budget forecast
+      action: append
+      collection: forecasts
+      scope: user
+    - name: append_recommendation
+      description: Store a proposed recommendation
+      action: append
+      collection: recommendations
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+      timeoutSeconds: 900
+  - key: assistant
+    role: helper
+    description: Answers questions about spend, energy and emissions, citing billing lines.
+    profile:
+      inline:
+        display_name: Cloudleaf assistant
+        chat_mode: true
+        crews:
+        - id: assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You answer questions about the user''s cloud cost, energy and emissions, for example which services
+            grew most last month. Use the tools to read billing_lines and emissions (they already respect what this user may
+            see). Always cite the billing line ids and months behind each figure, give numbers with units, and compare periods
+            explicitly. If the data does not cover the question, say so; never invent figures. You can only read data: you
+            never change cloud resources, and recommendations are proposals the engineer decides on.'
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New question from {user}: {message}
+
+      Today is {date}. Answer in the language with ISO code {lang}.'
+    appTools:
+    - name: search_billing_lines
+      description: Search billing lines
+      action: search
+      collection: billing_lines
+      scope: user
+    - name: search_emissions
+      description: Search emissions rows
+      action: search
+      collection: emissions
+      scope: user
+    - name: search_recommendations
+      description: Search recommendations
+      action: search
+      collection: recommendations
+      scope: user
+    output: markdown
+  - key: reporter
+    role: scheduled
+    description: Writes the monthly emissions and cost report for ESG reporting.
+    profile:
+      inline:
+        display_name: Cloudleaf reporter
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the monthly cloud emissions and cost report. Read emissions, budgets and recommendations
+            with the tools. Start with ''# Cloudleaf monthly report - <month>''. Sections: ## Summary (total kWh, kgCO2e,
+            cost, change vs previous month), ## By team, ## By project and tag, ## Budgets and targets, ## Top proposed recommendations.
+            Include a chart block ```chart {"type":"bar",...}``` of emissions by team with real figures only. State the methodology
+            used and its limits. Never invent figures.'
+    appTools:
+    - name: report_emissions
+      description: Read emissions rows
+      action: search
+      collection: emissions
+      scope: user
+    - name: report_budgets
+      description: Read budgets
+      action: read
+      collection: budgets
+      scope: user
+    - name: report_recommendations
+      description: Read recommendations
+      action: read
+      collection: recommendations
+      scope: user
+    output: markdown
+  templates:
+  - key: monthly_report
+    title:
+      en: Monthly report
+    description:
+      en: A report on emissions and cost emailed on the first of every month.
+    agent: reporter
+    params:
+    - name: scope
+      type: select
+      required: true
+      label:
+        en: Scope
+      options:
+      - value: all
+        label: All teams I can see
+      - value: projects
+        label: By project
+    goal: 'Write the monthly report for the previous month. Scope: {scope}. Today is {date}. Write in the language with ISO
+      code {lang}.'
+    schedule:
+      cron: 0 7 1 * *
+      userCanChange: false
+    maxPerUser: 1
+    deliver:
+      to: owner
+      onlyIfNew: true
+  data:
+    collections:
+    - name: usage_batches
+      ownedBy: user
+      description: Billing exports uploaded by the company
+      retentionDays: 730
+      fields:
+      - name: provider
+        type: select
+        required: true
+        label: Provider
+        options:
+        - aws
+        - azure
+        - gcp
+      - name: period
+        type: text
+        required: true
+        label: Billing month (YYYY-MM)
+      - name: export
+        type: file
+        required: true
+        label: Billing export
+        accept:
+        - csv
+        - json
+        - xlsx
+        - txt
+        maxMb: 15
+        extract: none
+    - name: billing_lines
+      ownedBy: user
+      description: Normalised billing lines
+      fields:
+      - name: line_id
+        type: text
+      - name: date
+        type: date
+      - name: provider
+        type: text
+      - name: service
+        type: text
+      - name: region
+        type: text
+      - name: team
+        type: text
+      - name: project
+        type: text
+      - name: tag
+        type: text
+      - name: lead_email
+        type: email
+      - name: usage
+        type: number
+      - name: cost_gbp
+        type: number
+      access:
+      - role: sustainability
+      - role: lead
+        where:
+          lead_email: '{user.email}'
+    - name: emissions
+      ownedBy: user
+      description: Energy and emissions per billing line group
+      fields:
+      - name: line_id
+        type: text
+      - name: date
+        type: date
+      - name: month
+        type: text
+      - name: provider
+        type: text
+      - name: service
+        type: text
+      - name: region
+        type: text
+      - name: team
+        type: text
+      - name: project
+        type: text
+      - name: tag
+        type: text
+      - name: lead_email
+        type: email
+      - name: kwh
+        type: number
+      - name: kgco2e
+        type: number
+      - name: cost_gbp
+        type: number
+      - name: method
+        type: text
+      access:
+      - role: sustainability
+      - role: lead
+        where:
+          lead_email: '{user.email}'
+    - name: grid_intensity
+      ownedBy: shared
+      description: Grid carbon intensity per region, kept by the admins
+      fields:
+      - name: provider
+        type: text
+      - name: region
+        type: text
+      - name: gco2_per_kwh
+        type: number
+      - name: year
+        type: number
+      - name: source
+        type: text
+    - name: budgets
+      ownedBy: user
+      description: Cost budgets and emissions targets per team
+      fields:
+      - name: team
+        type: text
+        required: true
+        label: Team
+      - name: monthly_budget_gbp
+        type: number
+        label: Monthly budget (GBP)
+      - name: emissions_target_kg
+        type: number
+        label: Monthly emissions target (kgCO2e)
+      - name: notify_email
+        type: email
+        required: true
+        label: Email for alerts
+      access:
+      - role: sustainability
+        can:
+        - read
+        - write
+    - name: forecasts
+      ownedBy: user
+      description: Forecast of the month per team
+      fields:
+      - name: team
+        type: text
+      - name: month
+        type: text
+      - name: forecast_cost_gbp
+        type: number
+      - name: forecast_kg
+        type: number
+      - name: breach
+        type: select
+        options:
+        - 'yes'
+        - 'no'
+      - name: detail
+        type: textarea
+      - name: notify_email
+        type: email
+      access:
+      - role: sustainability
+    - name: recommendations
+      ownedBy: user
+      description: Proposals only; an engineer decides
+      fields:
+      - name: team
+        type: text
+      - name: project
+        type: text
+      - name: kind
+        type: select
+        options:
+        - waste
+        - greener_region
+        - rightsizing
+      - name: description
+        type: textarea
+      - name: savings_kg
+        type: number
+      - name: savings_gbp
+        type: number
+      - name: citations
+        type: text
+      - name: lead_email
+        type: email
+      - name: status
+        type: select
+        options:
+        - proposed
+        - accepted
+        - dismissed
+        default: proposed
+      access:
+      - role: sustainability
+        can:
+        - read
+        - write
+      - role: lead
+        where:
+          lead_email: '{user.email}'
+        can:
+        - read
+        - write
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Cloudleaf
+    sections:
+    - type: hero
+      title:
+        en: See the **energy, emissions and cost** of your cloud and AI workloads.
+      text:
+        en: Upload your AWS, Azure and Google Cloud billing exports. An agent converts usage into energy and emissions, finds
+          waste and greener regions, and gives each team its own numbers.
+      actions:
+      - label:
+          en: Get started
+        href: /login
+        style: primary
+    - type: steps
+      id: how
+      title:
+        en: How it works
+      items:
+      - title:
+          en: Add your billing data
+        text:
+          en: Upload the billing export of each provider.
+      - title:
+          en: Convert to emissions
+        text:
+          en: Published methodologies and grid intensity data turn usage into kWh and kgCO2e.
+      - title:
+          en: Act on proposals
+        text:
+          en: Engineers review recommendations and decide. Cloudleaf never changes your cloud resources.
+    - type: cards
+      id: pricing
+      title:
+        en: Pricing
+      items:
+      - title:
+          en: Percentage of tracked spend
+        text:
+          en: A percentage of the cloud spend tracked, with a minimum of £500 a month.
+    - type: note
+      content:
+        en: Emissions are estimates based on published methodologies and regional grid data.
+  - key: upload
+    type: form
+    title:
+      en: Add billing export
+    collection: usage_batches
+    roles:
+    - user
+    - sustainability
+    - admin
+    submit:
+      label:
+        en: Upload and analyse
+      message:
+        en: Received. The analysis runs in the background.
+      redirect: dashboard
+  - key: dashboard
+    type: page
+    title:
+      en: Dashboard
+    roles:
+    - user
+    - sustainability
+    - lead
+    - admin
+    sections:
+    - type: data
+      title:
+        en: Emissions and cost by team
+      source: collection:emissions
+      display: chart
+      chart: bar
+      groupBy:
+        field: team
+        aggs:
+        - key: kg
+          agg: sum
+          field: kgco2e
+        - key: cost
+          agg: sum
+          field: cost_gbp
+      fields:
+      - key: team
+        label: Team
+      - key: kg
+        label: kgCO2e
+      - key: cost
+        label: Cost
+    - type: data
+      title:
+        en: By project
+      source: collection:emissions
+      display: table
+      groupBy:
+        field: project
+        aggs:
+        - key: kg
+          agg: sum
+          field: kgco2e
+        - key: kwh
+          agg: sum
+          field: kwh
+        - key: cost
+          agg: sum
+          field: cost_gbp
+      fields:
+      - key: project
+        label: Project
+      - key: kwh
+        label: kWh
+        format: number
+      - key: kg
+        label: kgCO2e
+        format: number
+      - key: cost
+        label: Cost
+        format: money
+    - type: data
+      title:
+        en: By tag
+      source: collection:emissions
+      display: table
+      groupBy:
+        field: tag
+        aggs:
+        - key: kg
+          agg: sum
+          field: kgco2e
+        - key: cost
+          agg: sum
+          field: cost_gbp
+      fields:
+      - key: tag
+        label: Tag
+      - key: kg
+        label: kgCO2e
+        format: number
+      - key: cost
+        label: Cost
+        format: money
+    - type: data
+      title:
+        en: Monthly trend
+      source: collection:emissions
+      display: chart
+      chart: line
+      groupBy:
+        field: date
+        bucket: month
+        aggs:
+        - key: kg
+          agg: sum
+          field: kgco2e
+      fields:
+      - key: date
+        label: Month
+      - key: kg
+        label: kgCO2e
+  - key: lines
+    type: table
+    title:
+      en: Emissions detail
+    source: collection:emissions
+    export: true
+    roles:
+    - user
+    - sustainability
+    - lead
+    - admin
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: provider
+        label: Provider
+      - key: service
+        label: Service
+      - key: region
+        label: Region
+      - key: team
+        label: Team
+      - key: project
+        label: Project
+      - key: kwh
+        label: kWh
+        format: number
+      - key: kgco2e
+        label: kgCO2e
+        format: number
+      - key: cost_gbp
+        label: Cost
+        format: money
+      sort:
+        field: date
+        dir: desc
+      limit: 200
+  - key: recs
+    type: table
+    title:
+      en: Recommendations
+    source: collection:recommendations
+    roles:
+    - user
+    - sustainability
+    - lead
+    - admin
+    data:
+      display: cards
+      fields:
+      - key: team
+        label: Team
+      - key: kind
+        label: Type
+        format: badge
+      - key: description
+        label: Proposal
+      - key: savings_kg
+        label: kgCO2e saved
+        format: number
+      - key: savings_gbp
+        label: Saved
+        format: money
+      - key: citations
+        label: Billing lines
+      - key: status
+        label: Status
+        format: badge
+      limit: 100
+  - key: decide
+    type: form
+    title:
+      en: Decide on a recommendation
+    collection: recommendations
+    fields:
+    - status
+    edit: true
+    nav: false
+    roles:
+    - lead
+    - sustainability
+    - admin
+    submit:
+      label:
+        en: Save decision
+      redirect: recs
+  - key: budget_form
+    type: form
+    title:
+      en: Set budget or target
+    collection: budgets
+    roles:
+    - user
+    - sustainability
+    - admin
+    submit:
+      label:
+        en: Save
+      message:
+        en: Saved. You will get an email if a forecast breaches it.
+  - key: budget_list
+    type: table
+    title:
+      en: Budgets and targets
+    source: collection:budgets
+    roles:
+    - user
+    - sustainability
+    - admin
+    data:
+      display: table
+      fields:
+      - key: team
+        label: Team
+      - key: monthly_budget_gbp
+        label: Budget
+        format: money
+      - key: emissions_target_kg
+        label: Target kgCO2e
+        format: number
+  - key: ask
+    type: chat
+    title:
+      en: Ask Cloudleaf
+    source: agent:assistant
+    roles:
+    - user
+    - sustainability
+    - lead
+    - admin
+    examples:
+    - Which services grew most last month?
+    - Which region would cut our emissions the most?
+    placeholder: Ask about cost, energy or emissions
+  - key: reports
+    type: instances
+    title:
+      en: Monthly report
+    template: monthly_report
+    roles:
+    - user
+    - sustainability
+    - lead
+    - admin
+  - key: account
+    type: account
+    title:
+      en: Plan
+    roles:
+    - user
+    - sustainability
+    - admin
+  triggers:
+  - key: analyse_upload
+    description: Convert a new billing export
+    'on':
+      collection: usage_batches
+      op: insert
+    start:
+      agent: converter
+    goal: Analyse the billing export for provider {record.provider}, month {record.period}. Open the file with read_upload
+      using the file id {record.export}. Today is {date}.
+    asUser: true
+  - key: forecast_breach
+    description: Email when a forecast breaches a budget or target
+    'on':
+      collection: forecasts
+      op: insert
+      where:
+        breach: 'yes'
+    notify:
+      to:
+      - record.notify_email
+      - role:sustainability
+      subject: 'Cloudleaf: forecast breach for {record.team}'
+      body: 'The forecast for team {record.team} in {record.month} exceeds its budget or emissions target. Forecast cost:
+        {record.forecast_cost_gbp} GBP, forecast emissions: {record.forecast_kg} kgCO2e. {record.detail}'
+      link: dashboard
+  exports:
+  - path: /api/emissions
+    source: collection:emissions
+    format: json
+    access: token
+  - path: /api/emissions.csv
+    source: collection:emissions
+    format: csv
+    access: token
+  notifications:
+    emailOnRunDone: false
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: platform
+      price: 500
+      interval: month
+      label: Cloudleaf platform (minimum £500 a month)
+      includes:
+      - all dashboards
+      - monthly reports
+      - API access
+      - assistant
+  extensions:
+  - key: cloud_account_onboarding
+    description: Connecting AWS (IAM role), Azure and Google Cloud via OAuth is not available yet. For now, billing exports
+      are uploaded as files (max 15 MB). Daily automatic ingestion of large exports needs a connector.
+  - key: spend_percentage_pricing
+    description: Pricing as a percentage of tracked cloud spend with a £500 monthly minimum is not expressible; a flat £500
+      plan is declared and the percentage must be billed outside the app.
+  - key: monthly_report_csv
+    description: Monthly reports are emailed per user; CSV export is available from the Emissions detail view and the token-protected
+      /api/emissions.csv endpoint.

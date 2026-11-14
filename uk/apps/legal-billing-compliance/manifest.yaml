@@ -1,0 +1,923 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: tallymere
+  displayName: Tallymere
+  tagline:
+    en: Check every invoice against the client's guidelines before it goes out.
+  description:
+    en: Tallymere turns each client's outside counsel guidelines into rules, checks monthly time entries against them, explains
+      every breach, and routes flags to fee earners and invoices to partners for approval.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f2a44'
+      accent: '#a67c3d'
+      background: '#f7f6f2'
+      foreground: '#1b1f24'
+    fonts:
+      body: Inter
+      display: Source Serif 4
+    wordmark:
+    - text: Tally
+      color: primary
+    - text: mere
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: billing_manager
+      label: Billing manager
+      assignedBy: signup
+    - key: partner
+      label: Partner
+      assignedBy: derived
+      from: collection:clients.partner_email
+    - key: fee_earner
+      label: Fee earner
+      assignedBy: derived
+      from: collection:flags.fee_earner_email
+  limits:
+  - action: agent:checker
+    per: user
+    max: 30
+    window: day
+    roles:
+    - billing_manager
+  agents:
+  - key: rule_extractor
+    role: helper
+    description: Reads a client's outside counsel guidelines (PDF or Word) and saves them as structured rules.
+    profile:
+      inline:
+        display_name: Tallymere rule extractor
+        crews:
+        - id: rule_extractor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You convert a client''s outside counsel guidelines into precise, checkable billing rules for a law
+            firm. Open the uploaded guideline file(s) with read_upload using each file id. Then call save_rule once per rule.
+            Rule types: banned_task (task descriptions or activities not billable, e.g. clerical work, internal conferences),
+            block_billing (max hours per entry or ban on multi-task entries), staffing_cap (max timekeepers, attendees or
+            seniority ratio), travel (local travel, class of travel, hourly cap), disbursement (non-reimbursable or capped
+            expenses), rate_cap (maximum hourly rate by grade), other. Each rule has: client, partner_email, rule_type, clause
+            (the clause or section reference exactly as in the document), description (plain English, testable), limit_value
+            (a number if applicable, e.g. 0.5 hours or 450 rate), grade (for rate caps) and keywords (comma-separated phrases
+            that signal the rule). Quote clause numbers faithfully; never invent a rule that is not in the document and never
+            guess a number. If the file is unreadable or has no text, say so. Finish with a level-1 Markdown title ''# Rules
+            extracted — <client>'' and a table of the rules saved, then list ambiguities a human should confirm.'
+    appTools:
+    - name: read_upload
+      description: Read a guideline file the user uploaded
+      action: read_file
+    - name: save_rule
+      description: Save one billing rule extracted from the guidelines
+      action: append
+      collection: guideline_rules
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 1.0
+  - key: checker
+    role: main
+    description: Checks a month of time entries against the client's rules and writes one flag per breach.
+    profile:
+      inline:
+        display_name: Tallymere invoice checker
+        crews:
+        - id: checker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 2.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a meticulous legal billing reviewer. Steps: (1) call read_clients to get the client''s partner_email
+            and details; (2) call read_rules to load that client''s rules; (3) open the uploaded time-entry CSV with read_upload
+            using the file id. Columns: date, fee_earner_email (if present), grade, hours, narrative, task_code, rate. (4)
+            Check EVERY entry against EVERY rule: banned tasks, block billing (several tasks in one entry or hours above the
+            limit), staffing caps (count timekeepers per day/matter), travel, disbursements, and rate caps by grade. (5) For
+            each breach call save_flag once with: client, batch_month, partner_email, fee_earner_email (blank if unknown),
+            entry_date, grade, hours, narrative, task_code, rate, rule_type, clause (the clause reference from the rule),
+            explanation (one or two sentences saying which clause is broken and why), suggestion (a rewritten compliant narrative,
+            or a write-down recommendation), writedown_value (the amount in currency at risk if the entry were rejected or
+            reduced: hours x rate, or the excess over the cap), deadline (the billing deadline given in the task, YYYY-MM-DD)
+            and status ''open''. Rules: only flag real breaches that you can tie to a stored clause; never invent clauses,
+            rates or hours; when an entry is borderline use a flag with a note ''confirm'' in the explanation. Never alter
+            the narrative''s facts in a rewrite: only clarify, split or remove prohibited wording and say what a fee earner
+            must confirm. End with a level-1 title ''# Invoice check — <client>, <month>'', a summary table (entries checked,
+            flags by rule type, total value at risk) and a ```chart block (bar, flags by rule type) using real figures only.'
+    appTools:
+    - name: read_upload
+      description: Read the time-entry CSV the user uploaded
+      action: read_file
+    - name: read_clients
+      description: Read the firm's clients
+      action: read
+      collection: clients
+      scope: user
+    - name: read_rules
+      description: Read the client's billing rules
+      action: read
+      collection: guideline_rules
+      scope: user
+    - name: save_flag
+      description: Save one flagged time entry
+      action: append
+      collection: flags
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 60
+      maxBudgetUsd: 2.5
+  - key: invoice_prep
+    role: helper
+    description: Summarises a checked batch for the partner and asks for the final sign-off.
+    awaits:
+    - invoice_signoff
+    profile:
+      inline:
+        display_name: Tallymere invoice preparer
+        crews:
+        - id: invoice_prep
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You prepare the final invoice review for a partner. Call read_flags and keep only the flags of the
+            given client and month. Count flags by status (open, accepted, disputed), sum writedown_value of accepted flags
+            (write-downs applied) and of disputed ones (value still contested). Save one summary record with save_invoice
+            (client, batch_month, partner_email, total_flags, accepted_flags, disputed_flags, open_flags, writedown_applied,
+            disputed_value, status 'awaiting_partner'). If any flag is still open, say so clearly. Then call request_invoice_signoff
+            once with that summary. Never approve on the partner's behalf. Write a short level-1 titled report '# Invoice
+            review — <client>, <month>' with the figures and the disputed entries listed with the fee earner's reasons.
+    appTools:
+    - name: read_flags
+      description: Read the flags of the batch
+      action: read
+      collection: flags
+      scope: user
+    - name: save_invoice
+      description: Save the invoice review summary
+      action: append
+      collection: invoices
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.6
+  data:
+    collections:
+    - name: clients
+      ownedBy: user
+      description: The firm's clients and their guideline files
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Client
+      - name: partner_email
+        type: email
+        required: true
+        label: Responsible partner (email)
+      - name: guidelines
+        type: file
+        accept:
+        - pdf
+        - docx
+        maxMb: 15
+        multiple: true
+        label: Outside counsel guidelines
+      - name: currency
+        type: select
+        label: Currency
+        options:
+        - GBP
+        - EUR
+        - USD
+      - name: status
+        type: select
+        label: Status
+        options:
+        - value: new
+          label: New
+        - value: reextract
+          label: Re-read the guidelines
+        - value: active
+          label: Active
+        default: new
+      access:
+      - role: partner
+        where:
+          partner_email: '{user.email}'
+        can:
+        - read
+    - name: guideline_rules
+      ownedBy: user
+      description: Rules extracted from each client's guidelines (written by the rule extractor)
+      fields:
+      - name: client
+        type: text
+        label: Client
+      - name: partner_email
+        type: email
+        label: Partner
+      - name: rule_type
+        type: select
+        label: Rule type
+        options:
+        - banned_task
+        - block_billing
+        - staffing_cap
+        - travel
+        - disbursement
+        - rate_cap
+        - other
+      - name: clause
+        type: text
+        label: Clause
+      - name: description
+        type: textarea
+        label: Rule
+      - name: limit_value
+        type: number
+        label: Limit
+      - name: grade
+        type: text
+        label: Grade
+      - name: keywords
+        type: text
+        label: Trigger phrases
+      access:
+      - role: partner
+        where:
+          partner_email: '{user.email}'
+        can:
+        - read
+    - name: time_batches
+      ownedBy: user
+      description: Monthly time-entry uploads
+      fields:
+      - name: client
+        type: text
+        required: true
+        label: Client
+      - name: month
+        type: text
+        required: true
+        label: Billing month (e.g. 2026-10)
+      - name: billing_deadline
+        type: date
+        required: true
+        label: Billing deadline
+      - name: entries
+        type: file
+        accept:
+        - csv
+        maxMb: 15
+        required: true
+        label: 'Time entries (CSV: date, fee_earner_email, grade, hours, narrative, task_code, rate)'
+      - name: status
+        type: select
+        label: Status
+        options:
+        - value: checking
+          label: Checking
+        - value: ready_for_approval
+          label: Send to partner
+        - value: approved
+          label: Approved
+        default: checking
+    - name: flags
+      ownedBy: user
+      description: Entries that breach a guideline rule, with the fee earner's response
+      fields:
+      - name: client
+        type: text
+        label: Client
+      - name: batch_month
+        type: text
+        label: Month
+      - name: partner_email
+        type: email
+        label: Partner
+      - name: fee_earner_email
+        type: email
+        label: Fee earner
+      - name: entry_date
+        type: date
+        label: Date
+      - name: grade
+        type: text
+        label: Grade
+      - name: hours
+        type: number
+        label: Hours
+      - name: rate
+        type: number
+        label: Rate
+      - name: task_code
+        type: text
+        label: Task code
+      - name: narrative
+        type: textarea
+        label: Narrative
+      - name: rule_type
+        type: select
+        label: Rule
+        options:
+        - banned_task
+        - block_billing
+        - staffing_cap
+        - travel
+        - disbursement
+        - rate_cap
+        - other
+      - name: clause
+        type: text
+        label: Clause
+      - name: explanation
+        type: textarea
+        label: Why it breaches
+      - name: suggestion
+        type: textarea
+        label: Suggested rewrite or write-down
+      - name: writedown_value
+        type: number
+        label: Value at risk
+      - name: deadline
+        type: date
+        label: Billing deadline
+      - name: status
+        type: select
+        label: Response
+        options:
+        - value: open
+          label: Open
+        - value: accepted
+          label: Accepted
+        - value: disputed
+          label: Disputed
+        default: open
+      - name: dispute_reason
+        type: textarea
+        label: Reason for disputing
+      access:
+      - role: partner
+        where:
+          partner_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: fee_earner
+        where:
+          fee_earner_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: invoices
+      ownedBy: user
+      description: Invoice review summaries awaiting partner sign-off
+      fields:
+      - name: client
+        type: text
+        label: Client
+      - name: batch_month
+        type: text
+        label: Month
+      - name: partner_email
+        type: email
+        label: Partner
+      - name: total_flags
+        type: number
+        label: Flags
+      - name: accepted_flags
+        type: number
+        label: Accepted
+      - name: disputed_flags
+        type: number
+        label: Disputed
+      - name: open_flags
+        type: number
+        label: Open
+      - name: writedown_applied
+        type: number
+        label: Write-downs applied
+      - name: disputed_value
+        type: number
+        label: Disputed value
+      - name: status
+        type: text
+        label: Status
+      access:
+      - role: partner
+        where:
+          partner_email: '{user.email}'
+        can:
+        - read
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Tallymere
+    sections:
+    - type: hero
+      band: true
+      eyebrow: For law firms
+      title: Catch **guideline breaches** before the invoice goes out.
+      text: Tallymere turns each client's outside counsel guidelines into rules, checks every time entry, and tells you which
+        clause it breaks and how to fix it.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Upload the guidelines
+        text: Billing managers add a client and upload its guidelines (PDF or Word). An agent extracts banned tasks, block-billing
+          limits, staffing caps, travel and disbursement rules and rate caps by grade.
+        badge: '1'
+      - title: Upload the month's time
+        text: A CSV of time entries is checked against every rule. Each breach is flagged with the clause, the reason and
+          a rewritten narrative or write-down.
+        badge: '2'
+      - title: Fee earners respond
+        text: Fee earners accept or dispute each flag. They get an email two days before the billing deadline if flags are
+          still open.
+        badge: '3'
+      - title: Partners approve
+        text: Each partner sees only their own clients and signs off the final invoice.
+        badge: '4'
+    - type: cards
+      id: pricing
+      title: Pricing
+      intro: One subscription per firm, by number of fee earners.
+      items:
+      - title: Up to 10 fee earners
+        text: GBP 290 per month
+      - title: Up to 30 fee earners
+        text: GBP 790 per month
+      - title: Up to 100 fee earners
+        text: GBP 1,990 per month
+    - type: note
+      content: Tallymere supports billing review; it does not give legal advice. A partner always approves the final invoice.
+  - key: add_client
+    type: form
+    title: Add client
+    collection: clients
+    fields:
+    - name
+    - partner_email
+    - currency
+    - guidelines
+    submit:
+      label: Save and read the guidelines
+      message: Saved. The agent is turning the guidelines into rules.
+      redirect: rules
+    roles:
+    - billing_manager
+    - admin
+  - key: clients
+    type: table
+    title: Clients
+    source: collection:clients
+    roles:
+    - billing_manager
+    - partner
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Client
+      - key: partner_email
+        label: Partner
+      - key: currency
+        label: Currency
+      - key: status
+        label: Status
+        format: badge
+  - key: rules
+    type: table
+    title: Rules
+    source: collection:guideline_rules
+    export: true
+    roles:
+    - billing_manager
+    - partner
+    - admin
+    data:
+      display: table
+      fields:
+      - key: client
+        label: Client
+      - key: rule_type
+        label: Rule
+        format: badge
+      - key: clause
+        label: Clause
+      - key: description
+        label: Description
+      - key: limit_value
+        label: Limit
+        format: number
+      - key: grade
+        label: Grade
+      sort:
+        field: client
+        dir: asc
+      limit: 200
+  - key: upload_time
+    type: form
+    title: Upload time entries
+    collection: time_batches
+    fields:
+    - client
+    - month
+    - billing_deadline
+    - entries
+    submit:
+      label: Check entries
+      message: Uploaded. The agent is checking every entry.
+      redirect: flags
+    roles:
+    - billing_manager
+    - admin
+  - key: batches
+    type: table
+    title: Batches
+    source: collection:time_batches
+    roles:
+    - billing_manager
+    - admin
+    data:
+      display: table
+      fields:
+      - key: client
+        label: Client
+      - key: month
+        label: Month
+      - key: billing_deadline
+        label: Deadline
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: billing_deadline
+        dir: desc
+  - key: close_batch
+    type: form
+    title: Send batch to partner
+    collection: time_batches
+    fields:
+    - status
+    edit: true
+    nav: false
+    submit:
+      label: Save
+      message: Updated.
+    roles:
+    - billing_manager
+    - admin
+  - key: flags
+    type: table
+    title: Flags
+    source: collection:flags
+    export: true
+    roles:
+    - billing_manager
+    - fee_earner
+    - partner
+    - admin
+    data:
+      display: table
+      fields:
+      - key: client
+        label: Client
+      - key: entry_date
+        label: Date
+        format: date
+      - key: fee_earner_email
+        label: Fee earner
+      - key: narrative
+        label: Narrative
+      - key: clause
+        label: Clause
+      - key: explanation
+        label: Why
+      - key: suggestion
+        label: Suggested fix
+      - key: writedown_value
+        label: Value at risk
+        format: money
+      - key: status
+        label: Response
+        format: badge
+      sort:
+        field: entry_date
+        dir: desc
+      limit: 200
+  - key: respond
+    type: form
+    title: Respond to a flag
+    collection: flags
+    fields:
+    - status
+    - dispute_reason
+    edit: true
+    nav: false
+    submit:
+      label: Save response
+      message: Response saved.
+      redirect: flags
+    roles:
+    - fee_earner
+    - partner
+    - billing_manager
+    - admin
+  - key: signoff
+    type: approvals
+    title: Invoice sign-off
+    roles:
+    - partner
+    - admin
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - billing_manager
+    - partner
+    - admin
+    sections:
+    - type: data
+      title: Flags raised
+      source: collection:flags
+      display: kpi
+      kpis:
+      - label: Flags
+        agg: count
+      - label: Value at risk
+        agg: sum
+        field: writedown_value
+        format: money
+    - type: data
+      title: Write-downs avoided
+      intro: Value of flagged entries the fee earners accepted to correct before sending.
+      source: collection:flags
+      display: kpi
+      filters:
+      - field: status
+        op: '='
+        value: accepted
+      kpis:
+      - label: Write-downs avoided
+        agg: sum
+        field: writedown_value
+        format: money
+    - type: data
+      title: Breaches by client
+      source: collection:flags
+      display: chart
+      chart: bar
+      groupBy:
+        field: client
+        aggs:
+        - key: value
+          agg: sum
+          field: writedown_value
+      fields:
+      - key: client
+        label: Client
+      - key: count
+        label: Breaches
+      - key: value
+        label: Value at risk
+        format: money
+    - type: data
+      title: Breaches by rule
+      source: collection:flags
+      display: chart
+      chart: pie
+      groupBy:
+        field: rule_type
+        aggs: []
+      fields:
+      - key: rule_type
+        label: Rule
+      - key: count
+        label: Breaches
+    - type: data
+      title: Breaches by fee earner
+      source: collection:flags
+      display: chart
+      chart: bar
+      groupBy:
+        field: fee_earner_email
+        aggs: []
+      fields:
+      - key: fee_earner_email
+        label: Fee earner
+      - key: count
+        label: Breaches
+  - key: runs
+    type: history
+    title: Checks
+    source: run
+    roles:
+    - billing_manager
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: account
+    type: account
+    title: Subscription
+    roles:
+    - billing_manager
+  triggers:
+  - key: extract_rules
+    description: 'A new client with guidelines: turn them into rules'
+    'on':
+      collection: clients
+      op: insert
+    start:
+      agent: rule_extractor
+    goal: 'Client: {record.name}. Partner email: {record.partner_email}. Guideline file ids: {record.guidelines}. Read every
+      file and save all billing rules with save_rule, using the client name and partner email above.'
+  - key: reextract_rules
+    description: Guidelines re-read on request
+    'on':
+      collection: clients
+      op: update
+      where:
+        status: reextract
+    start:
+      agent: rule_extractor
+    goal: 'Client: {record.name}. Partner email: {record.partner_email}. Guideline file ids: {record.guidelines}. The guidelines
+      were updated: read them again and save the rules with save_rule, marking in the description ''(updated)'' where a rule
+      changed.'
+  - key: check_batch
+    description: 'A time-entry upload: check it against the rules'
+    'on':
+      collection: time_batches
+      op: insert
+    start:
+      agent: checker
+    goal: 'Client: {record.client}. Billing month: {record.month}. Billing deadline: {record.billing_deadline}. Time-entry
+      CSV file id: {record.entries}. Check every entry and save one flag per breach.'
+  - key: prepare_invoice
+    description: 'Batch sent to the partner: prepare the sign-off'
+    'on':
+      collection: time_batches
+      op: update
+      where:
+        status: ready_for_approval
+    start:
+      agent: invoice_prep
+    goal: Prepare the final invoice review for client {record.client}, month {record.month}, and request the partner's sign-off.
+  - key: flag_reminder
+    description: Two days before the deadline, remind fee earners of unresolved flags
+    'on':
+      date:
+        collection: flags
+        field: deadline
+        offsetDays: -2
+        hour: 8
+      where:
+        status: open
+    notify:
+      to:
+      - record.fee_earner_email
+      subject: Unresolved billing flag for {record.client} - deadline in 2 days
+      body: 'You still have an open flag for {record.client}: "{record.narrative}" breaches {record.clause}. Please accept
+        the suggested fix or dispute it before the billing deadline on {record.deadline}.'
+      link: flags
+  - key: invoice_decided
+    description: Tell the billing team the partner's decision
+    'on':
+      approval: invoice_signoff
+      decision: any
+    notify:
+      to:
+      - owner
+      subject: Invoice sign-off decision
+      body: The partner has decided on the invoice review. Open Tallymere to see the outcome.
+      link: signoff
+  approvals:
+  - key: invoice_signoff
+    title: Approve final invoice
+    description: The partner reviews the flags, write-downs and disputes before the invoice is sent.
+    role: partner
+    decidedBy: role
+    fields:
+    - client
+    - batch_month
+    - total_flags
+    - writedown_applied
+    - disputed_value
+    timeoutMinutes: 10080
+    onTimeout: reject
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: firm_10
+      price: 290
+      interval: month
+      label: Up to 10 fee earners
+      includes:
+      - Unlimited clients and guideline sets
+      - Monthly invoice checks
+      - Dashboards
+    - key: firm_30
+      price: 790
+      interval: month
+      label: Up to 30 fee earners
+      includes:
+      - Everything in the 10 plan
+      - Partner sign-off workflow
+    - key: firm_100
+      price: 1990
+      interval: month
+      label: Up to 100 fee earners
+      includes:
+      - Everything in the 30 plan
+      - Priority support
+  extensions:
+  - key: live_integrations
+    description: Live time entries from the firm's practice management and e-billing systems through OAuth sign-in are not
+      available yet. Until then, time entries arrive as a monthly CSV upload; enterprise API-key connections can be added
+      per system once the vendors are named.
+  - key: fee_earner_seats
+    description: The limit on the number of fee earners per plan (10, 30, 100) is shown in the plan description but not enforced
+      automatically by the runtime.
+  - key: firm_team_accounts
+    description: Each billing manager's records are private to their account; several billing managers sharing one firm's
+      data need a shared team list that is not part of this design.

@@ -1,0 +1,643 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: genefield
+  displayName: Genefield
+  tagline:
+    en: Discover crop genes and traits, with evidence a scientist has reviewed.
+  description:
+    en: Genefield helps plant breeding companies find candidate genes for a target trait. Upload your genotype, phenotype
+      and environmental data, search public genomic databases, and get a ranked, evidence-based report reviewed by our scientists
+      before release.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#14452f'
+      accent: '#7a9a1e'
+      background: '#f6f8f2'
+      foreground: '#17231c'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Gene
+      color: primary
+    - text: field
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Trust
+      href: '#trust'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Genefield admin
+      assignedBy: admin_emails
+    - key: reviewer
+      label: Reviewing scientist
+      assignedBy: invite
+    - key: regulatory
+      label: Regulatory team
+      assignedBy: invite
+    - key: company_admin
+      label: Company admin
+      assignedBy: invite
+    - key: data_scientist
+      label: Data scientist
+      assignedBy: invite
+    - key: breeder
+      label: Breeder
+      assignedBy: signup
+  limits:
+  - action: agent:analyst
+    per: user
+    max: 10
+    window: day
+    roles:
+    - breeder
+    - data_scientist
+    - company_admin
+  agents:
+  - key: analyst
+    role: main
+    description: Ranks candidate genes for a target trait using the company's own data and public genomic databases, then
+      asks for scientific (and, if needed, regulatory) review.
+    memory: none
+    awaits:
+    - release
+    - regulatory_review
+    profile:
+      inline:
+        display_name: Genefield analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are a plant genomics analyst working for a breeding company. Goal: rank candidate genes for
+            a target trait in a crop and write an evidence-based report.
+
+
+            Sources: (1) the company''s own datasets listed in your context (use read_datasets; spreadsheets and small text
+            files can be opened with read_upload by file id; large genomic files such as VCF are referenced by a storage location
+            and must be processed through the WebRobot MCP by building and running a pipeline, never loaded whole); (2) public
+            databases: NCBI E-utilities via ncbi_eutils (e.g. path /esearch.fcgi with query db=gene&term=...&retmode=json,
+            /esummary.fcgi, /efetch.fcgi) and the Ensembl REST API via ensembl_rest (e.g. path /lookup/symbol/<species>/<symbol>,
+            /overlap/region/<species>/<region>?feature=gene). Check species names carefully; if a crop is not covered by a
+            source, say so.
+
+
+            Method: define the trait and population, check the data available, find loci and genes linked to the trait (GWAS/QTL
+            signals in the company data, then public annotation and literature), and score each candidate 0-100 with a confidence
+            of high, medium or low. Be explicit about what comes from the company''s data, what from public sources (cite
+            database and identifier) and what is inference. Never invent gene identifiers, p-values, effect sizes or citations.
+            State sample-size, population-structure and data-quality limits plainly.
+
+
+            Save each ranked candidate with save_gene (fields: project, gene_id, symbol, trait, crop, score, confidence, evidence,
+            source, status ''draft'').
+
+
+            Report structure, starting with a level-1 title ''# <Crop> - <trait>: candidate genes'': ## Summary, ## Data used,
+            ## Ranked candidates (table: rank, gene, score, confidence, key evidence), ## Evidence per gene, ## Limitations
+            and risks, ## Suggested validation. Add a chart block of scores:
+
+            ```chart
+
+            {"type":"bar","title":"Candidate scores","labels":["GeneA"],"series":[{"name":"Score","values":[80]}]}
+
+            ```
+
+            When the report is complete you MUST call request_release so a Genefield scientist reviews it; it is not released
+            to the company before that. If the request says the results will be used in a UK precision breeding application,
+            also call request_regulatory_review. Do not claim regulatory compliance or give legal advice. Mark the report
+            ''Pending scientific review''.'
+    appTools:
+    - name: read_datasets
+      description: List the company's datasets for the project (type, description, storage location, file ids)
+      action: read
+      collection: datasets
+      scope: user
+    - name: read_upload
+      description: Read a file the user uploaded (spreadsheet, text, image)
+      action: read_file
+    - name: save_gene
+      description: Save a ranked candidate gene for the project
+      action: append
+      collection: candidate_genes
+      scope: user
+    - name: ncbi_eutils
+      description: Query NCBI E-utilities (gene, nuccore, pubmed) for public genomic information
+      action: http
+      http:
+        method: GET
+        url: https://eutils.ncbi.nlm.nih.gov/entrez/eutils
+        allowPath: true
+        attribution: NCBI, National Library of Medicine
+    - name: ensembl_rest
+      description: Query the Ensembl REST API for genes, regions and annotations
+      action: http
+      http:
+        method: GET
+        url: https://rest.ensembl.org
+        allowPath: true
+        headers:
+          Accept: application/json
+        attribution: Ensembl, EMBL-EBI
+    context:
+    - key: datasets
+      from: collection:datasets
+    goalTemplate: 'Project: {project}
+
+      Crop: {crop}
+
+      Target trait: {trait}
+
+      Population: {population}
+
+      {?notes}Notes: {notes}{/notes}
+
+      {?uk_precision}The results will be used in a UK precision breeding application: also request the regulatory review.{/uk_precision}
+
+      The company''s datasets (JSON lines): {datasets}
+
+      Today is {date}. Write the report in English.'
+    output: markdown
+    limits:
+      maxTurns: 60
+      maxBudgetUsd: 3
+      timeoutSeconds: 3600
+  approvals:
+  - key: release
+    title: Scientific review before release
+    description: A Genefield scientist checks the ranking and evidence before the company sees the report as final.
+    role: reviewer
+    timeoutMinutes: 10080
+    onTimeout: reject
+  - key: regulatory_review
+    title: Regulatory review (UK precision breeding)
+    description: The regulatory team reviews results intended for UK precision breeding applications.
+    role: regulatory
+    timeoutMinutes: 10080
+    onTimeout: reject
+  inputForm:
+    title: Request an analysis
+    fields:
+    - name: project
+      type: select
+      required: true
+      label: Project
+      optionsFrom: collection:projects
+    - name: crop
+      type: text
+      required: true
+      label: Crop
+      help: e.g. wheat, barley, maize
+    - name: trait
+      type: text
+      required: true
+      label: Target trait
+      help: e.g. drought tolerance, rust resistance
+    - name: population
+      type: textarea
+      required: true
+      maxLength: 800
+      label: Population
+      help: Panel or cross, size, generations, environments
+    - name: uk_precision
+      type: boolean
+      label: Results will be used in a UK precision breeding application
+    - name: notes
+      type: textarea
+      maxLength: 600
+      label: Notes (optional)
+  data:
+    collections:
+    - name: projects
+      ownedBy: user
+      description: A company's breeding projects, shared with the members listed
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Project name
+      - name: crop
+        type: text
+        required: true
+        label: Crop
+      - name: trait
+        type: text
+        label: Main trait
+      - name: members
+        type: array
+        label: Team member emails
+        help: Colleagues at your company who can see this project
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: reviewer
+      - role: regulatory
+    - name: datasets
+      ownedBy: user
+      description: 'Company data: genotypes (VCF), field trial phenotypes, environmental data'
+      fields:
+      - name: project
+        type: text
+        required: true
+        label: Project
+      - name: kind
+        type: select
+        required: true
+        label: Data type
+        options:
+        - value: vcf
+          label: VCF genotypes
+        - value: phenotype
+          label: Field trial phenotypes
+        - value: environment
+          label: Environmental data
+      - name: file
+        type: file
+        label: Small file (spreadsheet, CSV, text, up to 15 MB)
+        accept:
+        - csv
+        - xlsx
+        - txt
+        maxMb: 15
+      - name: storage_url
+        type: url
+        label: Location of large file (VCF, VCF.gz)
+        help: Link to your own storage; the pipeline reads it in chunks
+      - name: description
+        type: textarea
+        label: Description
+        maxLength: 600
+      - name: members
+        type: array
+        label: Team member emails
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: candidate_genes
+      ownedBy: user
+      description: Ranked candidate genes written by the analyst
+      fields:
+      - name: project
+        type: text
+        label: Project
+      - name: gene_id
+        type: text
+        label: Gene ID
+      - name: symbol
+        type: text
+        label: Symbol
+      - name: trait
+        type: text
+        label: Trait
+      - name: crop
+        type: text
+        label: Crop
+      - name: score
+        type: number
+        label: Score
+      - name: confidence
+        type: select
+        label: Confidence
+        options:
+        - high
+        - medium
+        - low
+      - name: evidence
+        type: textarea
+        label: Evidence
+      - name: source
+        type: text
+        label: Source
+      - name: status
+        type: select
+        label: Status
+        options:
+        - draft
+        - released
+      - name: members
+        type: array
+        label: Team member emails
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: reviewer
+        can:
+        - read
+        - write
+      - role: regulatory
+  views:
+  - key: home
+    type: page
+    title: Genefield
+    nav: false
+    sections:
+    - type: hero
+      title: Find the **genes** behind your next crop trait.
+      text: Upload your genotype, phenotype and environmental data. Genefield searches public genomic databases, ranks candidate
+        genes with their evidence, and our scientists review every report before release.
+      eyebrow: For plant breeding companies
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Add your data
+        text: VCF genotypes, field trial phenotypes and environmental data stay private to your company.
+        badge: '1'
+      - title: Request an analysis
+        text: Describe the trait, crop and population. You get email updates as it progresses.
+        badge: '2'
+      - title: Reviewed results
+        text: Ranked candidate genes with confidence and evidence, checked by our scientists.
+        badge: '3'
+    - type: cards
+      id: trust
+      title: Built for trust
+      items:
+      - title: Your data is yours
+        text: Each company sees only its own projects.
+      - title: Scientist review
+        text: No report is released before a reviewing scientist approves it.
+      - title: Regulatory check
+        text: Results for UK precision breeding applications are also reviewed by our regulatory team.
+    - type: note
+      content: Decision support for research. Not regulatory or legal advice.
+  - key: new_analysis
+    type: new_run
+    title: Request analysis
+    roles:
+    - admin
+    - company_admin
+    - breeder
+    - data_scientist
+  - key: projects
+    type: table
+    title: Projects
+    source: collection:projects
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Project
+      - key: crop
+        label: Crop
+      - key: trait
+        label: Trait
+    roles:
+    - admin
+    - company_admin
+    - breeder
+    - data_scientist
+    - reviewer
+    - regulatory
+  - key: new_project
+    type: form
+    title: New project
+    collection: projects
+    submit:
+      label: Create project
+      message: Project created.
+      redirect: projects
+    roles:
+    - admin
+    - company_admin
+    - breeder
+    - data_scientist
+  - key: datasets_list
+    type: table
+    title: Data
+    source: collection:datasets
+    data:
+      display: table
+      fields:
+      - key: project
+        label: Project
+      - key: kind
+        label: Type
+        format: badge
+      - key: description
+        label: Description
+    roles:
+    - admin
+    - company_admin
+    - breeder
+    - data_scientist
+  - key: upload_data
+    type: form
+    title: Add data
+    collection: datasets
+    submit:
+      label: Save dataset
+      message: Dataset saved.
+      redirect: datasets_list
+    roles:
+    - admin
+    - company_admin
+    - data_scientist
+    - breeder
+  - key: analyses
+    type: history
+    title: My analyses
+    source: run
+    roles:
+    - admin
+    - company_admin
+    - breeder
+    - data_scientist
+  - key: analysis
+    type: report
+    title: Report
+    source: run
+    printable: true
+    nav: false
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - admin
+    - company_admin
+    - breeder
+    - data_scientist
+    - reviewer
+    - regulatory
+    sections:
+    - type: data
+      title: Candidate genes
+      source: collection:candidate_genes
+      display: kpi
+      kpis:
+      - label: Candidates
+        agg: count
+      - label: Average score
+        agg: avg
+        field: score
+        format: number
+    - type: data
+      title: Top candidates by score
+      source: collection:candidate_genes
+      display: chart
+      chart: bar
+      fields:
+      - key: symbol
+        label: Gene
+      - key: score
+        label: Score
+      sort:
+        field: score
+        dir: desc
+      limit: 20
+      empty: No candidate genes yet.
+    - type: data
+      title: Candidate genes with confidence
+      source: collection:candidate_genes
+      display: table
+      fields:
+      - key: symbol
+        label: Gene
+      - key: gene_id
+        label: ID
+      - key: trait
+        label: Trait
+      - key: score
+        label: Score
+        format: number
+      - key: confidence
+        label: Confidence
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: score
+        dir: desc
+      limit: 100
+  - key: reviews
+    type: approvals
+    title: Reviews
+    roles:
+    - admin
+    - reviewer
+    - regulatory
+  - key: account
+    type: account
+    title: Licence
+    roles:
+    - company_admin
+    - admin
+  notifications:
+    emailOnRunDone: true
+  triggers:
+  - key: release_approved
+    'on':
+      approval: release
+      decision: approved
+    notify:
+      to: owner
+      subject: Your Genefield report has been approved
+      body: Our reviewing scientist approved your analysis. The report is now final.
+      link: analyses
+  - key: release_rejected
+    'on':
+      approval: release
+      decision: rejected
+    notify:
+      to: owner
+      subject: Your Genefield report needs changes
+      body: Our reviewing scientist did not release your analysis yet. We will follow up with you.
+      link: analyses
+  - key: regulatory_decided
+    'on':
+      approval: regulatory_review
+      decision: any
+    notify:
+      to: owner
+      subject: Regulatory review update
+      body: Our regulatory team has completed its review of your analysis for UK precision breeding use. Open the app for
+        details.
+      link: analyses
+  egress:
+    hosts:
+    - eutils.ncbi.nlm.nih.gov
+    - rest.ensembl.org
+    notes: 'NCBI E-utilities and Ensembl REST: public genomic data, free reuse with attribution within usage policies.'
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: licence
+      price: 12000
+      interval: year
+      label: Annual licence
+      includes:
+      - Unlimited projects
+      - Data upload and pipelines
+      - Reviewed analyses
+      roles:
+      - company_admin
+    costs:
+      agent:analyst:
+        requiresPlan: licence
+  extensions:
+  - key: large_genomic_files
+    description: The upload field accepts only csv, xlsx and txt up to 15 MB. Large VCF/VCF.gz files are referenced by a storage
+      link and processed in chunks by the agent through the WebRobot MCP pipeline; direct upload of VCF files is not available
+      yet.
+  - key: company_tenancy
+    description: Company isolation is by the project members list (emails). A company-level organisation entity is not modelled;
+      company admins must add colleagues to each project.

@@ -1,0 +1,730 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: brickline
+  displayName: Brickline
+  tagline:
+    en: Site communication that turns chat into evidence.
+    pl: Komunikacja na budowie, która zamienia rozmowy w dowody.
+    ro: Comunicare pe șantier care transformă conversațiile în dovezi.
+    pt: Comunicação de obra que transforma conversas em evidências.
+    lt: Statybvietės komunikacija, paverčianti pokalbius įrodymais.
+  description:
+    en: Per-project and per-trade messaging with automatic translation, an agent that files issues, instructions, delays and
+      safety observations, and a daily site diary approved by the site manager.
+  langs:
+  - en
+  - pl
+  - ro
+  - pt
+  - lt
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f2933'
+      accent: '#e8710a'
+      background: '#f7f5f2'
+      foreground: '#16202a'
+    fonts:
+      body: Inter
+      display: Barlow Condensed
+    wordmark:
+    - text: Brick
+      color: primary
+    - text: line
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Company admin
+      assignedBy: admin_emails
+    - key: user
+      label: Contractor
+      assignedBy: signup
+    - key: project_manager
+      label: Project manager
+      assignedBy: invite
+    - key: site_manager
+      label: Site manager
+      assignedBy: invite
+    - key: subcontractor
+      label: Subcontractor
+      assignedBy: invite
+    - key: worker
+      label: Worker
+      assignedBy: invite
+  limits:
+  - action: create:projects
+    max: 1
+    window: total
+    plans:
+      starter: 5
+      pro: 25
+      agency: -1
+  agents:
+  - key: processor
+    role: helper
+    description: 'Reads each new site message: transcribes/translates it and files structured records.'
+    profile:
+      inline:
+        display_name: Brickline site processor
+        crews:
+        - id: processor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You process ONE new message from a construction site chat. 1) Translate the message text faithfully
+            into English, Polish, Romanian, Portuguese and Lithuanian (keep the construction terms, numbers, names and units
+            exact) and save the five versions with the tool save_translations (fields text_en, text_pl, text_ro, text_pt,
+            text_lt) and always set processed to yes in the same call. If the message has a photo or a file id, open it with
+            read_upload to see it (OCR included) and mention what is visible only when it matters. 2) Decide whether the message
+            contains an issue, an instruction, a delay or a safety observation. If so, file ONE structured entry per item
+            with file_record: kind (issue|instruction|delay|safety), a short title in English, a description, project, trade,
+            place (where on site), responsible_email only if the message names a person whose email is known, photo ids, status
+            open, scope_change yes or no, and copy the message''s members list. Never invent facts, names or places; leave
+            a field empty when unknown. Ordinary chatter creates no record. 3) If an instruction changes scope, cost or programme
+            (extra work, changed spec, omitted work), set scope_change yes and call request_scope_change with the record title
+            and why. Never decide on legal liability.'
+    goalTemplate: 'Process the message.
+
+      {message}'
+    appTools:
+    - name: save_translations
+      description: Write the translations onto the message
+      action: write
+      collection: messages
+      scope: user
+    - name: file_record
+      description: File a structured site record
+      action: append
+      collection: site_records
+      scope: user
+    - name: read_upload
+      description: Read a photo or file attached to a message
+      action: read_file
+    awaits:
+    - scope_change
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.3
+  - key: diarist
+    role: scheduled
+    description: Writes the daily site diary of one project from the day's messages and records.
+    memory: instance
+    profile:
+      inline:
+        display_name: Brickline site diarist
+        crews:
+        - id: diarist
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the daily site diary for one construction project, from the messages and records of the
+            day (use the tools read_day_messages and read_day_records, only the given project and date). Start with "# Site
+            diary — <project> — <date>". Sections with ## headings: Summary, Work done by trade, Issues (open and new), Instructions
+            given, Delays, Safety observations, Scope changes awaiting approval, Photos (list ids), Tomorrow. Facts only,
+            each item with who/where/trade when known; never invent figures or attribute blame. Write in English. When the
+            diary is complete call request_diary_review so the site manager can approve it.'
+    appTools:
+    - name: read_day_messages
+      description: Read the project's messages
+      action: read
+      collection: messages
+      scope: user
+    - name: read_day_records
+      description: Read the project's filed site records
+      action: read
+      collection: site_records
+      scope: user
+    awaits:
+    - diary_review
+    writesTo:
+      collection: diary_entries
+      parse: whole
+      keyBy: date
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.4
+  templates:
+  - key: site_diary
+    title: Daily site diary
+    description: One diary per project every working day, emailed to you after the site manager approves.
+    agent: diarist
+    params:
+    - name: project
+      type: select
+      required: true
+      label: Project
+      optionsFrom: collection:projects
+    goal: Write the site diary of project "{project}" for {date}.
+    schedule:
+      cron: 0 16 * * 1-5
+      userCanChange: true
+    maxPerUser: 25
+    deliver:
+      to: owner
+      subject: Site diary {title} — {date}
+      onlyIfNew: true
+  triggers:
+  - key: new_message
+    description: Every new unprocessed message is translated and mined for records
+    'on':
+      collection: messages
+      op: insert
+      where:
+        processed: 'no'
+    start:
+      agent: processor
+    goal: 'New message in project {record.project}, trade {record.trade}, author {record.author_email}, source language {record.language}:
+      {record.text}. Photo ids: {record.photo}. Members: {record.members}. Process it.'
+    asUser: true
+  - key: safety_alert
+    'on':
+      collection: site_records
+      op: insert
+      where:
+        kind: safety
+    notify:
+      to:
+      - owner
+      - role:site_manager
+      - role:project_manager
+      subject: 'Safety observation: {record.title}'
+      body: 'A safety observation was filed in {record.project} ({record.place}): {record.description}'
+      link: records
+  - key: assigned
+    'on':
+      collection: site_records
+      op: insert
+    notify:
+      to:
+      - record.responsible_email
+      subject: 'New {record.kind} for you: {record.title}'
+      body: '{record.description}
+
+        Project: {record.project}, place: {record.place}'
+      link: records
+  - key: scope_decided
+    'on':
+      approval: scope_change
+      decision: any
+    notify:
+      to:
+      - owner
+      - role:site_manager
+      subject: Scope change decision
+      body: The project manager has decided on a scope-changing instruction. Open the records to see it.
+      link: records
+  approvals:
+  - key: scope_change
+    title: Scope-changing instruction
+    role: project_manager
+    fields:
+    - title
+    - reason
+    timeoutMinutes: 2880
+  - key: diary_review
+    title: Daily site diary
+    role: site_manager
+    fields:
+    - title
+    timeoutMinutes: 1440
+    onTimeout: approve
+  inputForm:
+    title: Post a message
+    fields:
+    - name: text
+      type: textarea
+      required: true
+      maxLength: 1000
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Brickline
+    sections:
+    - type: hero
+      title: Your site chat, turned into **evidence**.
+      text: Per-project and per-trade messaging that every worker reads in their own language. An agent files issues, instructions,
+        delays and safety observations, and writes the daily site diary.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Invite
+        text: Create a project and add site managers, subcontractors and workers.
+        badge: 👷
+      - title: Talk and photograph
+        text: Messages and photos are translated into English, Polish, Romanian, Portuguese and Lithuanian.
+        badge: 💬
+      - title: Records file themselves
+        text: Issues, instructions, delays and safety notes get location, trade, photos and a responsible person.
+        badge: 📋
+      - title: Approve the diary
+        text: The site manager approves the daily diary; it is emailed to you.
+        badge: ✅
+    - type: cards
+      id: pricing
+      title: Pricing
+      intro: Monthly subscription by number of active projects. Free for subcontractors and workers.
+      items:
+      - title: Starter
+        text: Up to 5 active projects
+      - title: Pro
+        text: Up to 25 active projects
+      - title: Agency
+        text: Unlimited projects
+    - type: note
+      content: Records are kept as evidence of what was said and when. They support, but do not replace, legal advice.
+  - key: new_project
+    type: form
+    title: New project
+    collection: projects
+    fields:
+    - name
+    - address
+    - members
+    submit:
+      label: Create project
+      message: Project created
+      redirect: projects
+    roles:
+    - user
+    - admin
+  - key: projects
+    type: table
+    title: Projects
+    source: collection:projects
+    data:
+      display: table
+      fields:
+      - key: name
+      - key: address
+      - key: members
+    roles:
+    - user
+    - admin
+    - project_manager
+    - site_manager
+  - key: post
+    type: form
+    title: Post message
+    collection: messages
+    fields:
+    - project
+    - trade
+    - language
+    - text
+    - photo
+    submit:
+      label: Send
+      message: Sent
+      redirect: feed
+  - key: feed
+    type: list
+    title: Messages
+    source: collection:messages
+    export: true
+    data:
+      display: list
+      fields:
+      - key: date
+        format: date
+      - key: project
+      - key: trade
+      - key: author_email
+      - key: text_en
+        label: English
+      - key: text_pl
+        label: Polski
+      - key: text_ro
+        label: Română
+      - key: text_pt
+        label: Português
+      - key: text_lt
+        label: Lietuvių
+      sort:
+        field: date
+        dir: desc
+      limit: 100
+      actions:
+      - type: share
+        field: text_en
+  - key: records
+    type: table
+    title: Records and evidence
+    source: collection:site_records
+    export: true
+    data:
+      display: table
+      fields:
+      - key: date
+        format: date
+      - key: kind
+        format: badge
+      - key: title
+      - key: project
+      - key: trade
+      - key: place
+      - key: responsible_email
+      - key: status
+        format: badge
+      - key: scope_change
+        format: badge
+      sort:
+        field: date
+        dir: desc
+      limit: 200
+      actions:
+      - type: directions
+        field: location
+      - type: call
+        field: responsible_phone
+  - key: overview
+    type: page
+    title: Open issues
+    roles:
+    - user
+    - admin
+    - project_manager
+    - site_manager
+    sections:
+    - type: data
+      title: Open items
+      source: collection:site_records
+      display: kpi
+      filters:
+      - field: status
+        op: '='
+        value: open
+      kpis:
+      - label: Open
+        agg: count
+    - type: data
+      title: Open issues per project
+      source: collection:site_records
+      display: chart
+      chart: bar
+      filters:
+      - field: status
+        op: '='
+        value: open
+      groupBy:
+        field: project
+        aggs: []
+      fields:
+      - key: project
+      - key: count
+    - type: data
+      title: By kind
+      source: collection:site_records
+      display: chart
+      chart: pie
+      groupBy:
+        field: kind
+        aggs: []
+      fields:
+      - key: kind
+      - key: count
+  - key: watches
+    type: instances
+    template: site_diary
+    title: Daily diaries
+    roles:
+    - user
+    - admin
+  - key: diaries
+    type: list
+    title: Diary archive
+    source: collection:diary_entries
+    export: true
+    data:
+      display: list
+      fields:
+      - key: date
+        format: date
+      - key: title
+  - key: diary
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: approvals
+    type: approvals
+    title: Approvals
+    roles:
+    - project_manager
+    - site_manager
+    - admin
+  - key: account
+    type: account
+    title: Subscription
+    roles:
+    - user
+    - admin
+  data:
+    collections:
+    - name: projects
+      ownedBy: user
+      description: Construction projects created by the contractor
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: address
+        type: text
+      - name: members
+        type: array
+        help: Emails of invited site managers, subcontractors and workers
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: messages
+      ownedBy: user
+      description: Project and trade messages with their translations
+      retentionDays: 3650
+      searchable: true
+      fields:
+      - name: project
+        type: select
+        required: true
+        optionsFrom: collection:projects
+      - name: trade
+        type: select
+        options:
+        - general
+        - groundworks
+        - structure
+        - electrical
+        - plumbing
+        - hvac
+        - carpentry
+        - finishes
+      - name: language
+        type: select
+        options:
+        - en
+        - pl
+        - ro
+        - pt
+        - lt
+        - other
+      - name: text
+        type: textarea
+        required: true
+      - name: photo
+        type: file
+        accept:
+        - jpg
+        - jpeg
+        - png
+        - webp
+        maxMb: 10
+        multiple: true
+        capture: true
+        extract: none
+      - name: author_email
+        type: email
+      - name: date
+        type: date
+      - name: members
+        type: array
+      - name: processed
+        type: select
+        options:
+        - 'no'
+        - 'yes'
+        default: 'no'
+        help: Set to yes by the processor agent once translated, so it is not started again
+      - name: text_en
+        type: textarea
+      - name: text_pl
+        type: textarea
+      - name: text_ro
+        type: textarea
+      - name: text_pt
+        type: textarea
+      - name: text_lt
+        type: textarea
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: site_records
+      ownedBy: user
+      description: Issues, instructions, delays and safety observations filed by the agent
+      searchable: true
+      fields:
+      - name: kind
+        type: select
+        options:
+        - issue
+        - instruction
+        - delay
+        - safety
+      - name: title
+        type: text
+      - name: description
+        type: textarea
+      - name: project
+        type: text
+      - name: trade
+        type: text
+      - name: place
+        type: text
+      - name: location
+        type: location
+      - name: photo
+        type: file
+        accept:
+        - jpg
+        - jpeg
+        - png
+        - webp
+        multiple: true
+        capture: true
+        extract: none
+      - name: responsible_email
+        type: email
+      - name: responsible_phone
+        type: text
+      - name: status
+        type: select
+        options:
+        - open
+        - closed
+        default: open
+      - name: scope_change
+        type: select
+        options:
+        - 'yes'
+        - 'no'
+        default: 'no'
+      - name: date
+        type: date
+      - name: members
+        type: array
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: diary_entries
+      ownedBy: instance
+      description: Daily site diaries, one per project and date
+      fields:
+      - name: date
+        type: date
+      - name: title
+        type: text
+      - name: body
+        type: textarea
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: starter
+      price: 49
+      interval: month
+      label: Starter — up to 5 active projects
+      roles:
+      - user
+      - admin
+    - key: pro
+      price: 149
+      interval: month
+      label: Pro — up to 25 active projects
+      roles:
+      - user
+      - admin
+    - key: agency
+      price: 399
+      interval: month
+      label: Agency — unlimited projects
+      roles:
+      - user
+      - admin
+  mobile:
+    appId: com.brickline.site
+    appName: Brickline
+    capabilities:
+    - name: camera
+      reason: To photograph site conditions and issues
+    - name: location
+      reason: To mark where on site an issue is
+    - name: push
+  extensions:
+  - key: voice_notes
+    description: 'Voice notes with transcription are not available yet: audio files cannot be uploaded or read by the agents.
+      Needs an audio file type and a speech-to-text tool.'
+  - key: realtime_chat
+    description: Real-time group messaging per project/trade is approximated by a message form and list; no live chat rooms
+      yet.
+  - key: phone_invites
+    description: Invitations by phone number (SMS/WhatsApp) are not available; members are added by email.
+  - key: reader_language
+    description: Messages carry all five translations as columns; showing only each reader's own language and adding other
+      languages needs custom code.
+  - key: pdf_diary_email
+    description: The diary email is plain text with a link to the printable report; attaching a PDF is not available yet.
+  - key: per_project_price
+    description: Subscription is tiered by number of active projects; exact per-active-project billing is not available.

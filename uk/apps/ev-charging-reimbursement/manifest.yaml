@@ -1,0 +1,929 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: chargely
+  displayName: Chargely
+  tagline:
+    en: One place for EV charging claims, checks and reimbursements.
+  description:
+    en: Drivers log home and public charging with a photo of the charger reading. An AI agent checks each claim against HMRC
+      advisory electric rates and company policy and flags duplicates. Fleet managers approve, and finance gets a monthly
+      payroll export with taxable and non-taxable amounts separated.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0b3d3a'
+      accent: '#12a37f'
+      background: '#f6faf9'
+      foreground: '#14211f'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Charge
+      color: primary
+    - text: ly
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: Company account
+      assignedBy: signup
+    - key: fleet_manager
+      label: Fleet manager
+      assignedBy: derived
+      from: collection:drivers.manager_email
+    - key: driver
+      label: Driver
+      assignedBy: derived
+      from: collection:drivers.driver_email
+    - key: finance
+      label: Finance
+      assignedBy: derived
+      from: collection:drivers.finance_email
+  limits:
+  - action: create:claims
+    per: user
+    max: 100
+    window: month
+    roles:
+    - driver
+  egress:
+    hosts:
+    - www.gov.uk
+    notes: GOV.UK HMRC advisory fuel rates guidance, Open Government Licence v3.0.
+  agents:
+  - key: reconciler
+    role: main
+    description: Checks each new claim against HMRC advisory electric rates and company policy, splits taxable and non-taxable
+      amounts, and flags duplicate or suspicious claims with an explanation.
+    profile:
+      inline:
+        display_name: Chargely reconciler
+        crews:
+        - id: reconciler
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          system_prompt: 'You are a fleet-charging claims auditor for a UK company. You get one new charging claim (home or
+            public). Steps: 1) read the claim and the driver''s other claims with read_my_claims. 2) read the company policy
+            with read_policy. 3) fetch HMRC advisory electric rates with hmrc_rates (GOV.UK advisory fuel rates page) and
+            take the current electricity rate per mile. If the page is unclear, say so and do not invent a rate. 4) If a photo
+            of the charger reading exists, open it with read_upload and compare the reading with the kWh and date claimed.
+            5) Compute: period (YYYY-MM of the charge date), cost_per_mile = amount / miles, advisory_rate, and the split:
+            for HOME charging the reimbursable business amount is business miles x the HMRC advisory electric rate (or the
+            policy home rate per kWh if the policy sets one) and that part is non-taxable; any amount paid above it is taxable.
+            For PUBLIC charging, the amount for business mileage is non-taxable and any private-use part is taxable. 6) Flag
+            duplicates (same vehicle, date and similar kWh or amount, or the same receipt) and suspicious claims (kWh impossible
+            for the vehicle or time, round-number amounts, a reading that does not match the photo, miles that do not fit,
+            amount over policy limit) with flag = duplicate or suspicious (else none) and a clear flag_reason in plain English.
+            7) Save everything with update_claim, setting status to pending. Never approve or reject: only the fleet manager
+            decides. Never invent figures. Finish with a report starting with ''# Claim check - <vehicle> <date>'' with sections
+            ## Result, ## Calculation, ## Flags. Write in English.'
+          max_turns: 14
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+    appTools:
+    - name: read_my_claims
+      description: Read the claims of the current driver
+      action: read
+      collection: claims
+      scope: user
+    - name: update_claim
+      description: Save the check results on the claim
+      action: write
+      collection: claims
+      scope: user
+    - name: read_policy
+      description: Read the company charging policy
+      action: read
+      collection: policy
+      scope: all
+    - name: read_upload
+      description: Read a photo or receipt the driver uploaded
+      action: read_file
+    - name: hmrc_rates
+      description: Fetch the GOV.UK advisory fuel rates guidance (current electric rate per mile)
+      action: http
+      http:
+        method: GET
+        url: https://www.gov.uk/api/content/guidance/advisory-fuel-rates
+        attribution: GOV.UK, Open Government Licence v3.0
+    output: markdown
+  - key: reporter
+    role: helper
+    description: Writes the monthly charging report for a fleet manager.
+    memory: instance
+    writesTo:
+      collection: reports
+    profile:
+      inline:
+        display_name: Chargely monthly reporter
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          system_prompt: 'You write the monthly fleet charging report for a fleet manager, using read_team_claims (only the
+            claims you are allowed to see). Cover the previous calendar month. Start with ''# Fleet charging report - <month>''.
+            Sections: ## Summary (total cost, kWh, miles, cost per mile), ## Home vs public split, ## By vehicle (table with
+            cost and cost per mile), ## Claims approved, rejected, pending, ## Flagged claims and why. Add a ```chart block
+            (bar) for cost per vehicle: {"type":"bar","title":"Cost per vehicle","labels":[...],"series":[{"name":"Cost","values":[...]}],"unit":"GBP"}.
+            Use real figures only; say plainly when data is missing. Under 400 words. English.'
+          max_turns: 8
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+    appTools:
+    - name: read_team_claims
+      description: Read the claims the user is allowed to see
+      action: read
+      collection: claims
+      scope: all
+  - key: payroll
+    role: helper
+    description: Builds the monthly payroll export for finance with taxable and non-taxable amounts separated.
+    writesTo:
+      collection: payroll_exports
+    profile:
+      inline:
+        display_name: Chargely payroll export
+        crews:
+        - id: payroll
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          system_prompt: 'You prepare the monthly payroll export for finance from approved claims (status approved) of the
+            previous calendar month, read with read_payroll_claims. Start with ''# Payroll export - <month>''. Provide a table
+            with one row per driver: driver email, number of claims, home amount, public amount, non-taxable total, taxable
+            total, total to reimburse. Then a CSV block in a fenced code block with the same columns, then ## Notes with anything
+            finance must check (flagged claims still pending, missing data). Totals must add up; never invent figures; do
+            not include rejected or pending claims in the totals. English.'
+          max_turns: 8
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+    appTools:
+    - name: read_payroll_claims
+      description: Read the claims finance is allowed to see
+      action: read
+      collection: claims
+      scope: all
+  inputForm:
+    title:
+      en: Claim
+    fields: []
+  data:
+    collections:
+    - name: drivers
+      description: Drivers added by the fleet manager, with who approves and who handles payroll
+      ownedBy: user
+      fields:
+      - name: driver_email
+        type: email
+        required: true
+        label: Driver email
+      - name: name
+        type: text
+        required: true
+        label: Name
+      - name: manager_email
+        type: email
+        required: true
+        label: Fleet manager email
+      - name: finance_email
+        type: email
+        required: true
+        label: Finance contact email
+      - name: vehicle_reg
+        type: text
+        label: Vehicle registration
+    - name: vehicles
+      description: The company's electric vehicles
+      ownedBy: user
+      fields:
+      - name: reg
+        type: text
+        required: true
+        label: Registration
+      - name: model
+        type: text
+        label: Model
+      - name: battery_kwh
+        type: number
+        label: Battery size (kWh)
+    - name: policy
+      description: Company charging policy
+      ownedBy: user
+      fields:
+      - name: members
+        type: array
+        label: Driver emails covered
+      - name: home_rate_per_kwh
+        type: number
+        label: Home rate (GBP per kWh, optional)
+      - name: max_public_per_kwh
+        type: number
+        label: Maximum public price (GBP per kWh)
+      - name: max_claim
+        type: number
+        label: Maximum single claim (GBP)
+      - name: rules
+        type: textarea
+        label: Other rules
+      access:
+      - role: driver
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: claims
+      description: Charging claims, home and public
+      ownedBy: user
+      retentionDays: 2555
+      fields:
+      - name: driver_email
+        type: email
+        required: true
+        label: Your email
+      - name: manager_email
+        type: email
+        required: true
+        label: Fleet manager email
+        help: Given to you by your fleet manager
+      - name: finance_email
+        type: email
+        required: true
+        label: Finance email
+        help: Given to you by your fleet manager
+      - name: charge_date
+        type: date
+        required: true
+        label: Charge date
+      - name: kind
+        type: select
+        required: true
+        label: Type
+        options:
+        - value: home
+          label: Home charging
+        - value: public
+          label: Public charging
+      - name: vehicle_reg
+        type: text
+        required: true
+        label: Vehicle registration
+      - name: kwh
+        type: number
+        required: true
+        label: kWh charged
+      - name: miles
+        type: number
+        required: true
+        label: Business miles
+      - name: amount
+        type: number
+        required: true
+        label: Amount (GBP)
+      - name: network
+        type: text
+        label: Charging network (public)
+      - name: meter_reading
+        type: number
+        label: Charger reading (kWh)
+      - name: photo
+        type: file
+        accept:
+        - jpg
+        - jpeg
+        - png
+        maxMb: 10
+        capture: true
+        label: Photo of the charger reading
+      - name: receipt
+        type: file
+        accept:
+        - pdf
+        - jpg
+        - jpeg
+        - png
+        maxMb: 10
+        label: Receipt (public charging)
+      - name: status
+        type: select
+        label: Status
+        options:
+        - value: pending
+          label: Pending
+        - value: approved
+          label: Approved
+        - value: rejected
+          label: Rejected
+        - value: paid
+          label: Paid
+      - name: flag
+        type: select
+        label: Flag
+        options:
+        - value: none
+          label: None
+        - value: duplicate
+          label: Possible duplicate
+        - value: suspicious
+          label: Suspicious
+      - name: flag_reason
+        type: textarea
+        label: Why flagged
+      - name: period
+        type: text
+        label: Month
+      - name: advisory_rate
+        type: number
+        label: HMRC advisory rate used
+      - name: cost_per_mile
+        type: number
+        label: Cost per mile
+      - name: non_taxable_amount
+        type: number
+        label: Non-taxable (GBP)
+      - name: taxable_amount
+        type: number
+        label: Taxable (GBP)
+      - name: manager_note
+        type: textarea
+        label: Manager note
+      access:
+      - role: fleet_manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: finance
+        where:
+          finance_email: '{user.email}'
+        can:
+        - read
+    - name: reports
+      description: Monthly fleet reports
+      ownedBy: instance
+    - name: payroll_exports
+      description: Monthly payroll exports
+      ownedBy: instance
+  templates:
+  - key: monthly_report
+    title: Monthly fleet report
+    description: A charging report emailed to you on the first of every month.
+    agent: reporter
+    params:
+    - name: label
+      type: text
+      required: true
+      label: Name
+    goal: Write the monthly fleet charging report for "{instance}". Today is {date}.
+    schedule:
+      cron: 0 7 1 * *
+      userCanChange: false
+    maxPerUser: 2
+    roles:
+    - fleet_manager
+    - admin
+    deliver:
+      to: owner
+      onlyIfNew: true
+  - key: payroll_month
+    title: Monthly payroll export
+    description: Taxable and non-taxable amounts per driver, emailed to finance each month.
+    agent: payroll
+    params:
+    - name: label
+      type: text
+      required: true
+      label: Name
+    goal: Build the payroll export for "{instance}". Today is {date}.
+    schedule:
+      cron: 0 7 2 * *
+      userCanChange: false
+    maxPerUser: 2
+    roles:
+    - finance
+    - admin
+    deliver:
+      to: owner
+      onlyIfNew: true
+  triggers:
+  - key: check_claim_home
+    'on':
+      collection: claims
+      op: insert
+      where:
+        kind: home
+    start:
+      agent: reconciler
+    goal: 'Check the new charging claim. Claim id: {record.id}. Type: {record.kind}. Vehicle: {record.vehicle_reg}. Date:
+      {record.charge_date}. kWh: {record.kwh}. Miles: {record.miles}. Amount GBP: {record.amount}. Reading: {record.meter_reading}.
+      Photo file ids: {record.photo}. Receipt file ids: {record.receipt}. Driver: {record.driver_email}.'
+  - key: check_claim_public
+    'on':
+      collection: claims
+      op: insert
+      where:
+        kind: public
+    start:
+      agent: reconciler
+    goal: 'Check the new charging claim. Claim id: {record.id}. Type: {record.kind}. Vehicle: {record.vehicle_reg}. Date:
+      {record.charge_date}. kWh: {record.kwh}. Miles: {record.miles}. Amount GBP: {record.amount}. Reading: {record.meter_reading}.
+      Photo file ids: {record.photo}. Receipt file ids: {record.receipt}. Driver: {record.driver_email}.'
+  - key: claim_approved
+    'on':
+      collection: claims
+      op: update
+      where:
+        status: approved
+    notify:
+      to:
+      - record.driver_email
+      subject: Your charging claim for {record.vehicle_reg} was approved
+      body: Your claim of GBP {record.amount} dated {record.charge_date} has been approved.
+      link: my_claims
+  - key: claim_rejected
+    'on':
+      collection: claims
+      op: update
+      where:
+        status: rejected
+    notify:
+      to:
+      - record.driver_email
+      subject: Your charging claim for {record.vehicle_reg} was rejected
+      body: 'Your claim of GBP {record.amount} dated {record.charge_date} was rejected. Note from your manager: {record.manager_note}'
+      link: my_claims
+  - key: claim_flagged
+    'on':
+      collection: claims
+      op: update
+      where:
+        flag: suspicious
+    notify:
+      to:
+      - record.manager_email
+      subject: 'Suspicious charging claim: {record.vehicle_reg}'
+      body: 'A claim of GBP {record.amount} on {record.charge_date} was flagged. Reason: {record.flag_reason}'
+      link: review
+  - key: claim_duplicate
+    'on':
+      collection: claims
+      op: update
+      where:
+        flag: duplicate
+    notify:
+      to:
+      - record.manager_email
+      subject: 'Possible duplicate charging claim: {record.vehicle_reg}'
+      body: 'A claim of GBP {record.amount} on {record.charge_date} may be a duplicate. Reason: {record.flag_reason}'
+      link: review
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Chargely
+    sections:
+    - type: hero
+      eyebrow: For fleets with electric vehicles
+      title: EV charging claims, **checked and reimbursed** in one place.
+      text: Drivers log home and public charging with a photo of the charger reading. An AI agent checks every claim against
+        HMRC advisory electric rates and your policy, flags duplicates and explains why. You approve; finance gets a clean
+        monthly export.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+      band: true
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Log
+        text: Drivers record each home or public charge with mileage and a photo of the charger reading.
+        badge: 📷
+      - title: Check
+        text: The agent applies HMRC advisory electric rates and your policy, and splits taxable from non-taxable.
+        badge: 🔎
+      - title: Approve
+        text: Fleet managers review flagged claims with the reason, then approve or reject. Drivers get an email.
+        badge: ✅
+      - title: Export
+        text: Finance receives a monthly payroll export and managers a monthly report by email.
+        badge: 📬
+    - type: cards
+      title: Dashboards
+      items:
+      - title: Cost per vehicle and per mile
+        text: See which vehicles cost the most to run.
+      - title: Home vs public
+        text: Understand where your charging spend goes.
+      - title: Privacy by role
+        text: Drivers see only their own claims.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: About £5 per driver per month
+        text: Paid by card through Stripe.
+    - type: note
+      content: Chargely supports decisions and does not replace tax advice. Check rates and rules with your adviser.
+  - key: submit_claim
+    type: form
+    title: New charging claim
+    collection: claims
+    fields:
+    - driver_email
+    - manager_email
+    - finance_email
+    - charge_date
+    - kind
+    - vehicle_reg
+    - kwh
+    - miles
+    - amount
+    - network
+    - meter_reading
+    - photo
+    - receipt
+    submit:
+      label: Send claim
+      message: Claim received. It is being checked.
+      redirect: my_claims
+    roles:
+    - driver
+  - key: my_claims
+    type: table
+    title: My claims
+    source: collection:claims
+    export: true
+    data:
+      display: table
+      fields:
+      - key: charge_date
+        label: Date
+        format: date
+      - key: kind
+        label: Type
+        format: badge
+      - key: vehicle_reg
+        label: Vehicle
+      - key: amount
+        label: Amount
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      - key: flag
+        label: Flag
+        format: badge
+      - key: flag_reason
+        label: Why
+      sort:
+        field: charge_date
+        dir: desc
+      limit: 100
+    roles:
+    - driver
+  - key: review
+    type: table
+    title: Claims to review
+    source: collection:claims
+    export: true
+    data:
+      display: table
+      fields:
+      - key: charge_date
+        label: Date
+        format: date
+      - key: driver_email
+        label: Driver
+      - key: kind
+        label: Type
+        format: badge
+      - key: vehicle_reg
+        label: Vehicle
+      - key: amount
+        label: Amount
+        format: money
+      - key: non_taxable_amount
+        label: Non-taxable
+        format: money
+      - key: taxable_amount
+        label: Taxable
+        format: money
+      - key: flag
+        label: Flag
+        format: badge
+      - key: flag_reason
+        label: Why
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: charge_date
+        dir: desc
+      limit: 200
+    roles:
+    - fleet_manager
+    - finance
+    - admin
+  - key: decide
+    type: form
+    title: Approve or reject a claim
+    collection: claims
+    fields:
+    - status
+    - manager_note
+    edit: true
+    submit:
+      label: Save decision
+      message: Decision saved. The driver is notified.
+      redirect: review
+    roles:
+    - fleet_manager
+    nav: false
+  - key: dashboard
+    type: page
+    title: Dashboards
+    roles:
+    - fleet_manager
+    - finance
+    - admin
+    sections:
+    - type: data
+      title: Charging cost per vehicle
+      source: collection:claims
+      display: chart
+      chart: bar
+      groupBy:
+        field: vehicle_reg
+        aggs:
+        - key: total
+          agg: sum
+          field: amount
+        - key: miles
+          agg: sum
+          field: miles
+        - key: cost_per_mile
+          agg: avg
+          field: cost_per_mile
+      fields:
+      - key: vehicle_reg
+        label: Vehicle
+      - key: total
+        label: Cost
+    - type: data
+      title: Cost per mile by vehicle
+      source: collection:claims
+      display: table
+      groupBy:
+        field: vehicle_reg
+        aggs:
+        - key: total
+          agg: sum
+          field: amount
+        - key: miles
+          agg: sum
+          field: miles
+        - key: cost_per_mile
+          agg: avg
+          field: cost_per_mile
+      fields:
+      - key: vehicle_reg
+        label: Vehicle
+      - key: total
+        label: Cost
+        format: money
+      - key: miles
+        label: Miles
+        format: number
+      - key: cost_per_mile
+        label: Cost per mile
+        format: money
+    - type: data
+      title: Home versus public charging
+      source: collection:claims
+      display: chart
+      chart: pie
+      groupBy:
+        field: kind
+        aggs:
+        - key: total
+          agg: sum
+          field: amount
+      fields:
+      - key: kind
+        label: Type
+      - key: total
+        label: Cost
+    - type: data
+      title: Monthly cost
+      source: collection:claims
+      display: chart
+      chart: line
+      groupBy:
+        field: charge_date
+        bucket: month
+        aggs:
+        - key: total
+          agg: sum
+          field: amount
+      fields:
+      - key: charge_date
+        label: Month
+      - key: total
+        label: Cost
+  - key: add_driver
+    type: form
+    title: Add a driver
+    collection: drivers
+    submit:
+      label: Add driver
+      message: Driver added. They can sign in with this email.
+      redirect: drivers
+    roles:
+    - user
+    - admin
+  - key: drivers
+    type: table
+    title: Drivers
+    source: collection:drivers
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Name
+      - key: driver_email
+        label: Email
+      - key: vehicle_reg
+        label: Vehicle
+      - key: manager_email
+        label: Manager
+      - key: finance_email
+        label: Finance
+    roles:
+    - user
+    - admin
+  - key: add_vehicle
+    type: form
+    title: Add a vehicle
+    collection: vehicles
+    submit:
+      label: Add vehicle
+      message: Vehicle added.
+      redirect: vehicles
+    roles:
+    - user
+    - admin
+  - key: vehicles
+    type: table
+    title: Vehicles
+    source: collection:vehicles
+    data:
+      display: table
+      fields:
+      - key: reg
+        label: Registration
+      - key: model
+        label: Model
+      - key: battery_kwh
+        label: Battery kWh
+        format: number
+    roles:
+    - user
+    - admin
+  - key: set_policy
+    type: form
+    title: Company policy
+    collection: policy
+    edit: true
+    submit:
+      label: Save policy
+      message: Policy saved.
+    roles:
+    - user
+    - admin
+  - key: monthly
+    type: instances
+    template: monthly_report
+    title: Monthly report
+    roles:
+    - fleet_manager
+    - admin
+  - key: payroll_view
+    type: instances
+    template: payroll_month
+    title: Payroll export
+    roles:
+    - finance
+    - admin
+  - key: reports_list
+    type: table
+    title: Reports
+    source: collection:reports
+    data:
+      display: list
+      fields:
+      - key: title
+        label: Report
+    roles:
+    - fleet_manager
+    - admin
+  - key: account
+    type: account
+    title: Plan
+    roles:
+    - user
+    - admin
+  schedules: []
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: driver_seat
+      price: 5
+      interval: month
+      label: Per driver per month
+      includes:
+      - Claim checks
+      - Dashboards
+      - Monthly reports and payroll export
+  mobile:
+    appId: com.chargely.app
+    capabilities:
+    - name: camera
+      reason:
+        en: To photograph the charger reading and receipts
+    - name: push
+  extensions:
+  - key: stripe_reimbursement_payouts
+    description: 'Paying approved reimbursements to drivers through Stripe is not available yet: Stripe here only collects
+      the app''s subscription. Approved claims and the payroll export are available for payment.'
+  - key: per_driver_seat_billing
+    description: The plan is a flat £5 per month; billing quantity per driver is not available yet.
+  - key: roaming_apis
+    description: Charging-network roaming APIs need partner agreements and keys; public charging is entered by drivers with
+      receipts for now.
+  - key: fuel_cards
+    description: Fuel card import needs provider integrations not available yet.
+  - key: company_charging_cards
+    description: Issuing company charging cards to drivers needs a card-issuing partner and is not available yet.
+  - key: company_isolation
+    description: Claims name the manager and finance emails; the driver form takes them from the driver, so a stricter company
+      link is a later improvement.

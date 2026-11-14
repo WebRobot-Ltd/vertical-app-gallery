@@ -1,0 +1,903 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: paylane
+  displayName: Paylane
+  tagline:
+    en: Fly now, pay monthly.
+  description:
+    en: Search flights and holidays with an AI travel agent, then spread the cost in fixed-fee monthly instalments. Every
+      application is reviewed by a credit officer.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#0b3d5c'
+      accent: '#f26b3a'
+      background: '#f7f9fb'
+      foreground: '#14202e'
+    fonts:
+      body: Inter
+      display: Inter
+    wordmark:
+    - text: Pay
+      color: primary
+    - text: lane
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: credit_officer
+      label: Credit officer
+      assignedBy: invite
+    - key: user
+      label: Customer
+      assignedBy: signup
+  limits:
+  - action: chat
+    per: user
+    max: 60
+    window: day
+    roles:
+    - user
+  agents:
+  - key: trip_finder
+    role: main
+    description: Searches the partner trip catalogue, compares options and saves the customer's chosen trip as a booking.
+    profile:
+      inline:
+        display_name: Paylane trip finder
+        crews:
+        - id: trip_finder
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Paylane''s travel assistant. You help customers find flights, hotels and packages ONLY from
+            the partner catalogue, which you reach with the tool search_trips. Never invent trips, prices or dates. Compare
+            2-4 options in a short table (destination, dates, total price in GBP, type, whether ATOL protected). Explain that
+            the customer can pay the total in monthly instalments for a fixed fee per plan with no interest, but do not quote
+            exact fees or promise approval: credit is subject to status and every application is reviewed by a credit officer.
+            When the customer picks a trip, call select_trip once to save it as a booking (status ''selected''), then tell
+            them to open ''Apply for instalments'' to continue. Be concise and friendly. Reply in English.'
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      Customer: {message}
+
+      Reply in English.'
+    appTools:
+    - name: search_trips
+      description: Search the partner trip catalogue
+      action: search
+      collection: trips
+      scope: all
+    - name: select_trip
+      description: Save the customer's chosen trip as a booking
+      action: append
+      collection: bookings
+      scope: user
+    output: markdown
+  - key: underwriter
+    role: analyst
+    description: Assesses affordability of a new instalment application and asks a credit officer to decide.
+    profile:
+      inline:
+        display_name: Paylane affordability analyst
+        crews:
+        - id: underwriter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare an affordability assessment for a consumer instalment application at a FCA-authorised
+            lender. You only recommend: a credit officer takes every decision. Steps: 1) call get_application to read the
+            newest application with status ''submitted'' and get_booking to read the trip total. 2) Compute from the declared
+            figures: monthly income (annual_income / 12), monthly outgoings, disposable income, the approximate instalment
+            (trip total / number of instalments), and the instalment as a share of disposable income. 3) Credit bureau data
+            is NOT connected in this version: say so plainly, never invent a score, and list what the officer must check with
+            the bureau. Flag anything inconsistent (very short address history, income vs employment, outgoings missing).
+            4) Recommend approve, approve with conditions, or decline, with a risk_rating of low, medium or high; a guideline
+            is that an instalment above 30% of disposable income is high risk, but justify it. 5) Call save_assessment to
+            store recommendation, risk_rating and set status to ''under_review''. 6) Call request_credit_decision with the
+            recommendation, risk_rating and instalments. Write the assessment as Markdown starting with a level-1 title "#
+            Affordability assessment — <applicant name>", then sections ## Figures, ## Concerns, ## Recommendation. This is
+            decision support, not a credit decision.'
+    goalTemplate: 'A new instalment application was submitted by {record.full_name}: annual income {record.annual_income},
+      monthly outgoings {record.monthly_outgoings}, instalments {record.instalments}. Assess it as instructed. Today is {date}.'
+    awaits:
+    - credit_decision
+    appTools:
+    - name: get_application
+      description: Read the customer's instalment applications
+      action: read
+      collection: applications
+      scope: user
+    - name: get_booking
+      description: Read the customer's bookings
+      action: read
+      collection: bookings
+      scope: user
+    - name: save_assessment
+      description: Save the recommendation on the application
+      action: write
+      collection: applications
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.4
+  - key: fulfilment
+    role: helper
+    description: 'After a credit officer decides: records the outcome, and for approved applications creates the plan and
+      the instalment schedule.'
+    profile:
+      inline:
+        display_name: Paylane plan builder
+        crews:
+        - id: fulfilment
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You apply a credit officer''s decision. Read the decision from the goal. Call fetch_application
+            to find the application in status ''under_review''. If the decision is rejected: call update_application_status
+            with status ''declined'' and the officer''s reason in decision_reason, then stop. If approved: call get_booking
+            for the trip total, call plan_terms with total_gbp and instalments to get the fee, the monthly amount and the
+            exact schedule (never compute amounts yourself), call update_application_status with status ''approved'', then
+            create_plan once (booking, application_id, total_gbp, fee_gbp, instalments, monthly_gbp, status ''awaiting_agreement'',
+            agreement_signed false), then create_instalment once for each item of the schedule (plan_id, number, due_date,
+            amount_gbp, label like ''Paylane instalment 2 of 6 — <trip title>'', status ''scheduled''). End with a one-paragraph
+            Markdown summary starting with a level-1 title "# Plan created" or "# Application declined".'
+    goalTemplate: 'Credit officer decision event: {event}. Apply it as instructed. Today is {date}.'
+    appTools:
+    - name: fetch_application
+      description: Read the customer's instalment applications
+      action: read
+      collection: applications
+      scope: user
+    - name: get_booking
+      description: Read the customer's bookings
+      action: read
+      collection: bookings
+      scope: user
+    - name: update_application_status
+      description: Set the outcome on the application
+      action: write
+      collection: applications
+      scope: user
+    - name: plan_terms
+      description: Fixed fee, monthly amount and schedule for a total and a number of instalments
+      action: call
+      slot: plan_terms
+    - name: create_plan
+      description: Create the instalment plan
+      action: append
+      collection: plans
+      scope: user
+    - name: create_instalment
+      description: Create one scheduled instalment
+      action: append
+      collection: instalments
+      scope: user
+    output: markdown
+  slots:
+  - key: plan_terms
+    description: Fixed fee per plan (no interest) and the monthly schedule
+    timeoutMs: 2000
+    example:
+      args:
+        total_gbp: 600
+        instalments: 6
+      userId: u1
+    code: "import datetime\n\ndef main(input):\n    a = input.get('args') or {}\n    total = round(float(a.get('total_gbp',\
+      \ 0)), 2)\n    n = max(1, int(a.get('instalments', 1)))\n    if n <= 3:\n        fee = 15.0\n    elif n <= 6:\n    \
+      \    fee = 25.0\n    elif n <= 9:\n        fee = 35.0\n    else:\n        fee = 45.0\n    grand = round(total + fee,\
+      \ 2)\n    base = round(grand / n, 2)\n    today = datetime.date.today()\n    items = []\n    for i in range(n):\n  \
+      \      m = today.month - 1 + i\n        y = today.year + m // 12\n        mo = m % 12 + 1\n        d = min(today.day,\
+      \ 28)\n        amt = base if i < n - 1 else round(grand - base * (n - 1), 2)\n        items.append({'number': i + 1,\
+      \ 'due_date': datetime.date(y, mo, d).isoformat(), 'amount_gbp': amt})\n    return {'fee_gbp': fee, 'total_payable_gbp':\
+      \ grand, 'monthly_gbp': base, 'schedule': items}\n"
+  inputForm:
+    title: Ask Paylane
+    fields:
+    - name: message
+      type: textarea
+      label: Message
+  approvals:
+  - key: credit_decision
+    title: Credit decision
+    description: A credit officer approves or declines the application and records the reasons.
+    role: credit_officer
+    decidedBy: role
+    fields:
+    - recommendation
+    - risk_rating
+    - instalments
+  triggers:
+  - key: screen_application
+    'on':
+      collection: applications
+      op: insert
+      where:
+        status: submitted
+    start:
+      agent: underwriter
+    goal: 'A new instalment application was submitted by {record.full_name}: annual income {record.annual_income}, monthly
+      outgoings {record.monthly_outgoings}, instalments {record.instalments}. Assess it as instructed. Today is {date}.'
+  - key: decision_approved
+    'on':
+      approval: credit_decision
+      decision: approved
+    start:
+      agent: fulfilment
+    goal: 'Credit officer decision event: approved. Details: {event}. Apply it as instructed.'
+  - key: decision_declined
+    'on':
+      approval: credit_decision
+      decision: rejected
+    start:
+      agent: fulfilment
+    goal: 'Credit officer decision event: rejected. Details: {event}. Apply it as instructed.'
+  - key: approved_email
+    'on':
+      approval: credit_decision
+      decision: approved
+    notify:
+      to: owner
+      subject: Your Paylane application is approved
+      body: 'Good news: your instalment application has been approved. Please open the app to review and sign your credit
+        agreement and pay your first instalment.'
+      link: plans
+  - key: declined_email
+    'on':
+      approval: credit_decision
+      decision: rejected
+    notify:
+      to: owner
+      subject: Update on your Paylane application
+      body: 'We are sorry: we could not approve your instalment application this time. Open the app for the decision and the
+        reasons.'
+      link: applications
+  - key: instalment_reminder
+    'on':
+      date:
+        collection: instalments
+        field: due_date
+        offsetDays: -3
+        hour: 8
+      where:
+        status: scheduled
+    notify:
+      to: owner
+      subject: Instalment due in 3 days
+      body: Your instalment of £{record.amount_gbp} ({record.label}) will be collected on {record.due_date}. Please make sure
+        the funds are available on your card.
+      link: schedule
+  - key: open_case
+    'on':
+      collection: instalments
+      op: update
+      where:
+        status: missed
+    write:
+      collection: collections_cases
+    asUser: false
+  - key: case_alert
+    'on':
+      collection: instalments
+      op: update
+      where:
+        status: missed
+    notify:
+      to:
+      - role:credit_officer
+      - admins
+      subject: 'Missed instalment: collections case opened'
+      body: An instalment of £{record.amount_gbp} due on {record.due_date} was missed. A collections case has been opened.
+      link: cases
+    asUser: false
+  data:
+    collections:
+    - name: trips
+      ownedBy: shared
+      description: Trips from partner airline and hotel inventory, kept by the admins
+      searchable: true
+      fields:
+      - name: title
+        type: text
+        required: true
+      - name: trip_type
+        type: select
+        options:
+        - flight
+        - hotel
+        - package
+      - name: destination
+        type: text
+      - name: origin
+        type: text
+      - name: depart_date
+        type: date
+      - name: return_date
+        type: date
+      - name: partner
+        type: text
+      - name: price_gbp
+        type: number
+        required: true
+      - name: atol_protected
+        type: boolean
+      - name: description
+        type: textarea
+    - name: bookings
+      ownedBy: user
+      description: Trips chosen by the customer
+      fields:
+      - name: trip_title
+        type: text
+      - name: trip_id
+        type: text
+      - name: total_gbp
+        type: number
+      - name: travel_date
+        type: date
+      - name: status
+        type: select
+        options:
+        - selected
+        - pending_credit
+        - confirmed
+        - cancelled
+        default: selected
+      access:
+      - role: credit_officer
+    - name: applications
+      ownedBy: user
+      description: Instalment applications
+      retentionDays: 2190
+      fields:
+      - name: booking
+        type: select
+        required: true
+        optionsFrom: collection:bookings
+        label: Trip
+      - name: full_name
+        type: text
+        required: true
+      - name: date_of_birth
+        type: date
+        required: true
+      - name: address_history
+        type: textarea
+        required: true
+        help: Current and previous addresses covering the last 3 years, with dates
+      - name: employment_status
+        type: select
+        required: true
+        options:
+        - employed
+        - self_employed
+        - retired
+        - student
+        - unemployed
+        - other
+      - name: employer
+        type: text
+      - name: annual_income
+        type: number
+        required: true
+        label: Annual income (GBP, gross)
+      - name: monthly_outgoings
+        type: number
+        required: true
+        label: Monthly outgoings (GBP)
+      - name: instalments
+        type: select
+        required: true
+        label: Number of monthly instalments
+        options:
+        - '3'
+        - '4'
+        - '6'
+        - '9'
+        - '12'
+      - name: consent_credit_check
+        type: boolean
+        required: true
+        label: I agree to a credit and affordability check
+      - name: status
+        type: select
+        options:
+        - submitted
+        - under_review
+        - approved
+        - declined
+        default: submitted
+      - name: recommendation
+        type: textarea
+      - name: risk_rating
+        type: select
+        options:
+        - low
+        - medium
+        - high
+      - name: decision_reason
+        type: textarea
+      access:
+      - role: credit_officer
+        can:
+        - read
+        - write
+    - name: plans
+      ownedBy: user
+      description: Instalment plans
+      fields:
+      - name: booking
+        type: text
+      - name: application_id
+        type: text
+      - name: total_gbp
+        type: number
+      - name: fee_gbp
+        type: number
+      - name: instalments
+        type: number
+      - name: monthly_gbp
+        type: number
+      - name: status
+        type: select
+        options:
+        - awaiting_agreement
+        - active
+        - completed
+        - in_arrears
+        - cancelled
+        default: awaiting_agreement
+      - name: agreement_signed
+        type: boolean
+        label: I have read and accept the credit agreement
+      - name: signed_name
+        type: text
+        label: Type your full name to sign
+      access:
+      - role: credit_officer
+    - name: instalments
+      ownedBy: user
+      description: Scheduled collections of each plan
+      fields:
+      - name: plan_id
+        type: text
+      - name: number
+        type: number
+      - name: label
+        type: text
+      - name: due_date
+        type: date
+      - name: amount_gbp
+        type: number
+      - name: status
+        type: select
+        options:
+        - scheduled
+        - paid
+        - missed
+        default: scheduled
+      access:
+      - role: credit_officer
+        can:
+        - read
+        - write
+    - name: collections_cases
+      ownedBy: org
+      description: Collections cases opened for missed instalments
+      fields:
+      - name: plan_id
+        type: text
+      - name: number
+        type: number
+      - name: due_date
+        type: date
+      - name: amount_gbp
+        type: number
+      - name: case_status
+        type: select
+        options:
+        - open
+        - contacted
+        - arrangement
+        - resolved
+        - escalated
+        default: open
+      - name: notes
+        type: textarea
+      access:
+      - role: credit_officer
+        can:
+        - read
+        - write
+  views:
+  - key: home
+    type: page
+    title: Paylane
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      title: Fly now, **pay monthly**.
+      text: Search flights and holidays with an AI travel agent, pick your trip and spread the cost in fixed-fee monthly instalments.
+        No interest on short plans.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Find your trip
+        text: 'Ask our assistant: it compares partner flights, hotels and packages.'
+      - title: Apply in minutes
+        text: Tell us about your income and outgoings and choose the number of instalments.
+      - title: Decision by a person
+        text: An affordability check supports a credit officer, who approves or declines every application.
+      - title: Sign and pay
+        text: Sign your agreement, pay the first instalment by card and follow your schedule. We remind you 3 days before
+          each collection.
+    - type: cards
+      id: pricing
+      title: Simple pricing
+      items:
+      - title: One fixed fee per plan
+        text: No interest on short terms. You see the fee before you sign.
+      - title: Your data stays yours
+        text: You only see your own bookings and plans.
+    - type: note
+      content: Paylane is authorised and regulated by the Financial Conduct Authority. Flight-inclusive packages are protected
+        under our ATOL licence. Credit is subject to status and affordability. Missing payments may affect your credit file.
+  - key: assistant
+    type: chat
+    title: Find a trip
+    source: agent:trip_finder
+    examples:
+    - Long weekend in Lisbon in March under £500
+    - Family week in Crete in August
+    - Direct flights to New York in May
+    placeholder: Where would you like to go?
+    roles:
+    - user
+    - admin
+  - key: trips
+    type: table
+    title: Browse trips
+    source: collection:trips
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: title
+      - key: destination
+      - key: depart_date
+        format: date
+      - key: return_date
+        format: date
+      - key: price_gbp
+        format: money
+      - key: atol_protected
+      sort:
+        field: depart_date
+        dir: asc
+  - key: bookings
+    type: table
+    title: My bookings
+    source: collection:bookings
+    roles:
+    - user
+    data:
+      display: table
+      fields:
+      - key: trip_title
+      - key: travel_date
+        format: date
+      - key: total_gbp
+        format: money
+      - key: status
+        format: badge
+  - key: apply
+    type: form
+    title: Apply for instalments
+    collection: applications
+    fields:
+    - booking
+    - full_name
+    - date_of_birth
+    - address_history
+    - employment_status
+    - employer
+    - annual_income
+    - monthly_outgoings
+    - instalments
+    - consent_credit_check
+    submit:
+      label: Submit application
+      message: Application received. A credit officer will review it and we will email you the decision.
+      redirect: applications
+    edit: false
+    roles:
+    - user
+  - key: applications
+    type: table
+    title: My applications
+    source: collection:applications
+    roles:
+    - user
+    data:
+      display: table
+      fields:
+      - key: full_name
+      - key: instalments
+      - key: status
+        format: badge
+      - key: decision_reason
+  - key: plans
+    type: table
+    title: My plans
+    source: collection:plans
+    roles:
+    - user
+    data:
+      display: table
+      fields:
+      - key: total_gbp
+        format: money
+      - key: fee_gbp
+        format: money
+      - key: instalments
+      - key: monthly_gbp
+        format: money
+      - key: status
+        format: badge
+  - key: sign
+    type: form
+    title: Sign credit agreement
+    collection: plans
+    fields:
+    - agreement_signed
+    - signed_name
+    edit: true
+    submit:
+      label: Sign agreement
+      message: Agreement signed.
+      redirect: schedule
+    roles:
+    - user
+    nav: false
+  - key: schedule
+    type: table
+    title: My schedule
+    source: collection:instalments
+    roles:
+    - user
+    data:
+      display: table
+      fields:
+      - key: number
+      - key: due_date
+        format: date
+      - key: amount_gbp
+        format: money
+      - key: status
+        format: badge
+      sort:
+        field: due_date
+        dir: asc
+      actions:
+      - type: calendar
+        label: Add to calendar
+        title: label
+        start: due_date
+  - key: queue
+    type: table
+    title: Applications
+    source: collection:applications
+    roles:
+    - credit_officer
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: full_name
+      - key: annual_income
+        format: money
+      - key: monthly_outgoings
+        format: money
+      - key: instalments
+      - key: risk_rating
+        format: badge
+      - key: status
+        format: badge
+      - key: recommendation
+      sort:
+        field: status
+        dir: asc
+  - key: decisions
+    type: approvals
+    title: Credit decisions
+    approvals:
+    - credit_decision
+    roles:
+    - credit_officer
+    - admin
+  - key: cases
+    type: table
+    title: Collections cases
+    source: collection:collections_cases
+    roles:
+    - credit_officer
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: plan_id
+      - key: number
+      - key: due_date
+        format: date
+      - key: amount_gbp
+        format: money
+      - key: case_status
+        format: badge
+      - key: notes
+  - key: loan_book
+    type: page
+    title: Loan book
+    roles:
+    - admin
+    sections:
+    - type: data
+      title: Arrears (GBP)
+      source: collection:instalments
+      display: kpi
+      filters:
+      - field: status
+        op: '='
+        value: missed
+      kpis:
+      - label: Amount in arrears
+        agg: sum
+        field: amount_gbp
+        format: money
+      - label: Missed instalments
+        agg: count
+    - type: data
+      title: Application outcomes
+      source: collection:applications
+      display: bar
+      fields:
+      - key: status
+      - key: count
+      groupBy:
+        field: status
+        aggs: []
+    - type: data
+      title: Revenue from plan fees
+      source: collection:plans
+      display: kpi
+      kpis:
+      - label: Fees booked
+        agg: sum
+        field: fee_gbp
+        format: money
+      - label: Plans
+        agg: count
+      - label: Financed (GBP)
+        agg: sum
+        field: total_gbp
+        format: money
+    - type: data
+      title: Fees by month
+      source: collection:plans
+      display: chart
+      chart: bar
+      fields:
+      - key: date
+      - key: fees
+      groupBy:
+        field: date
+        bucket: month
+        aggs:
+        - key: fees
+          agg: sum
+          field: fee_gbp
+  billing:
+    modes:
+    - free
+  notifications:
+    emailOnRunDone: false
+  mobile:
+    appId: com.paylane.app
+    appName: Paylane
+    capabilities:
+    - name: push
+    - name: calendar
+      reason:
+        en: To add your instalment dates to your calendar
+    - name: microphone
+      reason:
+        en: To search for trips by voice
+  extensions:
+  - key: partner_inventory
+    description: Airline and hotel inventory is partnership-only, so live partner APIs cannot be called from the manifest.
+      The assistant searches the trips catalogue the admins keep (data page, or CSV import). A live feed would need a partner
+      connector.
+  - key: credit_bureau
+    description: 'Credit bureau data is not connected: the affordability agent works from declared income and outgoings and
+      tells the officer what to verify. It needs the bureau''s API host and an org-level API key credential, and a licence
+      gate, before it can use bureau data.'
+  - key: credit_agreement_esign
+    description: Signing is a typed-name acceptance recorded on the plan; a legally compliant e-signature and the pre-contract
+      credit information (SECCI) document are not available yet.
+  - key: card_collection
+    description: Card payment of the first instalment and recurring card collections are not available yet. Instalment statuses
+      (paid, missed) are updated by officers or admins; setting an instalment to missed opens the collections case and alerts
+      staff.

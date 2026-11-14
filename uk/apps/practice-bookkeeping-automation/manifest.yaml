@@ -1,0 +1,1044 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: ledgerlark
+  displayName: Ledgerlark
+  tagline:
+    en: AI-native bookkeeping for accounting firms.
+  description:
+    en: Clients photograph or upload receipts and invoices. An agent extracts the data, matches it to bank transactions and
+      proposes the account code and VAT treatment. Bookkeepers review only what is uncertain, and partners check VAT returns
+      before filing.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#17324d'
+      accent: '#2f9e8f'
+      background: '#f7f9fb'
+      foreground: '#17212b'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Ledger
+      color: primary
+    - text: lark
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Roles
+      href: '#roles'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Partner
+      assignedBy: admin_emails
+    - key: bookkeeper
+      label: Bookkeeper
+      assignedBy: derived
+      from: collection:clients.bookkeeper_email
+    - key: client
+      label: Client
+      assignedBy: derived
+      from: collection:clients.contact_email
+    - key: user
+      label: User
+      assignedBy: signup
+  limits:
+  - action: agent:vat_preparer
+    per: user
+    max: 20
+    window: day
+  agents:
+  - key: vat_preparer
+    role: main
+    description: Prepares a VAT return worksheet for a client and period, for the partner to check.
+    awaits:
+    - vat_check
+    profile:
+      inline:
+        display_name: Ledgerlark VAT preparer
+        crews:
+        - id: vat_preparer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare UK VAT return worksheets (the nine boxes) for a bookkeeping firm''s partner to check.
+            Read the client''s record with clients_lookup, then read the entries of the period with vat_entries. Use only
+            entries with status approved or posted whose doc_date falls in the period. Sum VAT due on sales (box 1), VAT reclaimed
+            on purchases (box 4), net VAT (box 5), net sales (box 6) and net purchases (box 7). Compute boxes 2, 3, 8 and
+            9 only if the entries show EU or NI goods movements; otherwise show 0. Apply the client''s VAT scheme (standard,
+            flat rate, cash accounting) as recorded and say which one you used. List every entry that is uncertain, unapproved
+            or outside the period as items to resolve, and do not include them in the totals. Never invent figures. Say plainly
+            that filing under Making Tax Digital is done by the partner in HMRC-recognised software. Save the worksheet with
+            add_vat_return (status draft), then call request_vat_check. Report structure: a level-1 title "# VAT return —
+            <client> — <period>", then ## Summary, ## Nine boxes (table), ## Items to resolve, ## Checks for the partner,
+            ## Sources. Add a chart block comparing box 1, box 4 and box 5.'
+          mcp_servers: []
+    appTools:
+    - name: clients_lookup
+      description: Read client records
+      action: read
+      collection: clients
+      scope: all
+    - name: vat_entries
+      description: Read the bookkeeping entries
+      action: read
+      collection: entries
+      scope: all
+    - name: add_vat_return
+      description: Save a VAT return worksheet
+      action: append
+      collection: vat_returns
+      scope: all
+    goalTemplate: 'Prepare the VAT return worksheet.
+
+      Client email: {client_email}
+
+      Period: {period_from} to {period_to}
+
+      {?notes}Notes: {notes}{/notes}
+
+      Today is {date}. Write in English.'
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 1.0
+  - key: extractor
+    role: helper
+    description: Reads each uploaded receipt or invoice, matches it to the bank feed and proposes the posting.
+    profile:
+      inline:
+        display_name: Ledgerlark document extractor
+        crews:
+        - id: extractor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a bookkeeping assistant for a UK accounting firm. A client has uploaded a receipt or invoice.
+            Steps: 1) open the file with read_upload using the file id from the task. 2) Extract supplier, document date,
+            currency, net, VAT, gross and the line items. 3) Look up the client with clients_lookup (by client_email) to get
+            the bookkeeper''s email, client name and VAT scheme. 4) Search past entries of this client and supplier with history_search:
+            approved or posted entries, and entries that a bookkeeper corrected, show the account code and VAT treatment to
+            reuse. 5) Search bank_search for a transaction with a matching amount and a date within a few days; record its
+            id in bank_match or leave it empty. 6) Propose an account code and a VAT treatment (standard 20%, reduced 5%,
+            zero, exempt, outside scope, or non-reclaimable such as business entertainment or a car purchase) following HMRC
+            VAT rules and the client''s history. 7) Save one entry with add_entry. Set status to proposed only if every figure
+            is legible, net + VAT = gross, a bank match exists and the history agrees with your proposal; set confidence high.
+            Otherwise set status needs_review, confidence low or medium, and put the reason in reason. Always set client_email,
+            client_name, bookkeeper_email, minutes_saved (about 4 for a clean entry, 2 for one needing review). Never guess
+            an unreadable figure: leave it empty and say why. Never state tax advice as fact: flag it for review. Answer with
+            a short title "# <supplier> — <gross>" and two lines of explanation.'
+          mcp_servers: []
+    appTools:
+    - name: read_upload
+      description: Read a file the client uploaded (photo or PDF, OCR included)
+      action: read_file
+    - name: clients_lookup
+      description: Read client records
+      action: read
+      collection: clients
+      scope: all
+    - name: history_search
+      description: Search past entries
+      action: search
+      collection: entries
+      scope: all
+    - name: bank_search
+      description: Search bank transactions
+      action: search
+      collection: bank_transactions
+      scope: all
+    - name: add_entry
+      description: Save a proposed entry
+      action: append
+      collection: entries
+      scope: all
+    goalTemplate: Process the uploaded document described in the task.
+    output: markdown
+    limits:
+      maxTurns: 14
+      maxBudgetUsd: 0.5
+  - key: month_end
+    role: scheduled
+    description: Each month prepares reconciliation summaries and missing-receipt lists per client.
+    profile:
+      inline:
+        display_name: Ledgerlark month-end
+        crews:
+        - id: month_end
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare the month-end pack for every client of a UK accounting firm. Work out the previous calendar
+            month from today''s date. List clients with clients_read. For each client: read their bank transactions of that
+            month (bank_read) and their entries (entries_read). Count matched and unmatched transactions. A transaction with
+            no matching entry (no entry whose bank_match equals its id) is a missing receipt: list date, payee and amount.
+            Then save one record with add_summary: client_email, client_name, bookkeeper_email, month (YYYY-MM), matched,
+            unmatched, backlog (entries in needs_review), summary (3 to 5 plain sentences) and missing (a short friendly bulleted
+            list of the missing receipts, or "Nothing missing, thank you"). The missing text is emailed to the client as a
+            reminder, so keep it polite and precise. Never invent transactions. Finish with a short markdown title "# Month-end
+            <month>" and a table of clients with unmatched counts.'
+          mcp_servers: []
+    appTools:
+    - name: clients_read
+      description: List client records
+      action: read
+      collection: clients
+      scope: all
+    - name: bank_read
+      description: Read bank transactions
+      action: read
+      collection: bank_transactions
+      scope: all
+    - name: entries_read
+      description: Read bookkeeping entries
+      action: read
+      collection: entries
+      scope: all
+    - name: add_summary
+      description: Save a monthly reconciliation summary
+      action: append
+      collection: monthly_summaries
+      scope: all
+    goalTemplate: Prepare the month-end pack for the previous month. Today is {date}.
+    output: markdown
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 1.5
+  schedules:
+  - agent: month_end
+    cron: 0 6 2 * *
+    action: run
+    owner: app
+    goal: Prepare the month-end reconciliation summaries and missing-receipt lists for all clients, for the previous month.
+  triggers:
+  - key: doc_received
+    description: 'A client uploaded a document: extract and propose the posting'
+    'on':
+      collection: documents
+      op: insert
+    start:
+      agent: extractor
+    asUser: false
+    goal: 'New document. Client email: {record.client_email}. Type: {record.kind}. File id(s): {record.file}. Client note:
+      {record.note}. Extract it, match it to the bank feed and save an entry.'
+  - key: review_alert
+    description: Tell the bookkeeper an entry needs review
+    'on':
+      collection: entries
+      op: insert
+      where:
+        status: needs_review
+    notify:
+      to: record.bookkeeper_email
+      subject: 'Review needed: {record.supplier} for {record.client_name}'
+      body: 'An entry needs your review.
+
+        Supplier: {record.supplier}
+
+        Amount: {record.gross}
+
+        Reason: {record.reason}'
+      link: review
+  - key: client_query
+    description: Email the client the bookkeeper's question
+    'on':
+      collection: entries
+      op: update
+      where:
+        status: client_query
+    notify:
+      to: record.client_email
+      subject: A question from your bookkeeper about {record.supplier}
+      body: 'Hello,
+
+        Your bookkeeper has a question about a document ({record.supplier}, {record.gross}):
+
+
+        {record.question}
+
+
+        Please reply to this email or upload a clearer copy in the app.'
+      link: upload
+  - key: missing_receipts_reminder
+    description: Monthly reminder with the missing receipts
+    'on':
+      collection: monthly_summaries
+      op: insert
+    notify:
+      to: record.client_email
+      subject: 'Your month-end {record.month}: receipts we still need'
+      body: 'Hello {record.client_name},
+
+
+        {record.missing}
+
+
+        You can photograph and upload them in the app.'
+      link: upload
+  approvals:
+  - key: vat_check
+    title: VAT return check
+    description: The partner checks the VAT return worksheet before it is filed under Making Tax Digital in HMRC-recognised
+      software.
+    role: admin
+    decidedBy: role
+    timeoutMinutes: 10080
+    onTimeout: reject
+  inputForm:
+    title: Prepare a VAT return
+    fields:
+    - name: client_email
+      type: email
+      required: true
+      label: Client contact email
+      help: As recorded on the client
+    - name: period_from
+      type: date
+      required: true
+      label: Period start
+    - name: period_to
+      type: date
+      required: true
+      label: Period end
+    - name: notes
+      type: textarea
+      maxLength: 500
+      label: Notes (optional)
+  data:
+    collections:
+    - name: clients
+      ownedBy: org
+      description: Client entities of the firm
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Client entity
+      - name: contact_email
+        type: email
+        required: true
+        label: Client contact email
+      - name: bookkeeper_email
+        type: email
+        required: true
+        label: Assigned bookkeeper email
+      - name: vat_number
+        type: text
+        label: VAT number
+      - name: vat_scheme
+        type: select
+        label: VAT scheme
+        options:
+        - standard
+        - flat_rate
+        - cash_accounting
+        - not_registered
+      - name: ledger
+        type: select
+        label: Ledger
+        options:
+        - xero
+        - quickbooks
+      - name: notes
+        type: textarea
+        label: Notes
+      access:
+      - role: bookkeeper
+        where:
+          bookkeeper_email: '{user.email}'
+        can:
+        - read
+      - role: client
+        where:
+          contact_email: '{user.email}'
+        can:
+        - read
+    - name: documents
+      ownedBy: org
+      description: Receipts and invoices uploaded by clients
+      fields:
+      - name: client_email
+        type: email
+        required: true
+        label: Your email
+      - name: kind
+        type: select
+        required: true
+        label: Type
+        options:
+        - receipt
+        - purchase_invoice
+        - sales_invoice
+        - other
+      - name: file
+        type: file
+        required: true
+        label: Photo or file
+        accept:
+        - pdf
+        - jpg
+        - jpeg
+        - png
+        - webp
+        maxMb: 10
+        multiple: true
+        capture: true
+      - name: note
+        type: textarea
+        maxLength: 400
+        label: Note (optional)
+      access:
+      - role: client
+        where:
+          client_email: '{user.email}'
+        can:
+        - read
+      - role: bookkeeper
+      retentionDays: 2555
+    - name: entries
+      ownedBy: org
+      description: Extracted documents with proposed posting, review status and time saved
+      fields:
+      - name: client_email
+        type: email
+        label: Client email
+      - name: client_name
+        type: text
+        label: Client
+      - name: bookkeeper_email
+        type: email
+        label: Bookkeeper email
+      - name: supplier
+        type: text
+        label: Supplier
+      - name: doc_date
+        type: date
+        label: Date
+      - name: currency
+        type: text
+        label: Currency
+      - name: net
+        type: number
+        label: Net
+      - name: vat
+        type: number
+        label: VAT
+      - name: gross
+        type: number
+        label: Gross
+      - name: line_items
+        type: textarea
+        label: Line items
+      - name: account_code
+        type: text
+        label: Account code
+      - name: vat_code
+        type: text
+        label: VAT treatment
+      - name: bank_match
+        type: text
+        label: Bank transaction
+      - name: confidence
+        type: select
+        label: Confidence
+        options:
+        - high
+        - medium
+        - low
+      - name: status
+        type: select
+        label: Status
+        options:
+        - proposed
+        - needs_review
+        - client_query
+        - approved
+        - posted
+        - rejected
+      - name: reason
+        type: textarea
+        label: Why review
+      - name: question
+        type: textarea
+        label: Question for the client
+      - name: minutes_saved
+        type: number
+        label: Minutes saved
+      access:
+      - role: bookkeeper
+        where:
+          bookkeeper_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: client
+        where:
+          client_email: '{user.email}'
+        can:
+        - read
+    - name: bank_transactions
+      ownedBy: org
+      description: Bank feed lines (imported by the admins until Open Banking is available)
+      fields:
+      - name: client_email
+        type: email
+        label: Client email
+      - name: bookkeeper_email
+        type: email
+        label: Bookkeeper email
+      - name: tx_id
+        type: text
+        label: Transaction id
+      - name: date
+        type: date
+        label: Date
+      - name: payee
+        type: text
+        label: Payee
+      - name: amount
+        type: number
+        label: Amount
+      - name: currency
+        type: text
+        label: Currency
+      access:
+      - role: bookkeeper
+        where:
+          bookkeeper_email: '{user.email}'
+        can:
+        - read
+    - name: monthly_summaries
+      ownedBy: org
+      description: Monthly reconciliation summaries and missing receipts
+      fields:
+      - name: client_email
+        type: email
+        label: Client email
+      - name: client_name
+        type: text
+        label: Client
+      - name: bookkeeper_email
+        type: email
+        label: Bookkeeper email
+      - name: month
+        type: text
+        label: Month
+      - name: matched
+        type: number
+        label: Matched
+      - name: unmatched
+        type: number
+        label: Unmatched
+      - name: backlog
+        type: number
+        label: In review
+      - name: summary
+        type: textarea
+        label: Summary
+      - name: missing
+        type: textarea
+        label: Missing receipts
+      access:
+      - role: bookkeeper
+        where:
+          bookkeeper_email: '{user.email}'
+        can:
+        - read
+      - role: client
+        where:
+          client_email: '{user.email}'
+        can:
+        - read
+    - name: vat_returns
+      ownedBy: org
+      description: VAT return worksheets prepared for the partner
+      fields:
+      - name: client_email
+        type: email
+        label: Client email
+      - name: client_name
+        type: text
+        label: Client
+      - name: bookkeeper_email
+        type: email
+        label: Bookkeeper email
+      - name: period
+        type: text
+        label: Period
+      - name: box1
+        type: number
+        label: Box 1
+      - name: box4
+        type: number
+        label: Box 4
+      - name: box5
+        type: number
+        label: Box 5
+      - name: box6
+        type: number
+        label: Box 6
+      - name: box7
+        type: number
+        label: Box 7
+      - name: status
+        type: select
+        label: Status
+        options:
+        - draft
+        - partner_checked
+        - filed
+      access:
+      - role: bookkeeper
+        where:
+          bookkeeper_email: '{user.email}'
+        can:
+        - read
+  views:
+  - key: home
+    type: page
+    title: Ledgerlark
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: For accounting firms
+      title: Bookkeeping that **reads the receipts** for you.
+      text: Clients photograph or forward receipts and invoices. An agent extracts the data, matches the bank feed and proposes
+        the account code and VAT treatment. Your team only reviews what is uncertain.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Capture
+        text: Clients upload a photo or file in the app.
+        badge: 📷
+      - title: Extract and match
+        text: Supplier, date, amounts, VAT and line items are read and matched to bank transactions.
+        badge: 🔎
+      - title: Review the exceptions
+        text: Bookkeepers accept, correct or email the client a question. Approved entries become the history the agent learns
+          from.
+        badge: ✅
+      - title: Month-end and VAT
+        text: A reconciliation summary, reminders for missing receipts, and VAT returns prepared for the partner to check.
+        badge: 📅
+    - type: cards
+      id: roles
+      title: Roles
+      items:
+      - title: Partner
+        text: Sees every client, backlog and hours saved, and checks VAT returns.
+      - title: Bookkeeper
+        text: Works the review queue of the assigned clients.
+      - title: Client
+        text: Uploads documents and answers questions about their own records.
+    - type: note
+      content: Ledgerlark prepares figures for professional review. VAT returns are checked by the partner and filed through
+        HMRC-recognised software.
+  - key: upload
+    type: form
+    title: Send a receipt or invoice
+    collection: documents
+    fields:
+    - client_email
+    - kind
+    - file
+    - note
+    submit:
+      label: Send
+      message: Thank you, we have received it.
+    roles:
+    - client
+    - bookkeeper
+    - admin
+  - key: my_docs
+    type: table
+    title: Documents
+    source: collection:documents
+    data:
+      display: table
+      fields:
+      - key: client_email
+        label: Client
+      - key: kind
+        label: Type
+      - key: note
+        label: Note
+      limit: 100
+    roles:
+    - client
+    - bookkeeper
+    - admin
+  - key: review
+    type: table
+    title: Review queue
+    source: collection:entries
+    data:
+      display: table
+      fields:
+      - key: client_name
+        label: Client
+      - key: supplier
+        label: Supplier
+      - key: doc_date
+        label: Date
+        format: date
+      - key: gross
+        label: Gross
+        format: money
+      - key: account_code
+        label: Account
+      - key: vat_code
+        label: VAT
+      - key: confidence
+        label: Confidence
+        format: badge
+      - key: reason
+        label: Why
+      filters:
+      - field: status
+        op: '='
+        value: needs_review
+      sort:
+        field: doc_date
+        dir: desc
+      limit: 100
+      empty: Nothing to review.
+    export: true
+    roles:
+    - bookkeeper
+    - admin
+  - key: review_item
+    type: form
+    title: Correct an entry
+    collection: entries
+    fields:
+    - supplier
+    - doc_date
+    - net
+    - vat
+    - gross
+    - account_code
+    - vat_code
+    - status
+    - question
+    edit: true
+    submit:
+      label: Save
+      message: Saved. Approved entries become the agent's history.
+      redirect: review
+    nav: false
+    roles:
+    - bookkeeper
+    - admin
+  - key: all_entries
+    type: table
+    title: All entries
+    source: collection:entries
+    data:
+      display: table
+      fields:
+      - key: client_name
+        label: Client
+      - key: supplier
+        label: Supplier
+      - key: doc_date
+        label: Date
+        format: date
+      - key: gross
+        label: Gross
+        format: money
+      - key: account_code
+        label: Account
+      - key: vat_code
+        label: VAT
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: doc_date
+        dir: desc
+      limit: 200
+    export: true
+    roles:
+    - bookkeeper
+    - admin
+    - client
+  - key: backlog
+    type: page
+    title: Dashboard
+    sections:
+    - type: data
+      id: saved
+      title: Hours saved
+      source: collection:entries
+      display: kpi
+      kpis:
+      - label: Entries processed
+        agg: count
+      - label: Minutes saved
+        agg: sum
+        field: minutes_saved
+        format: number
+    - type: data
+      id: backlog-chart
+      title: Backlog per client
+      intro: Entries waiting for review
+      source: collection:entries
+      display: bar
+      fields:
+      - key: client_name
+      - key: count
+      filters:
+      - field: status
+        op: '='
+        value: needs_review
+      groupBy:
+        field: client_name
+        aggs:
+        - key: minutes
+          agg: sum
+          field: minutes_saved
+      empty: No backlog.
+    - type: data
+      id: saved-by-client
+      title: Time saved per client
+      source: collection:entries
+      display: table
+      fields:
+      - key: client_name
+        label: Client
+      - key: count
+        label: Entries
+      - key: minutes
+        label: Minutes saved
+      groupBy:
+        field: client_name
+        aggs:
+        - key: minutes
+          agg: sum
+          field: minutes_saved
+    roles:
+    - admin
+    - bookkeeper
+  - key: summaries
+    type: table
+    title: Month-end
+    source: collection:monthly_summaries
+    data:
+      display: table
+      fields:
+      - key: month
+        label: Month
+      - key: client_name
+        label: Client
+      - key: matched
+        label: Matched
+      - key: unmatched
+        label: Unmatched
+      - key: backlog
+        label: In review
+      - key: summary
+        label: Summary
+      - key: missing
+        label: Missing receipts
+      sort:
+        field: month
+        dir: desc
+      limit: 100
+    roles:
+    - admin
+    - bookkeeper
+    - client
+  - key: clients
+    type: table
+    title: Clients
+    source: collection:clients
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Client
+      - key: contact_email
+        label: Contact
+      - key: bookkeeper_email
+        label: Bookkeeper
+      - key: vat_scheme
+        label: VAT scheme
+      - key: ledger
+        label: Ledger
+      limit: 200
+    export: true
+    roles:
+    - admin
+    - bookkeeper
+  - key: add_client
+    type: form
+    title: Add a client
+    collection: clients
+    submit:
+      label: Add client
+      message: Client added.
+      redirect: clients
+    roles:
+    - admin
+  - key: new_vat
+    type: new_run
+    title: Prepare VAT return
+    roles:
+    - admin
+  - key: vat_runs
+    type: history
+    title: VAT returns
+    source: run
+    roles:
+    - admin
+  - key: vat_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: vat_list
+    type: table
+    title: VAT worksheets
+    source: collection:vat_returns
+    data:
+      display: table
+      fields:
+      - key: client_name
+        label: Client
+      - key: period
+        label: Period
+      - key: box1
+        label: Box 1
+        format: money
+      - key: box4
+        label: Box 4
+        format: money
+      - key: box5
+        label: Box 5
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      limit: 100
+    roles:
+    - admin
+    - bookkeeper
+  - key: checks
+    type: approvals
+    title: VAT checks
+    approvals:
+    - vat_check
+    roles:
+    - admin
+  - key: account
+    type: account
+    title: Plan
+    roles:
+    - admin
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: entity
+      price: 15
+      interval: month
+      label: Per client entity, per month
+      includes:
+      - Document extraction and matching
+      - Review queue
+      - Month-end reconciliation and reminders
+      - VAT return preparation
+      roles:
+      - admin
+  notifications:
+    emailOnRunDone: true
+  mobile:
+    appId: com.ledgerlark.app
+    appName: Ledgerlark
+    capabilities:
+    - name: camera
+      reason:
+        en: To photograph receipts and invoices
+    - name: push
+  extensions:
+  - key: ledger_oauth
+    description: Connecting each client's Xero or QuickBooks ledger through OAuth is not available yet. Until then, chart
+      of accounts and history are in entries; the bookkeeper posts approved entries to the ledger and sets them to posted.
+  - key: open_banking
+    description: Open Banking bank feeds are not available yet. Bank transactions are imported by the admins on the data page
+      (CSV) into bank_transactions.
+  - key: inbound_email
+    description: Forwarding receipts to a dedicated email address per client is not available yet. Clients upload by photo
+      or file in the app.
+  - key: ledger_posting
+    description: Automatic posting of approved entries to Xero or QuickBooks needs OAuth, which is not available yet.
+  - key: mtd_filing
+    description: Filing under Making Tax Digital is done by the partner in HMRC-recognised software, after approving the worksheet.
+      Direct HMRC submission is not available.
+  - key: per_entity_billing
+    description: The subscription is one plan priced per client entity. Automatic counting of client entities to scale the
+      invoice is not available; the partner sets the quantity.
+  - key: inbound_reply_questions
+    description: Client answers to a bookkeeper's question arrive by reply to the email or as a new upload; they are not threaded
+      in the app.

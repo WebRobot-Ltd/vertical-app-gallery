@@ -1,0 +1,663 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: cookwise
+  displayName: Cookwise
+  tagline:
+    en: From recipes to your supermarket shopping list.
+  description:
+    en: Cookwise plans your week of meals around your household, diet, allergies and budget, then turns the plan into one
+      shopping list with what you already have subtracted.
+  langs:
+  - en
+  defaultLang: en
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f5d3a'
+      accent: '#e8702a'
+      background: '#fbf8f2'
+      foreground: '#1d2a22'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Cook
+      color: primary
+    - text: wise
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Get started
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: editor
+      label: Recipe editor
+      assignedBy: invite
+    - key: user
+      label: User
+      assignedBy: signup
+  limits:
+  - action: agent:planner
+    max: 2
+    window: month
+    roles:
+    - user
+    plans:
+      premium: -1
+  agents:
+  - key: planner
+    role: main
+    description: Recommends recipes, builds the weekly meal plan, handles swaps and asks the shopper to build the list.
+    profile:
+      inline:
+        display_name: Cookwise planner
+        crews:
+        - id: planner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Cookwise, a meal-planning assistant. Always start by calling read_profile (household size,
+            diets, allergies, weekly budget, supermarket) and read_plan (existing meals). Pick recipes ONLY from the catalogue
+            via search_recipes; never invent recipes. Hard rules: never include a recipe whose allergens overlap the user''s
+            allergies or that breaks their diets (vegetarian, vegan, halal, gluten-free); when unsure about an ingredient,
+            exclude the recipe. Keep the total weekly cost (cost_per_portion x portions) within the budget. Vary cuisines
+            and reuse ingredients across meals to cut waste. For mode plan: save each meal with save_meal (fields: week_start,
+            date YYYY-MM-DD, meal lunch|dinner, recipe_title, portions = household size, reason, kcal, protein_g, carbs_g,
+            fat_g, cost, defrost true when an ingredient such as meat or fish needs defrosting the day before the meal is
+            cooked, defrost applies to the date of the meal). For a swap request: find the meal(s) named, choose a replacement
+            that obeys all rules and save it, noting the change. Then, unless the mode is plan only, call ask_shopper to build
+            the shopping list for the week. Finish with a Markdown report: a level-1 title "# Meal plan — week of <date>",
+            then ## The plan (a table: day, meal, recipe, time, cost), ## Why these meals (a short explanation per choice,
+            naming allergens avoided), ## Budget (total vs budget), ## Nutrition (daily kcal and protein, only from recipe
+            data), ## Shopping list (summary). Say plainly when the catalogue lacks enough suitable recipes. Never invent
+            figures or give medical advice.'
+          mcp_servers: []
+    appTools:
+    - name: read_profile
+      description: Read the user's household profile
+      action: read
+      collection: profiles
+      scope: user
+    - name: search_recipes
+      description: Search the recipe catalogue
+      action: search
+      collection: recipes
+      scope: all
+    - name: read_plan
+      description: Read the user's meal plan entries
+      action: read
+      collection: meal_plans
+      scope: user
+    - name: save_meal
+      description: Add a meal to the user's plan
+      action: append
+      collection: meal_plans
+      scope: user
+    delegates:
+    - shopper
+    goalTemplate: 'User: {user}. Today is {date}. Week starting: {week_start}.
+
+      Mode: {mode_label}.
+
+      {?swap_note}Request from the user: {swap_note}{/swap_note}
+
+      Write the report in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 0.8
+  - key: shopper
+    role: helper
+    description: Combines the plan's ingredients into one deduplicated shopping list minus the cupboard.
+    profile:
+      inline:
+        display_name: Cookwise shopper
+        crews:
+        - id: shopper
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You build the user''s shopping list. Call read_plan for the week, then search_recipes to get each
+            recipe''s ingredients. Scale quantities by portions, convert to common units, merge duplicates (e.g. 2 onions
+            + 1 onion = 3 onions) and group by supermarket aisle. Call read_pantry and subtract what the user already has;
+            pantry rows with only a barcode and no name: call off_lookup with path /<barcode>.json (Open Food Facts) to learn
+            the product name, never guess. Call read_list first and do not add items already on it; add each remaining item
+            with save_item (fields: name, quantity, unit, aisle, week_start, checked false, note). Never invent quantities;
+            if an ingredient quantity is missing, add it with a note. Reply with a short summary of the items added and what
+            was already covered by the cupboard.'
+          mcp_servers: []
+    appTools:
+    - name: read_plan
+      description: Read the user's meal plan entries
+      action: read
+      collection: meal_plans
+      scope: user
+    - name: search_recipes
+      description: Search the recipe catalogue
+      action: search
+      collection: recipes
+      scope: all
+    - name: read_pantry
+      description: Read what the user has in the cupboard
+      action: read
+      collection: pantry
+      scope: user
+    - name: read_list
+      description: Read the user's shopping list
+      action: read
+      collection: shopping_items
+      scope: user
+    - name: save_item
+      description: Add an item to the shopping list
+      action: append
+      collection: shopping_items
+      scope: user
+    - name: off_lookup
+      description: Look up a product name from its barcode on Open Food Facts
+      action: http
+      http:
+        method: GET
+        url: https://world.openfoodfacts.org/api/v2/product
+        allowPath: true
+        attribution: Open Food Facts, ODbL
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 0.6
+  inputForm:
+    title: Plan my week
+    fields:
+    - name: week_start
+      type: date
+      required: true
+      label: Week starting
+    - name: mode
+      type: select
+      required: true
+      default: plan_list
+      label: What to do
+      options:
+      - value: plan_list
+        label: Plan the week and build the shopping list
+      - value: plan
+        label: Plan the week only
+      - value: list
+        label: Rebuild the shopping list for the current plan
+      - value: swap
+        label: Swap meals in my plan
+    - name: swap_note
+      type: textarea
+      maxLength: 400
+      label: Swap request (optional)
+      help: e.g. Replace Tuesday dinner with something faster
+  data:
+    collections:
+    - name: profiles
+      ownedBy: user
+      description: Each user's household profile
+      fields:
+      - name: household_size
+        type: number
+        required: true
+        label: Household size
+      - name: diets
+        type: multiselect
+        label: Diet
+        options:
+        - value: vegetarian
+          label: Vegetarian
+        - value: vegan
+          label: Vegan
+        - value: halal
+          label: Halal
+        - value: gluten_free
+          label: Gluten-free
+      - name: allergies
+        type: textarea
+        label: Allergies
+        help: e.g. peanuts, shellfish, sesame
+      - name: weekly_budget
+        type: number
+        label: Budget per week (EUR)
+      - name: supermarket
+        type: select
+        label: Preferred supermarket
+        options:
+        - Tesco
+        - Carrefour
+        - Lidl
+        - Aldi
+        - Other
+    - name: recipes
+      ownedBy: shared
+      description: The recipe catalogue (own or licensed recipes)
+      access:
+      - role: editor
+        can:
+        - read
+        - write
+      searchable: true
+      fields:
+      - name: title
+        type: text
+        required: true
+        label: Title
+      - name: description
+        type: textarea
+        label: Description
+      - name: diets
+        type: multiselect
+        label: Suitable diets
+        options:
+        - vegetarian
+        - vegan
+        - halal
+        - gluten_free
+      - name: allergens
+        type: text
+        label: Allergens (comma separated)
+      - name: minutes
+        type: number
+        label: Minutes
+      - name: portions
+        type: number
+        label: Portions
+      - name: cost_per_portion
+        type: number
+        label: Cost per portion (EUR)
+      - name: kcal
+        type: number
+        label: kcal per portion
+      - name: protein_g
+        type: number
+        label: Protein g per portion
+      - name: ingredients
+        type: textarea
+        required: true
+        label: Ingredients
+        help: 'One per line: quantity unit name'
+      - name: steps
+        type: textarea
+        label: Steps
+      - name: photo
+        type: file
+        accept:
+        - jpg
+        - png
+        - webp
+        maxMb: 5
+        label: Photo
+      - name: source
+        type: text
+        label: Source or licence
+    - name: meal_plans
+      ownedBy: user
+      description: Planned meals, written by the planner agent
+      retentionDays: 365
+      fields:
+      - name: week_start
+        type: date
+        label: Week
+      - name: date
+        type: date
+        label: Date
+      - name: meal
+        type: select
+        label: Meal
+        options:
+        - lunch
+        - dinner
+      - name: recipe_title
+        type: text
+        label: Recipe
+      - name: portions
+        type: number
+        label: Portions
+      - name: reason
+        type: textarea
+        label: Why this meal
+      - name: cost
+        type: number
+        label: Cost (EUR)
+      - name: kcal
+        type: number
+        label: kcal
+      - name: protein_g
+        type: number
+        label: Protein g
+      - name: carbs_g
+        type: number
+        label: Carbs g
+      - name: fat_g
+        type: number
+        label: Fat g
+      - name: defrost
+        type: boolean
+        label: Defrost needed
+    - name: pantry
+      ownedBy: user
+      description: What the user already has at home
+      fields:
+      - name: barcode
+        type: barcode
+        label: Barcode
+      - name: name
+        type: text
+        label: Product
+      - name: quantity
+        type: number
+        label: Quantity
+      - name: unit
+        type: text
+        label: Unit
+    - name: shopping_items
+      ownedBy: user
+      description: The combined shopping list, written by the shopper agent
+      retentionDays: 180
+      fields:
+      - name: name
+        type: text
+        label: Item
+      - name: quantity
+        type: number
+        label: Quantity
+      - name: unit
+        type: text
+        label: Unit
+      - name: aisle
+        type: text
+        label: Aisle
+      - name: week_start
+        type: date
+        label: Week
+      - name: checked
+        type: boolean
+        label: Bought
+      - name: note
+        type: text
+        label: Note
+  views:
+  - key: home
+    type: page
+    title: Cookwise
+    nav: false
+    sections:
+    - type: hero
+      title: Plan the week. **Shop once.**
+      text: Cookwise recommends recipes for your household, avoids your allergens, stays in budget and turns the plan into
+        one shopping list, minus what is already in your cupboard.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      note: Free to start. Premium for unlimited plans and nutrition tracking.
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Tell us about your household
+        text: Size, diet, allergies, weekly budget and your supermarket.
+      - title: Get a weekly plan
+        text: The AI picks recipes from the catalogue and explains each choice. Swap any meal.
+      - title: Scan your cupboard
+        text: Scan barcodes with your phone camera so you do not buy what you already have.
+      - title: Shop with one list
+        text: Ingredients are merged and grouped by aisle.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: Free
+        text: 2 meal plans a month, shopping lists and cupboard scanning.
+      - title: Premium
+        text: Unlimited plans and nutrition tracking, monthly.
+    - type: note
+      content: Cookwise suggests meals but is not medical or dietary advice. Always check labels for allergens. Basket checkout
+        at supermarkets needs retailer partnerships and is not available yet.
+  - key: profile
+    type: form
+    title: My household
+    collection: profiles
+    edit: true
+    submit:
+      label: Save
+      message: Profile saved
+      redirect: new_plan
+    roles:
+    - user
+    - admin
+  - key: new_plan
+    type: new_run
+    title: Plan my week
+    roles:
+    - user
+    - admin
+  - key: plans
+    type: history
+    title: My reports
+    source: run
+    roles:
+    - user
+    - admin
+  - key: plan
+    type: report
+    title: Meal plan
+    source: run
+    printable: true
+    nav: false
+  - key: my_meals
+    type: table
+    title: My meals
+    source: collection:meal_plans
+    columns:
+    - date
+    - meal
+    - recipe_title
+    - portions
+    - cost
+    - reason
+    roles:
+    - user
+    - admin
+  - key: shopping
+    type: table
+    title: Shopping list
+    source: collection:shopping_items
+    columns:
+    - aisle
+    - name
+    - quantity
+    - unit
+    - checked
+    - note
+    export: true
+    roles:
+    - user
+    - admin
+  - key: pantry_add
+    type: form
+    title: Scan to cupboard
+    collection: pantry
+    submit:
+      label: Add
+      message: Added to your cupboard
+    roles:
+    - user
+    - admin
+  - key: pantry
+    type: table
+    title: My cupboard
+    source: collection:pantry
+    columns:
+    - name
+    - barcode
+    - quantity
+    - unit
+    roles:
+    - user
+    - admin
+  - key: nutrition
+    type: table
+    title: Nutrition
+    source: collection:meal_plans
+    data:
+      display: table
+      groupBy:
+        field: date
+        bucket: day
+        aggs:
+        - key: kcal
+          agg: sum
+          field: kcal
+        - key: protein
+          agg: sum
+          field: protein_g
+        - key: carbs
+          agg: sum
+          field: carbs_g
+        - key: fat
+          agg: sum
+          field: fat_g
+    preview:
+      rows: 1
+      unlessPlan: premium
+    roles:
+    - user
+    - admin
+  - key: recipes
+    type: cards
+    title: Recipes
+    source: collection:recipes
+    data:
+      display: cards
+      fields:
+      - key: title
+      - key: minutes
+        label: Minutes
+      - key: cost_per_portion
+        label: Cost per portion
+        format: money
+      - key: diets
+        label: Diets
+      limit: 60
+    roles:
+    - user
+    - editor
+    - admin
+  - key: recipe_edit
+    type: form
+    title: Add a recipe
+    collection: recipes
+    submit:
+      label: Save recipe
+      message: Recipe saved
+    edit: true
+    roles:
+    - editor
+    - admin
+  - key: usage
+    type: admin
+    title: Usage
+    roles:
+    - admin
+  - key: account
+    type: account
+    title: Plan
+    roles:
+    - user
+  triggers:
+  - key: sunday_plan
+    description: Sunday reminder to plan the week
+    'on':
+      cron: 0 17 * * 0
+    notify:
+      to: role:user
+      subject: Plan your week with Cookwise
+      body: 'It''s Sunday: time to plan next week''s meals and build your shopping list.'
+      link: new_plan
+  - key: defrost
+    description: Defrost reminder on the day of the meal
+    'on':
+      date:
+        collection: meal_plans
+        field: date
+        offsetDays: 0
+        hour: 7
+      where:
+        defrost: true
+    notify:
+      to: owner
+      subject: 'Defrost for today: {record.recipe_title}'
+      body: Take the ingredients for {record.recipe_title} out of the freezer now.
+      link: my_meals
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: premium
+      price: 4.99
+      interval: month
+      label: Premium
+      includes:
+      - Unlimited meal plans
+      - Nutrition tracking
+  egress:
+    hosts:
+    - world.openfoodfacts.org
+    notes: Open Food Facts product names from barcodes, ODbL licence with attribution.
+  mobile:
+    appId: com.cookwise.app
+    capabilities:
+    - name: barcode
+      reason:
+        en: To scan the products in your cupboard
+    - name: push
+  extensions:
+  - key: retailer_basket
+    description: 'Turning the shopping list into a basket at the chosen supermarket and checkout needs retailer product data
+      and basket integration, available only through partnership (no public basket APIs). Not available yet: users shop from
+      the list and export it as CSV.'
+  - key: licensed_recipes
+    description: If recipes are licensed from a third party, the editors import them into the catalogue and record the licence
+      in the source field.

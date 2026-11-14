@@ -1,0 +1,1121 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: whiskra
+  displayName: Whiskra
+  tagline:
+    en: Cat food picked for your cat, delivered on your schedule.
+  description:
+    en: Add your cat, get a trial pack and a regular plan proposed and explained by an AI advisor, pay monthly, and pause,
+      skip, swap or cancel in one step.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#2f3e46'
+      accent: '#e07a5f'
+      background: '#fbf7f2'
+      foreground: '#1f262b'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Whis
+      color: primary
+    - text: kra
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Safety
+      href: '#safety'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: Customer
+      assignedBy: signup
+    - key: support
+      label: Customer service
+      assignedBy: invite
+    - key: manager
+      label: Manager
+      assignedBy: invite
+  limits:
+  - action: agent:advisor
+    per: user
+    max: 10
+    window: day
+    roles:
+    - user
+  agents:
+  - key: advisor
+    role: main
+    description: Proposes a trial pack, then a regular plan with recommended quantity, and explains the choice.
+    profile:
+      inline:
+        display_name: Whiskra plan advisor
+        crews:
+        - id: advisor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the feeding advisor of Whiskra, a cat-food subscription. You propose a box for ONE cat,
+            using only the products returned by the tool read_products (never invent products, flavours or nutrition figures).
+            Start with a level-1 title "# <Cat name> — trial pack" or "# <Cat name> — regular plan". Sections with ## headings:
+            Profile (what you understood about the cat), Proposed box (a table: flavour, pouches per box), Recommended quantity
+            (estimate daily energy need from weight, age, neutered status and indoor/outdoor, say the assumptions and the
+            pouches per day and per box for the frequency), Why this choice (link each choice to the cat''s data, preferences
+            and, if given, the feedback on earlier flavours), Next steps (how to start or change the subscription in the app;
+            for a trial, that we will ask how the cat liked each flavour). For the trial pack choose 3-4 different flavours
+            that match the preferences and health notes. For the regular plan, favour what the cat liked and drop what it
+            refused. If the cat has health issues (kidney, urinary, diabetes, allergies, obesity, etc.) say clearly this is
+            not veterinary advice and suggest checking with a vet before changing diet; only propose products marked suitable
+            in the catalogue. Kittens under 12 months and seniors over 10 years need their life-stage products. Mention that
+            quantities are guidelines to adjust to the cat''s body condition. Keep under 400 words. Do not make claims about
+            regulatory approvals.'
+          mcp_servers: []
+    context:
+    - key: cat_name
+      from: collection:cats.name
+    - key: cat_age
+      from: collection:cats.age_years
+    - key: cat_weight
+      from: collection:cats.weight_kg
+    - key: cat_lifestyle
+      from: collection:cats.lifestyle
+    - key: cat_neutered
+      from: collection:cats.neutered
+    - key: cat_health
+      from: collection:cats.health_issues
+    - key: cat_likes
+      from: collection:cats.flavour_likes
+    - key: feedback
+      from: collection:flavour_feedback
+    goalTemplate: 'Cat: {cat_name}, {cat_age} years, {cat_weight} kg, lifestyle: {cat_lifestyle}, neutered: {cat_neutered}.
+
+      {?cat_health}Health issues: {cat_health}{/cat_health}{!cat_health}No health issues reported.{/cat_health}
+
+      Preferred flavours: {cat_likes}.
+
+      Stage: {stage_label}. Delivery frequency: {frequency_label}.
+
+      {?feedback}Feedback on earlier flavours (JSON lines): {feedback}{/feedback}
+
+      Today is {date}. Write the answer in the language with ISO code {lang}.'
+    appTools:
+    - name: read_products
+      description: Read the product catalogue (flavours, pouch size, calories, life stage, suitability)
+      action: read
+      collection: products
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.4
+  - key: feedback_agent
+    role: helper
+    description: Reads a flavour feedback and adjusts the cat's next box.
+    profile:
+      inline:
+        display_name: Whiskra feedback agent
+        crews:
+        - id: feedback_agent
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You adjust a customer''s next box after they rated a flavour. Use list_subscriptions to find the
+            active subscription for that cat and read_products to check the catalogue. Rules: a flavour rated 1-2 or ''never''
+            is removed from the subscription''s flavours; rated 4-5 and ''more'' can be added or increased; 3 changes nothing.
+            Never add a flavour that is not in the catalogue or is unsuitable for the cat''s health notes. Apply the change
+            with update_subscription (only the fields flavours and primary_flavour, never status, dates or payment). Finish
+            with a short Markdown note: a level-1 title "# Next box adjusted — <cat>", what changed and why, in two or three
+            sentences. If nothing needed changing say so.'
+          mcp_servers: []
+    goalTemplate: 'A customer rated a flavour. Cat: {record.cat}. Flavour: {record.flavour}. Rating (1-5): {record.rating}.
+      Next time: {record.reorder}. Comments: {record.comments}. Adjust the next box of this cat''s subscription. Today is
+      {date}.'
+    appTools:
+    - name: list_subscriptions
+      description: Read the customer's subscriptions
+      action: read
+      collection: subscriptions
+      scope: user
+    - name: update_subscription
+      description: Change the flavours of a subscription of the customer
+      action: write
+      collection: subscriptions
+      scope: user
+    - name: read_products
+      description: Read the product catalogue (flavours, pouch size, calories, life stage, suitability)
+      action: read
+      collection: products
+      scope: all
+    output: markdown
+  - key: support_agent
+    role: helper
+    description: Triages complaints and refund requests, drafts the reply, asks the manager for refunds over the threshold.
+    profile:
+      inline:
+        display_name: Whiskra support triage
+        crews:
+        - id: support_agent
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You triage a customer complaint or refund request for customer service. Start with a level-1 title
+            "# Ticket — <subject>". Sections: Summary, Category (damaged, late, wrong item, cat refused food, health concern,
+            billing, other), Suggested reply (polite, plain text, ready to send), Recommended action. Policy: refunds up to
+            30 GBP can be decided by customer service; for a refund request above 30 GBP call request_refund_approval with
+            the ticket details and the amount, and set the ticket status to awaiting_manager with update_ticket. For refunds
+            of 30 GBP or less set the status to in_review. If the customer reports that a cat became ill after eating the
+            food, do not discuss causes: mark the ticket priority urgent, tell customer service to escalate it to a manager
+            and to advise contacting a vet. Never promise a refund yourself and never invent order details.'
+          mcp_servers: []
+    goalTemplate: 'New ticket. Type: {record.type}. Subject: {record.subject}. Order: {record.order_ref}. Amount requested
+      (GBP): {record.refund_amount}. Message: {record.message}. Today is {date}.'
+    appTools:
+    - name: update_ticket
+      description: Set the status and priority of the ticket
+      action: write
+      collection: tickets
+      scope: user
+    awaits:
+    - refund_approval
+    output: markdown
+  inputForm:
+    title:
+      en: Cat food plan
+    fields:
+    - name: cat
+      type: select
+      required: true
+      label:
+        en: Which cat?
+      optionsFrom: collection:cats
+    - name: stage
+      type: select
+      required: true
+      label:
+        en: What do you need?
+      options:
+      - value: trial
+        label:
+          en: A trial pack
+      - value: regular
+        label:
+          en: A regular plan
+    - name: frequency
+      type: select
+      required: true
+      label:
+        en: Delivery frequency
+      options:
+      - value: 2_weeks
+        label:
+          en: Every 2 weeks
+      - value: 4_weeks
+        label:
+          en: Every 4 weeks
+      - value: 6_weeks
+        label:
+          en: Every 6 weeks
+  data:
+    collections:
+    - name: cats
+      description: Each owner's cats
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Name
+      - name: age_years
+        type: number
+        required: true
+        label: Age (years)
+      - name: weight_kg
+        type: number
+        required: true
+        label: Weight (kg)
+      - name: lifestyle
+        type: select
+        required: true
+        label: Indoor or outdoor
+        options:
+        - value: indoor
+          label: Indoor
+        - value: outdoor
+          label: Outdoor
+        - value: both
+          label: Indoor and outdoor
+      - name: neutered
+        type: boolean
+        label: Neutered
+      - name: health_issues
+        type: textarea
+        maxLength: 600
+        label: Health issues or allergies
+      - name: flavour_likes
+        type: multiselect
+        label: Flavour preferences
+        options:
+        - chicken
+        - salmon
+        - turkey
+        - tuna
+        - beef
+        - duck
+        - white_fish
+      access:
+      - role: support
+        can:
+        - read
+    - name: products
+      description: The manufacturers' range, kept by the admins
+      ownedBy: shared
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: flavour
+        type: select
+        options:
+        - chicken
+        - salmon
+        - turkey
+        - tuna
+        - beef
+        - duck
+        - white_fish
+      - name: pouch_grams
+        type: number
+      - name: kcal_per_pouch
+        type: number
+      - name: life_stage
+        type: select
+        options:
+        - kitten
+        - adult
+        - senior
+        - all
+      - name: suitable_for
+        type: text
+        help: e.g. sensitive stomach, urinary care, weight control
+      - name: active
+        type: boolean
+    - name: subscriptions
+      description: One subscription per cat
+      ownedBy: user
+      fields:
+      - name: cat
+        type: select
+        required: true
+        label: Cat
+        optionsFrom: collection:cats
+      - name: stage
+        type: select
+        required: true
+        label: Stage
+        options:
+        - value: trial
+          label: Trial pack
+        - value: regular
+          label: Regular plan
+      - name: box_size
+        type: select
+        required: true
+        label: Box size
+        options:
+        - value: small
+          label: Small
+        - value: standard
+          label: Standard
+        - value: large
+          label: Large
+      - name: frequency
+        type: select
+        required: true
+        label: Frequency
+        options:
+        - value: 2_weeks
+          label: Every 2 weeks
+        - value: 4_weeks
+          label: Every 4 weeks
+        - value: 6_weeks
+          label: Every 6 weeks
+      - name: primary_flavour
+        type: select
+        label: Main flavour
+        options:
+        - chicken
+        - salmon
+        - turkey
+        - tuna
+        - beef
+        - duck
+        - white_fish
+      - name: flavours
+        type: multiselect
+        label: Flavours in the box
+        options:
+        - chicken
+        - salmon
+        - turkey
+        - tuna
+        - beef
+        - duck
+        - white_fish
+      - name: quantity_pouches
+        type: number
+        label: Pouches per box
+      - name: next_dispatch
+        type: date
+        label: Next dispatch
+      - name: skip_next
+        type: boolean
+        label: Skip the next box
+      - name: status
+        type: select
+        label: Status
+        default: active
+        options:
+        - value: active
+          label: Active
+        - value: paused
+          label: Paused
+        - value: cancelled
+          label: Cancelled
+      - name: cancelled_on
+        type: date
+        label: Cancelled on
+      - name: cancel_reason
+        type: textarea
+        maxLength: 400
+        label: Why are you leaving? (optional)
+      - name: owner_email
+        type: email
+        required: true
+        label: Email for reminders
+      - name: referral_code
+        type: text
+        label: Referral code (optional)
+      access:
+      - role: support
+        can:
+        - read
+        - write
+    - name: orders
+      description: Dispatches, written by the fulfilment partner's webhook
+      ownedBy: user
+      fields:
+      - name: order_ref
+        type: text
+      - name: owner_email
+        type: email
+      - name: subscription_ref
+        type: text
+      - name: dispatched_on
+        type: date
+      - name: items
+        type: text
+      - name: tracking
+        type: text
+      - name: status
+        type: text
+      access:
+      - role: support
+        can:
+        - read
+    - name: flavour_feedback
+      description: How each cat liked each flavour
+      ownedBy: user
+      fields:
+      - name: cat
+        type: select
+        required: true
+        label: Cat
+        optionsFrom: collection:cats
+      - name: flavour
+        type: select
+        required: true
+        label: Flavour
+        options:
+        - chicken
+        - salmon
+        - turkey
+        - tuna
+        - beef
+        - duck
+        - white_fish
+      - name: rating
+        type: select
+        required: true
+        label: How much did your cat like it?
+        options:
+        - value: '1'
+          label: 1 - refused
+        - value: '2'
+          label: '2'
+        - value: '3'
+          label: '3'
+        - value: '4'
+          label: '4'
+        - value: '5'
+          label: 5 - loved it
+      - name: reorder
+        type: select
+        label: Next time
+        options:
+        - value: more
+          label: More of it
+        - value: same
+          label: Same
+        - value: less
+          label: Less
+        - value: never
+          label: Never again
+      - name: comments
+        type: textarea
+        maxLength: 400
+        label: Comments
+      access:
+      - role: support
+        can:
+        - read
+    - name: tickets
+      description: Complaints and refund requests
+      ownedBy: user
+      fields:
+      - name: type
+        type: select
+        required: true
+        label: What is it about?
+        options:
+        - value: complaint
+          label: Complaint
+        - value: refund
+          label: Refund request
+        - value: question
+          label: Question
+      - name: subject
+        type: text
+        required: true
+        label: Subject
+      - name: order_ref
+        type: text
+        label: Order reference
+      - name: refund_amount
+        type: number
+        label: Refund requested (GBP)
+      - name: message
+        type: textarea
+        required: true
+        maxLength: 1500
+        label: Tell us what happened
+      - name: photo
+        type: file
+        accept:
+        - jpg
+        - png
+        - pdf
+        maxMb: 10
+        capture: true
+        label: Photo (optional)
+      - name: status
+        type: select
+        label: Status
+        default: open
+        options:
+        - open
+        - in_review
+        - awaiting_manager
+        - resolved
+        - refunded
+        - rejected
+        - urgent
+      - name: resolution
+        type: textarea
+        label: Resolution (staff)
+      access:
+      - role: support
+        can:
+        - read
+        - write
+      - role: manager
+        can:
+        - read
+    - name: referrals
+      description: Referral codes and codes used
+      ownedBy: user
+      fields:
+      - name: my_code
+        type: text
+        required: true
+        label: Your referral code
+        help: Choose a short code to share with friends
+      - name: friend_code
+        type: text
+        label: A friend's code you were given
+      access:
+      - role: support
+        can:
+        - read
+      retentionDays: 1095
+  views:
+  - key: home
+    type: page
+    title: Whiskra
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: Cat food subscription
+      title: Food chosen for **your cat**, at your door.
+      text: Tell us about your cat. Our advisor proposes a trial pack, then a regular plan with the right quantity, and explains
+        why. Pause, skip, swap flavours or cancel online in one step.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Add your cat
+        text: Age, weight, lifestyle, health notes and flavour preferences.
+        badge: 🐱
+      - title: Get a proposal
+        text: A trial pack first, then a regular plan with the recommended quantity.
+        badge: 📋
+      - title: Pay monthly
+        text: Choose your frequency and pay by card. We email you before each dispatch.
+        badge: 📦
+      - title: Tell us how it went
+        text: Rate each flavour after the trial and your next box adapts.
+        badge: ⭐
+    - type: cards
+      title: Refer a friend
+      items:
+      - title: You both save
+        text: 'Share your referral code: you and your friend each get a discount.'
+    - type: note
+      id: safety
+      content: 'Our food is made by our manufacturers and delivered by our fulfilment partner under APHA and DEFRA pet-food
+        rules. Plan proposals are guidelines, not veterinary advice: if your cat has a health condition, check with your vet.'
+  - key: add_cat
+    type: form
+    title: Add a cat
+    collection: cats
+    submit:
+      label: Save cat
+      message: Cat saved. Now ask for a trial pack.
+      redirect: my_cats
+    roles:
+    - user
+  - key: my_cats
+    type: cards
+    title: My cats
+    source: collection:cats
+    data:
+      display: cards
+      fields:
+      - key: name
+      - key: age_years
+        label: Age
+      - key: weight_kg
+        label: Weight (kg)
+      - key: lifestyle
+      - key: flavour_likes
+        label: Likes
+    roles:
+    - user
+  - key: new_plan
+    type: new_run
+    title: Get a plan
+    roles:
+    - user
+  - key: plans
+    type: history
+    title: My proposals
+    source: run
+    roles:
+    - user
+  - key: plan
+    type: report
+    title: Proposal
+    source: run
+    printable: true
+    nav: false
+  - key: start_sub
+    type: form
+    title: Start a subscription
+    collection: subscriptions
+    fields:
+    - cat
+    - stage
+    - box_size
+    - frequency
+    - primary_flavour
+    - flavours
+    - quantity_pouches
+    - next_dispatch
+    - owner_email
+    - referral_code
+    submit:
+      label: Start subscription
+      message: Subscription created. Pay on the Plan page to confirm your box.
+      redirect: my_subs
+    roles:
+    - user
+  - key: my_subs
+    type: table
+    title: My subscriptions
+    source: collection:subscriptions
+    data:
+      display: table
+      fields:
+      - key: cat
+      - key: stage
+        format: badge
+      - key: frequency
+      - key: flavours
+      - key: next_dispatch
+        format: date
+      - key: skip_next
+      - key: status
+        format: badge
+    roles:
+    - user
+  - key: manage_sub
+    type: form
+    title: Pause, skip, swap or cancel
+    collection: subscriptions
+    edit: true
+    fields:
+    - status
+    - skip_next
+    - frequency
+    - primary_flavour
+    - flavours
+    - cancelled_on
+    - cancel_reason
+    submit:
+      label: Save changes
+      message: Done. Your subscription is updated.
+      redirect: my_subs
+    roles:
+    - user
+    nav: false
+  - key: my_orders
+    type: table
+    title: My orders
+    source: collection:orders
+    data:
+      display: table
+      fields:
+      - key: dispatched_on
+        format: date
+      - key: items
+      - key: tracking
+      - key: status
+        format: badge
+      sort:
+        field: dispatched_on
+        dir: desc
+    roles:
+    - user
+  - key: feedback
+    type: form
+    title: How did your cat like it?
+    collection: flavour_feedback
+    submit:
+      label: Send feedback
+      message: Thank you. We will adjust your next box.
+    roles:
+    - user
+  - key: help
+    type: form
+    title: Complaint or refund
+    collection: tickets
+    fields:
+    - type
+    - subject
+    - order_ref
+    - refund_amount
+    - message
+    - photo
+    submit:
+      label: Send to customer service
+      message: We received your request and will reply by email.
+      redirect: my_tickets
+    roles:
+    - user
+  - key: my_tickets
+    type: table
+    title: My requests
+    source: collection:tickets
+    data:
+      display: table
+      fields:
+      - key: subject
+      - key: type
+      - key: status
+        format: badge
+      - key: resolution
+    roles:
+    - user
+  - key: referral
+    type: form
+    title: Referral code
+    collection: referrals
+    submit:
+      label: Save
+      message: Saved. Share your code with friends.
+    roles:
+    - user
+  - key: account
+    type: account
+    title: Plan and payment
+    roles:
+    - user
+  - key: all_subs
+    type: table
+    title: All subscriptions
+    source: collection:subscriptions
+    export: true
+    data:
+      display: table
+      fields:
+      - key: owner_email
+      - key: cat
+      - key: stage
+        format: badge
+      - key: box_size
+      - key: frequency
+      - key: next_dispatch
+        format: date
+      - key: status
+        format: badge
+      sort:
+        field: next_dispatch
+        dir: asc
+    roles:
+    - support
+    - admin
+  - key: all_tickets
+    type: table
+    title: Tickets
+    source: collection:tickets
+    data:
+      display: table
+      fields:
+      - key: subject
+      - key: type
+      - key: refund_amount
+        format: money
+      - key: status
+        format: badge
+    roles:
+    - support
+    - manager
+    - admin
+  - key: handle_ticket
+    type: form
+    title: Handle ticket
+    collection: tickets
+    edit: true
+    fields:
+    - status
+    - resolution
+    submit:
+      label: Save
+      message: Ticket updated.
+    roles:
+    - support
+    - admin
+    nav: false
+  - key: approvals
+    type: approvals
+    title: Refund approvals
+    approvals:
+    - refund_approval
+    roles:
+    - manager
+    - admin
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - admin
+    sections:
+    - type: data
+      title: Active subscribers
+      source: collection:subscriptions
+      display: kpi
+      filters:
+      - field: status
+        op: '='
+        value: active
+      kpis:
+      - label: Active subscribers
+        agg: count
+    - type: data
+      title: Cancelled subscriptions
+      source: collection:subscriptions
+      display: kpi
+      filters:
+      - field: status
+        op: '='
+        value: cancelled
+      kpis:
+      - label: Cancelled in total
+        agg: count
+    - type: data
+      title: Churn by month
+      source: collection:subscriptions
+      display: chart
+      chart: line
+      filters:
+      - field: status
+        op: '='
+        value: cancelled
+      groupBy:
+        field: cancelled_on
+        bucket: month
+        aggs: []
+      fields:
+      - key: cancelled_on
+      - key: count
+    - type: data
+      title: Top flavours
+      source: collection:subscriptions
+      display: bar
+      filters:
+      - field: status
+        op: '='
+        value: active
+      groupBy:
+        field: primary_flavour
+        aggs: []
+      fields:
+      - key: primary_flavour
+      - key: count
+    - type: data
+      title: Forecast volumes for the supplier (pouches per week)
+      source: collection:subscriptions
+      display: chart
+      chart: bar
+      filters:
+      - field: status
+        op: '='
+        value: active
+      groupBy:
+        field: next_dispatch
+        bucket: week
+        aggs:
+        - key: pouches
+          agg: sum
+          field: quantity_pouches
+      fields:
+      - key: next_dispatch
+      - key: pouches
+      - key: count
+  approvals:
+  - key: refund_approval
+    title: Refund over the threshold
+    description: Refunds above 30 GBP need a manager's decision.
+    role: manager
+    fields:
+    - subject
+    - refund_amount
+    - message
+    timeoutMinutes: 4320
+    onTimeout: reject
+  triggers:
+  - key: dispatch_reminder
+    description: Reminder two days before each dispatch
+    'on':
+      date:
+        collection: subscriptions
+        field: next_dispatch
+        offsetDays: -2
+        hour: 8
+      where:
+        status: active
+        skip_next: false
+    notify:
+      to: record.owner_email
+      subject: Your Whiskra box ships soon
+      body: Your next box for {record.cat} is dispatched in two days. You can still pause, skip or swap flavours before then.
+      link: my_subs
+  - key: trial_feedback_request
+    description: A week after the trial box, ask how the cat liked it
+    'on':
+      date:
+        collection: subscriptions
+        field: next_dispatch
+        offsetDays: 7
+        hour: 9
+      where:
+        stage: trial
+        status: active
+    notify:
+      to: record.owner_email
+      subject: How did your cat like the trial pack?
+      body: Tell us how {record.cat} liked each flavour and we will adjust the next box.
+      link: feedback
+  - key: feedback_adjust
+    'on':
+      collection: flavour_feedback
+      op: insert
+    start:
+      agent: feedback_agent
+    goal: 'A customer rated a flavour. Cat: {record.cat}. Flavour: {record.flavour}. Rating: {record.rating}. Next time: {record.reorder}.
+      Comments: {record.comments}. Adjust the next box.'
+    asUser: true
+  - key: ticket_triage
+    'on':
+      collection: tickets
+      op: insert
+      where:
+        status: open
+    start:
+      agent: support_agent
+    goal: 'New ticket. Type: {record.type}. Subject: {record.subject}. Order: {record.order_ref}. Amount requested (GBP):
+      {record.refund_amount}. Message: {record.message}.'
+    asUser: true
+  - key: refund_decided
+    'on':
+      approval: refund_approval
+      decision: any
+    notify:
+      to:
+      - owner
+      - role:support
+      subject: Refund request decision
+      body: 'The manager has decided on the refund request. Status: {decision}. Customer service will confirm the details.'
+      link: my_tickets
+  - key: dispatch_hook
+    description: The fulfilment partner posts each dispatch
+    'on':
+      webhook: true
+    write:
+      collection: orders
+      fields:
+        order_ref: order.id
+        owner_email: order.email
+        subscription_ref: order.subscription
+        dispatched_on: order.date
+        items: order.items
+        tracking: order.tracking
+        status: order.status
+      keyBy: order_ref
+  notifications:
+    emailOnRunDone: true
+  exports:
+  - path: /api/supplier-forecast
+    source: collection:subscriptions
+    format: csv
+    access: signed_url
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: gbp
+    packs:
+    - key: trial_pack
+      price: 9.99
+      credits: 0
+      label: Trial pack
+    plans:
+    - key: box_small
+      price: 24
+      interval: month
+      label: Small box
+      includes:
+      - Monthly box for one cat, small size
+    - key: box_standard
+      price: 39
+      interval: month
+      label: Standard box
+      includes:
+      - Monthly box for one cat, standard size
+    - key: box_large
+      price: 54
+      interval: month
+      label: Large box
+      includes:
+      - Monthly box for one cat, large size
+  mobile:
+    appId: com.whiskra.app
+    appName: Whiskra
+    capabilities:
+    - name: push
+    - name: camera
+      reason:
+        en: To photograph a damaged or wrong item for a complaint
+  extensions:
+  - key: referral_discount
+    description: 'Applying the referral discount to both customers'' Stripe subscriptions is not expressible yet: codes are
+      stored and visible to customer service, who apply the discount.'
+  - key: weekly_csv_delivery
+    description: The supplier forecast is served as a CSV through a signed URL (and per-view CSV export); emailing it to the
+      supplier every week is not available yet.
+  - key: dispatch_cycle
+    description: Advancing next_dispatch after each dispatch, charging the card and creating the Stripe subscription at sign-up
+      are handled by the payment and fulfilment integration, not by this manifest. The trial pack is a one-off pack.
+  - key: refund_payout
+    description: The refund itself is issued manually in Stripe after the manager approves.

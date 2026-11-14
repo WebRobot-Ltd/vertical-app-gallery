@@ -1,0 +1,749 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: hearth
+  displayName: Hearth
+  tagline:
+    en: AI-moderated consumer interviews, from guide to approved insight.
+  description:
+    en: Brands set up a study, an AI moderator interviews respondents in English, French, German or Spanish, and an agent
+      synthesises themes, quotes, personas and recommendations. Researchers approve before stakeholders see anything.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#3b2a20'
+      accent: '#d9622b'
+      background: '#fbf6f0'
+      foreground: '#231a14'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Hear
+      color: primary
+    - text: th
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Privacy
+      href: '#privacy'
+    cta:
+      label: Start a study
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: researcher
+      label: Researcher
+      assignedBy: signup
+    - key: stakeholder
+      label: Stakeholder viewer
+      assignedBy: invite
+    - key: respondent
+      label: Respondent
+      assignedBy: derived
+      from: collection:invites.email
+  limits:
+  - action: chat
+    per: user
+    max: 200
+    window: day
+  - action: agent:synthesiser
+    per: user
+    max: 10
+    window: day
+    roles:
+    - researcher
+  agents:
+  - key: synthesiser
+    role: main
+    description: Synthesises a study's interviews into a report for researcher approval.
+    awaits:
+    - report_review
+    writesTo:
+      collection: reports
+      parse: markdown_sections
+    output: markdown
+    goalTemplate: 'Study id: {study}
+
+      Today is {date}. Read the study and all its transcripts with the tools, then write the report in English (quotes stay
+      in the original language with an English translation).'
+    appTools:
+    - name: read_studies
+      description: Read the researcher's studies
+      action: read
+      collection: studies
+      scope: user
+    - name: read_transcripts
+      description: Read interview transcripts the researcher may see
+      action: search
+      collection: transcripts
+      scope: user
+    - name: save_report
+      description: Save the draft report
+      action: write
+      collection: reports
+      scope: user
+    profile:
+      inline:
+        display_name: Hearth synthesiser
+        crews:
+        - id: synth
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a senior qualitative researcher. Use read_studies for the objectives, then read_transcripts
+            for every interview of the study. Write a report starting with a level-1 title ''# <Study> — Insight report''.
+            Sections (## headings): Executive summary, Themes (each with a strength indicator: how many respondents), Quotes
+            (verbatim, each with a source reference: transcript id and respondent pseudonym, never names), Personas (2-4,
+            grounded in the data), Recommendations (tied to the study objectives), Limitations (sample size, language, gaps).
+            Never invent quotes or figures; say plainly when evidence is thin. Add a ```chart block for theme prevalence when
+            there are enough interviews. Then call save_report once with fields study, title, body, status ''draft'', members
+            (copy the study''s members list) and request the researcher''s review with request_report_review. Never use respondents''
+            names or contact details.'
+  - key: publisher
+    role: helper
+    description: Marks an approved report as shared with stakeholders.
+    goalTemplate: 'The report review was decided: {event}. If approved, set the report''s status to approved with the tool.'
+    appTools:
+    - name: set_report_status
+      description: Update a report's status
+      action: write
+      collection: reports
+      scope: user
+    profile:
+      inline:
+        display_name: Hearth publisher
+        crews:
+        - id: publisher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You only change the status of the report named in the event to 'approved' when the decision is approved.
+            Do nothing else.
+  - key: refiner
+    role: helper
+    description: Helps researchers sharpen the discussion guide and publishes the respondent-facing version.
+    appTools:
+    - name: read_my_studies
+      description: Read the researcher's studies
+      action: read
+      collection: studies
+      scope: user
+    - name: update_study
+      description: Save an improved guide on a study
+      action: write
+      collection: studies
+      scope: user
+    - name: publish_fieldwork
+      description: Publish the questions the moderator will use
+      action: write
+      collection: fieldwork
+      scope: all
+    goalTemplate: 'History:
+
+      {history}
+
+      Researcher: {message}'
+    profile:
+      inline:
+        display_name: Hearth guide coach
+        crews:
+        - id: refiner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You coach insight managers on discussion guides. Read the study with read_my_studies. Check that
+            each question serves an objective, is open, neutral and non-leading, flows from broad to specific, fits the time,
+            and that the screener matches the audience. Propose a rewritten guide with probes. Save only when the researcher
+            agrees (update_study). On request publish the respondent-facing guide with publish_fieldwork: fields study_code
+            (a short unique code), title, questions, languages, researcher_email, members. Never include personal data.'
+    memory: user
+  - key: moderator
+    role: helper
+    description: Interviews a respondent in text, following the guide and probing.
+    appTools:
+    - name: read_guide
+      description: Read the published guide by study code
+      action: search
+      collection: fieldwork
+      scope: all
+    - name: save_transcript
+      description: Append the interview turns to the transcript
+      action: append
+      collection: transcripts
+      scope: user
+    - name: set_enrolment_status
+      description: Mark the respondent's enrolment started or completed
+      action: write
+      collection: enrolments
+      scope: user
+    context:
+    - key: study_code
+      from: collection:enrolments.study_code
+    - key: interview_lang
+      from: collection:enrolments.language
+    goalTemplate: 'Study code: {study_code}. Interview language: {interview_lang}.
+
+      Conversation so far:
+
+      {history}
+
+      Respondent: {message}'
+    profile:
+      inline:
+        display_name: Hearth moderator
+        crews:
+        - id: moderator
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You are a warm, neutral research moderator. Fetch the guide with read_guide using the study code.
+            Speak only in the interview language. Ask one question at a time, follow the guide, probe with 'tell me more'
+            and 'why', never lead, never give opinions or advice. Remind respondents they may skip any question or stop at
+            any time. Do not ask for names, contact details or sensitive data; if given, do not repeat it. Mark the enrolment
+            started on the first turn and completed at the end with set_enrolment_status. After every exchange call save_transcript
+            with study_code, speaker turns, language, and members copied from the guide. Thank them at the end.
+  - key: assistant
+    role: helper
+    description: RAG assistant over all past studies of the brand.
+    appTools:
+    - name: search_reports
+      description: Search reports the user may see
+      action: search
+      collection: reports
+      scope: user
+    - name: search_transcripts
+      description: Search transcripts the user may see
+      action: search
+      collection: transcripts
+      scope: user
+    - name: search_studies
+      description: Search the user's studies
+      action: search
+      collection: studies
+      scope: user
+    goalTemplate: 'History:
+
+      {history}
+
+      Question: {message}'
+    profile:
+      inline:
+        display_name: Hearth research assistant
+        crews:
+        - id: assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You answer researchers' questions across the brand's past studies. Always search first, answer only
+            from what the tools return, cite the study, report or transcript id for each claim, and say when the evidence
+            does not cover the question. Stakeholders only see approved reports; never reveal respondent identities.
+  inputForm:
+    title: Synthesise a study
+    fields:
+    - name: study
+      type: select
+      required: true
+      label: Study
+      optionsFrom: collection:studies
+  data:
+    collections:
+    - name: studies
+      ownedBy: user
+      description: A brand's studies
+      fields:
+      - name: title
+        type: text
+        required: true
+      - name: objectives
+        type: textarea
+        required: true
+      - name: audience
+        type: textarea
+      - name: screener
+        type: textarea
+        label: Screener questions
+      - name: guide
+        type: textarea
+        label: Discussion guide
+      - name: languages
+        type: multiselect
+        options:
+        - English
+        - French
+        - German
+        - Spanish
+      - name: members
+        type: multiselect
+        label: Stakeholder emails
+        help: Emails of stakeholders who may see approved reports
+      access:
+      - role: researcher
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: fieldwork
+      ownedBy: app
+      description: Respondent-facing guide per study code (questions only)
+      fields:
+      - name: study_code
+        type: text
+      - name: title
+        type: text
+      - name: questions
+        type: textarea
+      - name: languages
+        type: text
+      - name: researcher_email
+        type: email
+      - name: members
+        type: multiselect
+    - name: invites
+      ownedBy: user
+      description: Respondents the brand invites from its own customer list
+      fields:
+      - name: email
+        type: email
+        required: true
+      - name: study_code
+        type: text
+        required: true
+      - name: language
+        type: select
+        options:
+        - en
+        - fr
+        - de
+        - es
+      - name: invited_on
+        type: date
+      retentionDays: 180
+    - name: enrolments
+      ownedBy: user
+      description: A respondent's consent and progress
+      fields:
+      - name: study_code
+        type: text
+        required: true
+      - name: language
+        type: select
+        required: true
+        options:
+        - en
+        - fr
+        - de
+        - es
+      - name: email
+        type: email
+        required: true
+      - name: consent
+        type: boolean
+        required: true
+        label: I consent to take part, to the interview being recorded as text and to my answers being used for this research
+      - name: consented_on
+        type: date
+      - name: status
+        type: select
+        options:
+        - started
+        - completed
+        default: started
+      retentionDays: 365
+    - name: transcripts
+      ownedBy: user
+      description: Interview transcripts, pseudonymised
+      fields:
+      - name: study_code
+        type: text
+      - name: pseudonym
+        type: text
+      - name: language
+        type: text
+      - name: turns
+        type: textarea
+      - name: members
+        type: multiselect
+      retentionDays: 730
+      access:
+      - role: researcher
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: reports
+      ownedBy: user
+      description: Synthesis reports; stakeholders see approved ones only
+      fields:
+      - name: study
+        type: text
+      - name: title
+        type: text
+      - name: body
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - draft
+        - approved
+      - name: members
+        type: multiselect
+      access:
+      - role: stakeholder
+        where:
+          members: '{user.email}'
+          status: approved
+        can:
+        - read
+      - role: researcher
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: deletion_requests
+      ownedBy: org
+      description: Respondent requests to delete their data
+      fields:
+      - name: email
+        type: email
+        required: true
+      - name: study_code
+        type: text
+      - name: details
+        type: textarea
+  views:
+  - key: home
+    type: page
+    nav: false
+    sections:
+    - type: hero
+      title: Interviews at scale, **moderated by AI**.
+      text: Create a study, let an AI moderator interview your customers in English, French, German or Spanish, and get approved
+        themes, quotes, personas and recommendations.
+      actions:
+      - label: Start a study
+        href: /login
+        style: primary
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Design
+        text: Objectives, audience, screener and a guide refined with an agent.
+      - title: Interview
+        text: Respondents from your own customer list are invited by email and interviewed by the AI moderator.
+      - title: Synthesise
+        text: Themes, quotes linked to transcripts, personas and recommendations.
+      - title: Approve and share
+        text: You approve the report before stakeholders see it.
+    - type: cards
+      id: privacy
+      title: Privacy by design
+      items:
+      - title: Consent first
+        text: Respondents consent before the interview and can ask for deletion at any time.
+      - title: Minimal data
+        text: Transcripts are pseudonymised and deleted after two years.
+      - title: Brand isolation
+        text: Each brand sees only its own studies.
+    - type: note
+      content: Interviews are in English, French, German and Spanish; the interface is in English.
+  - key: new_study
+    type: form
+    title: New study
+    collection: studies
+    roles:
+    - researcher
+    - admin
+    submit:
+      label: Save study
+      message: Study saved
+      redirect: studies
+  - key: studies
+    type: table
+    title: My studies
+    source: collection:studies
+    roles:
+    - researcher
+    - admin
+    data:
+      display: table
+      fields:
+      - key: title
+      - key: languages
+      - key: objectives
+    export: true
+  - key: guide_coach
+    type: chat
+    title: Guide coach
+    source: agent:refiner
+    roles:
+    - researcher
+    examples:
+    - Review my discussion guide
+    - Publish the respondent guide
+    placeholder: Ask for feedback on your guide
+  - key: invite
+    type: form
+    title: Invite respondents
+    collection: invites
+    roles:
+    - researcher
+    submit:
+      label: Send invite
+      message: Invitation sent
+  - key: invited
+    type: table
+    title: Invitations
+    source: collection:invites
+    roles:
+    - researcher
+    data:
+      display: table
+      fields:
+      - key: email
+      - key: study_code
+      - key: invited_on
+        format: date
+  - key: enrol
+    type: form
+    title: Consent to take part
+    collection: enrolments
+    roles:
+    - respondent
+    - researcher
+    nav: false
+    submit:
+      label: I agree, start
+      message: Thank you. Open the interview.
+      redirect: interview
+  - key: interview
+    type: chat
+    title: Interview
+    source: agent:moderator
+    roles:
+    - respondent
+    - researcher
+    nav: false
+    placeholder: Type your answer
+  - key: deletion
+    type: form
+    title: Delete my data
+    collection: deletion_requests
+    submit:
+      label: Request deletion
+      message: We received your request
+  - key: synthesise
+    type: new_run
+    title: Synthesise a study
+    roles:
+    - researcher
+  - key: runs
+    type: history
+    title: My runs
+    source: run
+    roles:
+    - researcher
+  - key: report_view
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: approvals
+    type: approvals
+    title: Report approvals
+    roles:
+    - researcher
+  - key: reports
+    type: table
+    title: Reports
+    source: collection:reports
+    roles:
+    - researcher
+    - stakeholder
+    - admin
+    data:
+      display: table
+      fields:
+      - key: title
+      - key: status
+        format: badge
+    export: true
+  - key: ask
+    type: chat
+    title: Ask across studies
+    source: agent:assistant
+    roles:
+    - researcher
+    - stakeholder
+    examples:
+    - What did respondents say about price across all studies?
+    placeholder: Ask about past research
+  - key: account
+    type: account
+    title: Billing
+    roles:
+    - researcher
+  approvals:
+  - key: report_review
+    title: Approve report for stakeholders
+    decidedBy: requester
+    fields:
+    - title
+  triggers:
+  - key: report_decided
+    'on':
+      approval: report_review
+      decision: approved
+    start:
+      agent: publisher
+    goal: 'Approval decided: {event}'
+  - key: invite_email
+    'on':
+      collection: invites
+      op: insert
+    notify:
+      to:
+      - record.email
+      subject: You are invited to share your views
+      body: You have been invited to a research interview (code {record.study_code}). Sign in, give your consent and start
+        whenever you like. You can stop at any time.
+      link: enrol
+  - key: finish_reminder
+    'on':
+      date:
+        collection: enrolments
+        field: consented_on
+        offsetDays: 2
+        hour: 9
+    notify:
+      to:
+      - record.email
+      subject: Please finish your interview
+      body: You started an interview but have not finished. It only takes a few more minutes; you can continue where you stopped.
+      link: interview
+  - key: deletion_alert
+    'on':
+      collection: deletion_requests
+      op: insert
+    notify:
+      to:
+      - admins
+      subject: Deletion request
+      body: 'A respondent asked to delete their data: {record.email}.'
+  billing:
+    modes:
+    - credits
+    - subscription
+    currency: gbp
+    signupCredits: 0
+    costs:
+      agent:synthesiser:
+        estimate: 300
+        metered: true
+    metering:
+      creditEur: 1
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    packs:
+    - key: study
+      credits: 2000
+      price: 2000
+      label: One study (from £2,000)
+    plans:
+    - key: annual
+      price: 18000
+      interval: year
+      label: Annual licence
+      credits: 30000
+      creditsReset: never
+      roles:
+      - researcher
+  notifications:
+    emailOnRunDone: true
+  extensions:
+  - key: voice_video_interviews
+    description: Voice and video interviews with recording and transcription are not available yet; only text chat works (the
+      fallback). Needs a realtime voice/video channel and a transcription service.
+  - key: panel_recruitment
+    description: Third-party panel recruitment and respondent incentives are not available. Panel use needs a signed licence;
+      for now respondents come only from the brand's own lists via email invites.
+  - key: respondent_roles
+    description: Respondents sign in by email link and get the signup role as well; tokenised respondent links without an
+      account are not available. Screener scoring is manual.

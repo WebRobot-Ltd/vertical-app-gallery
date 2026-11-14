@@ -1,0 +1,898 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: corpuscraft
+  displayName: Corpuscraft
+  tagline:
+    en: See how AI assistants talk about your brand, and fix what they get wrong.
+  description:
+    en: Corpuscraft tracks your brand's visibility and factual accuracy in AI assistant answers, flags wrong or outdated claims,
+      and helps you produce sourced content that improves it. Nothing is published automatically.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#1d2b53'
+      accent: '#e4572e'
+      background: '#f7f8fb'
+      foreground: '#161a24'
+    fonts:
+      body: Inter
+      display: Space Grotesk
+    wordmark:
+    - text: Corpus
+      color: primary
+    - text: craft
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      label: Brand or agency
+      assignedBy: signup
+  limits:
+  - action: create:tracked_questions
+    max: 25
+    window: total
+    plans:
+      growth: 100
+      scale: 300
+  - action: agent:writer
+    per: user
+    max: 30
+    window: day
+    roles:
+    - user
+  egress:
+    hosts:
+    - api.openai.com
+    - api.anthropic.com
+    - generativelanguage.googleapis.com
+    - api.perplexity.ai
+    notes: Official model APIs, called with the app owner's own API keys under each provider's commercial terms. Used only
+      to ask the brand's target questions and record the answers.
+  agents:
+  - key: monitor
+    role: scheduled
+    description: Asks the target questions to several language models through their official APIs and records mentions, positioning,
+      accuracy and sources.
+    memory: instance
+    profile:
+      inline:
+        display_name: Corpuscraft monitor
+        crews:
+        - id: monitor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You monitor how AI assistants talk about one brand. Steps: 1) call read_brands and keep the record
+            whose name matches the brand: products, competitors, markets and the facts sheet are the ground truth. 2) call
+            read_questions and keep the questions of that brand. 3) For each question, ask each model with its tool (query_openai
+            with model gpt-5, query_anthropic with model claude-sonnet-5-5, query_gemini, query_perplexity). Send the question
+            exactly as a user would write it, in the question''s language, with no hint about the brand. Request bodies: OpenAI
+            and Perplexity {"model":"…","messages":[{"role":"user","content":"…"}]} (Perplexity model sonar-pro); Anthropic
+            {"model":"claude-sonnet-5-5","max_tokens":1024,"messages":[…]}; Gemini {"contents":[{"parts":[{"text":"…"}]}]}.
+            If a tool reports a missing key or error, skip that model and say so. 4) For each answer call save_probe with
+            fields brand, date, model, question, mentioned (1 or 0), position (rank among brands named, 0 if absent), visibility
+            (0-100: absent 0, listed late 30, listed early 60, recommended first 100), accuracy (0-100 share of claims about
+            the brand that match the facts sheet; 100 if none are made), sources (cited URLs only, never invented), excerpt.
+            5) For every claim about the brand that is wrong, outdated or unverifiable against the facts sheet call save_claim
+            with brand, date, model, question, claim, issue (wrong|outdated|unverifiable), correct_fact, severity (low|medium|high),
+            status "open". 6) Call read_drafts and note pieces with status published: compare this week''s answers with your
+            memory to say whether answers changed after publication. Finally call remember with the key figures of this run.
+            Output a level-1 "# <Brand> — AI visibility, week of <date>" report with sections ## Visibility by model, ## Accuracy,
+            ## New inaccuracies, ## Changes since last run, ## Impact of published content, then a final fenced JSON object
+            {"brand":…,"date":…,"score":<avg visibility>,"accuracy":<avg accuracy>,"inaccuracies":<new claims>,"summary":<2
+            sentences>}. Never invent answers or figures.'
+    output: markdown+json
+    writesTo:
+      collection: visibility_runs
+      parse: json_last
+    appTools:
+    - name: read_brands
+      description: Read the user's brand setups (facts sheet, products, competitors, markets)
+      action: read
+      collection: brands
+      scope: user
+    - name: read_questions
+      description: Read the user's tracked questions
+      action: read
+      collection: tracked_questions
+      scope: user
+    - name: read_drafts
+      description: Read the content drafts and their status
+      action: read
+      collection: drafts
+      scope: user
+    - name: save_probe
+      description: Record one model's answer to one question
+      action: append
+      collection: probes
+      scope: all
+    - name: save_claim
+      description: Record a wrong or outdated claim found in an answer
+      action: append
+      collection: claims
+      scope: all
+    - name: query_openai
+      description: Ask an OpenAI model a question
+      action: http
+      http:
+        method: POST
+        url: https://api.openai.com/v1/chat/completions
+        credential:
+          provider: openai
+        maxBytes: 200000
+        attribution: OpenAI API
+    - name: query_anthropic
+      description: Ask an Anthropic model a question
+      action: http
+      http:
+        method: POST
+        url: https://api.anthropic.com/v1/messages
+        headers:
+          anthropic-version: '2023-06-01'
+        credential:
+          provider: anthropic
+          header: x-api-key
+          format: '{secret}'
+        maxBytes: 200000
+        attribution: Anthropic API
+    - name: query_gemini
+      description: Ask a Gemini model a question
+      action: http
+      http:
+        method: POST
+        url: https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent
+        credential:
+          provider: google
+          query: key
+        maxBytes: 200000
+        attribution: Google Gemini API
+    - name: query_perplexity
+      description: Ask a Perplexity model a question (returns citations)
+      action: http
+      http:
+        method: POST
+        url: https://api.perplexity.ai/chat/completions
+        credential:
+          provider: perplexity
+        maxBytes: 200000
+        attribution: Perplexity API
+  - key: gap
+    role: analyst
+    description: Compares what models say with the facts sheet and allowed public pages, then proposes a content plan.
+    profile:
+      inline:
+        display_name: Corpuscraft gap analyst
+        crews:
+        - id: gap
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You find why AI assistants misdescribe or omit a brand and propose content to fix it. Call read_brands
+            (facts sheet, products, competitors), read_probes and read_claims for the brand. Where useful, read public pages
+            (the brand''s site, cited sources) with the WebRobot MCP, but ONLY pages whose robots.txt and terms allow automated
+            access; skip the rest and say so. Find gaps: questions where the brand is absent or late, open inaccuracies, missing
+            facts, sources models cite that the brand does not control. For each gap call save_plan once with brand, title,
+            type (explainer|faq|product_data|comparison|press), target_question, rationale (which models, which claim or gap),
+            key_facts (from the facts sheet only), sources (URLs), priority (high|medium|low), status "proposed". Propose
+            at most 10 items, highest impact first. Finish with a level-1 "# <Brand> — content plan, <date>" summary. Never
+            invent facts about the brand; no black-hat or manipulative tactics, no fake reviews.'
+    goalTemplate: 'Brand: {record.brand}. A new monitoring run finished on {record.date} (visibility {record.score}, accuracy
+      {record.accuracy}). Analyse the gaps and propose the content plan. Language: {lang}.'
+    output: markdown
+    appTools:
+    - name: read_brands
+      description: Read the user's brand setups (facts sheet, products, competitors, markets)
+      action: read
+      collection: brands
+      scope: user
+    - name: read_probes
+      description: Read recorded model answers
+      action: read
+      collection: probes
+      scope: all
+    - name: read_claims
+      description: Read flagged inaccurate claims
+      action: read
+      collection: claims
+      scope: all
+    - name: save_plan
+      description: Add a content plan item
+      action: append
+      collection: content_plan
+      scope: user
+  - key: writer
+    role: helper
+    description: Drafts one content piece with sources for editor review.
+    profile:
+      inline:
+        display_name: Corpuscraft writer
+        crews:
+        - id: writer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You draft one piece of brand content (explainer page, FAQ entries, product data page, comparison
+            article or press material) from an approved plan item. Call read_brands and use the facts sheet as the only source
+            of facts about the brand; use only the sources listed in the plan item for external claims and cite them. Write
+            clear, factual, directly answerable text that answers the target question in its first paragraph, with headings,
+            an FAQ block where fitting, and a Sources list. For comparisons be fair and verifiable. Mark any fact you cannot
+            support with [NEEDS FACT CHECK]. Then call save_draft once with brand, title, type, target_question, body (the
+            full Markdown), sources, status "in_review". The piece is NOT published: a human editor approves, edits or rejects
+            it. Reply with the draft.'
+    goalTemplate: 'Write the piece for brand {record.brand}: {record.title} (type {record.type}). Target question: {record.target_question}.
+      Rationale: {record.rationale}. Key facts: {record.key_facts}. Sources: {record.sources}. Language: {lang}.'
+    output: markdown
+    appTools:
+    - name: read_brands
+      description: Read the user's brand setups (facts sheet, products, competitors, markets)
+      action: read
+      collection: brands
+      scope: user
+    - name: save_draft
+      description: Save a draft for editor review
+      action: append
+      collection: drafts
+      scope: user
+  templates:
+  - key: visibility_watch
+    title: Brand workspace
+    description: A weekly monitor of one brand (or one client of an agency) across AI assistants.
+    agent: monitor
+    params:
+    - name: brand
+      type: text
+      required: true
+      label: Brand name (as in your setup)
+    goal: Monitor the brand "{brand}" (workspace {instance}) across the AI models. Today is {date}. Write the report in the
+      language with ISO code {lang}.
+    schedule:
+      cron: 0 6 * * 1
+      userCanChange: true
+    maxPerUser: 50
+    deliver:
+      to: owner
+      subject: Your weekly AI visibility digest — {title}
+      onlyIfNew: true
+  triggers:
+  - key: plan_after_run
+    'on':
+      collection: visibility_runs
+      op: insert
+    start:
+      agent: gap
+    asUser: true
+    goal: 'Brand: {record.brand}. A new monitoring run finished on {record.date} (visibility {record.score}, accuracy {record.accuracy}).
+      Analyse the gaps and propose the content plan.'
+  - key: draft_approved_plan
+    'on':
+      collection: content_plan
+      op: update
+      where:
+        status: approved
+    start:
+      agent: writer
+    asUser: true
+    goal: 'Write the piece for brand {record.brand}: {record.title} (type {record.type}). Target question: {record.target_question}.
+      Rationale: {record.rationale}. Key facts: {record.key_facts}. Sources: {record.sources}.'
+  - key: new_inaccuracy
+    'on':
+      collection: claims
+      op: insert
+    notify:
+      to: owner
+      subject: New inaccuracy about {record.brand} in {record.model}
+      body: '{record.model} said: {record.claim}
+
+        Issue: {record.issue} (severity {record.severity}).
+
+        Correct fact: {record.correct_fact}'
+      link: claims
+  views:
+  - key: home
+    type: page
+    nav: false
+    sections:
+    - type: hero
+      title: Know what AI says about your **brand**
+      text: Corpuscraft asks the major AI assistants the questions your customers ask, scores your visibility and factual
+        accuracy, flags wrong claims, and helps you write the content that fixes them. Built for brands and agencies.
+      actions:
+      - label: Start monitoring
+        href: /login
+        style: primary
+      note: Nothing is ever published automatically.
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Set up
+        text: Brand, products, competitors, facts sheet, markets and the questions to track.
+      - title: Monitor
+        text: Every week several models are queried through their official APIs.
+      - title: Plan and draft
+        text: Gaps become a content plan; a writer drafts each approved piece with sources.
+      - title: Review and export
+        text: You approve, edit or reject. Then track whether answers change.
+    - type: cards
+      id: pricing
+      title: Pricing
+      intro: Monthly plan by number of tracked questions, plus credits for content drafts.
+      items:
+      - title: Starter
+        text: 25 tracked questions
+        badge: €49
+      - title: Growth
+        text: 100 tracked questions
+        badge: €149
+      - title: Scale
+        text: 300 tracked questions, for agencies
+        badge: €399
+    - type: note
+      content: Agencies create one workspace per client; each account sees only its own workspaces. Model answers vary between
+        runs; scores are indicative.
+  - key: setup_brand
+    type: form
+    title: Brand setup
+    collection: brands
+    submit:
+      label: Save brand
+      message: Brand saved. Now add the questions to track.
+      redirect: brands
+    edit: true
+  - key: brands
+    type: table
+    title: Brands
+    source: collection:brands
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Brand
+      - key: website
+        label: Website
+      - key: markets
+        label: Markets
+  - key: setup_question
+    type: form
+    title: Add a question
+    collection: tracked_questions
+    submit:
+      label: Track question
+      message: Question added.
+      redirect: questions
+  - key: questions
+    type: table
+    title: Tracked questions
+    source: collection:tracked_questions
+    export: true
+    data:
+      display: table
+      fields:
+      - key: brand
+        label: Brand
+      - key: question
+        label: Question
+      - key: market
+        label: Market
+      - key: language
+        label: Language
+  - key: watches
+    type: instances
+    template: visibility_watch
+    title: Workspaces
+  - key: dashboard
+    type: page
+    title: Dashboard
+    sections:
+    - type: data
+      title: Overview
+      source: collection:probes
+      display: kpi
+      kpis:
+      - label: Avg visibility
+        agg: avg
+        field: visibility
+        format: number
+      - label: Avg accuracy
+        agg: avg
+        field: accuracy
+        format: number
+      - label: Answers checked
+        agg: count
+    - type: data
+      title: Visibility score per model
+      source: collection:probes
+      display: chart
+      chart: bar
+      fields:
+      - key: model
+      - key: avg_visibility
+      groupBy:
+        field: model
+        aggs:
+        - key: avg_visibility
+          agg: avg
+          field: visibility
+    - type: data
+      title: Factual accuracy per model
+      source: collection:probes
+      display: chart
+      chart: bar
+      fields:
+      - key: model
+      - key: avg_accuracy
+      groupBy:
+        field: model
+        aggs:
+        - key: avg_accuracy
+          agg: avg
+          field: accuracy
+    - type: data
+      title: Visibility and accuracy over time
+      source: collection:visibility_runs
+      display: chart
+      chart: line
+      fields:
+      - key: date
+      - key: score
+      - key: accuracy
+      groupBy:
+        field: date
+        bucket: week
+        aggs:
+        - key: score
+          agg: avg
+          field: score
+        - key: accuracy
+          agg: avg
+          field: accuracy
+    - type: data
+      title: Content shipped
+      source: collection:drafts
+      display: chart
+      chart: bar
+      fields:
+      - key: published_on
+      - key: count
+      filters:
+      - field: status
+        op: '='
+        value: published
+      groupBy:
+        field: published_on
+        bucket: month
+        aggs:
+        - key: pieces
+          agg: count
+    - type: data
+      title: Latest reports
+      source: collection:visibility_runs
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: brand
+        label: Brand
+      - key: score
+        label: Visibility
+      - key: accuracy
+        label: Accuracy
+      - key: inaccuracies
+        label: New inaccuracies
+      - key: summary
+        label: Summary
+      sort:
+        field: date
+        dir: desc
+      limit: 20
+  - key: claims
+    type: table
+    title: Inaccuracies
+    source: collection:claims
+    export: true
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: model
+        label: Model
+      - key: claim
+        label: Claim
+      - key: issue
+        label: Issue
+        format: badge
+      - key: correct_fact
+        label: Correct fact
+      - key: severity
+        label: Severity
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: date
+        dir: desc
+  - key: plan
+    type: table
+    title: Content plan
+    source: collection:content_plan
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Piece
+      - key: type
+        label: Type
+        format: badge
+      - key: target_question
+        label: Target question
+      - key: priority
+        label: Priority
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+  - key: plan_edit
+    type: form
+    title: Review plan item
+    collection: content_plan
+    edit: true
+    nav: false
+    fields:
+    - title
+    - type
+    - target_question
+    - key_facts
+    - sources
+    - status
+    submit:
+      label: Save
+      message: Saved. Set status to approved to have the writer draft it.
+      redirect: plan
+  - key: drafts
+    type: table
+    title: Drafts for review
+    source: collection:drafts
+    export: true
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Piece
+      - key: type
+        label: Type
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+      - key: published_on
+        label: Published
+        format: date
+  - key: draft_edit
+    type: form
+    title: Edit and approve draft
+    collection: drafts
+    edit: true
+    nav: false
+    fields:
+    - title
+    - body
+    - sources
+    - status
+    - published_on
+    submit:
+      label: Save
+      message: Draft saved.
+      redirect: drafts
+  - key: account
+    type: account
+    title: Plan and credits
+  data:
+    credentials:
+    - provider: openai
+      kind: api_key
+      scope: org
+      label: OpenAI API key
+    - provider: anthropic
+      kind: api_key
+      scope: org
+      label: Anthropic API key
+    - provider: google
+      kind: api_key
+      scope: org
+      label: Google Gemini API key
+    - provider: perplexity
+      kind: api_key
+      scope: org
+      label: Perplexity API key
+    collections:
+    - name: brands
+      ownedBy: user
+      description: Brand setup and facts sheet
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Brand name
+      - name: website
+        type: url
+        label: Website
+      - name: products
+        type: textarea
+        label: Products and services
+      - name: competitors
+        type: textarea
+        label: Competitors (one per line)
+      - name: markets
+        type: text
+        label: Markets (countries/languages)
+      - name: facts_sheet
+        type: textarea
+        required: true
+        label: Facts sheet (the ground truth about the brand)
+        maxLength: 6000
+    - name: tracked_questions
+      ownedBy: user
+      description: Questions asked to the models
+      fields:
+      - name: brand
+        type: text
+        required: true
+        label: Brand
+      - name: question
+        type: text
+        required: true
+        label: Question
+      - name: market
+        type: text
+        label: Market
+      - name: language
+        type: text
+        label: Language
+    - name: visibility_runs
+      ownedBy: instance
+      description: One record per monitoring run
+      fields:
+      - name: brand
+        type: text
+      - name: date
+        type: date
+      - name: score
+        type: number
+      - name: accuracy
+        type: number
+      - name: inaccuracies
+        type: number
+      - name: summary
+        type: textarea
+    - name: probes
+      ownedBy: instance
+      description: One model answer to one question
+      retentionDays: 730
+      fields:
+      - name: brand
+        type: text
+      - name: date
+        type: date
+      - name: model
+        type: text
+      - name: question
+        type: text
+      - name: mentioned
+        type: number
+      - name: position
+        type: number
+      - name: visibility
+        type: number
+      - name: accuracy
+        type: number
+      - name: sources
+        type: textarea
+      - name: excerpt
+        type: textarea
+    - name: claims
+      ownedBy: instance
+      description: Wrong or outdated claims
+      fields:
+      - name: brand
+        type: text
+      - name: date
+        type: date
+      - name: model
+        type: text
+      - name: question
+        type: text
+      - name: claim
+        type: textarea
+      - name: issue
+        type: select
+        options:
+        - wrong
+        - outdated
+        - unverifiable
+      - name: correct_fact
+        type: textarea
+      - name: severity
+        type: select
+        options:
+        - low
+        - medium
+        - high
+      - name: status
+        type: select
+        options:
+        - open
+        - fixed
+        - ignored
+    - name: content_plan
+      ownedBy: user
+      description: Proposed content pieces
+      fields:
+      - name: brand
+        type: text
+      - name: title
+        type: text
+      - name: type
+        type: select
+        options:
+        - explainer
+        - faq
+        - product_data
+        - comparison
+        - press
+      - name: target_question
+        type: text
+      - name: rationale
+        type: textarea
+      - name: key_facts
+        type: textarea
+      - name: sources
+        type: textarea
+      - name: priority
+        type: select
+        options:
+        - high
+        - medium
+        - low
+      - name: status
+        type: select
+        options:
+        - proposed
+        - approved
+        - rejected
+    - name: drafts
+      ownedBy: user
+      description: Drafts reviewed by the editor before export
+      fields:
+      - name: brand
+        type: text
+      - name: title
+        type: text
+      - name: type
+        type: text
+      - name: target_question
+        type: text
+      - name: body
+        type: textarea
+        maxLength: 20000
+      - name: sources
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - in_review
+        - approved
+        - rejected
+        - published
+      - name: published_on
+        type: date
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 30
+    costs:
+      agent:writer: 15
+    packs:
+    - key: drafts_100
+      credits: 100
+      price: 19
+      label: 100 draft credits
+    - key: drafts_500
+      credits: 500
+      price: 79
+      label: 500 draft credits
+    plans:
+    - key: starter
+      price: 49
+      interval: month
+      label: Starter — 25 tracked questions
+      credits: 30
+      creditsReset: monthly
+    - key: growth
+      price: 149
+      interval: month
+      label: Growth — 100 tracked questions
+      credits: 100
+      creditsReset: monthly
+    - key: scale
+      price: 399
+      interval: month
+      label: Scale — 300 tracked questions
+      credits: 300
+      creditsReset: monthly
+  extensions:
+  - key: agency_client_sharing
+    description: Agencies run one workspace per client under their own account. Giving a client read access to a workspace
+      owned by the agency is not expressed yet; clients who sign up see only their own workspaces.
+  - key: editor_role
+    description: Editing and approval happen through the status field of drafts by the workspace owner; a separate editor
+      role with cross-account access is not modelled.

@@ -1,0 +1,1107 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: questbot
+  displayName: Questbot
+  tagline: AI agents play your game builds. You triage the bugs.
+  description: 'Questbot is the QA workspace for automated play-testing: define test plans, receive bugs reported by vision
+    agents that play your builds, triage them, push confirmed bugs to Jira and follow quality trends.'
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: dark
+    palette:
+      primary: '#6d5efc'
+      accent: '#19d3a2'
+      background: '#0f1220'
+      foreground: '#e8eaf6'
+    fonts:
+      body: Inter
+      display: Space Grotesk
+    wordmark:
+    - text: Quest
+      color: foreground
+    - text: bot
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Platform admin
+      assignedBy: admin_emails
+    - key: user
+      label: Studio admin
+      assignedBy: signup
+    - key: qa_lead
+      label: QA lead
+      assignedBy: invite
+    - key: developer
+      label: Developer
+      assignedBy: invite
+    - key: producer
+      label: Producer
+      assignedBy: invite
+  agents:
+  - key: triage_assistant
+    role: helper
+    description: Checks each new bug against existing ones and suggests duplicates and a severity check. The QA lead decides.
+    profile:
+      inline:
+        display_name: Questbot triage assistant
+        crews:
+        - id: triage
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You assist a QA lead in a game studio. A new bug reported by an AI play-testing agent has just arrived.
+            Use read_bugs to list existing bugs of the same project and build family. If the new bug describes the same defect
+            (same level, same symptom, similar steps) as an existing one, call update_bug on the NEW bug with triage_note
+            explaining ''Possible duplicate of <bug_id>: <reason>'' and duplicate_of set to that bug_id. Otherwise set triage_note
+            to a one-sentence assessment of whether the severity looks right. Never change status, never reject or confirm
+            a bug: the QA lead decides. Finish with a level-1 Markdown title ''# Triage — <bug title>'' and two lines of summary.
+            Never invent facts that are not in the records.'
+    goalTemplate: 'New bug id {record.bug_id}: {record.title}
+
+      Project: {record.project}, build: {record.build}, level: {record.level}, severity: {record.severity}, category: {record.category}.
+
+      Steps: {record.steps}
+
+      Compare it with existing bugs and write your suggestion on the bug.'
+    appTools:
+    - name: read_bugs
+      description: Read the studio's bugs
+      action: read
+      collection: bugs
+      scope: user
+    - name: update_bug
+      description: Update the triage note and duplicate suggestion of a bug
+      action: write
+      collection: bugs
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.2
+  - key: jira_pusher
+    role: helper
+    description: Creates a Jira issue for a confirmed bug and records its key.
+    profile:
+      inline:
+        display_name: Questbot Jira pusher
+        crews:
+        - id: jira
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You file confirmed game bugs in Jira. Steps: 1) call read_projects to find the Jira project key
+            (field jira_project_key) of the bug''s project; if it is empty, stop and say so. 2) Call jira_create_issue (POST,
+            JSON body) with {"fields":{"project":{"key":"<KEY>"},"issuetype":{"name":"Bug"},"summary":"<title>","priority":{"name":"<Highest|High|Medium|Low
+            from severity critical|major|minor|trivial>"},"description":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"<build,
+            level, platform, steps to reproduce, screenshot URL, video URL>"}]}]}}}. 3) The response holds the issue key:
+            call mark_bug_pushed on the bug with jira_key set to it and status ''pushed''. If the tool says the Jira account
+            is not connected, or the call fails, do not change the bug and explain what the user must do. Finish with ''#
+            Jira — <bug title>'' and the issue key. Never invent keys.'
+    goalTemplate: 'Push this confirmed bug to Jira. Bug id {record.bug_id}: {record.title}
+
+      Project: {record.project}, build {record.build}, level {record.level}, platform {record.platform}, severity {record.severity}.
+
+      Steps to reproduce: {record.steps}
+
+      Screenshot: {record.screenshot_url}
+
+      Video: {record.video_url}'
+    appTools:
+    - name: read_projects
+      description: Read the studio's projects (Jira project key)
+      action: read
+      collection: projects
+      scope: user
+    - name: mark_bug_pushed
+      description: Save the Jira key on a bug and set it as pushed
+      action: write
+      collection: bugs
+      scope: user
+    - name: jira_create_issue
+      description: Create an issue in the user's Jira Cloud
+      action: http
+      http:
+        method: POST
+        url: https://{host}/rest/api/3/issue
+        allowPath: false
+        headers:
+          Accept: application/json
+        credential:
+          provider: jira
+          header: Authorization
+          format: Basic {secret}
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.2
+  data:
+    credentials:
+    - provider: jira
+      kind: api_key
+      scope: user
+      label: Jira Cloud
+      help: Paste your Jira email and API token as base64 of 'email:api_token' (create the token at id.atlassian.com > Security
+        > API tokens).
+      hostLabel: your-studio.atlassian.net
+    collections:
+    - name: projects
+      ownedBy: user
+      description: A game project of the studio
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Game / project name
+      - name: engine
+        type: select
+        label: Engine
+        options:
+        - Unity
+        - Unreal
+        - Godot
+        - Custom
+      - name: jira_project_key
+        type: text
+        label: Jira project key
+        help: e.g. GAME
+      - name: members
+        type: array
+        label: Team emails
+        help: Emails of the people who can see this project
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: qa_lead
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: developer
+        where:
+          members: '{user.email}'
+      - role: producer
+        where:
+          members: '{user.email}'
+    - name: builds
+      ownedBy: user
+      description: Game builds to test
+      fields:
+      - name: project
+        type: select
+        required: true
+        optionsFrom: collection:projects
+        label: Project
+      - name: version
+        type: text
+        required: true
+        label: Build version
+      - name: platform
+        type: select
+        label: Platform
+        options:
+        - PC
+        - PlayStation
+        - Xbox
+        - Switch
+        - Android
+        - iOS
+        - Web
+      - name: build_url
+        type: url
+        label: Build link (or pipeline artifact URL)
+      - name: members
+        type: array
+        label: Team emails
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: qa_lead
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: developer
+        where:
+          members: '{user.email}'
+      - role: producer
+        where:
+          members: '{user.email}'
+    - name: test_plans
+      ownedBy: user
+      description: What the agents must play and check
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Plan name
+      - name: project
+        type: select
+        required: true
+        optionsFrom: collection:projects
+        label: Project
+      - name: levels
+        type: textarea
+        label: Levels to cover (one per line)
+      - name: goals
+        type: textarea
+        label: Goals (e.g. reach the boss, collect 3 keys)
+      - name: sessions
+        type: number
+        label: Play sessions
+      - name: platforms
+        type: multiselect
+        label: Platforms
+        options:
+        - PC
+        - PlayStation
+        - Xbox
+        - Switch
+        - Android
+        - iOS
+        - Web
+      - name: checks
+        type: multiselect
+        label: Things to check
+        options:
+        - crashes
+        - stuck states
+        - broken collisions
+        - performance drops
+        - visual glitches
+      - name: members
+        type: array
+        label: Team emails
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: qa_lead
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: developer
+        where:
+          members: '{user.email}'
+      - role: producer
+        where:
+          members: '{user.email}'
+    - name: test_runs
+      ownedBy: user
+      description: Test runs requested by the studio and updated by the play-testing engine
+      fields:
+      - name: run_id
+        type: text
+        label: Run id
+      - name: project
+        type: select
+        required: true
+        optionsFrom: collection:projects
+        label: Project
+      - name: build
+        type: select
+        required: true
+        optionsFrom: collection:builds
+        label: Build
+      - name: plan
+        type: select
+        required: true
+        optionsFrom: collection:test_plans
+        label: Test plan
+      - name: platform
+        type: select
+        label: Platform
+        options:
+        - PC
+        - PlayStation
+        - Xbox
+        - Switch
+        - Android
+        - iOS
+        - Web
+      - name: sessions
+        type: number
+        label: Sessions
+      - name: date
+        type: date
+        label: Date
+      - name: status
+        type: select
+        label: Status
+        options:
+        - queued
+        - running
+        - completed
+        - failed
+        default: queued
+      - name: play_hours
+        type: number
+        label: Agent play-hours
+      - name: levels_total
+        type: number
+        label: Levels in plan
+      - name: levels_covered
+        type: number
+        label: Levels covered
+      - name: bugs_found
+        type: number
+        label: Bugs found
+      - name: crash_count
+        type: number
+        label: Crashes
+      - name: avg_fps
+        type: number
+        label: Average FPS
+      - name: producer_email
+        type: email
+        label: Send summary to (producer)
+      - name: members
+        type: array
+        label: Team emails
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: qa_lead
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: developer
+        where:
+          members: '{user.email}'
+      - role: producer
+        where:
+          members: '{user.email}'
+    - name: bugs
+      ownedBy: user
+      description: Bugs reported by the agents, triaged by the QA lead
+      fields:
+      - name: bug_id
+        type: text
+        label: Bug id
+      - name: title
+        type: text
+        required: true
+        label: Title
+      - name: project
+        type: text
+        label: Project
+      - name: build
+        type: text
+        label: Build
+      - name: level
+        type: text
+        label: Level
+      - name: platform
+        type: text
+        label: Platform
+      - name: category
+        type: select
+        label: Category
+        options:
+        - crash
+        - stuck state
+        - collision
+        - performance
+        - visual
+        - other
+      - name: severity
+        type: select
+        label: Severity
+        options:
+        - critical
+        - major
+        - minor
+        - trivial
+      - name: steps
+        type: textarea
+        label: Steps to reproduce
+      - name: screenshot_url
+        type: url
+        label: Screenshot
+      - name: video_url
+        type: url
+        label: Video clip
+      - name: run_id
+        type: text
+        label: Run
+      - name: date
+        type: date
+        label: Date
+      - name: status
+        type: select
+        label: Status
+        options:
+        - new
+        - confirmed
+        - duplicate
+        - rejected
+        - pushed
+        default: new
+      - name: duplicate_of
+        type: text
+        label: Duplicate of (bug id)
+      - name: triage_note
+        type: textarea
+        label: Triage note
+      - name: jira_key
+        type: text
+        label: Jira issue
+      - name: members
+        type: array
+        label: Team emails
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: qa_lead
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: developer
+        where:
+          members: '{user.email}'
+      - role: producer
+        where:
+          members: '{user.email}'
+  egress:
+    hosts:
+    - '*.atlassian.net'
+    notes: Jira Cloud REST API on the studio's own site, called with the studio's own API token.
+  triggers:
+  - key: bug_ingest
+    description: The play-testing engine posts each bug it finds
+    'on':
+      webhook: true
+    write:
+      collection: bugs
+      fields:
+        bug_id: bug_id
+        title: title
+        project: project
+        build: build
+        level: level
+        platform: platform
+        category: category
+        severity: severity
+        steps: steps
+        screenshot_url: screenshot_url
+        video_url: video_url
+        run_id: run_id
+        date: date
+        members: members
+      keyBy: bug_id
+  - key: run_ingest
+    description: The engine posts progress and results of a test run
+    'on':
+      webhook: true
+    write:
+      collection: test_runs
+      fields:
+        run_id: run_id
+        project: project
+        build: build
+        plan: plan
+        platform: platform
+        status: status
+        date: date
+        play_hours: play_hours
+        levels_total: levels_total
+        levels_covered: levels_covered
+        bugs_found: bugs_found
+        crash_count: crash_count
+        avg_fps: avg_fps
+        producer_email: producer_email
+        members: members
+      keyBy: run_id
+  - key: triage_new
+    description: Suggest duplicates for every new bug
+    'on':
+      collection: bugs
+      op: insert
+      where:
+        status: new
+    start:
+      agent: triage_assistant
+    goal: 'Triage the new bug {record.bug_id}: {record.title}'
+  - key: push_confirmed
+    description: Push a confirmed bug to Jira
+    'on':
+      collection: bugs
+      op: update
+      where:
+        status: confirmed
+    start:
+      agent: jira_pusher
+    goal: Push bug {record.bug_id} to Jira.
+  - key: run_summary
+    description: Email the producer when a test run completes
+    'on':
+      collection: test_runs
+      op: any
+      where:
+        status: completed
+    notify:
+      to:
+      - record.producer_email
+      - owner
+      subject: 'Questbot: test run {record.run_id} finished — {record.bugs_found} bugs, {record.crash_count} crashes'
+      body: 'The play-test of build {record.build} ({record.platform}) has finished.
+
+
+        Bugs found: {record.bugs_found}
+
+        Crashes: {record.crash_count}
+
+        Levels covered: {record.levels_covered} of {record.levels_total}
+
+        Agent play-hours used: {record.play_hours}
+
+
+        Open the dashboard for trends and the triage queue for the new bugs.'
+      link: dashboard
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Questbot
+    sections:
+    - type: hero
+      eyebrow: Automated play-testing
+      title: AI agents **play your game**. Your team fixes what they find.
+      text: Define a test plan, point Questbot at a build, and vision agents play it in real time. Every bug arrives with
+        steps to reproduce, a screenshot and a video clip, ready for triage and Jira.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+      band: true
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Create a project and test plan
+        text: 'Add your builds, levels, goals, platforms and what to check: crashes, stuck states, collisions, performance.'
+        badge: '1'
+      - title: Agents play the build
+        text: Vision agents watch the screen and press the controls across many sessions, then post their findings.
+        badge: '2'
+      - title: Triage in one queue
+        text: The QA lead confirms, merges duplicates or rejects. Confirmed bugs go to Jira.
+        badge: '3'
+      - title: Follow the trend
+        text: Bugs per build, level coverage and crash rate. The producer gets an email after every run.
+        badge: '4'
+    - type: cards
+      id: pricing
+      title: Pricing by agent play-hours
+      items:
+      - title: Studio — £1,000 / month
+        text: 100 agent play-hours a month, unlimited projects, Jira push, producer summaries.
+      - title: Growth — £4,000 / month
+        text: 500 agent play-hours a month for studios shipping every week.
+      - title: Extra hours
+        text: Top up with a pack of 50 play-hours whenever you need it.
+    - type: note
+      content: Questbot, automated play-testing for game studios.
+  - key: projects
+    type: table
+    title: Projects
+    source: collection:projects
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Project
+      - key: engine
+        label: Engine
+      - key: jira_project_key
+        label: Jira key
+    roles:
+    - user
+    - qa_lead
+    - developer
+    - producer
+    - admin
+  - key: new_project
+    type: form
+    title: New project
+    collection: projects
+    submit:
+      label: Create project
+      message: Project created.
+      redirect: projects
+    roles:
+    - user
+    - admin
+  - key: builds_list
+    type: table
+    title: Builds
+    source: collection:builds
+    data:
+      display: table
+      fields:
+      - key: project
+        label: Project
+      - key: version
+        label: Version
+      - key: platform
+        label: Platform
+      - key: build_url
+        label: Link
+        format: link
+    roles:
+    - user
+    - qa_lead
+    - developer
+    - producer
+    - admin
+  - key: new_build
+    type: form
+    title: Add a build
+    collection: builds
+    submit:
+      label: Add build
+      message: Build added.
+      redirect: builds_list
+    roles:
+    - user
+    - qa_lead
+    - developer
+    - admin
+  - key: plans
+    type: table
+    title: Test plans
+    source: collection:test_plans
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Plan
+      - key: project
+        label: Project
+      - key: sessions
+        label: Sessions
+        format: number
+      - key: checks
+        label: Checks
+    roles:
+    - user
+    - qa_lead
+    - developer
+    - producer
+    - admin
+  - key: new_plan
+    type: form
+    title: New test plan
+    collection: test_plans
+    submit:
+      label: Save plan
+      message: Test plan saved.
+      redirect: plans
+    roles:
+    - user
+    - qa_lead
+    - admin
+  - key: request_run
+    type: form
+    title: Start a test run
+    collection: test_runs
+    fields:
+    - project
+    - build
+    - plan
+    - platform
+    - sessions
+    - date
+    - producer_email
+    - members
+    submit:
+      label: Queue the run
+      message: Run queued. The agents will start shortly.
+      redirect: runs
+    roles:
+    - user
+    - qa_lead
+    - admin
+  - key: runs
+    type: table
+    title: Test runs
+    source: collection:test_runs
+    export: true
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: build
+        label: Build
+      - key: platform
+        label: Platform
+      - key: status
+        label: Status
+        format: badge
+      - key: bugs_found
+        label: Bugs
+        format: number
+      - key: crash_count
+        label: Crashes
+        format: number
+      - key: play_hours
+        label: Play-hours
+        format: number
+      sort:
+        field: date
+        dir: desc
+    roles:
+    - user
+    - qa_lead
+    - developer
+    - producer
+    - admin
+  - key: bugs_list
+    type: table
+    title: All bugs
+    source: collection:bugs
+    export: true
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Bug
+      - key: build
+        label: Build
+      - key: level
+        label: Level
+      - key: severity
+        label: Severity
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+      - key: jira_key
+        label: Jira
+      - key: screenshot_url
+        label: Screenshot
+        format: link
+      - key: video_url
+        label: Video
+        format: link
+      sort:
+        field: date
+        dir: desc
+    roles:
+    - user
+    - qa_lead
+    - developer
+    - producer
+    - admin
+  - key: triage_queue
+    type: cards
+    title: Triage queue
+    source: collection:bugs
+    data:
+      display: cards
+      fields:
+      - key: title
+        label: Bug
+      - key: severity
+        label: Severity
+        format: badge
+      - key: level
+        label: Level
+      - key: steps
+        label: Steps to reproduce
+      - key: triage_note
+        label: Assistant note
+      - key: video_url
+        label: Video
+        format: link
+      filters:
+      - field: status
+        op: '='
+        value: new
+      sort:
+        field: date
+        dir: desc
+      empty: Nothing to triage.
+    roles:
+    - user
+    - qa_lead
+    - admin
+  - key: triage
+    type: form
+    title: Triage a bug
+    collection: bugs
+    fields:
+    - status
+    - severity
+    - duplicate_of
+    - triage_note
+    edit: true
+    nav: false
+    submit:
+      label: Save decision
+      message: Decision saved. Confirmed bugs are pushed to Jira.
+      redirect: triage_queue
+    roles:
+    - user
+    - qa_lead
+    - admin
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - user
+    - qa_lead
+    - developer
+    - producer
+    - admin
+    sections:
+    - type: data
+      title: Overview
+      source: collection:bugs
+      display: kpi
+      kpis:
+      - label: Bugs
+        agg: count
+      - label: New in triage
+        agg: count
+    - type: data
+      title: Bugs per build
+      source: collection:bugs
+      display: chart
+      chart: bar
+      groupBy:
+        field: build
+        aggs: []
+      fields:
+      - key: build
+        label: Build
+      - key: count
+        label: Bugs
+    - type: data
+      title: Bugs by severity
+      source: collection:bugs
+      display: chart
+      chart: pie
+      groupBy:
+        field: severity
+        aggs: []
+      fields:
+      - key: severity
+        label: Severity
+      - key: count
+        label: Bugs
+    - type: data
+      title: Bugs by level
+      source: collection:bugs
+      display: chart
+      chart: bar
+      groupBy:
+        field: level
+        aggs: []
+      fields:
+      - key: level
+        label: Level
+      - key: count
+        label: Bugs
+    - type: data
+      title: Crashes per week
+      source: collection:test_runs
+      display: chart
+      chart: line
+      groupBy:
+        field: date
+        bucket: week
+        aggs:
+        - key: crashes
+          agg: sum
+          field: crash_count
+        - key: hours
+          agg: sum
+          field: play_hours
+      fields:
+      - key: date
+        label: Week
+      - key: crashes
+        label: Crashes
+    - type: data
+      title: Level coverage per week
+      source: collection:test_runs
+      display: chart
+      chart: line
+      groupBy:
+        field: date
+        bucket: week
+        aggs:
+        - key: covered
+          agg: sum
+          field: levels_covered
+        - key: total
+          agg: sum
+          field: levels_total
+      fields:
+      - key: date
+        label: Week
+      - key: covered
+        label: Levels covered
+      - key: total
+        label: Levels in plans
+    - type: data
+      title: Latest runs
+      source: collection:test_runs
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: build
+        label: Build
+      - key: status
+        label: Status
+        format: badge
+      - key: bugs_found
+        label: Bugs
+        format: number
+      - key: crash_count
+        label: Crashes
+        format: number
+      - key: avg_fps
+        label: Avg FPS
+        format: number
+      sort:
+        field: date
+        dir: desc
+      limit: 10
+  - key: account
+    type: account
+    title: Plan and Jira
+    roles:
+    - user
+    - admin
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: gbp
+    signupCredits: 0
+    packs:
+    - key: extra_50h
+      credits: 50
+      price: 450
+      label: 50 extra agent play-hours
+    plans:
+    - key: studio
+      price: 1000
+      interval: month
+      label: Studio
+      credits: 100
+      creditsReset: monthly
+      includes:
+      - 100 agent play-hours a month
+      - Unlimited projects and builds
+      - Triage queue and Jira push
+      - Producer email summaries
+      roles:
+      - user
+    - key: growth
+      price: 4000
+      interval: month
+      label: Growth
+      credits: 500
+      creditsReset: monthly
+      includes:
+      - 500 agent play-hours a month
+      - Everything in Studio
+      roles:
+      - user
+  notifications:
+    emailOnRunDone: false
+  extensions:
+  - key: play_engine
+    description: The vision agents that play the builds (screen capture, controls, video clips, proprietary ML) run outside
+      this app. They read queued records of test_runs and post bugs and run results to the webhooks bug_ingest and run_ingest,
+      including the studio's members list so records belong to the right team.
+  - key: play_hours_metering
+    description: Play-hours are consumed from the plan's credit allowance by the engine's reports; automatic deduction per
+      run from the posted play_hours is not expressed in the manifest yet.
+  - key: build_pipeline
+    description: 'Connecting a CI/CD pipeline (GitHub Actions, Jenkins) and large build uploads are not available yet: builds
+      are registered as links.'
+  - key: studio_isolation
+    description: Team access is by the members emails on each record; invited roles (QA lead, developer, producer) only see
+      records of teams that list their email.

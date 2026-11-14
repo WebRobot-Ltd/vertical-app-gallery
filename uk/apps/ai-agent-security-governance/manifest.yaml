@@ -1,0 +1,1107 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: warden
+  displayName: Warden
+  tagline:
+    en: Security and governance for the AI agents your company runs.
+  description:
+    en: Warden keeps an inventory of every AI agent in your company, scores each one's risk and explains the score, enforces
+      your policies, routes approvals, raises incidents and maps your controls to the EU AI Act and ISO 42001.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0f2a3d'
+      accent: '#e0603a'
+      background: '#f6f8fa'
+      foreground: '#11212d'
+    fonts:
+      body: Inter
+      display: Sora
+    wordmark:
+    - text: War
+      color: primary
+    - text: den
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Controls
+      href: '#controls'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: security_analyst
+      label: Security analyst
+      assignedBy: invite
+    - key: auditor
+      label: Auditor
+      assignedBy: invite
+    - key: agent_owner
+      label: Agent owner
+      assignedBy: derived
+      from: collection:agents.owner_email
+  agents:
+  - key: scorer
+    role: analyst
+    description: Scores each new or changed agent's risk, explains the score, requests approvals and logs the change.
+    awaits:
+    - security_signoff
+    - owner_signoff
+    profile:
+      inline:
+        display_name: Warden risk scorer
+        crews:
+        - id: scorer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the risk analyst of Warden, an AI-agent governance platform. For the agent you are given:
+            read its record (read_agents), the active policies (read_policies) and its recent runtime behaviour events (read_behavior).
+            Score risk 0-100 from three factors: permissions (breadth, write/admin rights, cross-system reach), data sensitivity
+            (customer data, personal data, financial, health, secrets) and observed behaviour (anomalies, denied calls, unusual
+            volumes). Level: low <30, medium 30-59, high 60-79, critical 80+. Never invent facts: if a factor lacks evidence
+            say so and score it conservatively. Then: 1) call record_assessment with agent_name, score, level, permissions_factor,
+            data_factor, behaviour_factor, explanation (plain English, which policies are touched and why) and date; 2) call
+            update_agent to set risk_score, risk_level and stage ''scored'' on the agent; 3) if the agent is new or its permissions
+            increased, set its status to pending_approval and call request_security_signoff and request_owner_signoff; 4)
+            call log_audit with actor ''warden-scorer'', the action and a one-line detail. Finish with a short Markdown summary
+            starting with a level-1 ''# '' title.'
+          mcp_servers: []
+    goalTemplate: 'Assess this agent. Event: {event}. Name: {record.name}. Owner: {record.owner_email}. Purpose: {record.purpose}.
+      Model: {record.model}. Tools: {record.tools}. Permissions: {record.permissions}. Data accessed: {record.data_accessed}.
+      Business unit: {record.business_unit}. Today is {date}.'
+    appTools:
+    - name: read_agents
+      description: Read agent inventory records
+      action: read
+      collection: agents
+      scope: all
+    - name: read_policies
+      description: Read the policy library
+      action: read
+      collection: policies
+      scope: all
+    - name: read_behavior
+      description: Read runtime behaviour events
+      action: read
+      collection: behavior_events
+      scope: all
+    - name: record_assessment
+      description: Store a risk assessment
+      action: append
+      collection: risk_assessments
+      scope: all
+    - name: update_agent
+      description: Update an agent record (status, risk score, risk level, stage)
+      action: write
+      collection: agents
+      scope: all
+    - name: log_audit
+      description: Append an entry to the audit log
+      action: append
+      collection: audit_log
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  - key: enforcer
+    role: helper
+    description: Checks runtime behaviour events against policies and opens incidents.
+    profile:
+      inline:
+        display_name: Warden policy enforcer
+        crews:
+        - id: enforcer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You enforce the policy library of Warden. Given a runtime behaviour event reported by a collector
+            inside the customer's infrastructure, read the agent (read_agents) and the active policies (read_policies). Decide
+            whether the event violates a policy (for example access to customer data without an approved status). If it does,
+            call create_incident with title, agent_name, owner_email, policy, severity (low|medium|high|critical), status
+            'open', description (what happened, which rule) and detected_on (date). Leave assignee_email empty unless the
+            agent record names a clear security contact. Then call log_audit. If there is no violation, only log it when it
+            is notable. Never invent evidence. Finish with a short Markdown note starting with a level-1 '# ' title.
+          mcp_servers: []
+    goalTemplate: 'Runtime event: {event}. Agent: {record.agent_name}. Type: {record.event_type}. Tool: {record.tool}. Data
+      class: {record.data_class}. Detail: {record.detail}. Today is {date}.'
+    appTools:
+    - name: read_agents
+      description: Read agent inventory records
+      action: read
+      collection: agents
+      scope: all
+    - name: read_policies
+      description: Read the policy library
+      action: read
+      collection: policies
+      scope: all
+    - name: create_incident
+      description: Open an incident
+      action: append
+      collection: incidents
+      scope: all
+    - name: log_audit
+      description: Append an entry to the audit log
+      action: append
+      collection: audit_log
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.4
+  - key: reporter
+    role: main
+    description: Writes a control-mapping report for the EU AI Act or ISO/IEC 42001.
+    profile:
+      inline:
+        display_name: Warden compliance reporter
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write governance reports for auditors and security leaders. Read the inventory (read_agents),
+            policies (read_policies), incidents (read_incidents), risk assessments (read_assessments) and the audit log (read_audit).
+            Start with a level-1 title ''# <Framework> control mapping — <date>''. Sections (##): Scope and method, Inventory
+            summary, Risk distribution (include a chart block), Control mapping (a table: framework clause or control, Warden
+            evidence — policies, approvals, audit entries, incidents — status Met / Partial / Gap), Open incidents, Gaps and
+            recommended actions, Evidence references. For the EU AI Act map to risk management, data governance, record-keeping,
+            transparency, human oversight, and accuracy/robustness/cybersecurity (Articles 9-15) and to deployer duties where
+            relevant. For ISO/IEC 42001 map to the clauses 4-10 and Annex A controls. Use only data you read; say plainly
+            where evidence is missing. State that this is decision support, not legal advice or certification. Add one chart
+            as a fenced block: ```chart {"type":"bar","title":"...","labels":[...],"series":[{"name":"...","values":[...]}]}
+            ``` with real figures only.'
+          mcp_servers: []
+    goalTemplate: 'Framework: {framework_label}.
+
+      {?business_unit}Limit to business unit: {business_unit}.{/business_unit}{!business_unit}Cover all business units.{/business_unit}
+
+      {?notes}Notes: {notes}{/notes}
+
+      Today is {date}. Write the report in English.'
+    appTools:
+    - name: read_agents
+      description: Read agent inventory records
+      action: read
+      collection: agents
+      scope: all
+    - name: read_policies
+      description: Read the policy library
+      action: read
+      collection: policies
+      scope: all
+    - name: read_incidents
+      description: Read incidents
+      action: read
+      collection: incidents
+      scope: all
+    - name: read_assessments
+      description: Read risk assessments
+      action: read
+      collection: risk_assessments
+      scope: all
+    - name: read_audit
+      description: Read the audit log
+      action: read
+      collection: audit_log
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 14
+      maxBudgetUsd: 0.8
+  inputForm:
+    title:
+      en: New compliance report
+    fields:
+    - name: framework
+      type: select
+      required: true
+      label:
+        en: Framework
+      options:
+      - value: eu_ai_act
+        label: EU AI Act
+      - value: iso_42001
+        label: ISO/IEC 42001
+    - name: business_unit
+      type: text
+      label:
+        en: Business unit (optional)
+    - name: notes
+      type: textarea
+      maxLength: 500
+      label:
+        en: Notes (optional)
+  data:
+    collections:
+    - name: agents
+      ownedBy: org
+      description: 'Inventory of AI agents: registered by form, pushed by discovery connectors, or entered by staff'
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Agent name
+      - name: owner_email
+        type: email
+        required: true
+        label: Owner email
+      - name: purpose
+        type: textarea
+        required: true
+        label: Purpose
+      - name: model
+        type: text
+        label: Model
+      - name: tools
+        type: textarea
+        label: Tools
+      - name: permissions
+        type: textarea
+        required: true
+        label: Permissions
+      - name: data_accessed
+        type: textarea
+        required: true
+        label: Data accessed
+      - name: data_sensitivity
+        type: select
+        label: Data sensitivity
+        options:
+        - public
+        - internal
+        - confidential
+        - customer_data
+        - regulated
+      - name: business_unit
+        type: text
+        label: Business unit
+      - name: source
+        type: select
+        label: Source
+        options:
+        - manual
+        - microsoft365
+        - google_workspace
+        - salesforce
+        - aws
+        - azure
+        - github
+      - name: status
+        type: select
+        label: Status
+        options:
+        - pending_approval
+        - approved
+        - rejected
+        - retired
+      - name: stage
+        type: select
+        label: Scoring stage
+        options:
+        - new
+        - scored
+        default: new
+      - name: risk_score
+        type: number
+        label: Risk score
+      - name: risk_level
+        type: select
+        label: Risk level
+        options:
+        - low
+        - medium
+        - high
+        - critical
+      access:
+      - role: security_analyst
+        can:
+        - read
+        - write
+      - role: auditor
+      - role: agent_owner
+        where:
+          owner_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: policies
+      ownedBy: org
+      description: Policy library
+      fields:
+      - name: title
+        type: text
+        required: true
+        label: Policy
+      - name: rule
+        type: textarea
+        required: true
+        label: Rule
+      - name: severity
+        type: select
+        label: Severity if violated
+        options:
+        - low
+        - medium
+        - high
+        - critical
+      - name: framework_refs
+        type: text
+        label: EU AI Act / ISO 42001 references
+      - name: active
+        type: boolean
+        label: Active
+        default: true
+      access:
+      - role: security_analyst
+        can:
+        - read
+        - write
+      - role: auditor
+      - role: agent_owner
+    - name: risk_assessments
+      ownedBy: org
+      description: Risk score history with explanations
+      fields:
+      - name: agent_name
+        type: text
+      - name: score
+        type: number
+      - name: level
+        type: select
+        options:
+        - low
+        - medium
+        - high
+        - critical
+      - name: permissions_factor
+        type: number
+      - name: data_factor
+        type: number
+      - name: behaviour_factor
+        type: number
+      - name: explanation
+        type: textarea
+      - name: date
+        type: date
+      access:
+      - role: security_analyst
+      - role: auditor
+    - name: behavior_events
+      ownedBy: org
+      description: Runtime events sent by the collector inside the customer's infrastructure
+      retentionDays: 365
+      fields:
+      - name: agent_name
+        type: text
+      - name: event_type
+        type: text
+      - name: tool
+        type: text
+      - name: data_class
+        type: text
+      - name: detail
+        type: textarea
+      - name: occurred_at
+        type: text
+      access:
+      - role: security_analyst
+      - role: auditor
+    - name: incidents
+      ownedBy: org
+      description: Policy violations
+      fields:
+      - name: title
+        type: text
+        required: true
+        label: Title
+      - name: agent_name
+        type: text
+        label: Agent
+      - name: owner_email
+        type: email
+        label: Agent owner
+      - name: policy
+        type: text
+        label: Policy
+      - name: severity
+        type: select
+        label: Severity
+        options:
+        - low
+        - medium
+        - high
+        - critical
+      - name: status
+        type: select
+        label: Status
+        options:
+        - open
+        - investigating
+        - resolved
+        - accepted_risk
+      - name: assignee_email
+        type: email
+        label: Assignee
+      - name: description
+        type: textarea
+        label: Description
+      - name: detected_on
+        type: date
+        label: Detected on
+      access:
+      - role: security_analyst
+        can:
+        - read
+        - write
+      - role: auditor
+      - role: agent_owner
+        where:
+          owner_email: '{user.email}'
+    - name: audit_log
+      ownedBy: org
+      description: Every change, append-only
+      fields:
+      - name: actor
+        type: text
+      - name: action
+        type: text
+      - name: entity
+        type: text
+      - name: detail
+        type: textarea
+      - name: at
+        type: date
+      access:
+      - role: security_analyst
+      - role: auditor
+  approvals:
+  - key: security_signoff
+    title: Security approval
+    description: A security analyst approves a new agent or a permission increase
+    role: security_analyst
+    fields:
+    - agent_name
+    - change
+    - risk_score
+    timeoutMinutes: 10080
+    onTimeout: reject
+  - key: owner_signoff
+    title: Owner approval
+    description: The agent owner confirms the new agent or permission increase
+    role: agent_owner
+    fields:
+    - agent_name
+    - change
+    - risk_score
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: discovered
+    description: Agents found by discovery connectors are pushed here and saved to the inventory
+    'on':
+      webhook: true
+    write:
+      collection: agents
+      fields:
+        name: agent.name
+        owner_email: agent.owner
+        purpose: agent.purpose
+        model: agent.model
+        tools: agent.tools
+        permissions: agent.permissions
+        data_accessed: agent.data
+        business_unit: agent.unit
+        source: source
+      keyBy: name
+  - key: behavior
+    description: Runtime behaviour events from the collector inside the customer's infrastructure
+    'on':
+      webhook: true
+    write:
+      collection: behavior_events
+      fields:
+        agent_name: agent
+        event_type: type
+        tool: tool
+        data_class: data_class
+        detail: detail
+        occurred_at: time
+  - key: score_new
+    'on':
+      collection: agents
+      op: insert
+      where:
+        stage: new
+    start:
+      agent: scorer
+    goal: 'A new agent was added to the inventory. Score it and request approvals. Event: {event}'
+    asUser: false
+  - key: score_changed
+    'on':
+      collection: agents
+      op: update
+    start:
+      agent: scorer
+    goal: 'An agent record changed. Check whether permissions or data access increased; re-score; if they increased, request
+      approvals again. Event: {event}'
+    asUser: false
+  - key: check_behavior
+    'on':
+      collection: behavior_events
+      op: insert
+    start:
+      agent: enforcer
+    goal: 'Check this runtime event against the policies. Event: {event}'
+    asUser: false
+  - key: notify_registered
+    'on':
+      collection: agents
+      op: insert
+    notify:
+      to:
+      - record.owner_email
+      - role:security_analyst
+      subject: Agent {record.name} registered and awaiting approval
+      body: The AI agent {record.name} was added to the Warden inventory. It will be risk-scored and needs approval from its
+        owner and from security.
+      link: approvals
+    asUser: false
+  - key: notify_incident
+    'on':
+      collection: incidents
+      op: insert
+    notify:
+      to:
+      - role:security_analyst
+      - admins
+      - record.owner_email
+      subject: 'Incident ({record.severity}): {record.title}'
+      body: 'A policy violation was detected for agent {record.agent_name}. Policy: {record.policy}. {record.description}'
+      link: incidents
+    asUser: false
+  - key: notify_rejected
+    'on':
+      approval: security_signoff
+      decision: rejected
+    notify:
+      to:
+      - admins
+      - role:security_analyst
+      subject: Agent approval rejected
+      body: Security rejected an agent change. Review the agent inventory.
+      link: inventory
+    asUser: false
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Warden
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: AI agent security and governance
+      title: Know every AI agent you run. **Control** what each one can do.
+      text: Warden builds a live inventory of your AI agents, scores their risk and explains why, enforces your policies,
+        routes approvals, raises incidents and produces EU AI Act and ISO 42001 evidence.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+      aside: <div style="padding:16px"><strong>Example</strong><br>Sales-Copilot · owner j.doe · CRM read/write · customer
+        data<br><strong>Risk 78 — High</strong><br>Write access to CRM and customer data with no approval on record.</div>
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Discover
+        text: Agents from your SaaS and cloud are pushed into the inventory, or registered with a form.
+        badge: 🔎
+      - title: Score and approve
+        text: Each agent gets an explained risk score. New agents and permission increases need owner and security approval.
+        badge: ⚖️
+      - title: Monitor and enforce
+        text: Runtime events from your own infrastructure are checked against your policy library; violations become incidents.
+        badge: 🛡️
+      - title: Prove
+        text: Dashboards, an audit log and control-mapped reports for auditors.
+        badge: 📋
+    - type: cards
+      id: controls
+      title: Built for governance teams
+      items:
+      - title: Inventory
+        text: Name, owner, purpose, model, tools, permissions, data and business unit.
+      - title: Policy library
+        text: Rules such as no customer-data access without approval.
+      - title: Frameworks
+        text: EU AI Act and ISO/IEC 42001 control mapping.
+      - title: Enterprise
+        text: From £40,000 a year, deployed for your own organisation only.
+    - type: note
+      content: Warden is decision support, not legal advice or certification.
+  - key: overview
+    type: page
+    title: Dashboard
+    roles:
+    - admin
+    - security_analyst
+    - auditor
+    sections:
+    - type: data
+      title: Inventory
+      source: collection:agents
+      display: kpi
+      kpis:
+      - label: Agents
+        agg: count
+      - label: Average risk
+        agg: avg
+        field: risk_score
+        format: number
+      - label: Highest risk
+        agg: max
+        field: risk_score
+        format: number
+    - type: data
+      title: Risk distribution
+      source: collection:agents
+      display: chart
+      chart: bar
+      groupBy:
+        field: risk_level
+        aggs: []
+      fields:
+      - key: risk_level
+        label: Risk level
+      - key: count
+        label: Agents
+    - type: data
+      title: Agents by business unit
+      source: collection:agents
+      display: chart
+      chart: pie
+      groupBy:
+        field: business_unit
+        aggs: []
+      fields:
+      - key: business_unit
+        label: Business unit
+      - key: count
+        label: Agents
+    - type: data
+      title: 'Policy compliance: incidents by policy'
+      source: collection:incidents
+      display: chart
+      chart: bar
+      groupBy:
+        field: policy
+        aggs: []
+      fields:
+      - key: policy
+        label: Policy
+      - key: count
+        label: Incidents
+    - type: data
+      title: Risk trend
+      source: collection:risk_assessments
+      display: chart
+      chart: line
+      groupBy:
+        field: date
+        bucket: week
+        aggs:
+        - key: avg_score
+          agg: avg
+          field: score
+      fields:
+      - key: date
+        label: Week
+      - key: avg_score
+        label: Average score
+    - type: data
+      title: Open incidents
+      source: collection:incidents
+      display: table
+      filters:
+      - field: status
+        op: '='
+        value: open
+      fields:
+      - key: title
+        label: Incident
+      - key: agent_name
+        label: Agent
+      - key: severity
+        label: Severity
+        format: badge
+      - key: assignee_email
+        label: Assignee
+      - key: detected_on
+        label: Detected
+        format: date
+      limit: 20
+      empty: No open incidents.
+  - key: inventory
+    type: table
+    title: Agent inventory
+    source: collection:agents
+    export: true
+    roles:
+    - admin
+    - security_analyst
+    - auditor
+    - agent_owner
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Agent
+      - key: owner_email
+        label: Owner
+      - key: business_unit
+        label: Business unit
+      - key: model
+        label: Model
+      - key: data_sensitivity
+        label: Data
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+      - key: risk_score
+        label: Risk
+        format: number
+      - key: risk_level
+        label: Level
+        format: badge
+      - key: source
+        label: Source
+        format: badge
+      sort:
+        field: risk_score
+        dir: desc
+      limit: 200
+  - key: agent_register
+    type: form
+    title: Register an agent
+    collection: agents
+    fields:
+    - name
+    - owner_email
+    - purpose
+    - model
+    - tools
+    - permissions
+    - data_accessed
+    - data_sensitivity
+    - business_unit
+    submit:
+      label: Register agent
+      message: Agent registered. It will be risk-scored and sent for approval.
+      redirect: inventory
+    roles:
+    - admin
+    - security_analyst
+    - agent_owner
+  - key: agent_edit
+    type: form
+    title: Edit an agent
+    collection: agents
+    edit: true
+    submit:
+      label: Save
+      message: Saved. A change in permissions triggers a new assessment and approvals.
+      redirect: inventory
+    roles:
+    - admin
+    - security_analyst
+    - agent_owner
+    nav: false
+  - key: assessments
+    type: table
+    title: Risk assessments
+    source: collection:risk_assessments
+    roles:
+    - admin
+    - security_analyst
+    - auditor
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: agent_name
+        label: Agent
+      - key: score
+        label: Score
+        format: number
+      - key: level
+        label: Level
+        format: badge
+      - key: explanation
+        label: Explanation
+      sort:
+        field: date
+        dir: desc
+      limit: 100
+  - key: approvals
+    type: approvals
+    title: Approvals
+    roles:
+    - admin
+    - security_analyst
+    - agent_owner
+  - key: policy_library
+    type: table
+    title: Policy library
+    source: collection:policies
+    export: true
+    roles:
+    - admin
+    - security_analyst
+    - auditor
+    - agent_owner
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Policy
+      - key: rule
+        label: Rule
+      - key: severity
+        label: Severity
+        format: badge
+      - key: framework_refs
+        label: References
+      - key: active
+        label: Active
+      limit: 200
+  - key: policy_form
+    type: form
+    title: Add a policy
+    collection: policies
+    edit: false
+    submit:
+      label: Save policy
+      message: Policy saved.
+      redirect: policy_library
+    roles:
+    - admin
+    - security_analyst
+  - key: behavior
+    type: table
+    title: Runtime behaviour
+    source: collection:behavior_events
+    roles:
+    - admin
+    - security_analyst
+    - auditor
+    data:
+      display: table
+      fields:
+      - key: occurred_at
+        label: Time
+      - key: agent_name
+        label: Agent
+      - key: event_type
+        label: Event
+      - key: tool
+        label: Tool
+      - key: data_class
+        label: Data class
+      - key: detail
+        label: Detail
+      limit: 200
+  - key: incidents
+    type: table
+    title: Incidents
+    source: collection:incidents
+    export: true
+    roles:
+    - admin
+    - security_analyst
+    - auditor
+    - agent_owner
+    data:
+      display: table
+      fields:
+      - key: detected_on
+        label: Detected
+        format: date
+      - key: title
+        label: Incident
+      - key: agent_name
+        label: Agent
+      - key: policy
+        label: Policy
+      - key: severity
+        label: Severity
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+      - key: assignee_email
+        label: Assignee
+      sort:
+        field: detected_on
+        dir: desc
+      limit: 200
+  - key: incident_form
+    type: form
+    title: Open or update an incident
+    collection: incidents
+    edit: true
+    submit:
+      label: Save incident
+      message: Incident saved.
+      redirect: incidents
+    roles:
+    - admin
+    - security_analyst
+  - key: audit
+    type: table
+    title: Audit log
+    source: collection:audit_log
+    export: true
+    roles:
+    - admin
+    - security_analyst
+    - auditor
+    data:
+      display: table
+      fields:
+      - key: at
+        label: Date
+        format: date
+      - key: actor
+        label: Actor
+      - key: action
+        label: Action
+      - key: entity
+        label: Entity
+      - key: detail
+        label: Detail
+      sort:
+        field: at
+        dir: desc
+      limit: 200
+  - key: new_report
+    type: new_run
+    title: New compliance report
+    roles:
+    - admin
+    - security_analyst
+    - auditor
+  - key: reports
+    type: history
+    title: Reports
+    source: run
+    roles:
+    - admin
+    - security_analyst
+    - auditor
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: account
+    type: account
+    title: Subscription
+    roles:
+    - admin
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: enterprise
+      price: 40000
+      interval: year
+      label: Enterprise (from £40,000 a year)
+      includes:
+      - Unlimited agents inventory
+      - Runtime behaviour monitoring
+      - EU AI Act and ISO 42001 reports
+      roles:
+      - admin
+  notifications:
+    emailOnRunDone: true
+  extensions:
+  - key: oauth_discovery
+    description: Automatic discovery through OAuth connections to Microsoft 365, Google Workspace, Salesforce, Azure and AWS
+      is not available yet. Today, discovered agents are pushed to the 'discovered' webhook by the customer's own connectors,
+      or registered with the form.
+  - key: slack_alerts
+    description: Slack alerts are not available yet. Email alerts to security analysts, admins and agent owners work today.
+  - key: runtime_collector
+    description: The runtime monitor that runs inside the customer's infrastructure is deployed by the customer and posts
+      events to the 'behavior' webhook; Warden stores and evaluates them but does not install the collector.
+  - key: tenancy
+    description: Assumes one deployment per customer organisation, so the organisation back office holds that customer's data
+      and roles control who sees what. No data is shared between customers.
+  - key: form_audit
+    description: The audit log is written by Warden's agents for assessments, approvals and incidents. Manual edits in forms
+      are not logged automatically.

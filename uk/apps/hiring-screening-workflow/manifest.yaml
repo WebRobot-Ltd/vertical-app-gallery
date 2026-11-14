@@ -1,0 +1,1027 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: vetstream
+  displayName: Vetstream
+  tagline: 'AI agents for hiring: from screening to verified, cleared candidates.'
+  description: Vetstream screens applications against your criteria, asks candidates follow-up questions, gives recruiters
+    a shortlist to approve, then collects documents and tracks every pre-employment check until compliance clears the file.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12355b'
+      accent: '#1b998b'
+      background: '#f6f8fa'
+      foreground: '#17212b'
+    fonts:
+      body: Inter
+      display: Sora
+    wordmark:
+    - text: Vet
+      color: primary
+    - text: stream
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Checks
+      href: '#checks'
+    - label: Open roles
+      href: /v/jobs
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+      - jobs
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: Employer, agency or candidate
+      assignedBy: signup
+    - key: recruiter
+      label: Recruiter
+      assignedBy: derived
+      from: collection:vacancies.recruiter_email
+    - key: hiring_manager
+      label: Hiring manager
+      assignedBy: derived
+      from: collection:vacancies.hiring_manager_email
+    - key: compliance
+      label: Compliance
+      assignedBy: derived
+      from: collection:vacancies.compliance_email
+  limits:
+  - action: create:vacancies
+    max: 3
+    window: total
+    plans:
+      starter: 25
+      agency: -1
+  - action: login
+    per: ip
+    max: 20
+    window: hour
+  agents:
+  - key: screener
+    role: main
+    description: Scores each application against the vacancy criteria, asks follow-up questions and proposes a shortlist for
+      the recruiter to approve.
+    profile:
+      inline:
+        display_name: Vetstream screener
+        crews:
+        - id: screener
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a fair, careful recruitment screener. For one application you: (1) read the application
+            and the vacancy (tool read_vacancy, match by ref; the vacancy has criteria, recruiter_email, hiring_manager_email,
+            compliance_email, title); (2) open the CV with read_upload using the file id in the application; (3) score the
+            candidate 0-100 against the stated criteria only, using job-relevant evidence. Never use or infer age, gender,
+            ethnicity, nationality, religion, disability, health, family status or any other protected characteristic, and
+            never reject on those grounds. (4) If key information is missing, write at most 3 short, specific follow-up questions.
+            Make ONE single update_application call at the end that sets: score, screening_summary (3-6 lines: strengths,
+            gaps, evidence), vacancy_title, recruiter_email, hiring_manager_email, compliance_email (copied from the vacancy),
+            answered=false, and status screened. If you have questions also set followup_question and followup_status asked;
+            otherwise followup_status none. (5) If the score is 60 or more and there are no open questions, call request_shortlist
+            with a concise rationale for the recruiter, and set status shortlisted in your update. Scores are advice: the
+            recruiter decides. Never invent facts about the candidate. When the candidate has answered follow-up questions
+            (followup_answer), re-score taking the answers into account. Finish with a short Markdown report starting with
+            a level-1 title ''# Screening — <candidate name> — <vacancy title>''.'
+    appTools:
+    - name: read_vacancy
+      description: Read published vacancies (criteria, contacts)
+      action: read
+      collection: job_board
+      scope: all
+    - name: read_application
+      description: Read the candidate's application
+      action: read
+      collection: applications
+      scope: user
+    - name: update_application
+      description: Update the candidate's application with the screening result
+      action: write
+      collection: applications
+      scope: user
+    - name: read_upload
+      description: Read an uploaded file (CV, OCR included) by file id
+      action: read_file
+    awaits:
+    - shortlist
+    output: markdown
+    limits:
+      maxTurns: 14
+      maxBudgetUsd: 0.5
+  - key: verifier
+    role: helper
+    description: After an offer, collects documents, checks previous employers against Companies House, tracks every check
+      and asks compliance to clear the file.
+    profile:
+      inline:
+        display_name: Vetstream verifier
+        crews:
+        - id: verifier
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You run pre-employment verification for one candidate after an offer. First make ONE update_app
+            call setting status verifying. Then create one check record (add_check) per required check, with candidate_name,
+            candidate_email, vacancy_title, recruiter_email, compliance_email copied from the application, a due_date 7 days
+            from today, and a status: requested (waiting for the candidate), received, pending, passed, failed, partner_required
+            or waived. Checks: id, address, qualification (documents the candidate uploads: look them up with read_docs and
+            open them with read_upload; compare name, dates and obviously inconsistent details, and say plainly when a document
+            looks unreadable or doubtful, never declare a document genuine or forged as fact); reference (one check per referee
+            given in the application: needs the referee''s email and the candidate''s explicit consent, boolean consent; with
+            no consent do not contact the referee, leave status requested and ask the candidate); employer (for each previous
+            employer in the application, search companies_house_search with query q=<company name>; record whether a matching
+            company exists, its status and incorporation date, and whether the claimed employment dates are plausible; sole
+            traders and non-UK employers cannot be checked: mark them waived with a reason). Criminal record (DBS), digital
+            right-to-work, identity-service and credit checks are NEVER performed by you: DBS only through a registered body,
+            digital right-to-work and identity checks only through a certified identity service provider, credit checks only
+            through licensed bureaus, and only if the customer has a contract with them. Create these checks with status partner_required
+            and a detail explaining which partner route applies; add a credit check only if the role needs it and the candidate
+            gave written consent. Use update_check to track progress and always set failure_reason (a short phrase such as
+            ''document unreadable'', ''employer not found'', ''referee no reply'', ''dates inconsistent'') when a check fails.
+            When all checks are resolved (passed, failed, waived or partner_required), call request_clearance with a summary
+            of results per check for the compliance user, and set the application status verifying until the decision. Never
+            give legal advice or make the hiring decision. Finish with a Markdown report starting with ''# Verification —
+            <candidate name> — <vacancy title>'' containing a table of checks and statuses.'
+        mcp_servers: []
+    appTools:
+    - name: read_app
+      description: Read the candidate's application
+      action: read
+      collection: applications
+      scope: user
+    - name: update_app
+      description: Update the candidate's application status
+      action: write
+      collection: applications
+      scope: user
+    - name: read_docs
+      description: List the documents the candidate uploaded
+      action: read
+      collection: documents
+      scope: user
+    - name: read_checks
+      description: List the checks of this candidate
+      action: read
+      collection: checks
+      scope: user
+    - name: add_check
+      description: Create a check record
+      action: append
+      collection: checks
+      scope: user
+    - name: update_check
+      description: Update a check record (status, detail, failure reason)
+      action: write
+      collection: checks
+      scope: user
+    - name: read_upload
+      description: Read an uploaded document (OCR included) by file id
+      action: read_file
+    - name: companies_house_search
+      description: Search UK companies by name on Companies House
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk/search/companies
+        allowPath: false
+        credential:
+          provider: companies_house
+          header: Authorization
+          format: Basic {secret}
+        attribution: Contains public sector information from Companies House, Open Government Licence v3.0
+    awaits:
+    - clearance
+    output: markdown
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 1.0
+  data:
+    credentials:
+    - provider: companies_house
+      kind: api_key
+      scope: org
+      label: Companies House API key
+      help: Create a free REST API key on developer.company-information.service.gov.uk and paste it Base64-encoded as 'KEY:'
+        (key followed by a colon).
+    collections:
+    - name: job_board
+      ownedBy: shared
+      description: Published open roles that candidates can apply to (copied from the recruiters' vacancies)
+      fields:
+      - name: ref
+        type: text
+        required: true
+      - name: title
+        type: text
+      - name: client_name
+        type: text
+      - name: location
+        type: text
+      - name: description
+        type: textarea
+      - name: criteria
+        type: textarea
+      - name: status
+        type: text
+      - name: closing_date
+        type: date
+      - name: recruiter_email
+        type: email
+      - name: hiring_manager_email
+        type: email
+      - name: compliance_email
+        type: email
+    - name: vacancies
+      ownedBy: user
+      description: Roles posted by employers and agencies
+      fields:
+      - name: ref
+        type: text
+        required: true
+        label: Reference
+        help: A short unique code, e.g. ENG-2026-01
+      - name: title
+        type: text
+        required: true
+        label: Job title
+      - name: client_name
+        type: text
+        label: 'Employer (for agencies: the client)'
+      - name: location
+        type: text
+      - name: description
+        type: textarea
+        maxLength: 4000
+      - name: criteria
+        type: textarea
+        required: true
+        maxLength: 3000
+        label: Screening criteria
+        help: Must-haves and nice-to-haves, job-related only
+      - name: status
+        type: select
+        required: true
+        default: open
+        options:
+        - open
+        - closed
+      - name: closing_date
+        type: date
+      - name: recruiter_email
+        type: email
+        required: true
+        label: Recruiter email
+      - name: hiring_manager_email
+        type: email
+        required: true
+        label: Hiring manager email
+      - name: compliance_email
+        type: email
+        required: true
+        label: Compliance reviewer email
+    - name: applications
+      ownedBy: user
+      retentionDays: 730
+      description: Each candidate's application with screening and status
+      fields:
+      - name: vacancy_ref
+        type: select
+        required: true
+        optionsFrom: collection:job_board
+        label: Role
+      - name: full_name
+        type: text
+        required: true
+        label: Full name
+      - name: email
+        type: email
+        required: true
+      - name: phone
+        type: text
+      - name: cv
+        type: file
+        accept:
+        - pdf
+        - docx
+        maxMb: 10
+        required: true
+        label: CV
+      - name: previous_employers
+        type: textarea
+        maxLength: 2000
+        label: Previous employers (name, dates)
+      - name: cover_note
+        type: textarea
+        maxLength: 2000
+      - name: vacancy_title
+        type: text
+      - name: recruiter_email
+        type: email
+      - name: hiring_manager_email
+        type: email
+      - name: compliance_email
+        type: email
+      - name: score
+        type: number
+      - name: screening_summary
+        type: textarea
+      - name: followup_question
+        type: textarea
+      - name: followup_status
+        type: select
+        options:
+        - none
+        - asked
+      - name: followup_answer
+        type: textarea
+        maxLength: 3000
+        label: Your answers
+      - name: answered
+        type: boolean
+        label: I have finished answering
+      - name: status
+        type: select
+        default: applied
+        options:
+        - applied
+        - screened
+        - shortlisted
+        - rejected
+        - offer_made
+        - verifying
+        - cleared
+        - failed
+      - name: offer_date
+        type: date
+      - name: cleared_date
+        type: date
+      - name: time_to_hire_days
+        type: number
+      access:
+      - role: recruiter
+        where:
+          recruiter_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: hiring_manager
+        where:
+          hiring_manager_email: '{user.email}'
+        can:
+        - read
+      - role: compliance
+        where:
+          compliance_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: documents
+      ownedBy: user
+      retentionDays: 730
+      description: Documents the candidate uploads for verification
+      fields:
+      - name: vacancy_ref
+        type: text
+        required: true
+        label: Role reference
+      - name: doc_type
+        type: select
+        required: true
+        label: Document
+        options:
+        - id
+        - proof_of_address
+        - qualification
+        - reference_letter
+      - name: file
+        type: file
+        accept:
+        - pdf
+        - jpg
+        - jpeg
+        - png
+        maxMb: 10
+        required: true
+        capture: true
+      - name: consent
+        type: boolean
+        label: I consent to this document being verified
+    - name: checks
+      ownedBy: user
+      retentionDays: 730
+      description: One record per pre-employment check, with status and failure reason
+      fields:
+      - name: candidate_name
+        type: text
+      - name: candidate_email
+        type: email
+      - name: vacancy_title
+        type: text
+      - name: check_type
+        type: select
+        options:
+        - id
+        - address
+        - qualification
+        - reference
+        - employer
+        - dbs
+        - right_to_work
+        - credit
+      - name: status
+        type: select
+        options:
+        - requested
+        - received
+        - pending
+        - passed
+        - failed
+        - partner_required
+        - waived
+      - name: failure_reason
+        type: text
+      - name: detail
+        type: textarea
+      - name: referee_email
+        type: email
+      - name: consent
+        type: boolean
+      - name: due_date
+        type: date
+      - name: recruiter_email
+        type: email
+      - name: compliance_email
+        type: email
+      access:
+      - role: recruiter
+        where:
+          recruiter_email: '{user.email}'
+        can:
+        - read
+      - role: compliance
+        where:
+          compliance_email: '{user.email}'
+        can:
+        - read
+        - write
+  views:
+  - key: home
+    type: page
+    title: Vetstream
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: Hiring, screened and verified
+      title: From first application to a **cleared** hire.
+      text: AI agents score applications against your criteria, ask candidates the right follow-up questions and give recruiters
+        a shortlist to approve. After the offer, they collect documents, check previous employers and chase referees, until
+        compliance clears the file.
+      actions:
+      - label: Post a role
+        href: /v/post_vacancy
+        style: primary
+      - label: See open roles
+        href: /v/jobs
+        style: ghost
+      aside: '<div style="padding:16px"><b>Shortlist ready</b><br>Candidate A: 82/100, approved by recruiter<br>Checks: ID
+        passed, employer passed, reference pending</div>'
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Recruiters post roles
+        text: With criteria, hiring manager and compliance contact.
+        badge: '1'
+      - title: Candidates apply
+        text: A form with CV upload. The screening agent scores and asks follow-ups by email.
+        badge: '2'
+      - title: Recruiter approves the shortlist
+        text: Hiring managers see only candidates for their own vacancies.
+        badge: '3'
+      - title: Verify and clear
+        text: Documents, previous employers, references; compliance reviews and clears each file.
+        badge: '4'
+    - type: cards
+      id: checks
+      title: Checks, done properly
+      items:
+      - title: Documents and references
+        text: ID, proof of address, qualifications and references, with the candidate's consent and email reminders for what
+          is missing.
+      - title: Companies House
+        text: Previous employers are checked against the Companies House register.
+      - title: Regulated checks via partners
+        text: DBS goes through a registered body, digital right-to-work and identity through a certified identity service
+          provider, credit checks through licensed bureaus, and only where you hold the contract.
+    - type: note
+      content: Vetstream supports hiring decisions; it does not make them and is not legal advice. Screening uses job-related
+        criteria only.
+  - key: jobs
+    type: cards
+    title: Open roles
+    source: collection:job_board
+    data:
+      display: cards
+      fields:
+      - key: title
+        label: Role
+      - key: client_name
+        label: Employer
+      - key: location
+        label: Location
+      - key: closing_date
+        label: Closes
+        format: date
+      filters:
+      - field: status
+        op: '='
+        value: open
+      empty: No open roles right now.
+  - key: post_vacancy
+    type: form
+    title: Post a role
+    collection: vacancies
+    submit:
+      label: Publish role
+      message: Role published. Candidates can now apply.
+      redirect: my_vacancies
+    edit: true
+  - key: my_vacancies
+    type: table
+    title: My roles
+    source: collection:vacancies
+    export: true
+    data:
+      display: table
+      fields:
+      - key: ref
+        label: Ref
+      - key: title
+        label: Role
+      - key: client_name
+        label: Employer
+      - key: status
+        label: Status
+        format: badge
+      - key: closing_date
+        label: Closes
+        format: date
+  - key: apply
+    type: form
+    title: Apply
+    collection: applications
+    fields:
+    - vacancy_ref
+    - full_name
+    - email
+    - phone
+    - cv
+    - previous_employers
+    - cover_note
+    submit:
+      label: Send application
+      message: Application received. You may get follow-up questions by email.
+      redirect: applications
+  - key: applications
+    type: table
+    title: Applications
+    source: collection:applications
+    export: true
+    data:
+      display: table
+      fields:
+      - key: full_name
+        label: Candidate
+      - key: vacancy_title
+        label: Role
+      - key: score
+        label: Score
+        format: number
+      - key: status
+        label: Status
+        format: badge
+      - key: followup_status
+        label: Follow-up
+        format: badge
+      - key: screening_summary
+        label: Summary
+      sort:
+        field: score
+        dir: desc
+      actions:
+      - type: call
+        field: phone
+        label: Call
+  - key: answer
+    type: form
+    title: Answer follow-up questions
+    collection: applications
+    fields:
+    - followup_answer
+    - answered
+    edit: true
+    nav: false
+    submit:
+      label: Send answers
+      message: Thank you, your answers were sent.
+  - key: offer
+    type: form
+    title: Update status / make offer
+    collection: applications
+    fields:
+    - status
+    - offer_date
+    edit: true
+    nav: false
+    roles:
+    - recruiter
+    - admin
+    submit:
+      label: Save
+      message: Saved.
+  - key: upload_docs
+    type: form
+    title: Upload documents
+    collection: documents
+    submit:
+      label: Upload
+      message: Document uploaded.
+  - key: checks_table
+    type: table
+    title: Checks
+    source: collection:checks
+    roles:
+    - recruiter
+    - compliance
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: candidate_name
+        label: Candidate
+      - key: vacancy_title
+        label: Role
+      - key: check_type
+        label: Check
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+      - key: failure_reason
+        label: Failure reason
+      - key: due_date
+        label: Due
+        format: date
+      sort:
+        field: due_date
+        dir: asc
+  - key: approvals_view
+    type: approvals
+    title: Approvals
+    roles:
+    - recruiter
+    - compliance
+    - admin
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - recruiter
+    - hiring_manager
+    - compliance
+    - admin
+    sections:
+    - type: data
+      title: Hiring at a glance
+      source: collection:applications
+      display: kpi
+      kpis:
+      - label: Applications
+        agg: count
+      - label: Average time to hire (days)
+        agg: avg
+        field: time_to_hire_days
+        format: number
+    - type: data
+      title: Time to hire by month
+      source: collection:applications
+      display: chart
+      chart: line
+      fields:
+      - key: cleared_date
+        label: Month
+      - key: avg_days
+        label: Avg days
+      groupBy:
+        field: cleared_date
+        bucket: month
+        aggs:
+        - key: avg_days
+          agg: avg
+          field: time_to_hire_days
+    - type: data
+      title: Checks pending
+      source: collection:checks
+      display: kpi
+      filters:
+      - field: status
+        op: '='
+        value: pending
+      kpis:
+      - label: Pending checks
+        agg: count
+    - type: data
+      title: Failure reasons
+      source: collection:checks
+      display: chart
+      chart: bar
+      fields:
+      - key: failure_reason
+        label: Reason
+      - key: count
+        label: Checks
+      filters:
+      - field: status
+        op: '='
+        value: failed
+      groupBy:
+        field: failure_reason
+        aggs: []
+      empty: No failed checks.
+  - key: runs
+    type: history
+    title: Agent runs
+    source: run
+    roles:
+    - admin
+    - compliance
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: account
+    type: account
+    title: Plan and credits
+    roles:
+    - user
+    - recruiter
+    - admin
+  approvals:
+  - key: shortlist
+    title: Approve shortlisted candidate
+    description: The screening agent proposes this candidate for the shortlist.
+    role: recruiter
+    decidedBy: role
+  - key: clearance
+    title: Clear candidate file
+    description: Compliance reviews all checks and clears or rejects the file.
+    role: compliance
+    decidedBy: role
+  triggers:
+  - key: publish_vacancy
+    'on':
+      collection: vacancies
+      op: any
+    write:
+      collection: job_board
+      fields:
+        ref: ref
+        title: title
+        client_name: client_name
+        location: location
+        description: description
+        criteria: criteria
+        status: status
+        closing_date: closing_date
+        recruiter_email: recruiter_email
+        hiring_manager_email: hiring_manager_email
+        compliance_email: compliance_email
+      keyBy: ref
+  - key: screen_application
+    'on':
+      collection: applications
+      op: insert
+      where:
+        status: applied
+    start:
+      agent: screener
+    goal: 'Screen the new application of {record.full_name} for vacancy ref {record.vacancy_ref}. CV file id(s): {record.cv}.
+      Previous employers: {record.previous_employers}. Cover note: {record.cover_note}. Today is {date}.'
+  - key: rescreen_application
+    'on':
+      collection: applications
+      op: update
+      where:
+        answered: true
+    start:
+      agent: screener
+    goal: 'The candidate {record.full_name} answered the follow-up questions for vacancy ref {record.vacancy_ref}. Questions:
+      {record.followup_question}. Answers: {record.followup_answer}. CV file id(s): {record.cv}. Re-score and update the application,
+      setting answered to false and followup_status to none.'
+  - key: followup_email
+    'on':
+      collection: applications
+      op: update
+      where:
+        followup_status: asked
+    notify:
+      to:
+      - record.email
+      subject: A few questions about your application
+      body: 'Hello {record.full_name},
+
+
+        Thank you for applying. To complete your application we have a few questions:
+
+
+        {record.followup_question}
+
+
+        Please answer them in the app.'
+      link: answer
+  - key: shortlist_approved
+    'on':
+      approval: shortlist
+      decision: approved
+    notify:
+      to: owner
+      subject: You have been shortlisted
+      body: 'Good news: your application has been shortlisted by the recruiter. We will be in touch about next steps.'
+      link: applications
+  - key: start_verification
+    'on':
+      collection: applications
+      op: update
+      where:
+        status: offer_made
+    start:
+      agent: verifier
+    goal: 'An offer was made to {record.full_name} ({record.email}) for {record.vacancy_title}. Recruiter {record.recruiter_email},
+      compliance {record.compliance_email}. Previous employers: {record.previous_employers}. Start the verification workflow.
+      Today is {date}.'
+  - key: referee_request
+    'on':
+      collection: checks
+      op: insert
+      where:
+        check_type: reference
+        consent: true
+        status: requested
+    notify:
+      to:
+      - record.referee_email
+      subject: Reference request for {record.candidate_name}
+      body: 'Hello,
+
+
+        {record.candidate_name} has named you as a referee for a position as {record.vacancy_title} and has given consent
+        for us to contact you. Please reply with a short reference on their reliability, role, dates of employment and reason
+        for leaving.'
+  - key: missing_docs_reminder
+    'on':
+      date:
+        collection: checks
+        field: due_date
+        offsetDays: 0
+        hour: 8
+      where:
+        status: requested
+    notify:
+      to:
+      - record.candidate_email
+      subject: Documents still missing for your application
+      body: 'Hello {record.candidate_name},
+
+
+        We are still waiting for: {record.check_type} ({record.vacancy_title}). Please upload it today to avoid delays.'
+      link: upload_docs
+  - key: delay_alert
+    'on':
+      date:
+        collection: checks
+        field: due_date
+        offsetDays: 3
+        hour: 8
+      where:
+        status: pending
+    notify:
+      to:
+      - record.recruiter_email
+      - record.compliance_email
+      subject: 'Check delayed: {record.check_type} for {record.candidate_name}'
+      body: The {record.check_type} check for {record.candidate_name} ({record.vacancy_title}) is still pending, three days
+        past its due date.
+      link: checks_table
+  - key: clearance_decided
+    'on':
+      approval: clearance
+      decision: approved
+    notify:
+      to: owner
+      subject: Your pre-employment checks are complete
+      body: Your file has been reviewed and cleared by compliance. Thank you for your help.
+  egress:
+    hosts:
+    - api.company-information.service.gov.uk
+    notes: Companies House public API for checking previous employers; free reuse under the Open Government Licence v3.0.
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: gbp
+    signupCredits: 20
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:screener:
+        estimate: 10
+        metered: true
+      agent:verifier:
+        estimate: 40
+        metered: true
+    packs:
+    - key: checks_50
+      credits: 500
+      price: 50
+      label: Check pack 500
+    - key: checks_250
+      credits: 2500
+      price: 200
+      label: Check pack 2500
+    plans:
+    - key: starter
+      price: 99
+      interval: month
+      label: 'Starter: 25 open roles'
+      credits: 200
+      creditsReset: monthly
+    - key: agency
+      price: 299
+      interval: month
+      label: 'Agency: unlimited roles'
+      credits: 800
+      creditsReset: monthly
+  extensions:
+  - key: partner_ordering
+    description: Ordering DBS checks (registered body), digital right-to-work and identity checks (certified identity service
+      provider) and credit checks (licensed bureau) is not built. The verifier only creates a partner_required check; compliance
+      records the result from the partner the customer has a contract with.
+  - key: per_check_fee
+    description: Per-check fees are modelled as metered credits on agent runs. Charging the employer (not the candidate who
+      owns the records) per individual check needs a dedicated billing rule.
+  - key: compliance_document_viewer
+    description: Compliance sees check results and summaries; opening the candidate's original uploaded files needs a shared
+      access rule on documents.
+  - key: outbound_email_to_candidates
+    description: Follow-up questions and reminders are plain-text platform emails; branded templates, SMS or WhatsApp are
+      not available.

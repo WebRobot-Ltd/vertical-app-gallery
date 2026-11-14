@@ -1,0 +1,916 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: vendorscope
+  displayName: Vendorscope
+  tagline: Continuous cyber-risk monitoring of your suppliers.
+  description: Vendorscope checks each supplier's domains every day using passive public sources only, calculates a deterministic
+    0-100 risk score, explains it in plain English, and sends alerts to contract owners. It also runs the supplier security
+    questionnaire.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#0f1d2e'
+      accent: '#d9432b'
+      background: '#f6f8fa'
+      foreground: '#111827'
+    fonts:
+      body: Inter
+      display: IBM Plex Sans
+    wordmark:
+    - text: Vendor
+      color: primary
+    - text: scope
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how-it-works'
+    - label: Sources
+      href: '#sources'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: Team member
+      assignedBy: signup
+    - key: risk_analyst
+      label: Risk analyst
+      assignedBy: invite
+    - key: contract_owner
+      label: Contract owner
+      assignedBy: derived
+      from: collection:suppliers.contract_owner_email
+    - key: supplier
+      label: Supplier
+      assignedBy: derived
+      from: collection:questionnaire_requests.supplier_email
+  limits:
+  - action: agent:monitor
+    per: user
+    max: 60
+    window: day
+  agents:
+  - key: monitor
+    role: scheduled
+    description: Runs the daily passive checks for one supplier, calls the scoring tool, and explains the score in plain English.
+    profile:
+      inline:
+        display_name: Vendorscope monitor
+        crews:
+        - id: monitor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the Vendorscope monitor. You check ONE supplier of the user''s company, using passive public
+            sources only (never scan, probe or connect to the supplier''s systems).
+
+
+            Steps:
+
+            1. Call read_suppliers and find the supplier named in the goal. You get its Companies House number, domains, criticality,
+            data shared, contract owner and team emails.
+
+            2. Call last_assessment to get the previous score for this supplier (none on the first run).
+
+            3. For each domain: (a) ct_search with query q=%25.<domain>&output=json to list certificates and subdomains; count
+            expired certificates and unexpected or forgotten subdomains. (b) dns_lookup with name=<domain>&type=TXT for SPF
+            (v=spf1: strict if it ends -all, weak if ~all or ?all/+all, missing if none) and name=_dmarc.<domain>&type=TXT
+            for DMARC (policy p=reject, quarantine, none or missing); try common DKIM selectors (google, selector1, selector2,
+            default, k1) at <selector>._domainkey.<domain> type TXT: dkim is found if any exists, otherwise unknown. Also
+            query MX and CAA if useful. (c) TLS: you only have certificate evidence from the CT logs (issuer, expiry, weak
+            key sizes, missing coverage); do not claim protocol or cipher grades.
+
+            4. Exposed technology: infer products only from evidence you have (MX provider, hostnames such as vpn., mail.,
+            sso., certificate names, TXT verification records). Fetch the CISA KEV catalogue with cisa_kev (large JSON) and
+            match entries by vendor/product to the technology you inferred; for each match you may confirm details with nvd_cves
+            (query keywordSearch=<product>&resultsPerPage=20). Count kev_matches (KEV entries matching inferred technology)
+            and high_cves (CVSS >= 7.0 recent). State confidence. Never invent a match.
+
+            5. Company status: companies_house with path /company/<number> (status, accounts overdue, confirmation statement
+            overdue, dissolved or liquidation) and /company/<number>/filing-history. ch_status is one of active, dormant,
+            liquidation, dissolved, unknown. If the call fails because the key is not set, use unknown and say so.
+
+            6. Breach and exposure data from paid sources is NOT connected. Say it was not checked; never guess.
+
+            7. read_questionnaires: set questionnaire_overdue true if a request for this supplier is still in status sent
+            for more than 7 days.
+
+            8. Call calc_score with args {kev_matches, high_cves, dmarc, spf, dkim, expired_certs, unknown_subdomains, ch_status,
+            overdue_filings, questionnaire_overdue, criticality, previous_score}. The score is computed ONLY by this tool:
+            never compute, adjust or override it. It returns score, band, delta, alert and breakdown.
+
+            9. Call save_assessment once with supplier_name, date (YYYY-MM-DD), score, previous_score, delta, band, critical_count
+            (= kev_matches + number of expired certificates + 1 if the company is dissolved or in liquidation), alert (yes
+            or no, as returned by calc_score), ch_status, findings (short bullet list as text), explanation (the plain-English
+            paragraph below, max 120 words), contract_owner_email and team_emails copied from the supplier record.
+
+            10. If alert is yes, call request_risk_review with the supplier, the main issue and a proposed action (for example:
+            request remediation within 14 days, escalate to the supplier''s CISO, suspend data sharing, accept the risk with
+            a review date). Do not decide it yourself.
+
+
+            Final answer: Markdown that starts with a level-1 title ''# <Supplier> — risk <date>''. Then ## Score (score,
+            band, change since last time), ## What drives the score (the breakdown, each item tied to its evidence), ## What
+            changed, ## Recommended next steps, ## Not checked (breach data, TLS protocol grading, anything that failed).
+            Plain English for a non-technical reader. Cite sources (crt.sh, DNS, CISA KEV, NVD, Companies House). The AI explains
+            the score; it never gives legal advice or states that a supplier was breached unless a source says so.'
+          mcp_servers: []
+    appTools:
+    - name: read_suppliers
+      description: List the suppliers of the signed-in user's company
+      action: read
+      collection: suppliers
+      scope: user
+    - name: last_assessment
+      description: Search the previous assessments of a supplier (latest first)
+      action: search
+      collection: assessments
+      scope: user
+    - name: read_questionnaires
+      description: Read the questionnaire requests sent to suppliers
+      action: read
+      collection: questionnaire_requests
+      scope: user
+    - name: save_assessment
+      description: Save today's assessment of a supplier
+      action: append
+      collection: assessments
+      scope: user
+    - name: calc_score
+      description: Deterministic 0-100 risk score from the check results
+      action: call
+      slot: risk_score
+    - name: ct_search
+      description: 'Certificate transparency search on crt.sh (query: q=%25.domain&output=json)'
+      action: http
+      http:
+        method: GET
+        url: https://crt.sh/
+        attribution: crt.sh public certificate transparency search
+    - name: dns_lookup
+      description: 'Public DNS over HTTPS lookup (query: name=<host>&type=<TXT|MX|CAA|A>)'
+      action: http
+      http:
+        method: GET
+        url: https://dns.google/resolve
+        headers:
+          Accept: application/dns-json
+        attribution: Google Public DNS
+    - name: cisa_kev
+      description: CISA Known Exploited Vulnerabilities catalogue (JSON)
+      action: http
+      http:
+        method: GET
+        url: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
+        maxBytes: 2000000
+        timeoutMs: 30000
+        attribution: CISA KEV catalog
+    - name: nvd_cves
+      description: 'NVD CVE API 2.0 (query: keywordSearch=<product>&resultsPerPage=20)'
+      action: http
+      http:
+        method: GET
+        url: https://services.nvd.nist.gov/rest/json/cves/2.0
+        attribution: NVD, NIST
+    - name: companies_house
+      description: Companies House API; path /company/<number> or /company/<number>/filing-history
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk
+        allowPath: true
+        attribution: Companies House, Open Government Licence v3.0
+        credential:
+          provider: companies_house
+          header: Authorization
+          format: Basic {secret}
+    awaits:
+    - risk_review
+    output: markdown
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 0.8
+      timeoutSeconds: 900
+  templates:
+  - key: supplier_watch
+    title: Supplier monitor
+    description: Daily passive monitoring of one supplier from your supplier register.
+    agent: monitor
+    params:
+    - name: supplier
+      type: select
+      required: true
+      label: Supplier
+      optionsFrom: collection:suppliers
+    goal: Monitor the supplier "{supplier}" (instance {instance}). Today is {date}. Write the report in English.
+    schedule:
+      cron: 0 5 * * *
+      userCanChange: false
+    maxPerUser: 50
+  inputForm:
+    title: Supplier
+    fields: []
+  data:
+    credentials:
+    - provider: companies_house
+      kind: api_key
+      scope: org
+      label: Companies House API key
+      help: Free key from the Companies House developer hub. Store it as base64 of '<key>:' (the key as username, empty password).
+    collections:
+    - name: suppliers
+      description: The supplier register of each company
+      ownedBy: user
+      fields:
+      - name: company_name
+        type: text
+        required: true
+        label: Company name
+      - name: companies_house_number
+        type: text
+        required: true
+        label: Companies House number
+        help: 8 characters, e.g. 01234567
+      - name: domains
+        type: textarea
+        required: true
+        label: Main domains
+        help: One per line, e.g. example.com
+      - name: criticality
+        type: select
+        required: true
+        label: Criticality
+        options:
+        - value: critical
+          label: Critical
+        - value: high
+          label: High
+        - value: medium
+          label: Medium
+        - value: low
+          label: Low
+      - name: data_shared
+        type: multiselect
+        label: Data shared
+        options:
+        - value: personal
+          label: Personal data
+        - value: financial
+          label: Financial data
+        - value: health
+          label: Health data
+        - value: ip
+          label: Intellectual property
+        - value: credentials
+          label: Credentials / system access
+        - value: none
+          label: None
+      - name: contract_owner_email
+        type: email
+        required: true
+        label: Contract owner email
+      - name: supplier_email
+        type: email
+        label: Supplier security contact email
+      - name: team_emails
+        type: array
+        label: Team members who can see this supplier
+        help: Emails of your colleagues (analysts, procurement)
+      access:
+      - role: contract_owner
+        where:
+          contract_owner_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: user
+        where:
+          team_emails: '{user.email}'
+        can:
+        - read
+        - write
+    - name: assessments
+      description: Daily score and explanation per supplier, written by the monitor
+      ownedBy: user
+      fields:
+      - name: supplier_name
+        type: text
+        label: Supplier
+      - name: date
+        type: date
+        label: Date
+      - name: score
+        type: number
+        label: Score
+      - name: previous_score
+        type: number
+        label: Previous score
+      - name: delta
+        type: number
+        label: Change
+      - name: band
+        type: text
+        label: Band
+      - name: critical_count
+        type: number
+        label: Critical issues
+      - name: alert
+        type: text
+        label: Alert
+      - name: ch_status
+        type: text
+        label: Company status
+      - name: findings
+        type: textarea
+        label: Findings
+      - name: explanation
+        type: textarea
+        label: Explanation
+      - name: contract_owner_email
+        type: email
+      - name: team_emails
+        type: array
+      access:
+      - role: contract_owner
+        where:
+          contract_owner_email: '{user.email}'
+        can:
+        - read
+      - role: user
+        where:
+          team_emails: '{user.email}'
+        can:
+        - read
+      retentionDays: 730
+    - name: questionnaire_requests
+      description: Security questionnaires sent to suppliers, with their answers
+      ownedBy: user
+      fields:
+      - name: supplier_name
+        type: text
+        required: true
+        label: Supplier
+      - name: supplier_email
+        type: email
+        required: true
+        label: Supplier contact email
+      - name: contract_owner_email
+        type: email
+        required: true
+        label: Contract owner email
+      - name: team_emails
+        type: array
+        label: Team members who can see it
+      - name: sent_on
+        type: date
+        required: true
+        label: Sent on
+        help: Today's date; a reminder goes out after 7 days
+      - name: status
+        type: select
+        required: true
+        label: Status
+        default: sent
+        options:
+        - value: sent
+          label: Sent
+        - value: submitted
+          label: Submitted
+      - name: q_mfa
+        type: select
+        label: MFA enforced for all staff and admin access?
+        options:
+        - 'yes'
+        - partly
+        - 'no'
+      - name: q_encryption
+        type: select
+        label: Customer data encrypted at rest and in transit?
+        options:
+        - 'yes'
+        - partly
+        - 'no'
+      - name: q_incident_plan
+        type: select
+        label: Tested incident response plan?
+        options:
+        - 'yes'
+        - documented only
+        - 'no'
+      - name: q_pentest
+        type: select
+        label: Independent penetration test in the last 12 months?
+        options:
+        - 'yes'
+        - 'no'
+      - name: q_breach
+        type: select
+        label: Security incident affecting customer data in the last 12 months?
+        options:
+        - 'no'
+        - 'yes'
+      - name: q_certifications
+        type: multiselect
+        label: Certifications held
+        options:
+        - ISO 27001
+        - SOC 2
+        - Cyber Essentials
+        - Cyber Essentials Plus
+        - None
+      - name: q_subprocessors
+        type: textarea
+        label: Sub-processors that handle our data
+      - name: q_comments
+        type: textarea
+        label: Comments
+      - name: q_evidence
+        type: file
+        label: Evidence (certificates, reports)
+        accept:
+        - pdf
+        - docx
+        - png
+        - jpg
+        maxMb: 10
+        multiple: true
+      access:
+      - role: supplier
+        where:
+          supplier_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: contract_owner
+        where:
+          contract_owner_email: '{user.email}'
+        can:
+        - read
+      - role: user
+        where:
+          team_emails: '{user.email}'
+        can:
+        - read
+        - write
+  approvals:
+  - key: risk_review
+    title: Supplier risk review
+    description: The contract owner reviews the alert and decides the proposed action.
+    role: contract_owner
+    decidedBy: role
+    fields:
+    - supplier
+    - issue
+    - proposed_action
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: questionnaire_sent
+    'on':
+      collection: questionnaire_requests
+      op: insert
+    notify:
+      to: record.supplier_email
+      subject: Security questionnaire requested by one of your customers
+      body: 'Hello,
+
+
+        A customer asks {record.supplier_name} to complete a short security questionnaire. Sign in with this email address
+        to open and submit it.'
+      link: my_requests
+  - key: questionnaire_reminder
+    'on':
+      date:
+        collection: questionnaire_requests
+        field: sent_on
+        offsetDays: 7
+        hour: 8
+      where:
+        status: sent
+    notify:
+      to:
+      - record.supplier_email
+      - record.contract_owner_email
+      subject: 'Reminder: security questionnaire still open'
+      body: The security questionnaire for {record.supplier_name} was sent seven days ago and has not been submitted yet.
+        Please complete it as soon as possible.
+      link: my_requests
+  - key: risk_alert
+    'on':
+      collection: assessments
+      op: insert
+      where:
+        alert: 'yes'
+    notify:
+      to:
+      - record.contract_owner_email
+      - owner
+      subject: 'Vendorscope alert: {record.supplier_name} scored {record.score}'
+      body: 'The risk score of {record.supplier_name} is {record.score} (change {record.delta}) with {record.critical_count}
+        critical issue(s).
+
+
+        {record.explanation}
+
+
+        Please review the proposed action and decide.'
+      link: reviews
+  - key: review_decided
+    'on':
+      approval: risk_review
+      decision: any
+    notify:
+      to: owner
+      subject: Supplier risk review decided
+      body: The contract owner has decided the supplier risk review. Open Vendorscope to see the decision.
+      link: reviews
+  views:
+  - key: home
+    type: page
+    title: Vendorscope
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: Supplier cyber-risk monitoring
+      title: Know which suppliers are **getting riskier** before it becomes your incident.
+      text: Vendorscope checks every supplier's domains each day with passive public sources, calculates a transparent 0-100
+        score, and tells the contract owner when something needs a decision.
+      actions:
+      - label: Start monitoring
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how-it-works'
+        style: ghost
+      aside: '<div style="padding:16px"><strong>Example: Acme Logistics Ltd</strong><br>Score <strong>58</strong> (-14 since
+        yesterday)<br>DMARC policy dropped to none; one CISA KEV match on an inferred VPN product.<br><em>Owner review requested.</em></div>'
+    - type: steps
+      id: how-it-works
+      title: How it works
+      items:
+      - title: Add your suppliers
+        text: Company name, Companies House number, domains, criticality, data shared and contract owner.
+      - title: Daily passive checks
+        text: Certificates, DNS, SPF, DKIM, DMARC, known exploited vulnerabilities and company status.
+      - title: A score you can audit
+        text: The score is calculated by fixed rules. The AI only explains it in plain English.
+      - title: Alert, review, decide
+        text: When a score drops or a critical issue appears, the contract owner reviews and decides an action.
+    - type: cards
+      id: sources
+      title: Sources
+      intro: Passive and public only. We never scan your suppliers.
+      items:
+      - title: Certificate transparency
+        text: Certificates and subdomains from public CT logs.
+      - title: DNS and email security
+        text: SPF, DKIM, DMARC, MX and CAA records.
+      - title: NVD and CISA KEV
+        text: Known exploited vulnerabilities matched to technology exposed by the supplier.
+      - title: Companies House
+        text: Company status and filings from the free UK API.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: £300 a month
+        text: Up to 50 suppliers, daily monitoring, questionnaires, supplier portal, dashboards and alerts.
+        badge: Standard
+    - type: note
+      content: Vendorscope supports risk decisions; it is not legal or security-audit advice. Scores are based on public,
+        passive signals only.
+  - key: portfolio
+    type: page
+    title: Portfolio
+    roles:
+    - user
+    - admin
+    - risk_analyst
+    - contract_owner
+    sections:
+    - type: data
+      title: Portfolio risk
+      source: collection:assessments
+      display: kpi
+      kpis:
+      - label: Average score
+        agg: avg
+        field: score
+        format: number
+      - label: Assessments
+        agg: count
+      - label: Critical issues
+        agg: sum
+        field: critical_count
+        format: number
+    - type: data
+      title: Worst suppliers
+      source: collection:assessments
+      display: table
+      fields:
+      - key: supplier_name
+        label: Supplier
+      - key: score
+        label: Score
+        format: number
+      - key: band
+        label: Band
+        format: badge
+      - key: delta
+        label: Change
+        format: number
+      - key: critical_count
+        label: Critical
+        format: number
+      - key: date
+        label: Date
+        format: date
+      sort:
+        field: score
+        dir: asc
+      limit: 10
+      empty: No assessments yet. Add a supplier and start a monitor.
+    - type: data
+      title: Average score trend
+      source: collection:assessments
+      display: chart
+      chart: line
+      groupBy:
+        field: date
+        bucket: day
+        aggs:
+        - key: avg_score
+          agg: avg
+          field: score
+      fields:
+      - key: date
+        label: Day
+      - key: avg_score
+        label: Average score
+    - type: data
+      title: Suppliers by risk band
+      source: collection:assessments
+      display: chart
+      chart: pie
+      groupBy:
+        field: band
+        aggs: []
+      fields:
+      - key: band
+        label: Band
+      - key: count
+        label: Assessments
+    - type: data
+      title: Open alerts
+      source: collection:assessments
+      display: cards
+      fields:
+      - key: supplier_name
+        label: Supplier
+      - key: score
+        label: Score
+        format: number
+      - key: explanation
+        label: Why
+      filters:
+      - field: alert
+        op: '='
+        value: 'yes'
+      sort:
+        field: date
+        dir: desc
+      limit: 10
+  - key: suppliers
+    type: table
+    title: Suppliers
+    source: collection:suppliers
+    columns:
+    - company_name
+    - companies_house_number
+    - criticality
+    - contract_owner_email
+    export: true
+    roles:
+    - user
+    - admin
+    - risk_analyst
+    - contract_owner
+  - key: add_supplier
+    type: form
+    title: Add supplier
+    collection: suppliers
+    edit: true
+    submit:
+      label: Save supplier
+      message: Supplier saved. Now start a monitor for it.
+      redirect: watches
+    roles:
+    - user
+    - admin
+    - risk_analyst
+  - key: watches
+    type: instances
+    template: supplier_watch
+    title: Monitors
+    roles:
+    - user
+    - admin
+    - risk_analyst
+  - key: assessments
+    type: history
+    title: Assessment history
+    source: collection:assessments
+    roles:
+    - user
+    - admin
+    - risk_analyst
+    - contract_owner
+  - key: reviews
+    type: approvals
+    title: Reviews and decisions
+    approvals:
+    - risk_review
+    roles:
+    - contract_owner
+    - admin
+  - key: request_questionnaire
+    type: form
+    title: Send questionnaire
+    collection: questionnaire_requests
+    fields:
+    - supplier_name
+    - supplier_email
+    - contract_owner_email
+    - team_emails
+    - sent_on
+    - status
+    submit:
+      label: Send to supplier
+      message: The supplier has been emailed.
+      redirect: questionnaires
+    roles:
+    - user
+    - admin
+    - risk_analyst
+  - key: questionnaires
+    type: table
+    title: Questionnaires
+    source: collection:questionnaire_requests
+    columns:
+    - supplier_name
+    - supplier_email
+    - sent_on
+    - status
+    - q_certifications
+    export: true
+    roles:
+    - user
+    - admin
+    - risk_analyst
+    - contract_owner
+  - key: my_requests
+    type: table
+    title: Supplier portal
+    source: collection:questionnaire_requests
+    columns:
+    - supplier_name
+    - sent_on
+    - status
+    roles:
+    - supplier
+  - key: portal
+    type: form
+    title: Security questionnaire
+    collection: questionnaire_requests
+    edit: true
+    fields:
+    - status
+    - q_mfa
+    - q_encryption
+    - q_incident_plan
+    - q_pentest
+    - q_breach
+    - q_certifications
+    - q_subprocessors
+    - q_comments
+    - q_evidence
+    submit:
+      label: Save answers
+      message: Thank you. Your answers were saved.
+      redirect: my_requests
+    nav: false
+    roles:
+    - supplier
+  - key: account
+    type: account
+    title: Subscription
+    roles:
+    - user
+    - admin
+    - risk_analyst
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    costs:
+      agent:monitor:
+        requiresPlan: standard
+    plans:
+    - key: standard
+      price: 300
+      interval: month
+      label: 'Standard: up to 50 suppliers'
+      includes:
+      - Up to 50 monitored suppliers
+      - Daily passive checks
+      - Supplier questionnaires and portal
+      - Dashboards and alerts
+  slots:
+  - key: risk_score
+    description: Deterministic 0-100 supplier risk score from the check results
+    timeoutMs: 2000
+    example:
+      args:
+        kev_matches: 1
+        high_cves: 2
+        dmarc: none
+        spf: weak
+        dkim: found
+        expired_certs: 0
+        unknown_subdomains: 3
+        ch_status: active
+        overdue_filings: 0
+        questionnaire_overdue: true
+        criticality: high
+        previous_score: 80
+    code: "def _i(v):\n    try:\n        return max(0, int(float(v or 0)))\n    except Exception:\n        return 0\n\ndef\
+      \ main(input):\n    a = input.get('args') or {}\n    kev = _i(a.get('kev_matches'))\n    pen = {}\n    pen['known_exploited_vulnerabilities']\
+      \ = min(40, 20 * kev)\n    pen['high_severity_cves'] = min(15, 5 * _i(a.get('high_cves')))\n    pen['dmarc'] = {'reject':\
+      \ 0, 'quarantine': 3, 'none': 8}.get(str(a.get('dmarc', 'missing')).lower(), 12)\n    pen['spf'] = {'strict': 0, 'pass':\
+      \ 0, 'weak': 5}.get(str(a.get('spf', 'missing')).lower(), 10)\n    pen['dkim'] = 0 if str(a.get('dkim', '')).lower()\
+      \ == 'found' else 4\n    expired = _i(a.get('expired_certs'))\n    pen['certificates'] = min(15, 5 * expired + min(6,\
+      \ _i(a.get('unknown_subdomains'))))\n    st = str(a.get('ch_status', 'unknown')).lower()\n    pen['company_status']\
+      \ = {'active': 0, 'unknown': 3, 'dormant': 10}.get(st, 25)\n    pen['filings'] = min(10, 5 * _i(a.get('overdue_filings')))\n\
+      \    q = a.get('questionnaire_overdue')\n    pen['questionnaire'] = 5 if (q is True or str(q).lower() == 'true') else\
+      \ 0\n    mult = {'critical': 1.25, 'high': 1.1}.get(str(a.get('criticality', '')).lower(), 1.0)\n    total = round(sum(pen.values())\
+      \ * mult)\n    score = max(0, min(100, 100 - total))\n    prev = a.get('previous_score')\n    try:\n        delta =\
+      \ score - int(float(prev)) if prev not in (None, '') else 0\n    except Exception:\n        delta = 0\n    band = 'low'\
+      \ if score >= 80 else ('medium' if score >= 60 else ('high' if score >= 40 else 'critical'))\n    alert = 'yes' if (score\
+      \ < 50 or delta <= -10 or kev > 0 or st in ('liquidation', 'dissolved')) else 'no'\n    return {'score': score, 'band':\
+      \ band, 'delta': delta, 'alert': alert, 'breakdown': pen, 'criticality_multiplier': mult}\n"
+  egress:
+    hosts:
+    - crt.sh
+    - dns.google
+    - www.cisa.gov
+    - services.nvd.nist.gov
+    - api.company-information.service.gov.uk
+    notes: 'crt.sh: public certificate transparency search. dns.google: public DNS over HTTPS, passive lookups. CISA KEV:
+      public US-government catalogue, reusable. NVD: public API, reusable with attribution and rate limits. Companies House:
+      free API, Open Government Licence v3.0.'
+  extensions:
+  - key: companies_house_key
+    description: The admins must set one Companies House API key (provider companies_house, scope org, declared in spec.data.credentials).
+      The API uses HTTP Basic with the key as username and an empty password, so the stored secret must be base64('<key>:').
+  - key: paid_breach_data
+    description: 'Breach and exposure data from a paid vendor is not connected: no vendor was named. When one is chosen, add
+      an org-scoped API key credential and an http tool; until then the monitor reports it as not checked.'
+  - key: tls_grading
+    description: Full TLS protocol and cipher grading needs an active or third-party scanner, which would not be passive.
+      The monitor only uses certificate evidence from CT logs.
+  - key: seat_quota
+    description: The plan covers up to 50 suppliers, enforced by the monitor template limit (50 per user). Per-plan supplier
+      quotas beyond that are not modelled.

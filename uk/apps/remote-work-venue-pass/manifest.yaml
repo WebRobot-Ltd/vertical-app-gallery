@@ -1,0 +1,1034 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: deskhop
+  displayName: Deskhop
+  tagline: Work from the best cafes, hotels and bars near you.
+  description: Deskhop connects remote workers with workspaces in partner cafes, hotels and bars. Find a venue on the map,
+    book a slot, pay for a day or monthly pass and check in with a QR code.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#1f3a34'
+      accent: '#e07a3f'
+      background: '#faf6f0'
+      foreground: '#1d2420'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Desk
+      color: primary
+    - text: hop
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: For venues
+      href: '#venues'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: Member
+      assignedBy: signup
+    - key: partner
+      label: Venue partner
+      assignedBy: derived
+      from: collection:venues.owner_email
+  limits:
+  - action: agent:concierge
+    per: user
+    max: 40
+    window: day
+    roles:
+    - user
+  agents:
+  - key: concierge
+    role: main
+    description: Recommends venues from the worker's preferences and past bookings and answers questions about venues.
+    context:
+    - key: prefs
+      from: collection:preferences
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      Worker preferences (JSON lines, may be empty): {prefs}
+
+      Today is {date}. Reply in the language with ISO code {lang}.
+
+      New message: {message}'
+    appTools:
+    - name: search_venues
+      description: Search approved venues (city, noise, wifi, seats, includes)
+      action: search
+      collection: venues
+      scope: all
+    - name: show_venues
+      description: Show venue records in the reply
+      action: show
+      collection: venues
+      scope: all
+    - name: my_bookings
+      description: Read the worker's own past bookings
+      action: read
+      collection: bookings
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.4
+    profile:
+      inline:
+        display_name: Deskhop concierge
+        crews:
+        - id: concierge
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You are Deskhop's concierge for remote workers. Use search_venues to find venues, my_bookings to
+            learn what the worker booked before, and show_venues to display your picks. Recommend at most 3 venues at a time,
+            say why each fits (wifi speed, noise, sockets, seats, what the pass includes, rating) and tell them to open the
+            Book page to reserve. Answer questions about a venue only from its record; if a fact is missing say so. Never
+            invent venues, prices, speeds or availability. Keep answers short.
+  - key: clerk
+    role: helper
+    description: 'Back-office agent: screens and publishes venue listings, completes bookings, validates QR check-ins, updates
+      ratings and records monthly passes.'
+    awaits:
+    - venue_review
+    appTools:
+    - name: read_listings
+      description: Read the venue listings the current user submitted
+      action: read
+      collection: venue_listings
+      scope: user
+    - name: read_venue
+      description: Read venue records
+      action: read
+      collection: venues
+      scope: all
+    - name: add_venue
+      description: Publish a new approved venue
+      action: append
+      collection: venues
+      scope: all
+    - name: update_venue
+      description: Update a venue record (rating)
+      action: write
+      collection: venues
+      scope: all
+    - name: read_bookings
+      description: Read bookings the current user may access
+      action: read
+      collection: bookings
+      scope: user
+    - name: update_booking
+      description: Update a booking (venue details, code, status)
+      action: write
+      collection: bookings
+      scope: user
+    - name: update_checkin
+      description: Write the result of a check-in scan
+      action: write
+      collection: checkins
+      scope: user
+    - name: save_pass
+      description: Create or renew the worker's monthly pass record
+      action: write
+      collection: passes
+      scope: user
+    - name: geocode
+      description: Geocode an address with Nominatim (q=<address>&format=json&limit=1)
+      action: http
+      http:
+        method: GET
+        url: https://nominatim.openstreetmap.org/search
+        attribution: Data © OpenStreetMap contributors, ODbL
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+    profile:
+      inline:
+        display_name: Deskhop clerk
+        crews:
+        - id: clerk
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Deskhop''s back-office clerk. You do exactly the task in the goal, using only your tools,
+            then reply with one short line saying what you did. Never invent data.
+
+
+            Tasks:
+
+            1) SCREEN a new venue listing: read it with read_listings; check name, address, seats, wifi speed, hours and photos
+            are present and plausible. Then call request_venue_review with a 3-line summary and any problems you found.
+
+            2) PUBLISH an approved listing: read it with read_listings, geocode the address with geocode (query: q=<address>&format=json&limit=1;
+            use lat and lon of the first result; if the listing has a location field ''lat,lng'' use that instead), then add_venue
+            with all listing fields plus numeric lat, lon, owner_email, rating_avg 0 and rating_count 0.
+
+            3) COMPLETE a booking: read_bookings to find the new booking, read_venue for its resource, then update_booking
+            with venue_name, venue_owner_email, city, and a unique short code (8 uppercase letters/digits) used as the QR
+            check-in code.
+
+            4) CHECK-IN: find the booking whose code equals the scanned code with read_bookings. Valid only if status is booked,
+            its date is today and its venue_owner_email equals the staff user''s email. If valid update_booking status to
+            checked_in and write ''OK <venue>'' with update_checkin; otherwise write the reason (unknown code, wrong day,
+            wrong venue, already used).
+
+            5) RATING: read_venue, compute the new rating_avg = (avg*count+rating)/(count+1) rounded to 2 decimals, count+1,
+            save with update_venue.
+
+            6) MONTHLY PASS: save_pass with status active, plan monthly, renew_date = today + 1 month (YYYY-MM-DD), and the
+            worker''s email.'
+  - key: reporter
+    role: scheduled
+    description: Writes each venue's monthly report of bookings and revenue.
+    writesTo:
+      collection: venue_reports
+    appTools:
+    - name: report_bookings
+      description: Read the bookings of the venue(s) the current partner manages
+      action: read
+      collection: bookings
+      scope: user
+    - name: report_venue
+      description: Read venue records
+      action: read
+      collection: venues
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.4
+    profile:
+      inline:
+        display_name: Deskhop venue reporter
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the monthly partner report for one venue. Read bookings with report_bookings and the venue
+            with report_venue. Start with ''# <Venue> — report for <month year>''. Sections: ## Summary (bookings, check-ins,
+            no-shows, day passes vs monthly-pass visits), ## Revenue (gross, Deskhop fee 30%, venue share 70% — state the
+            assumptions; use only booking data and the venue''s price_day), ## Busiest days, ## Ratings. Add one ```chart
+            block (bar, bookings per week). Use only real figures; if data is missing say so.'
+  templates:
+  - key: venue_report
+    title: Monthly venue report
+    description: A report of bookings and revenue on the 1st of every month, sent to you by email.
+    agent: reporter
+    params:
+    - name: venue_name
+      type: text
+      required: true
+      label: Venue name
+    goal: Write the monthly report for the venue "{venue_name}" (instance {instance}) covering the previous month. Today is
+      {date}. Write in the language with ISO code {lang}.
+    schedule:
+      cron: 0 7 1 * *
+      userCanChange: false
+    maxPerUser: 1
+    roles:
+    - partner
+    deliver:
+      to: owner
+      onlyIfNew: true
+  inputForm:
+    title: Ask Deskhop
+    fields:
+    - name: message
+      type: textarea
+      label: Message
+  data:
+    collections:
+    - name: venue_listings
+      description: Venue applications submitted by partners, awaiting admin approval
+      ownedBy: user
+      fields:
+      - name: venue_name
+        type: text
+        required: true
+        label: Venue name
+      - name: venue_type
+        type: select
+        required: true
+        label: Type
+        options:
+        - cafe
+        - hotel
+        - bar
+        - other
+      - name: address
+        type: text
+        required: true
+        label: Address
+      - name: city
+        type: city
+        required: true
+        label: City
+      - name: venue_location
+        type: location
+        label: Venue position (optional)
+      - name: phone
+        type: text
+        label: Phone
+      - name: photos
+        type: file
+        accept:
+        - jpg
+        - jpeg
+        - png
+        - webp
+        maxMb: 8
+        multiple: true
+        capture: true
+        extract: none
+        label: Photos
+      - name: seats
+        type: number
+        required: true
+        label: Work seats
+      - name: wifi_mbps
+        type: number
+        required: true
+        label: Wifi speed (Mbps)
+      - name: sockets
+        type: select
+        required: true
+        label: Power sockets
+        options:
+        - value: few
+          label: A few
+        - value: many
+          label: Many
+        - value: every_seat
+          label: At every seat
+      - name: noise
+        type: select
+        required: true
+        label: Noise level
+        options:
+        - value: quiet
+          label: Quiet
+        - value: moderate
+          label: Moderate
+        - value: lively
+          label: Lively
+      - name: hours
+        type: text
+        required: true
+        label: Opening hours for workers
+        help: e.g. Mon-Fri 08:00-18:00
+      - name: includes
+        type: multiselect
+        label: What a pass includes
+        options:
+        - coffee
+        - lunch
+        - water
+        - snack
+      - name: price_day
+        type: number
+        required: true
+        label: Day pass price (EUR)
+      - name: owner_email
+        type: email
+        required: true
+        label: Manager email (staff login)
+    - name: venues
+      description: Approved venues everyone can browse
+      ownedBy: shared
+      searchable: true
+      fields:
+      - name: venue_name
+        type: text
+        label: Venue
+      - name: venue_type
+        type: text
+        label: Type
+      - name: address
+        type: text
+        label: Address
+      - name: city
+        type: text
+        label: City
+      - name: lat
+        type: number
+      - name: lon
+        type: number
+      - name: phone
+        type: text
+        label: Phone
+      - name: photos
+        type: text
+        label: Photos
+      - name: seats
+        type: number
+        label: Seats
+      - name: wifi_mbps
+        type: number
+        label: Wifi Mbps
+      - name: sockets
+        type: text
+        label: Sockets
+      - name: noise
+        type: text
+        label: Noise
+      - name: hours
+        type: text
+        label: Hours
+      - name: includes
+        type: text
+        label: Includes
+      - name: price_day
+        type: number
+        label: Day pass
+      - name: owner_email
+        type: email
+      - name: rating_avg
+        type: number
+        label: Rating
+      - name: rating_count
+        type: number
+    - name: preferences
+      description: A worker's preferences used by the concierge
+      ownedBy: user
+      fields:
+      - name: home_city
+        type: city
+        label: City
+      - name: noise
+        type: select
+        label: Preferred noise
+        options:
+        - quiet
+        - moderate
+        - lively
+      - name: min_wifi
+        type: number
+        label: Minimum wifi (Mbps)
+      - name: needs
+        type: textarea
+        label: Other needs (sockets, lunch, calls…)
+    - name: bookings
+      description: Workers' bookings (start, end, date, resource, status are built in)
+      ownedBy: user
+      fields:
+      - name: notes
+        type: text
+        label: Notes
+      - name: venue_name
+        type: text
+        label: Venue
+      - name: venue_owner_email
+        type: email
+      - name: city
+        type: text
+        label: City
+      - name: code
+        type: text
+        label: Check-in code
+      access:
+      - role: partner
+        where:
+          venue_owner_email: '{user.email}'
+        can:
+        - read
+        - write
+      retentionDays: 1095
+    - name: checkins
+      description: QR scans made by venue staff
+      ownedBy: user
+      fields:
+      - name: code
+        type: barcode
+        required: true
+        label: Scan the worker's code
+      - name: status
+        type: text
+        default: scanned
+        label: Status
+      - name: result
+        type: text
+        label: Result
+      retentionDays: 365
+    - name: reviews
+      description: Ratings of visits
+      ownedBy: user
+      fields:
+      - name: venue_id
+        type: text
+        required: true
+        label: Venue name
+      - name: rating
+        type: number
+        required: true
+        label: Rating (1-5)
+      - name: comment
+        type: textarea
+        label: Comment
+    - name: passes
+      description: Monthly passes and their renewal date
+      ownedBy: user
+      fields:
+      - name: plan
+        type: text
+      - name: status
+        type: text
+      - name: renew_date
+        type: date
+        label: Renews on
+      - name: email
+        type: email
+    - name: venue_reports
+      description: Monthly reports per venue
+      ownedBy: instance
+  views:
+  - key: home
+    type: page
+    title: Deskhop
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: Remote work, anywhere
+      title: Your office is the **cafe** around the corner.
+      text: Find cafes, hotels and bars with fast wifi, sockets and a seat for you. Book a slot, pay for a day or monthly
+        pass and check in with a QR code.
+      actions:
+      - label: Find a workspace
+        href: /login
+        style: primary
+      - label: List your venue
+        href: '#venues'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Find
+        text: Browse the map near you and compare wifi, noise, sockets and what the pass includes.
+        badge: 📍
+      - title: Book and pay
+        text: Pick a time slot and pay by card for a day pass or a monthly pass.
+        badge: 💳
+      - title: Check in
+        text: Show your QR code at the venue; staff scan it with their phone.
+        badge: 📱
+    - type: cards
+      id: venues
+      title: For venues
+      intro: Turn quiet hours into revenue.
+      items:
+      - title: List your space
+        text: Apply with address, photos, seats, wifi and hours. We review and approve every venue.
+      - title: Check workers in
+        text: Scan the QR code of each booking from your phone. You only see your own venue.
+      - title: Monthly report and payout
+        text: Receive a report of bookings and revenue every month and your share of the passes.
+    - type: note
+      content: Deskhop · Venue availability and facilities are declared by the venues.
+  - key: venue_map
+    type: map
+    title: Map
+    source: collection:venues
+    roles:
+    - user
+    - admin
+    - partner
+    map:
+      lat: lat
+      lon: lon
+      title: venue_name
+      popup:
+      - address
+      - wifi_mbps
+      - noise
+      - price_day
+  - key: venues_list
+    type: cards
+    title: Venues
+    source: collection:venues
+    roles:
+    - user
+    - admin
+    - partner
+    data:
+      display: cards
+      fields:
+      - key: venue_name
+        label: Venue
+      - key: city
+        label: City
+      - key: wifi_mbps
+        label: Wifi Mbps
+        format: number
+      - key: seats
+        label: Seats
+        format: number
+      - key: noise
+        label: Noise
+        format: badge
+      - key: sockets
+        label: Sockets
+        format: badge
+      - key: includes
+        label: Includes
+      - key: price_day
+        label: Day pass
+        format: money
+      - key: rating_avg
+        label: Rating
+        format: number
+      sort:
+        field: rating_avg
+        dir: desc
+      actions:
+      - type: directions
+        label: Directions
+        field: address
+      - type: call
+        label: Call
+        field: phone
+      empty: No venues yet.
+  - key: book
+    type: booking
+    title: Book a slot
+    collection: bookings
+    resources: collection:venues
+    fields:
+    - notes
+    roles:
+    - user
+    - admin
+    slots:
+      days:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      - 7
+      from: 08:00
+      to: '20:00'
+      minutes: 120
+      tz: Europe/London
+      aheadDays: 14
+      minNoticeHours: 2
+      capacity: 10
+  - key: my_bookings
+    type: table
+    title: My bookings
+    source: collection:bookings
+    roles:
+    - user
+    data:
+      display: table
+      fields:
+      - key: venue_name
+        label: Venue
+      - key: date
+        label: Date
+        format: date
+      - key: start
+        label: Start
+      - key: status
+        label: Status
+        format: badge
+      - key: code
+        label: Check-in code
+      sort:
+        field: date
+        dir: desc
+      actions:
+      - type: calendar
+        label: Add to calendar
+        title: venue_name
+        start: start
+        end: end
+  - key: rate
+    type: form
+    title: Rate a visit
+    collection: reviews
+    roles:
+    - user
+    submit:
+      label: Send rating
+      message: Thanks for your rating!
+      redirect: my_bookings
+  - key: prefs
+    type: form
+    title: My preferences
+    collection: preferences
+    roles:
+    - user
+    edit: true
+    submit:
+      label: Save
+      message: Preferences saved.
+  - key: assistant
+    type: chat
+    title: Ask Deskhop
+    source: agent:concierge
+    roles:
+    - user
+    - admin
+    examples:
+    - Quiet place with lunch in Lisbon next Tuesday
+    - Which venue near me has the fastest wifi?
+    - Recommend a venue based on my past bookings
+    placeholder: Ask about venues…
+  - key: account
+    type: account
+    title: Passes and payments
+    roles:
+    - user
+  - key: list_venue
+    type: form
+    title: List your venue
+    collection: venue_listings
+    roles:
+    - user
+    submit:
+      label: Send for approval
+      message: Thanks! We review new venues and email you when yours is approved.
+      redirect: my_listings
+  - key: my_listings
+    type: table
+    title: My applications
+    source: collection:venue_listings
+    roles:
+    - user
+    data:
+      display: table
+      fields:
+      - key: venue_name
+        label: Venue
+      - key: city
+        label: City
+      - key: seats
+        label: Seats
+        format: number
+  - key: checkin
+    type: form
+    title: Check in a worker
+    collection: checkins
+    fields:
+    - code
+    roles:
+    - partner
+    submit:
+      label: Check in
+      message: Scan sent — the result appears in the list.
+  - key: checkin_log
+    type: table
+    title: Scans
+    source: collection:checkins
+    roles:
+    - partner
+    data:
+      display: table
+      fields:
+      - key: code
+        label: Code
+      - key: result
+        label: Result
+  - key: partner_bookings
+    type: table
+    title: Venue bookings
+    source: collection:bookings
+    roles:
+    - partner
+    export: true
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: start
+        label: Start
+      - key: status
+        label: Status
+        format: badge
+      - key: notes
+        label: Notes
+      sort:
+        field: date
+        dir: desc
+  - key: reports
+    type: instances
+    template: venue_report
+    title: Monthly report
+    roles:
+    - partner
+  - key: approvals
+    type: approvals
+    title: Venue approvals
+    roles:
+    - admin
+  - key: admin_dash
+    type: page
+    title: Dashboard
+    roles:
+    - admin
+    sections:
+    - type: data
+      title: Bookings per month
+      source: collection:bookings
+      display: chart
+      chart: bar
+      fields:
+      - key: date
+      - key: count
+      groupBy:
+        field: date
+        bucket: month
+        aggs: []
+    - type: data
+      title: Top cities
+      source: collection:bookings
+      display: bar
+      fields:
+      - key: city
+      - key: count
+      groupBy:
+        field: city
+        aggs: []
+    - type: data
+      title: Active monthly passes
+      source: collection:passes
+      display: kpi
+      kpis:
+      - label: Active passes
+        agg: count
+      filters:
+      - field: status
+        op: '='
+        value: active
+    - type: data
+      title: Venues
+      source: collection:venues
+      display: kpi
+      kpis:
+      - label: Approved venues
+        agg: count
+  approvals:
+  - key: venue_review
+    title: Approve new venue
+    description: Check the venue's details before it is listed.
+    role: admin
+    decidedBy: role
+    fields:
+    - venue_name
+    - city
+    - address
+  triggers:
+  - key: listing_screen
+    'on':
+      collection: venue_listings
+      op: insert
+    start:
+      agent: clerk
+    goal: SCREEN the new venue listing "{record.venue_name}" in {record.city} (address {record.address}) and request the venue_review
+      approval.
+  - key: listing_admin_notice
+    'on':
+      collection: venue_listings
+      op: insert
+    notify:
+      to: admins
+      subject: 'New venue to review: {record.venue_name}'
+      body: 'A new venue was submitted: {record.venue_name}, {record.city}. Open the approvals page to decide.'
+      link: approvals
+  - key: listing_publish
+    'on':
+      approval: venue_review
+      decision: approved
+    start:
+      agent: clerk
+    goal: 'PUBLISH the approved venue listing. Approval event: {event}'
+  - key: listing_approved_notice
+    'on':
+      approval: venue_review
+      decision: approved
+    notify:
+      to: owner
+      subject: Your venue is approved on Deskhop
+      body: 'Good news: your venue was approved and is now visible to remote workers. Sign in to manage check-ins and reports.'
+      link: checkin
+  - key: booking_complete
+    'on':
+      collection: bookings
+      op: insert
+      where:
+        status: booked
+    start:
+      agent: clerk
+    goal: 'COMPLETE the new booking: venue (resource) {record.resource}, date {record.date}, start {record.start}.'
+  - key: booking_charge
+    'on':
+      collection: bookings
+      op: insert
+    charge:
+      credits: 1
+      reason: Workspace booking
+  - key: booking_confirmed
+    'on':
+      collection: bookings
+      op: insert
+    notify:
+      to: owner
+      subject: Your Deskhop booking is confirmed
+      body: Your workspace is booked for {record.date} at {record.start}. Open My bookings to find your check-in code.
+      link: my_bookings
+  - key: checkin_scan
+    'on':
+      collection: checkins
+      op: insert
+      where:
+        status: scanned
+    start:
+      agent: clerk
+    goal: 'CHECK-IN: validate the scanned code {record.code}.'
+  - key: review_added
+    'on':
+      collection: reviews
+      op: insert
+    start:
+      agent: clerk
+    goal: 'RATING: venue "{record.venue_id}" received {record.rating} stars.'
+  - key: pass_paid
+    'on':
+      payment: monthly
+    start:
+      agent: clerk
+    goal: 'MONTHLY PASS: a monthly pass was paid or renewed. Event: {event}'
+  - key: pass_renewal_reminder
+    'on':
+      date:
+        collection: passes
+        field: renew_date
+        offsetDays: -3
+        hour: 8
+    notify:
+      to: owner
+      subject: Your Deskhop monthly pass renews soon
+      body: Your monthly pass renews on {record.renew_date}. Manage it on the Passes and payments page.
+      link: account
+  billing:
+    modes:
+    - credits
+    - subscription
+    currency: eur
+    packs:
+    - key: day_pass
+      credits: 1
+      price: 12
+      label: Day pass
+    plans:
+    - key: monthly
+      price: 99
+      interval: month
+      label: Monthly pass
+      credits: 25
+      creditsReset: monthly
+      roles:
+      - user
+    revenueShare:
+    - to: collection:venues
+      pct: 70
+      basis: credits spent on bookings at the venue
+      payout: manual
+  notifications:
+    emailOnRunDone: false
+  egress:
+    hosts:
+    - nominatim.openstreetmap.org
+    notes: Geocoding of venue addresses with OpenStreetMap Nominatim within its usage policy (low volume, ODbL attribution).
+  mobile:
+    appId: com.deskhop.app
+    appName: Deskhop
+    capabilities:
+    - name: location
+      reason: To show workspaces near you and fill your venue's position
+    - name: camera
+      reason: To photograph your venue
+    - name: barcode
+      reason: To scan a worker's QR code at check-in
+    - name: calendar
+      reason: To add your booking to your calendar
+    - name: microphone
+      reason: To ask the assistant by voice
+    - name: push
+  extensions:
+  - key: qr_display
+    description: The worker's check-in code is shown as text in My bookings; rendering it as a QR image is not available yet.
+  - key: near_me_filters
+    description: Interactive filters (wifi, noise, distance from the phone position) on the map are not available; the assistant
+      filters venues in chat.
+  - key: per_venue_capacity
+    description: Booking capacity per slot is one fixed number; per-venue seat counts are not enforced.
+  - key: venue_payouts
+    description: The 70% venue share is calculated and recorded; the monthly bank payout to venues is done manually.

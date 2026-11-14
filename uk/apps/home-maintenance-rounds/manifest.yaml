@@ -1,0 +1,1133 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: roundly
+  displayName: Roundly
+  tagline: Window cleaning and home maintenance, booked, paid and managed in one place.
+  description: Homeowners book windows, gutters, conservatory and driveway cleaning on a schedule. Cleaners and small firms
+    get optimised rounds, GPS check-in and before/after photos. Owners see their team, revenue and missed visits.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0b4f6c'
+      accent: '#1fa5a0'
+      background: '#f4fafb'
+      foreground: '#14262e'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Round
+      color: primary
+    - text: ly
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: For cleaners
+      href: '#cleaners'
+    cta:
+      label: Get started
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      label: Homeowner
+      assignedBy: signup
+    - key: owner
+      label: Firm owner
+      assignedBy: derived
+      from: collection:firm_profiles.owner_email
+    - key: cleaner
+      label: Cleaner
+      assignedBy: derived
+      from: collection:cleaners.email
+  limits:
+  - action: agent:planner
+    per: user
+    max: 20
+    window: day
+  egress:
+    hosts:
+    - api.postcodes.io
+    notes: postcodes.io serves UK postcodes built from ONS and Ordnance Survey open data (Open Government Licence v3.0; contains
+      OS data © Crown copyright and database right, ONS data © Crown copyright). Used to find coordinates and district of
+      a postcode.
+  agents:
+  - key: planner
+    role: main
+    description: Groups a firm's customers into a round for a postcode area and day and orders the stops into a sensible route.
+    context:
+    - key: firm_email
+      from: user.email
+    goalTemplate: 'Firm owner: {firm_email}
+
+      Date: {date_of_round}
+
+      Postcode area: {area}
+
+      Cleaner: {cleaner_email}
+
+      {?notes}Notes: {notes}{/notes}
+
+      Plan the round and save it.'
+    output: markdown
+    writesTo:
+      collection: rounds
+      parse: whole
+    profile:
+      inline:
+        display_name: Roundly round planner
+        crews:
+        - id: planner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You plan window-cleaning rounds for a UK firm owner. Steps: 1) search_plans for service plans assigned
+            to this firm (firm_email) whose postcode starts with the given area and whose frequency makes them due on the
+            given date. 2) Respect the cleaner''s daily capacity from the firm''s records and do not exceed it; list what
+            does not fit as ''Overflow''. 3) For plans missing lat/lon, call postcode_lookup with path ''/<POSTCODE without
+            spaces>'' (response JSON result.latitude, result.longitude). 4) Order the stops as a short route: start from the
+            stop furthest from the others'' centre or the first by outward code, then go to the nearest unvisited stop each
+            time; estimate 10 minutes travel between stops and the job time from the services. 5) For each stop call write_visits
+            once with date, address, postcode, lat, lon, services, price, customer_email, firm_email, cleaner_email, stop_order
+            and status ''scheduled''. 6) Call write_rounds once with the summary. Never invent customers or prices: use only
+            what the records contain. Say the route order is an approximation, not a certified optimum. Output Markdown starting
+            with a level-1 title ''# Round <date> — <area>'', then a table of stops (order, address, postcode, services, est.
+            minutes, price), then ## Totals (stops, hours, revenue) and ## Overflow and warnings.'
+    appTools:
+    - name: postcode_lookup
+      description: Look up a UK postcode (ONS/OS open data via postcodes.io)
+      action: http
+      http:
+        method: GET
+        url: https://api.postcodes.io/postcodes
+        allowPath: true
+        attribution: Contains OS data © Crown copyright; ONS data, OGL v3.0
+    - name: search_plans
+      description: Search the service plans assigned to this firm
+      action: search
+      collection: service_plans
+      scope: user
+    - name: read_cleaners
+      description: List the firm's cleaners
+      action: search
+      collection: cleaners
+      scope: user
+    - name: write_rounds
+      description: Save a round
+      action: write
+      collection: rounds
+      scope: user
+    - name: write_visits
+      description: Create a visit for a stop
+      action: write
+      collection: visits
+      scope: user
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 1
+  - key: allocator
+    role: helper
+    description: Geocodes a new plan's postcode and assigns it to the best-matching firm.
+    profile:
+      inline:
+        display_name: Roundly allocator
+        crews:
+        - id: allocator
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You match a new homeowner plan to a cleaning firm. 1) Call postcode_lookup with path '/<POSTCODE
+            without spaces>' to get latitude, longitude and the admin district. 2) Call search_coverage and pick the firm
+            whose postcodes cover the plan's outward code, that offers all the requested services, and that has capacity.
+            If several fit, prefer the lowest total price. 3) Call update_plan with the plan's id and fields lat, lon, firm_email,
+            quoted_price and status 'assigned'; if no firm fits set status 'no_cover'. Never invent firms or prices. Reply
+            with one short sentence.
+    appTools:
+    - name: postcode_lookup
+      description: Look up a UK postcode (ONS/OS open data via postcodes.io)
+      action: http
+      http:
+        method: GET
+        url: https://api.postcodes.io/postcodes
+        allowPath: true
+        attribution: Contains OS data © Crown copyright; ONS data, OGL v3.0
+    - name: search_coverage
+      description: Firms with their postcodes, services, prices and capacity
+      action: search
+      collection: coverage
+      scope: all
+    - name: update_plan
+      description: Update the customer's service plan
+      action: write
+      collection: service_plans
+      scope: user
+  - key: issue_triage
+    role: helper
+    description: Links a reported problem to the firm that did the visit.
+    profile:
+      inline:
+        display_name: Roundly issue triage
+        crews:
+        - id: issue_triage
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'A homeowner reported a problem with a visit. Call search_visits to find the visit named in the report,
+            then call update_issue with the issue id, firm_email and cleaner_email copied from the visit, a one-sentence summary
+            of the complaint, and status ''triaged''. If the visit cannot be found set status ''open''. Never decide on a
+            refund or re-clean: the firm owner does.'
+    appTools:
+    - name: search_visits
+      description: The customer's visits
+      action: search
+      collection: visits
+      scope: user
+    - name: update_issue
+      description: Update the reported issue
+      action: write
+      collection: issues
+      scope: user
+  inputForm:
+    title: Plan a round
+    fields:
+    - name: date_of_round
+      type: date
+      required: true
+      label: Date
+    - name: area
+      type: text
+      required: true
+      label: Postcode area
+      help: Outward code, e.g. BS8
+    - name: cleaner_email
+      type: select
+      required: true
+      label: Cleaner
+      optionsFrom: collection:cleaners
+    - name: notes
+      type: textarea
+      maxLength: 400
+      label: Notes (optional)
+  data:
+    collections:
+    - name: service_plans
+      description: A homeowner's address, services, frequency and payment choice
+      ownedBy: user
+      access:
+      - role: owner
+        where:
+          firm_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: cleaner
+        where:
+          cleaner_email: '{user.email}'
+      fields:
+      - name: customer_email
+        type: email
+        required: true
+        label: Your email
+      - name: phone
+        type: text
+        label: Phone
+      - name: address
+        type: text
+        required: true
+        label: Address
+      - name: postcode
+        type: text
+        required: true
+        label: Postcode
+      - name: services
+        type: multiselect
+        required: true
+        label: Services
+        options:
+        - value: windows
+          label: Windows
+        - value: gutters
+          label: Gutters
+        - value: conservatory
+          label: Conservatory
+        - value: driveway
+          label: Driveway
+      - name: frequency
+        type: select
+        required: true
+        label: Frequency
+        options:
+        - value: 4weeks
+          label: Every 4 weeks
+        - value: 8weeks
+          label: Every 8 weeks
+        - value: quarterly
+          label: Quarterly
+        - value: once
+          label: One-off
+      - name: payment_mode
+        type: select
+        required: true
+        label: Payment
+        options:
+        - value: subscription
+          label: Monthly card subscription
+        - value: per_visit
+          label: Pay per visit
+      - name: access_notes
+        type: textarea
+        label: Access notes (gate code, dogs…)
+      - name: firm_email
+        type: email
+        label: Assigned firm
+      - name: cleaner_email
+        type: email
+        label: Assigned cleaner
+      - name: quoted_price
+        type: number
+        label: Price per visit (GBP)
+      - name: lat
+        type: number
+      - name: lon
+        type: number
+      - name: status
+        type: select
+        label: Status
+        options:
+        - new
+        - assigned
+        - no_cover
+        - paused
+    - name: firm_profiles
+      description: A cleaner's or firm's service postcodes, prices and capacity
+      ownedBy: user
+      fields:
+      - name: firm_name
+        type: text
+        required: true
+        label: Firm or trading name
+      - name: owner_email
+        type: email
+        required: true
+        label: Your email
+      - name: phone
+        type: text
+        label: Phone
+      - name: postcodes
+        type: textarea
+        required: true
+        label: Service postcodes
+        help: Outward codes separated by commas, e.g. BS8, BS9, BS6
+      - name: services
+        type: multiselect
+        required: true
+        label: Services offered
+        options:
+        - windows
+        - gutters
+        - conservatory
+        - driveway
+      - name: prices
+        type: textarea
+        required: true
+        label: Prices (GBP per visit)
+        help: e.g. windows 18, gutters 45, conservatory 35, driveway 60
+      - name: capacity
+        type: number
+        required: true
+        label: Visits per day per cleaner
+    - name: coverage
+      description: Public directory of firms' coverage, copied from firm profiles
+      ownedBy: app
+      fields:
+      - name: firm_name
+        type: text
+      - name: firm_email
+        type: email
+      - name: postcodes
+        type: textarea
+      - name: services
+        type: multiselect
+        options:
+        - windows
+        - gutters
+        - conservatory
+        - driveway
+      - name: prices
+        type: textarea
+      - name: capacity
+        type: number
+    - name: cleaners
+      description: Team members of a firm
+      ownedBy: user
+      access:
+      - role: cleaner
+        where:
+          email: '{user.email}'
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Name
+      - name: email
+        type: email
+        required: true
+        label: Email
+      - name: phone
+        type: text
+        label: Phone
+      - name: firm_email
+        type: email
+        label: Firm owner email
+      - name: active
+        type: boolean
+        label: Active
+        default: true
+    - name: rounds
+      description: A cleaner's round for a day and postcode area
+      ownedBy: user
+      access:
+      - role: cleaner
+        where:
+          cleaner_email: '{user.email}'
+      fields:
+      - name: date
+        type: date
+        label: Date
+      - name: area
+        type: text
+        label: Area
+      - name: cleaner_email
+        type: email
+        label: Cleaner
+      - name: firm_email
+        type: email
+        label: Firm
+      - name: stop_count
+        type: number
+        label: Stops
+      - name: est_hours
+        type: number
+        label: Hours
+      - name: report
+        type: textarea
+        label: Route
+    - name: visits
+      description: One visit to one home, with check-in and photos
+      ownedBy: user
+      retentionDays: 730
+      access:
+      - role: cleaner
+        where:
+          cleaner_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: user
+        where:
+          customer_email: '{user.email}'
+      fields:
+      - name: date
+        type: date
+        label: Date
+      - name: stop_order
+        type: number
+        label: Stop
+      - name: address
+        type: text
+        label: Address
+      - name: postcode
+        type: text
+        label: Postcode
+      - name: lat
+        type: number
+      - name: lon
+        type: number
+      - name: services
+        type: text
+        label: Services
+      - name: price
+        type: number
+        label: Price (GBP)
+      - name: customer_email
+        type: email
+      - name: firm_email
+        type: email
+      - name: cleaner_email
+        type: email
+      - name: status
+        type: select
+        label: Status
+        options:
+        - scheduled
+        - checked_in
+        - done
+        - missed
+        - problem
+      - name: checkin_location
+        type: location
+        label: Check-in position
+      - name: before_photo
+        type: file
+        accept:
+        - jpg
+        - jpeg
+        - png
+        capture: true
+        maxMb: 8
+        label: Before photo
+      - name: after_photo
+        type: file
+        accept:
+        - jpg
+        - jpeg
+        - png
+        capture: true
+        maxMb: 8
+        label: After photo
+      - name: cleaner_notes
+        type: textarea
+        label: Notes
+    - name: issues
+      description: Problems reported by homeowners; the firm owner decides
+      ownedBy: user
+      retentionDays: 730
+      access:
+      - role: owner
+        where:
+          firm_email: '{user.email}'
+        can:
+        - read
+        - write
+      fields:
+      - name: visit
+        type: select
+        required: true
+        label: Visit
+        optionsFrom: collection:visits
+      - name: customer_email
+        type: email
+        required: true
+        label: Your email
+      - name: description
+        type: textarea
+        required: true
+        label: What went wrong?
+      - name: photo
+        type: file
+        accept:
+        - jpg
+        - jpeg
+        - png
+        capture: true
+        maxMb: 8
+        label: Photo
+      - name: firm_email
+        type: email
+      - name: cleaner_email
+        type: email
+      - name: summary
+        type: text
+        label: Summary
+      - name: status
+        type: select
+        label: Status
+        options:
+        - open
+        - triaged
+        - resolved
+      - name: resolution
+        type: select
+        label: Decision
+        options:
+        - value: reclean
+          label: Free re-clean
+        - value: refund
+          label: Refund
+        - value: none
+          label: No action
+      - name: owner_note
+        type: textarea
+        label: Note to customer
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Roundly
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: Window cleaning & home maintenance
+      title: A **clean home** on a schedule, with proof on your phone.
+      text: Book windows, gutters, conservatory and driveway cleaning. Pay by card, get before and after photos when it is
+        done. Cleaners and small firms get optimised rounds and automatic payouts.
+      actions:
+      - label: Book my home
+        href: /login
+        style: primary
+      - label: Join as a cleaner
+        href: '#cleaners'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Tell us where
+        text: Add your address and postcode, pick services and how often.
+        badge: 🏠
+      - title: We match a firm
+        text: Your home joins the round of a local firm covering your postcode.
+        badge: 📍
+      - title: Visit with proof
+        text: The cleaner checks in by GPS and photographs before and after. You get a notification and an email.
+        badge: 📸
+      - title: Something wrong?
+        text: Report it in a tap; the firm decides on a re-clean or refund.
+        badge: 🛠️
+    - type: cards
+      id: cleaners
+      title: For cleaners and firms
+      items:
+      - title: Rounds by postcode and day
+        text: Customers are grouped and ordered into an efficient route for each cleaner.
+        badge: 🗺️
+      - title: Paid out automatically
+        text: Card payments are collected from homeowners and paid to you minus our fee.
+        badge: 💷
+      - title: See your business
+        text: Team, rounds, revenue and missed visits on one dashboard.
+        badge: 📊
+    - type: note
+      content: 'Postcode data: contains OS data © Crown copyright and ONS data, Open Government Licence v3.0. Route order
+        is an approximation.'
+  - key: plan_new
+    type: form
+    title: Book my home
+    collection: service_plans
+    fields:
+    - customer_email
+    - phone
+    - address
+    - postcode
+    - services
+    - frequency
+    - payment_mode
+    - access_notes
+    submit:
+      label: Request my visits
+      message: Thanks! We are matching your home to a local firm.
+      redirect: my_plans
+    roles:
+    - user
+    - admin
+  - key: my_plans
+    type: table
+    title: My plans
+    source: collection:service_plans
+    data:
+      display: table
+      fields:
+      - key: address
+        label: Address
+      - key: services
+        label: Services
+      - key: frequency
+        label: Frequency
+      - key: quoted_price
+        label: Per visit
+        format: money
+      - key: status
+        label: Status
+        format: badge
+    roles:
+    - user
+    - admin
+  - key: my_visits
+    type: cards
+    title: My visits
+    source: collection:visits
+    data:
+      display: cards
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: address
+        label: Address
+      - key: services
+        label: Services
+      - key: status
+        label: Status
+        format: badge
+      - key: before_photo
+        label: Before
+        format: link
+      - key: after_photo
+        label: After
+        format: link
+      sort:
+        field: date
+        dir: desc
+    roles:
+    - user
+    - admin
+  - key: report_problem
+    type: form
+    title: Report a problem
+    collection: issues
+    fields:
+    - visit
+    - customer_email
+    - description
+    - photo
+    submit:
+      label: Send report
+      message: Sent. The firm will get back to you.
+      redirect: my_visits
+    roles:
+    - user
+    - admin
+  - key: firm_setup
+    type: form
+    title: My firm
+    collection: firm_profiles
+    edit: true
+    submit:
+      label: Save my firm
+      message: Saved. Customers in your postcodes can now be matched to you.
+      redirect: owner_dashboard
+    roles:
+    - user
+    - owner
+    - admin
+  - key: team_add
+    type: form
+    title: Add cleaner
+    collection: cleaners
+    edit: true
+    submit:
+      label: Save
+      message: Cleaner saved.
+      redirect: owner_team
+    roles:
+    - owner
+    - admin
+  - key: owner_team
+    type: table
+    title: Team
+    source: collection:cleaners
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Name
+      - key: email
+        label: Email
+      - key: phone
+        label: Phone
+      - key: active
+        label: Active
+    export: true
+    nav: false
+    roles:
+    - owner
+    - admin
+  - key: new_round
+    type: new_run
+    title: Plan a round
+    roles:
+    - owner
+    - admin
+  - key: round_history
+    type: history
+    title: Planned rounds
+    source: run
+    roles:
+    - owner
+    - admin
+  - key: round_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: owner_rounds
+    type: table
+    title: Rounds
+    source: collection:rounds
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: area
+        label: Area
+      - key: cleaner_email
+        label: Cleaner
+      - key: stop_count
+        label: Stops
+        format: number
+      - key: est_hours
+        label: Hours
+        format: number
+      sort:
+        field: date
+        dir: desc
+    nav: false
+    roles:
+    - owner
+    - admin
+  - key: owner_revenue
+    type: chart
+    title: Revenue by month
+    source: collection:visits
+    data:
+      display: chart
+      chart: bar
+      fields:
+      - key: date
+        label: Month
+      - key: revenue
+        label: Revenue (GBP)
+      filters:
+      - field: status
+        op: '='
+        value: done
+      groupBy:
+        field: date
+        bucket: month
+        aggs:
+        - key: revenue
+          agg: sum
+          field: price
+    nav: false
+    roles:
+    - owner
+    - admin
+  - key: owner_missed
+    type: table
+    title: Missed visits
+    source: collection:visits
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: address
+        label: Address
+      - key: cleaner_email
+        label: Cleaner
+      - key: status
+        label: Status
+        format: badge
+      filters:
+      - field: status
+        op: '='
+        value: missed
+      sort:
+        field: date
+        dir: desc
+      empty: No missed visits.
+    nav: false
+    roles:
+    - owner
+    - admin
+  - key: owner_dashboard
+    type: dashboard
+    title: Dashboard
+    children:
+    - owner_revenue
+    - owner_rounds
+    - owner_missed
+    - owner_team
+    roles:
+    - owner
+    - admin
+  - key: owner_issues
+    type: table
+    title: Problems to decide
+    source: collection:issues
+    data:
+      display: table
+      fields:
+      - key: summary
+        label: Problem
+      - key: description
+        label: Details
+      - key: status
+        label: Status
+        format: badge
+      - key: resolution
+        label: Decision
+        format: badge
+      sort:
+        field: status
+        dir: asc
+      actions:
+      - type: call
+        field: customer_email
+        label: Contact
+    roles:
+    - owner
+    - admin
+  - key: resolve_issue
+    type: form
+    title: Decide
+    collection: issues
+    fields:
+    - status
+    - resolution
+    - owner_note
+    edit: true
+    submit:
+      label: Send decision
+      message: The customer has been told.
+      redirect: owner_issues
+    nav: false
+    roles:
+    - owner
+    - admin
+  - key: my_rounds
+    type: cards
+    title: My rounds today
+    source: collection:visits
+    data:
+      display: cards
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: stop_order
+        label: Stop
+        format: number
+      - key: address
+        label: Address
+      - key: postcode
+        label: Postcode
+      - key: services
+        label: Services
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: date
+        dir: asc
+      actions:
+      - type: directions
+        field: address
+        label: Directions
+    roles:
+    - cleaner
+    - admin
+  - key: checkin
+    type: form
+    title: Check in and photos
+    collection: visits
+    fields:
+    - status
+    - checkin_location
+    - before_photo
+    - after_photo
+    - cleaner_notes
+    edit: true
+    submit:
+      label: Save visit
+      message: Saved.
+      redirect: my_rounds
+    nav: false
+    roles:
+    - cleaner
+    - admin
+  - key: account
+    type: account
+    title: Plan and payments
+    roles:
+    - user
+    - owner
+    - admin
+  triggers:
+  - key: sync_coverage
+    'on':
+      collection: firm_profiles
+      op: any
+    write:
+      collection: coverage
+      fields:
+        firm_name: firm_name
+        firm_email: owner_email
+        postcodes: postcodes
+        services: services
+        prices: prices
+        capacity: capacity
+      keyBy: firm_email
+  - key: allocate_plan
+    'on':
+      collection: service_plans
+      op: insert
+    start:
+      agent: allocator
+    goal: New service plan {record.address}, postcode {record.postcode}, services {record.services}, frequency {record.frequency}.
+      Find the plan by these details in the user's plans, geocode it and assign a firm.
+  - key: triage_issue
+    'on':
+      collection: issues
+      op: insert
+    start:
+      agent: issue_triage
+    goal: 'A homeowner reported a problem on visit {record.visit}: {record.description}. Link it to the firm.'
+  - key: issue_to_owner
+    'on':
+      collection: issues
+      op: update
+      where:
+        status: triaged
+    notify:
+      to: record.firm_email
+      subject: 'Roundly: a customer reported a problem'
+      body: 'A customer reported a problem: {record.summary}. Please decide on a re-clean or a refund.'
+      link: owner_issues
+  - key: issue_decided
+    'on':
+      collection: issues
+      op: update
+      where:
+        status: resolved
+    notify:
+      to: record.customer_email
+      subject: 'Roundly: update on your problem report'
+      body: 'The firm has decided: {record.resolution}. {record.owner_note}'
+      link: my_visits
+  - key: visit_done
+    'on':
+      collection: visits
+      op: update
+      where:
+        status: done
+    notify:
+      to: record.customer_email
+      subject: Your clean at {record.address} is done
+      body: Your visit on {record.date} is complete. Open the link to see the before and after photos. Not happy? Report a
+        problem from the visit.
+      link: my_visits
+  - key: visit_reminder
+    'on':
+      date:
+        collection: visits
+        field: date
+        offsetDays: -1
+        hour: 17
+      where:
+        status: scheduled
+    notify:
+      to: record.customer_email
+      subject: 'Roundly: cleaning tomorrow at {record.address}'
+      body: Your cleaner visits tomorrow ({record.date}). Please leave gates unlocked or follow your access notes.
+      link: my_visits
+  - key: visit_missed
+    'on':
+      date:
+        collection: visits
+        field: date
+        offsetDays: 1
+        hour: 8
+      where:
+        status: scheduled
+    notify:
+      to:
+      - record.firm_email
+      - record.customer_email
+      subject: 'Roundly: missed visit at {record.address}'
+      body: The visit on {record.date} at {record.address} was not completed. The firm will rebook it.
+      link: my_visits
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - subscription
+    - per_transaction
+    currency: gbp
+    transactionFeePct: 12
+    sellers: collection:firm_profiles
+    plans:
+    - key: monthly_care
+      price: 30
+      interval: month
+      label: Monthly home care subscription
+      roles:
+      - user
+      includes:
+      - recurring card payment for scheduled visits
+  mobile:
+    appId: com.roundly.app
+    appName: Roundly
+    capabilities:
+    - name: location
+      reason: To check in at the house you are cleaning
+    - name: camera
+      reason: To take before and after photos of the job
+    - name: push
+  extensions:
+  - key: route_optimisation
+    description: The planner agent orders stops with a nearest-neighbour approximation using postcode coordinates; true road-network
+      route optimisation is not available.
+  - key: photos_in_email
+    description: The done email links to the visit; photos are shown in the app, not attached to the email.
+  - key: refund_execution
+    description: The owner's refund decision is recorded and the customer is notified; the money refund itself is made in
+      Stripe, not automated.
+  - key: per_customer_subscription_price
+    description: The subscription plan has a fixed price; per-customer recurring amounts based on the firm's quote are not
+      available yet.

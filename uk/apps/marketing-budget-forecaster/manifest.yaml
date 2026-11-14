@@ -1,0 +1,987 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: spendwise
+  displayName: Spendwise
+  tagline: One view of ad spend and sales, with a forecast and a budget you approve.
+  description: Spendwise unifies advertising and sales data per client workspace, shows ROAS, CPA and period comparisons,
+    forecasts revenue at different budget levels, proposes a channel split that a marketing manager approves, and sends weekly
+    and monthly client reports and underperformance alerts.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#12304a'
+      accent: '#e4572e'
+      background: '#f7f8fa'
+      foreground: '#1a2230'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Spend
+      color: primary
+    - text: wise
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: marketer
+      label: Marketer
+      assignedBy: signup
+    - key: client_viewer
+      label: Client viewer
+      assignedBy: derived
+      from: collection:workspaces.viewer_email
+  limits:
+  - action: agent:forecaster
+    per: user
+    max: 20
+    window: day
+    roles:
+    - marketer
+  agents:
+  - key: forecaster
+    role: main
+    description: Forecasts revenue at several budget levels and proposes a channel split; asks the marketer to approve it.
+    awaits:
+    - spend_plan
+    profile:
+      inline:
+        display_name: Spendwise forecaster
+        crews:
+        - id: forecaster
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a performance-marketing analyst. Read the workspace''s daily metrics (spend, impressions,
+            clicks, conversions, revenue per channel and campaign) with metrics_read. Compute ROAS, CPA and blended performance
+            per channel and the change against the previous period. Forecast revenue for the requested horizon at three budget
+            levels (current, -20%, +20%) using observed diminishing returns; give a low/expected/high range and a confidence
+            level (low/medium/high) justified by how much data you have. Propose a split of the budget between channels with
+            expected revenue, ROAS and confidence for each. Never invent figures: if data is thin, say so and lower confidence.
+            You never change campaigns. Output starts with a level-1 title ''# Budget plan — <workspace> — <horizon>'', then
+            sections ## Current performance, ## Forecast by budget level, ## Proposed allocation, ## Risks and assumptions.
+            Add a chart as a fenced block ```chart with JSON {"type":"bar","title":"...","labels":[...],"series":[{"name":"...","values":[...]}],"unit":"£"}
+            comparing channels. Finally call request_spend_plan once with the workspace, horizon, total budget, the allocation
+            per channel, expected revenue and confidence, and wait for the decision. Write in English.'
+    appTools:
+    - name: metrics_read
+      description: Read the daily metrics records of the user's workspaces
+      action: read
+      collection: metrics
+      scope: user
+    - name: budgets_read
+      description: Read the official budgets already approved
+      action: read
+      collection: official_budgets
+      scope: user
+    context: []
+    goalTemplate: 'Workspace: {workspace}
+
+      Horizon: {horizon_label}
+
+      {?budget}Planned total budget for the period: £{budget}{/budget}{!budget}Use the recent average spend as the baseline
+      budget.{/budget}
+
+      {?notes}Notes: {notes}{/notes}
+
+      Today is {date}. Write in English.'
+    output: markdown
+    limits:
+      maxTurns: 20
+      maxBudgetUsd: 1.0
+  - key: publisher
+    role: helper
+    description: Saves an approved plan as the official budget.
+    profile:
+      inline:
+        display_name: Spendwise publisher
+        crews:
+        - id: publisher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: An approved spend plan arrives in the goal. Save it once with budget_append as an official budget,
+            copying the workspace, period, total, allocation, expected revenue and confidence exactly. Do not alter figures.
+            Reply with a one-line confirmation titled '# Official budget saved'.
+    appTools:
+    - name: budget_append
+      description: Save the approved plan as the official budget
+      action: append
+      collection: official_budgets
+      scope: user
+    goalTemplate: 'Approved plan: {event}'
+    output: markdown
+  - key: importer
+    role: helper
+    description: Reads an uploaded CSV (or Shopify orders) and stores the daily metrics.
+    profile:
+      inline:
+        display_name: Spendwise importer
+        crews:
+        - id: importer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You import advertising and sales data. Open the uploaded file with read_upload using the file id
+            in the goal, map its columns to: date (YYYY-MM-DD), channel (google_ads, meta_ads, microsoft_ads, ga4, shopify,
+            amazon or other), campaign, spend, impressions, clicks, conversions, revenue, and compute roas (revenue/spend)
+            and cpa (spend/conversions) when possible. Append one record per day, channel and campaign with metrics_append,
+            including the workspace name and viewer_email given in the goal. If the source is Shopify, use shop_orders (GET
+            orders) to build daily revenue and order counts for channel shopify. Never invent rows; skip malformed ones and
+            say how many. End with ''# Import summary'' and counts.'
+    appTools:
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
+    - name: metrics_append
+      description: Add a daily metrics record
+      action: append
+      collection: metrics
+      scope: user
+    - name: shop_orders
+      description: Read the user's Shopify orders
+      action: http
+      http:
+        method: GET
+        url: https://{host}/admin/api/2025-01/orders.json
+        allowPath: false
+        credential:
+          provider: shopify
+          header: X-Shopify-Access-Token
+          format: '{secret}'
+    goalTemplate: 'Workspace: {record.workspace}
+
+      viewer_email: {record.viewer_email}
+
+      Source: {record.source}
+
+      File ids: {record.file}'
+    output: markdown
+  - key: reporter
+    role: helper
+    description: Writes the weekly or monthly client report for one workspace.
+    profile:
+      inline:
+        display_name: Spendwise reporter
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You write a client-ready performance report for one workspace. Read its metrics with metrics_read
+            and the official budget with budgets_read. Cover spend, revenue, ROAS, CPA, blended performance, change against
+            the previous period, and performance against the official budget, per channel. Be factual and concise (under 400
+            words); never invent figures; no instructions to change campaigns beyond suggestions. Start with '# <Workspace>
+            — <period> performance report'. Then save it once with report_append (title, body, workspace, viewer_email). Write
+            in English.
+    appTools:
+    - name: metrics_read
+      description: Read the daily metrics records of the user's workspaces
+      action: read
+      collection: metrics
+      scope: user
+    - name: budgets_read
+      description: Read the official budgets already approved
+      action: read
+      collection: official_budgets
+      scope: user
+    - name: report_append
+      description: Save the report for the client
+      action: append
+      collection: reports
+      scope: user
+    goalTemplate: 'Workspace: {workspace}
+
+      Client email: {viewer_email}
+
+      Period: {period}
+
+      Today is {date}.'
+    output: markdown
+  - key: alerter
+    role: helper
+    description: Checks each channel against the official budget and raises alerts.
+    profile:
+      inline:
+        display_name: Spendwise alerter
+        crews:
+        - id: alerter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: Compare the last 7 days of each channel in the workspace (metrics_read) with the official budget's
+            expected revenue and ROAS (budgets_read), pro-rated to the period. Raise an alert with alert_append only when
+            a channel is more than 15% below plan on revenue or ROAS, or spends more than 20% over plan; include workspace,
+            viewer_email, channel, severity (warning or critical), date and a one-sentence message with the real figures.
+            If nothing is off, append nothing. End with '# Alert check' and a summary. You never change campaigns.
+    appTools:
+    - name: metrics_read
+      description: Read the daily metrics records of the user's workspaces
+      action: read
+      collection: metrics
+      scope: user
+    - name: budgets_read
+      description: Read the official budgets already approved
+      action: read
+      collection: official_budgets
+      scope: user
+    - name: alert_append
+      description: Raise an alert
+      action: append
+      collection: alerts
+      scope: user
+    goalTemplate: 'Workspace: {workspace}
+
+      viewer_email: {viewer_email}
+
+      Today is {date}.'
+    output: markdown
+  inputForm:
+    title: New forecast and budget plan
+    fields:
+    - name: workspace
+      type: select
+      required: true
+      label: Client workspace
+      optionsFrom: collection:workspaces
+    - name: horizon
+      type: select
+      required: true
+      label: Horizon
+      options:
+      - value: month
+        label: Next month
+      - value: quarter
+        label: Next quarter
+    - name: budget
+      type: number
+      label: Total budget for the period (£)
+      help: Leave empty to use the recent average spend
+    - name: notes
+      type: textarea
+      maxLength: 500
+      label: Notes (optional)
+  data:
+    collections:
+    - name: workspaces
+      description: Client workspaces managed by a brand or agency
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Client name
+      - name: viewer_email
+        type: email
+        label: Client viewer email
+      - name: currency
+        type: select
+        options:
+        - GBP
+        - EUR
+        - USD
+        label: Currency
+      access:
+      - role: client_viewer
+        where:
+          viewer_email: '{user.email}'
+        can:
+        - read
+    - name: uploads
+      description: Data uploads (CSV fallback or Shopify sync)
+      ownedBy: user
+      fields:
+      - name: workspace
+        type: text
+        required: true
+        label: Workspace name
+      - name: viewer_email
+        type: email
+        label: Client viewer email
+      - name: source
+        type: select
+        required: true
+        label: Source
+        options:
+        - value: csv
+          label: CSV file
+        - value: shopify
+          label: Shopify (API key)
+      - name: file
+        type: file
+        accept:
+        - csv
+        - xlsx
+        maxMb: 15
+        label: CSV or Excel file
+      retentionDays: 365
+    - name: metrics
+      description: Daily spend, impressions, clicks, conversions and revenue per campaign and channel
+      ownedBy: user
+      fields:
+      - name: workspace
+        type: text
+      - name: viewer_email
+        type: email
+      - name: date
+        type: date
+      - name: channel
+        type: text
+      - name: campaign
+        type: text
+      - name: spend
+        type: number
+      - name: impressions
+        type: number
+      - name: clicks
+        type: number
+      - name: conversions
+        type: number
+      - name: revenue
+        type: number
+      - name: roas
+        type: number
+      - name: cpa
+        type: number
+      access:
+      - role: client_viewer
+        where:
+          viewer_email: '{user.email}'
+        can:
+        - read
+    - name: official_budgets
+      description: Approved budget plans
+      ownedBy: user
+      fields:
+      - name: workspace
+        type: text
+      - name: viewer_email
+        type: email
+      - name: period
+        type: text
+      - name: total
+        type: number
+      - name: allocation
+        type: textarea
+      - name: expected_revenue
+        type: number
+      - name: confidence
+        type: text
+      access:
+      - role: client_viewer
+        where:
+          viewer_email: '{user.email}'
+        can:
+        - read
+    - name: reports
+      description: Weekly and monthly client reports
+      ownedBy: user
+      fields:
+      - name: title
+        type: text
+      - name: body
+        type: textarea
+      - name: workspace
+        type: text
+      - name: viewer_email
+        type: email
+      access:
+      - role: client_viewer
+        where:
+          viewer_email: '{user.email}'
+        can:
+        - read
+      retentionDays: 730
+    - name: alerts
+      description: Channels underperforming the plan
+      ownedBy: user
+      fields:
+      - name: workspace
+        type: text
+      - name: viewer_email
+        type: email
+      - name: channel
+        type: text
+      - name: severity
+        type: text
+      - name: date
+        type: date
+      - name: message
+        type: textarea
+      access:
+      - role: client_viewer
+        where:
+          viewer_email: '{user.email}'
+        can:
+        - read
+      retentionDays: 365
+    credentials:
+    - provider: shopify
+      kind: api_key
+      scope: user
+      label: Shopify
+      help: In Shopify admin, create a custom app and copy its Admin API access token (read orders).
+      hostLabel: your-store.myshopify.com
+  egress:
+    hosts:
+    - '*.myshopify.com'
+    notes: Users' own Shopify stores, read with the user's own API key.
+  approvals:
+  - key: spend_plan
+    title: Approve budget plan
+    description: The marketing manager confirms the proposed plan before it becomes the official budget.
+    decidedBy: requester
+    fields:
+    - workspace
+    - horizon
+    - total
+    - allocation
+    - expected_revenue
+    - confidence
+  templates:
+  - key: weekly_report
+    title: Weekly client report
+    description: A report on one workspace every Monday, emailed to the client.
+    agent: reporter
+    params:
+    - name: workspace
+      type: text
+      required: true
+      label: Workspace name
+    - name: viewer_email
+      type: email
+      required: true
+      label: Client email
+    - name: period
+      type: select
+      label: Period
+      options:
+      - value: last 7 days
+        label: Last 7 days
+    goal: 'Workspace: {workspace}
+
+      Client email: {viewer_email}
+
+      Period: {period}
+
+      Today is {date}.'
+    schedule:
+      cron: 0 7 * * 1
+      userCanChange: true
+    maxPerUser: 20
+    deliver:
+      to: owner
+      onlyIfNew: true
+  - key: monthly_report
+    title: Monthly client report
+    description: A report on the previous month on the 1st, emailed to the client.
+    agent: reporter
+    params:
+    - name: workspace
+      type: text
+      required: true
+      label: Workspace name
+    - name: viewer_email
+      type: email
+      required: true
+      label: Client email
+    - name: period
+      type: select
+      label: Period
+      options:
+      - value: previous calendar month
+        label: Previous month
+    goal: 'Workspace: {workspace}
+
+      Client email: {viewer_email}
+
+      Period: {period}
+
+      Today is {date}.'
+    schedule:
+      cron: 0 7 1 * *
+      userCanChange: true
+    maxPerUser: 20
+    deliver:
+      to: owner
+      onlyIfNew: true
+  - key: plan_watch
+    title: Plan alerts
+    description: Daily check of each channel against the official budget.
+    agent: alerter
+    params:
+    - name: workspace
+      type: text
+      required: true
+      label: Workspace name
+    - name: viewer_email
+      type: email
+      label: Client email
+    goal: 'Workspace: {workspace}
+
+      viewer_email: {viewer_email}
+
+      Today is {date}.'
+    schedule:
+      cron: 0 6 * * *
+      userCanChange: false
+    maxPerUser: 20
+  triggers:
+  - key: plan_approved
+    'on':
+      approval: spend_plan
+      decision: approved
+    start:
+      agent: publisher
+    goal: 'Approved plan: {event}'
+  - key: upload_received
+    'on':
+      collection: uploads
+      op: insert
+    start:
+      agent: importer
+    goal: 'Workspace: {record.workspace}
+
+      viewer_email: {record.viewer_email}
+
+      Source: {record.source}
+
+      File ids: {record.file}'
+  - key: report_ready
+    'on':
+      collection: reports
+      op: insert
+    notify:
+      to:
+      - record.viewer_email
+      - owner
+      subject: '{record.title}'
+      body: '{record.body}'
+      link: reports
+  - key: channel_alert
+    'on':
+      collection: alerts
+      op: insert
+    notify:
+      to:
+      - owner
+      subject: 'Spendwise alert: {record.channel} is below plan ({record.workspace})'
+      body: '{record.message}'
+      link: alerts
+  views:
+  - key: home
+    type: page
+    nav: false
+    sections:
+    - type: hero
+      title: All your ad spend and sales in **one place**, with a budget you can trust.
+      text: Spendwise unifies Google Ads, Meta Ads, Microsoft Ads, GA4, Shopify and Amazon data, forecasts revenue at different
+        budget levels and proposes how to split the budget. You approve every plan; Spendwise never touches your campaigns.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Bring your data
+        text: Upload CSV exports or connect your Shopify store with an API key; daily spend, clicks, conversions and revenue
+          are stored per campaign and channel.
+        badge: 📥
+      - title: See performance
+        text: ROAS, CPA and blended results with comparison to the previous period, one workspace per client.
+        badge: 📊
+      - title: Forecast and approve
+        text: The agent forecasts the next month or quarter at several budget levels. A marketing manager approves before
+          it becomes the official budget.
+        badge: ✅
+      - title: Report and alert
+        text: Weekly and monthly reports reach your clients by email, and alerts fire when a channel falls behind plan.
+        badge: 🔔
+    - type: cards
+      id: pricing
+      title: Pricing
+      intro: By monthly ad spend tier. Prices in GBP.
+      items:
+      - title: Growth — £500 / month
+        text: Up to £25k managed ad spend per month, 1 workspace.
+      - title: Scale — £1,200 / month
+        text: Up to £150k managed ad spend per month, 3 workspaces.
+      - title: Agency — £2,500 / month
+        text: Unlimited client workspaces with client viewer access.
+    - type: note
+      content: Spendwise is decision support, not financial advice. Forecasts are estimates with stated confidence. Spendwise
+        reads data only and never changes ad campaigns.
+  - key: overview
+    type: page
+    title: Dashboard
+    roles:
+    - marketer
+    - client_viewer
+    - admin
+    sections:
+    - type: data
+      title: Performance
+      source: collection:metrics
+      display: kpi
+      kpis:
+      - label: Spend
+        agg: sum
+        field: spend
+        format: money
+      - label: Revenue
+        agg: sum
+        field: revenue
+        format: money
+      - label: Conversions
+        agg: sum
+        field: conversions
+        format: number
+      - label: Avg ROAS
+        agg: avg
+        field: roas
+        format: ratio
+      - label: Avg CPA
+        agg: avg
+        field: cpa
+        format: money
+    - type: data
+      title: By channel
+      source: collection:metrics
+      display: table
+      fields:
+      - key: channel
+        label: Channel
+      - key: spend
+        label: Spend
+        format: money
+      - key: revenue
+        label: Revenue
+        format: money
+      - key: roas
+        label: ROAS
+        format: ratio
+      - key: cpa
+        label: CPA
+        format: money
+      groupBy:
+        field: channel
+        aggs:
+        - key: spend
+          agg: sum
+          field: spend
+        - key: revenue
+          agg: sum
+          field: revenue
+        - key: roas
+          agg: avg
+          field: roas
+        - key: cpa
+          agg: avg
+          field: cpa
+    - type: data
+      title: Month by month (vs previous period)
+      source: collection:metrics
+      display: chart
+      chart: line
+      fields:
+      - key: date
+        label: Month
+      - key: spend
+        label: Spend
+      - key: revenue
+        label: Revenue
+      groupBy:
+        field: date
+        bucket: month
+        aggs:
+        - key: spend
+          agg: sum
+          field: spend
+        - key: revenue
+          agg: sum
+          field: revenue
+    - type: data
+      title: Official budgets
+      source: collection:official_budgets
+      display: table
+      fields:
+      - key: workspace
+        label: Workspace
+      - key: period
+        label: Period
+      - key: total
+        label: Budget
+        format: money
+      - key: expected_revenue
+        label: Expected revenue
+        format: money
+      - key: confidence
+        label: Confidence
+        format: badge
+  - key: alerts
+    type: table
+    title: Alerts
+    source: collection:alerts
+    roles:
+    - marketer
+    - client_viewer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: workspace
+        label: Workspace
+      - key: channel
+        label: Channel
+      - key: severity
+        label: Severity
+        format: badge
+      - key: message
+        label: Message
+      sort:
+        field: date
+        dir: desc
+      limit: 100
+  - key: reports
+    type: table
+    title: Client reports
+    source: collection:reports
+    roles:
+    - marketer
+    - client_viewer
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Report
+      - key: workspace
+        label: Workspace
+      limit: 100
+  - key: workspaces_form
+    type: form
+    title: New client workspace
+    collection: workspaces
+    roles:
+    - marketer
+    - admin
+    submit:
+      label: Create workspace
+      message: Workspace created.
+  - key: workspaces
+    type: table
+    title: Workspaces
+    source: collection:workspaces
+    roles:
+    - marketer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Client
+      - key: viewer_email
+        label: Viewer
+      - key: currency
+        label: Currency
+  - key: upload
+    type: form
+    title: Import data
+    collection: uploads
+    roles:
+    - marketer
+    - admin
+    submit:
+      label: Import
+      message: Import started; data appears on the dashboard shortly.
+      redirect: overview
+  - key: new_plan
+    type: new_run
+    title: Forecast and plan
+    roles:
+    - marketer
+    - admin
+  - key: plans
+    type: history
+    title: My plans
+    source: run
+    roles:
+    - marketer
+    - admin
+  - key: plan
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: approvals
+    type: approvals
+    title: Approvals
+    roles:
+    - marketer
+    - admin
+  - key: report_schedules
+    type: instances
+    template: weekly_report
+    title: Weekly reports
+    roles:
+    - marketer
+    - admin
+  - key: monthly_schedules
+    type: instances
+    template: monthly_report
+    title: Monthly reports
+    roles:
+    - marketer
+    - admin
+  - key: alert_schedules
+    type: instances
+    template: plan_watch
+    title: Alert watches
+    roles:
+    - marketer
+    - admin
+  - key: account
+    type: account
+    title: Plan and connections
+    roles:
+    - marketer
+    - admin
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: growth
+      price: 500
+      interval: month
+      label: Growth — up to £25k ad spend
+      includes:
+      - 1 workspace
+      - Forecasts and approvals
+      - Weekly and monthly reports
+      roles:
+      - marketer
+    - key: scale
+      price: 1200
+      interval: month
+      label: Scale — up to £150k ad spend
+      includes:
+      - 3 workspaces
+      - Forecasts and approvals
+      - Weekly and monthly reports
+      - Alerts
+      roles:
+      - marketer
+    - key: agency
+      price: 2500
+      interval: month
+      label: Agency — unlimited client workspaces
+      includes:
+      - Unlimited client workspaces
+      - Client viewer access
+      - Weekly and monthly reports
+      - Alerts
+      roles:
+      - marketer
+  notifications:
+    emailOnRunDone: true
+  extensions:
+  - key: oauth_connectors
+    description: OAuth connections to Google Ads, Meta Ads, Microsoft Ads, Google Analytics 4 and Amazon are not available
+      yet; only CSV upload and Shopify via API key work now. Daily sync from those platforms must wait for OAuth support.
+  - key: workspace_quotas
+    description: Plan limits on the number of client workspaces and ad spend tiers are not enforced automatically; they are
+      described in the plans.
+  - key: ratio_aggregation
+    description: ROAS and CPA in aggregated dashboards are averages of the daily values, not spend-weighted ratios.

@@ -1,0 +1,1114 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: skillvane
+  displayName: Skillvane
+  tagline:
+    en: Map skills and gaps. Move talent inside.
+  description:
+    en: Skillvane maps employees' skills and gaps against role frameworks aligned to the ONS SOC, so large companies can run
+      internal mobility, succession and learning with evidence.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12304a'
+      accent: '#0f8b8d'
+      background: '#f6f8fa'
+      foreground: '#16222e'
+    fonts:
+      body: Inter
+      display: Sora
+    wordmark:
+    - text: Skill
+      color: primary
+    - text: vane
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Who sees what
+      href: '#roles'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: HR admin
+      assignedBy: admin_emails
+    - key: manager
+      label: Manager
+      assignedBy: derived
+      from: collection:employees.manager_email
+    - key: employee
+      label: Employee
+      assignedBy: signup
+  limits:
+  - action: agent:cv_analyst
+    per: user
+    max: 10
+    window: day
+  agents:
+  - key: cv_analyst
+    role: main
+    description: Infers skills from an employee's CV and suggests additions to their profile.
+    profile:
+      inline:
+        display_name: Skillvane CV analyst
+        crews:
+        - id: cv_analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the Skillvane CV analyst. You read an employee''s CV (the text given in the goal, or a file
+            you open with read_upload using the file id when there is no text, e.g. a scan) and infer their skills. Use read_role_frameworks
+            to see which skills their current role requires. Produce: 1) a list of at most 15 skills you can evidence from
+            the CV, each with a suggested self-level 1-5 and a one-line evidence quote or summary; 2) skills the role requires
+            that the CV does not show (do not invent them). For each inferred skill call append_skill_rating once with employee_email,
+            manager_email, department, skill, self_level, evidence, source ''cv_inferred'' and status ''suggested''. Their
+            manager will validate them. Never claim a skill the CV does not support and never invent employers or dates. Final
+            report in Markdown, starting with a level-1 title ''# CV skills review — <name or email>'', then sections ## Skills
+            found, ## Suggested additions, ## Not evidenced in the CV, ## Next steps. Under 450 words.'
+          mcp_servers: []
+    appTools:
+    - name: append_skill_rating
+      description: Add a suggested skill to the employee's own profile
+      action: append
+      collection: skill_ratings
+      scope: user
+    - name: read_role_frameworks
+      description: Read the skills frameworks of roles
+      action: read
+      collection: role_frameworks
+      scope: all
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
+    context:
+    - key: email
+      from: user.email
+    - key: job_title
+      from: collection:employees.job_title
+    - key: department
+      from: collection:employees.department
+    - key: manager_email
+      from: collection:employees.manager_email
+    goalTemplate: 'Employee: {email}. Current job title: {job_title}. Department: {department}. Manager: {manager_email}.
+
+      {?cv_text}CV text:
+
+      {cv_text}{/cv_text}
+
+      {?cv}CV file ids: {cv}{/cv}
+
+      {?notes}Notes from the employee: {notes}{/notes}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    output: markdown
+  - key: framework_builder
+    role: setup
+    description: Maps job titles to the ONS SOC and builds a skills framework per role.
+    profile:
+      inline:
+        display_name: Skillvane framework builder
+        crews:
+        - id: framework_builder
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You build role skills frameworks. For the role you are given: read its description with read_role_descriptions,
+            and the employees'' job titles with read_employees if useful. Map the job title to the closest ONS Standard Occupational
+            Classification 2020 unit group (4-digit code and title) from your own knowledge; give a confidence (high, medium,
+            low) and say low when unsure: HR will verify, never invent a code. Then define 8-15 skills (technical, functional,
+            behavioural) with a required level 1-5 and a critical flag (true only for skills without which the role cannot
+            be performed), taken from the description first and the SOC unit group''s typical tasks second. Save with write_role_frameworks
+            one record: job_title, soc_code, soc_title, soc_confidence, skills (JSON array of {skill, level, critical, learning_hint}),
+            summary. Final report: a Markdown note starting with ''# Framework — <job title>'' with the SOC mapping and a
+            table of skills. Do not invent company-specific requirements that are not in the description.'
+    appTools:
+    - name: read_role_descriptions
+      description: Read the company's role descriptions
+      action: read
+      collection: role_descriptions
+      scope: all
+    - name: read_employees
+      description: Read the staff records
+      action: read
+      collection: employees
+      scope: all
+    - name: write_role_frameworks
+      description: Save a role's skills framework
+      action: write
+      collection: role_frameworks
+      scope: all
+    output: markdown
+  - key: gap_analyst
+    role: scheduled
+    description: 'Weekly: computes each employee''s gaps for their current role and for roles they could move to, with learning
+      suggestions.'
+    profile:
+      inline:
+        display_name: Skillvane gap analyst
+        crews:
+        - id: gap_analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You compute skills gaps. Read the staff (read_employees), their skill ratings (read_skill_ratings)
+            and the role frameworks (read_role_frameworks). Use only ratings with status ''validated'' (level = manager_level),
+            and say in the summary how many employees have none. For each employee with a framework for their job title, write
+            with write_skill_gaps one record per gap (at most 8 per target, largest or critical first): employee_email, department,
+            job_title, target_role, target_type ''current'', skill, required_level, current_level (0 if absent), gap, critical
+            (from the framework), learning (one concrete suggestion: course type, project, mentoring; no invented course names
+            or URLs), assessed_on today. Then pick up to 2 other roles in the frameworks closest to the employee''s validated
+            skills (target_type ''move'') and write their top gaps the same way. Do not write records for skills with no gap.
+            Never invent skills or levels. Final report in Markdown starting with ''# Gap analysis — <date>'' with counts
+            of employees processed, skipped (no framework or no validated skills) and critical gaps found.'
+    appTools:
+    - name: read_employees
+      description: Read the staff records
+      action: read
+      collection: employees
+      scope: all
+    - name: read_skill_ratings
+      description: Read all skill ratings
+      action: read
+      collection: skill_ratings
+      scope: all
+    - name: read_role_frameworks
+      description: Read the skills frameworks of roles
+      action: read
+      collection: role_frameworks
+      scope: all
+    - name: write_skill_gaps
+      description: Save a skills gap of an employee
+      action: write
+      collection: skill_gaps
+      scope: all
+    output: markdown
+  - key: candidate_ranker
+    role: helper
+    description: Ranks internal candidates for a vacancy by fit and explains why; HR approves before managers see it.
+    awaits:
+    - shortlist_approval
+    profile:
+      inline:
+        display_name: Skillvane candidate ranker
+        crews:
+        - id: candidate_ranker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You rank internal candidates for a vacancy. Two modes, given by the goal. MODE DRAFT (new vacancy):
+            read the staff (read_employees), validated skill ratings (read_skill_ratings) and role frameworks (read_role_frameworks).
+            Compare each plausible employee''s validated skills with what the vacancy requires (and the framework of the target
+            role if one exists). Pick the top 5 and for each give a fit score 0-100, strengths, gaps, and a plain-language
+            explanation based only on recorded evidence (grade, tenure, validated skills). Use only job-related criteria;
+            never use or infer age, gender, ethnicity, disability, family status or other protected characteristics, and flag
+            candidates with little validated data instead of guessing. Then call request_shortlist_approval with the vacancy
+            title and the shortlist (Markdown) and stop. MODE APPROVED (the goal says the shortlist was approved): call write_shortlists
+            once with vacancy_title, candidates (the approved Markdown shortlist), summary, approved_on today. Final report
+            in Markdown starting with ''# Shortlist — <vacancy title>''.'
+    appTools:
+    - name: read_employees
+      description: Read the staff records
+      action: read
+      collection: employees
+      scope: all
+    - name: read_skill_ratings
+      description: Read all skill ratings
+      action: read
+      collection: skill_ratings
+      scope: all
+    - name: read_role_frameworks
+      description: Read the skills frameworks of roles
+      action: read
+      collection: role_frameworks
+      scope: all
+    - name: write_shortlists
+      description: Save an approved shortlist for managers
+      action: write
+      collection: shortlists
+      scope: all
+    output: markdown
+  inputForm:
+    title: Upload your CV
+    fields:
+    - name: cv
+      type: file
+      label: CV
+      accept:
+      - pdf
+      - docx
+      - txt
+      maxMb: 10
+      multiple: false
+      required: true
+    - name: notes
+      type: textarea
+      maxLength: 600
+      label: Anything the CV misses (optional)
+  data:
+    collections:
+    - name: employees
+      description: Staff imported by HR from CSV
+      ownedBy: org
+      fields:
+      - name: employee_id
+        type: text
+        required: true
+        label: Employee ID
+      - name: name
+        type: text
+        label: Name
+      - name: email
+        type: email
+        required: true
+        label: Work email
+      - name: job_title
+        type: text
+        required: true
+        label: Job title
+      - name: department
+        type: text
+        required: true
+        label: Department
+      - name: grade
+        type: text
+        label: Grade
+      - name: location
+        type: text
+        label: Location
+      - name: start_date
+        type: date
+        label: Start date
+      - name: manager_email
+        type: email
+        label: Manager email
+      access:
+      - role: employee
+        where:
+          email: '{user.email}'
+        can:
+        - read
+      - role: manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+    - name: role_descriptions
+      description: The company's role descriptions
+      ownedBy: org
+      fields:
+      - name: title
+        type: text
+        required: true
+        label: Job title
+      - name: department
+        type: text
+        label: Department
+      - name: description
+        type: textarea
+        required: true
+        label: Role description
+      - name: document
+        type: file
+        accept:
+        - pdf
+        - docx
+        - txt
+        label: Document
+    - name: role_frameworks
+      description: Skills framework per role with ONS SOC mapping, written by the framework agent
+      ownedBy: shared
+      fields:
+      - name: job_title
+        type: text
+        label: Job title
+      - name: soc_code
+        type: text
+        label: ONS SOC code
+      - name: soc_title
+        type: text
+        label: ONS SOC title
+      - name: soc_confidence
+        type: select
+        label: Mapping confidence
+        options:
+        - high
+        - medium
+        - low
+      - name: skills
+        type: json
+        label: Skills
+      - name: summary
+        type: textarea
+        label: Summary
+    - name: skill_ratings
+      description: Self-rated and CV-inferred skills, validated by managers
+      ownedBy: org
+      fields:
+      - name: employee_email
+        type: email
+        required: true
+        label: Your work email
+      - name: manager_email
+        type: email
+        label: Your manager's email
+      - name: department
+        type: text
+        label: Department
+      - name: skill
+        type: text
+        required: true
+        label: Skill
+      - name: self_level
+        type: number
+        label: Self-rating (1-5)
+      - name: source
+        type: select
+        label: Source
+        options:
+        - self
+        - cv_inferred
+        default: self
+      - name: evidence
+        type: textarea
+        label: Evidence
+      - name: status
+        type: select
+        label: Status
+        options:
+        - pending
+        - suggested
+        - validated
+        - rejected
+        default: pending
+      - name: manager_level
+        type: number
+        label: Manager's level (1-5)
+      - name: manager_note
+        type: textarea
+        label: Manager's note
+      access:
+      - role: employee
+        where:
+          employee_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: skill_gaps
+      description: Gaps per employee for the current role and roles they could move to
+      ownedBy: org
+      fields:
+      - name: employee_email
+        type: email
+        label: Employee
+      - name: department
+        type: text
+        label: Department
+      - name: job_title
+        type: text
+        label: Current role
+      - name: target_role
+        type: text
+        label: Target role
+      - name: target_type
+        type: select
+        label: Type
+        options:
+        - current
+        - move
+      - name: skill
+        type: text
+        label: Skill
+      - name: required_level
+        type: number
+        label: Required
+      - name: current_level
+        type: number
+        label: Current
+      - name: gap
+        type: number
+        label: Gap
+      - name: critical
+        type: boolean
+        label: Critical
+      - name: learning
+        type: textarea
+        label: Suggested learning
+      - name: assessed_on
+        type: date
+        label: Assessed on
+      access:
+      - role: employee
+        where:
+          employee_email: '{user.email}'
+        can:
+        - read
+      - role: manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+    - name: vacancies
+      description: Internal vacancies opened by HR
+      ownedBy: org
+      fields:
+      - name: title
+        type: text
+        required: true
+        label: Vacancy title
+      - name: department
+        type: text
+        label: Department
+      - name: grade
+        type: text
+        label: Grade
+      - name: location
+        type: text
+        label: Location
+      - name: requirements
+        type: textarea
+        required: true
+        label: Requirements and skills needed
+      - name: status
+        type: select
+        label: Status
+        options:
+        - open
+        - filled
+        default: open
+    - name: shortlists
+      description: Approved shortlists, visible to managers
+      ownedBy: org
+      fields:
+      - name: vacancy_title
+        type: text
+        label: Vacancy
+      - name: candidates
+        type: textarea
+        label: Shortlist
+      - name: summary
+        type: textarea
+        label: Summary
+      - name: approved_on
+        type: date
+        label: Approved on
+      access:
+      - role: manager
+    - name: mobility_moves
+      description: Internal moves, filled by HR
+      ownedBy: org
+      fields:
+      - name: employee_email
+        type: email
+        label: Employee
+      - name: from_title
+        type: text
+        label: From
+      - name: to_title
+        type: text
+        label: To
+      - name: department
+        type: text
+        label: Department
+      - name: date
+        type: date
+        label: Date
+      - name: type
+        type: select
+        label: Type
+        options:
+        - promotion
+        - lateral
+        - relocation
+    - name: succession_plans
+      description: Critical roles and successor readiness, filled by HR
+      ownedBy: org
+      fields:
+      - name: critical_role
+        type: text
+        label: Critical role
+      - name: department
+        type: text
+        label: Department
+      - name: incumbent_email
+        type: email
+        label: Incumbent
+      - name: successor_email
+        type: email
+        label: Successor
+      - name: readiness
+        type: select
+        label: Readiness
+        options:
+        - ready_now
+        - ready_1_2_years
+        - ready_3_plus_years
+  views:
+  - key: home
+    type: page
+    title: Skillvane
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: Internal mobility
+      title: See the **skills** you have, the gaps you can close, and the roles you can grow into.
+      text: Skillvane maps every employee's skills against role frameworks aligned to the ONS Standard Occupational Classification,
+        so HR, managers and employees can plan moves, learning and succession with evidence.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: HR sets the frame
+        text: Import staff by CSV and upload role descriptions. An agent maps each job title to the ONS SOC and builds a skills
+          framework per role.
+      - title: Employees build their profile
+        text: Upload a CV or fill the skills form. An agent infers skills and suggests additions; the manager validates them.
+      - title: Gaps and learning
+        text: Each employee sees gaps for their current role and for roles they could move to, with suggested learning.
+      - title: Fair internal hiring
+        text: For an internal vacancy an agent ranks candidates and explains why; HR approves the shortlist before managers
+          see it.
+    - type: cards
+      id: roles
+      title: Who sees what
+      items:
+      - title: Employees
+        text: Only their own profile, gaps and learning.
+      - title: Managers
+        text: Their team's profiles, to validate skills, plus approved shortlists.
+      - title: HR admins
+        text: 'Everyone: imports, frameworks, vacancies, approvals and company dashboards.'
+    - type: note
+      content: Skillvane supports people decisions; it does not replace them. SOC mappings and rankings are suggestions for
+        HR to verify. Personal data is visible only to the people described above.
+  - key: cv_upload
+    type: new_run
+    title: Upload CV
+    roles:
+    - employee
+    - manager
+    - admin
+  - key: cv_history
+    type: history
+    title: My CV reviews
+    source: run
+    roles:
+    - employee
+    - manager
+    - admin
+  - key: cv_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: self_rating
+    type: form
+    title: Rate my skills
+    collection: skill_ratings
+    fields:
+    - employee_email
+    - manager_email
+    - department
+    - skill
+    - self_level
+    - evidence
+    submit:
+      label: Save skill
+      message: Saved. Your manager will validate it.
+      redirect: skills
+    roles:
+    - employee
+    - manager
+    - admin
+  - key: skills
+    type: table
+    title: Skills profiles
+    source: collection:skill_ratings
+    export: true
+    data:
+      display: table
+      fields:
+      - key: employee_email
+        label: Employee
+      - key: skill
+        label: Skill
+      - key: self_level
+        label: Self
+        format: number
+      - key: manager_level
+        label: Manager
+        format: number
+      - key: source
+        label: Source
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: status
+        dir: asc
+      limit: 200
+      empty: No skills yet.
+    roles:
+    - employee
+    - manager
+    - admin
+  - key: validate
+    type: form
+    title: Validate a skill
+    collection: skill_ratings
+    fields:
+    - manager_level
+    - status
+    - manager_note
+    edit: true
+    submit:
+      label: Save validation
+      message: Validation saved.
+      redirect: skills
+    roles:
+    - manager
+    - admin
+    nav: false
+  - key: my_gaps
+    type: table
+    title: Gaps and learning
+    source: collection:skill_gaps
+    data:
+      display: table
+      fields:
+      - key: target_role
+        label: Role
+      - key: target_type
+        label: Type
+        format: badge
+      - key: skill
+        label: Skill
+      - key: required_level
+        label: Required
+        format: number
+      - key: current_level
+        label: Current
+        format: number
+      - key: critical
+        label: Critical
+        format: badge
+      - key: learning
+        label: Suggested learning
+      sort:
+        field: gap
+        dir: desc
+      limit: 200
+      empty: No gaps computed yet. They appear after your manager validates your skills.
+    export: true
+    roles:
+    - employee
+    - manager
+    - admin
+  - key: team_dashboard
+    type: page
+    title: Skills dashboard
+    roles:
+    - manager
+    - admin
+    sections:
+    - type: data
+      id: coverage
+      title: Skills coverage by department (validated skills)
+      source: collection:skill_ratings
+      display: chart
+      chart: bar
+      filters:
+      - field: status
+        op: '='
+        value: validated
+      groupBy:
+        field: department
+        aggs:
+        - key: avg_level
+          agg: avg
+          field: manager_level
+      fields:
+      - key: department
+        label: Department
+      - key: count
+        label: Validated skills
+        format: number
+      - key: avg_level
+        label: Average level
+        format: number
+    - type: data
+      id: critical-skills
+      title: Critical gaps by skill
+      source: collection:skill_gaps
+      display: chart
+      chart: bar
+      filters:
+      - field: critical
+        op: '='
+        value: true
+      - field: target_type
+        op: '='
+        value: current
+      groupBy:
+        field: skill
+        aggs: []
+      sort:
+        field: count
+        dir: desc
+      limit: 15
+      fields:
+      - key: skill
+        label: Skill
+      - key: count
+        label: Employees with the gap
+        format: number
+    - type: data
+      id: critical-dept
+      title: Critical gaps by department
+      source: collection:skill_gaps
+      display: table
+      filters:
+      - field: critical
+        op: '='
+        value: true
+      groupBy:
+        field: department
+        aggs: []
+      fields:
+      - key: department
+        label: Department
+      - key: count
+        label: Critical gaps
+        format: number
+  - key: hr_dashboard
+    type: page
+    title: Mobility and succession
+    roles:
+    - admin
+    sections:
+    - type: data
+      id: kpis
+      title: Headcount and moves
+      source: collection:mobility_moves
+      display: kpi
+      kpis:
+      - label: Internal moves recorded
+        agg: count
+      intro: Mobility rate = internal moves divided by headcount (see the staff list).
+    - type: data
+      id: moves-month
+      title: Internal moves per month
+      source: collection:mobility_moves
+      display: chart
+      chart: line
+      groupBy:
+        field: date
+        bucket: month
+        aggs: []
+      fields:
+      - key: date
+        label: Month
+      - key: count
+        label: Moves
+        format: number
+    - type: data
+      id: succession
+      title: Succession readiness
+      source: collection:succession_plans
+      display: chart
+      chart: pie
+      groupBy:
+        field: readiness
+        aggs: []
+      fields:
+      - key: readiness
+        label: Readiness
+      - key: count
+        label: Successors
+        format: number
+    - type: data
+      id: headcount
+      title: Headcount by department
+      source: collection:employees
+      display: chart
+      chart: bar
+      groupBy:
+        field: department
+        aggs: []
+      fields:
+      - key: department
+        label: Department
+      - key: count
+        label: Employees
+        format: number
+  - key: staff
+    type: table
+    title: Staff
+    source: collection:employees
+    export: true
+    data:
+      display: table
+      fields:
+      - key: employee_id
+        label: ID
+      - key: name
+        label: Name
+      - key: job_title
+        label: Job title
+      - key: department
+        label: Department
+      - key: grade
+        label: Grade
+      - key: location
+        label: Location
+      - key: start_date
+        label: Start
+        format: date
+      limit: 200
+      empty: No staff imported yet. HR can import a CSV on the data page (/admin/data).
+    roles:
+    - manager
+    - admin
+  - key: role_upload
+    type: form
+    title: Add a role description
+    collection: role_descriptions
+    submit:
+      label: Save and build framework
+      message: Saved. The framework is being built.
+    roles:
+    - admin
+  - key: frameworks
+    type: table
+    title: Role frameworks
+    source: collection:role_frameworks
+    data:
+      display: table
+      fields:
+      - key: job_title
+        label: Role
+      - key: soc_code
+        label: SOC
+      - key: soc_title
+        label: SOC title
+      - key: soc_confidence
+        label: Confidence
+        format: badge
+      - key: summary
+        label: Summary
+      limit: 200
+      empty: No frameworks yet.
+    roles:
+    - admin
+    - manager
+    - employee
+  - key: new_vacancy
+    type: form
+    title: Open a vacancy
+    collection: vacancies
+    submit:
+      label: Open vacancy
+      message: Vacancy opened. Candidates are being ranked; you will approve the shortlist.
+    roles:
+    - admin
+  - key: approvals
+    type: approvals
+    title: Shortlist approvals
+    roles:
+    - admin
+  - key: shortlists
+    type: table
+    title: Approved shortlists
+    source: collection:shortlists
+    data:
+      display: list
+      fields:
+      - key: vacancy_title
+        label: Vacancy
+      - key: candidates
+        label: Shortlist
+      - key: approved_on
+        label: Approved
+        format: date
+      limit: 50
+      empty: No approved shortlists yet.
+    roles:
+    - admin
+    - manager
+  - key: account
+    type: account
+    title: Subscription
+    roles:
+    - admin
+  schedules:
+  - agent: gap_analyst
+    action: run
+    cron: 0 4 * * 1
+    owner: app
+    goal: Compute this week's skills gaps for all employees as described. Today is {date}.
+  triggers:
+  - key: build_framework
+    description: 'A role description is saved: map to the ONS SOC and build the framework'
+    'on':
+      collection: role_descriptions
+      op: any
+    start:
+      agent: framework_builder
+    goal: 'Build or update the skills framework for the role ''{record.title}'' (department: {record.department}). Read its
+      description with read_role_descriptions.'
+  - key: rank_candidates
+    description: 'A vacancy is opened: rank internal candidates'
+    'on':
+      collection: vacancies
+      op: insert
+    start:
+      agent: candidate_ranker
+    goal: 'MODE DRAFT. New internal vacancy: {record.title}, department {record.department}, grade {record.grade}, location
+      {record.location}. Requirements: {record.requirements}. Rank internal candidates and request HR approval of the shortlist.'
+  - key: publish_shortlist
+    description: 'HR approved the shortlist: publish it to managers'
+    'on':
+      approval: shortlist_approval
+      decision: approved
+    start:
+      agent: candidate_ranker
+    goal: 'MODE APPROVED. HR approved the shortlist. Event: {event}. Save it with write_shortlists.'
+  - key: validate_request
+    description: Tell the manager a skill awaits validation
+    'on':
+      collection: skill_ratings
+      op: insert
+    notify:
+      to: record.manager_email
+      subject: 'Skill to validate: {record.skill}'
+      body: '{record.employee_email} added the skill ''{record.skill}'' to their Skillvane profile. Please review and validate
+        it.'
+      link: skills
+  - key: quarterly_reminder
+    description: Every quarter, remind everyone to update their profile
+    'on':
+      cron: 0 8 1 1,4,7,10 *
+    notify:
+      to: role:employee
+      subject: Time to update your skills profile
+      body: It is a new quarter. Please upload your latest CV or update your skills in Skillvane so your gaps and learning
+        suggestions stay accurate.
+      link: self_rating
+  approvals:
+  - key: shortlist_approval
+    title: Approve the internal shortlist
+    description: HR reviews the ranked candidates before managers see them
+    role: admin
+    decidedBy: role
+    fields:
+    - vacancy
+    - shortlist
+    timeoutMinutes: 10080
+    onTimeout: reject
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: per_employee
+      price: 4
+      interval: month
+      label: Per employee, annual plan billed monthly
+      includes:
+      - Skills framework per role
+      - Gap analysis and learning suggestions
+      - Internal vacancy ranking
+      - Dashboards
+      roles:
+      - admin
+  extensions:
+  - key: per_seat_pricing
+    description: The plan is a flat price; scaling the monthly charge with the number of employees (annual commitment, quantity
+      set from headcount) cannot be expressed yet and must be set up in Stripe by the owner.
+  - key: tenancy
+    description: 'One Skillvane app per company: the company owner''s admins are the HR admins. A shared multi-company deployment
+      is not modelled.'
+  - key: soc_lookup
+    description: SOC codes are suggested by the agent from its own knowledge with a confidence flag; HR must verify them.
+      No ONS coding API is called.

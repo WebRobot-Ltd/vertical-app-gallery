@@ -1,0 +1,999 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: shopreel
+  displayName: Shopreel
+  tagline: Shoppable video, creators and sales analytics for brands.
+  description: 'Shopreel helps brands run social commerce: sync the product catalogue, tag products in short videos, work
+    with creators, approve their content and see views, clicks, add-to-cart and revenue per video, creator and product.'
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#14121f'
+      accent: '#ff3d6e'
+      background: '#faf8f6'
+      foreground: '#14121f'
+    fonts:
+      body: Inter
+      display: Sora
+    wordmark:
+    - text: Shop
+      color: primary
+    - text: reel
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Brand admin
+      assignedBy: admin_emails
+    - key: marketer
+      label: Marketer
+      assignedBy: invite
+    - key: creator
+      label: Creator
+      assignedBy: derived
+      from: collection:creators.email
+  egress:
+    hosts:
+    - '*.myshopify.com'
+    notes: Shopify Admin API on the brand's own store, called with the brand's own API key. Official API only; no scraping.
+  agents:
+  - key: captioner
+    role: main
+    description: Writes captions and suggests which products to feature, using stock and past performance.
+    when: task == 'captions'
+    profile:
+      inline:
+        display_name: Shopreel caption and product advisor
+        crews:
+        - id: captioner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a social commerce copywriter and merchandiser for a brand. Use the tool search_products
+            to read the catalogue (name, price, stock, category) and read_performance to read past results per product and
+            video. Start with a level-1 title "# Captions and products: <video title>". Then sections with ## headings: Products
+            to feature (3 to 5 in-stock products only, each with one line of reasoning based on real stock and performance
+            figures, and a suggested timestamp to tag if the concept suggests one), Caption options (3 captions for the chosen
+            channel in the requested tone, each with hashtags), Call to action, Watch out (low stock, products with no performance
+            history). Never recommend a product with zero stock. Never invent figures: if there is no performance data say
+            so. Add a ```chart block (bar) of recent revenue per suggested product only when real figures exist. Write in
+            English.'
+    goalTemplate: 'Video: {video_title}
+
+      {?concept}Concept: {concept}{/concept}
+
+      Channel: {channel_label}
+
+      Tone: {tone_label}
+
+      Today is {date}. Suggest products and write the captions.'
+    appTools:
+    - name: search_products
+      description: Read the product catalogue
+      action: search
+      collection: products
+      scope: all
+    - name: read_performance
+      description: Read past performance rows per video, creator and product
+      action: read
+      collection: performance
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.5
+  - key: catalog_sync
+    role: setup
+    description: Syncs name, price, stock and images from the brand's Shopify store into the catalogue.
+    when: task == 'sync'
+    profile:
+      inline:
+        display_name: Shopreel catalogue sync
+        crews:
+        - id: catalog_sync
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You sync the product catalogue from Shopify. Call shop_products (GET, query limit=250&fields=id,title,variants,images,handle,product_type)
+            and for each product call write_product once with: sku (variant sku, or the Shopify id as text), name, price (number),
+            stock (sum of variant inventory_quantity), image_url (first image src), url (store product URL if known), category
+            (product_type). If the tool says the store is not connected, stop and tell the user to paste their Shopify key
+            on the Account page. Finish with a level-1 title "# Catalogue sync" and a short summary: products written, products
+            out of stock. Never invent products.'
+    goalTemplate: Sync the product catalogue from the connected Shopify store. Today is {date}.
+    appTools:
+    - name: shop_products
+      description: List products from the brand's Shopify store
+      action: http
+      http:
+        method: GET
+        url: https://{host}/admin/api/2025-01/products.json
+        allowPath: false
+        attribution: Shopify Admin API
+        credential:
+          provider: shopify
+          header: X-Shopify-Access-Token
+          format: '{secret}'
+    - name: write_product
+      description: Create or update a product in the catalogue
+      action: write
+      collection: products
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.6
+  - key: statements
+    role: scheduled
+    description: Each month computes every creator's attributed sales and commission and writes the earnings statements.
+    profile:
+      inline:
+        display_name: Shopreel earnings statements
+        crews:
+        - id: statements
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You prepare monthly creator earnings statements. Read the creators with read_creators and the performance
+            rows with read_performance. For the previous calendar month, for each creator with attributed sales, sum revenue
+            from that creator's rows (match creator_email), compute commission = sales x commission_pct / 100 rounded to 2
+            decimals, and call write_earning once per creator with month (YYYY-MM), creator_email, creator_handle, sales,
+            commission_pct, commission, status "issued". Skip creators with no sales. Use only real figures. Finish with a
+            level-1 title "# Earnings statements <month>" and a table of what you wrote.
+    goalTemplate: Prepare the earnings statements for the previous calendar month. Today is {date}.
+    appTools:
+    - name: read_creators
+      description: Read the creator directory with commission rates
+      action: read
+      collection: creators
+      scope: all
+    - name: read_performance
+      description: Read attributed performance rows
+      action: read
+      collection: performance
+      scope: all
+    - name: write_earning
+      description: Write one creator earnings statement
+      action: write
+      collection: earnings
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 20
+      maxBudgetUsd: 0.6
+  inputForm:
+    title: Ask the agent
+    fields:
+    - name: task
+      type: select
+      required: true
+      label: What do you need?
+      default: captions
+      options:
+      - value: captions
+        label: Captions and products for a video
+      - value: sync
+        label: Sync the catalogue from my store
+    - name: video_title
+      type: text
+      required: true
+      label: Video title
+      visibleWhen: task == 'captions'
+    - name: concept
+      type: textarea
+      maxLength: 800
+      label: Concept (optional)
+      visibleWhen: task == 'captions'
+    - name: channel
+      type: select
+      required: true
+      label: Channel
+      visibleWhen: task == 'captions'
+      options:
+      - value: tiktok
+        label: TikTok
+      - value: instagram
+        label: Instagram
+      - value: site
+        label: Brand website
+    - name: tone
+      type: select
+      required: true
+      label: Tone
+      visibleWhen: task == 'captions'
+      options:
+      - value: playful
+        label: Playful
+      - value: premium
+        label: Premium
+      - value: direct
+        label: Direct and promotional
+  data:
+    credentials:
+    - provider: shopify
+      kind: api_key
+      scope: user
+      label: Shopify store
+      help: In Shopify admin create a custom app with read_products and read_orders and paste its Admin API access token.
+      hostLabel: your-store.myshopify.com
+    collections:
+    - name: products
+      ownedBy: app
+      description: Catalogue synced from the store
+      fields:
+      - name: sku
+        type: text
+        required: true
+      - name: name
+        type: text
+        required: true
+      - name: price
+        type: number
+      - name: stock
+        type: number
+      - name: image_url
+        type: url
+      - name: url
+        type: url
+      - name: category
+        type: text
+    - name: videos
+      ownedBy: org
+      description: Shoppable videos with product tags at timestamps
+      access:
+      - role: marketer
+        can:
+        - read
+        - write
+      fields:
+      - name: title
+        type: text
+        required: true
+      - name: video_url
+        type: url
+        required: true
+        help: Link to the hosted video file
+      - name: creator_handle
+        type: text
+      - name: product_tags
+        type: array
+        label: Product tags
+        fields:
+        - name: sku
+          type: text
+          required: true
+        - name: at_seconds
+          type: number
+          required: true
+      - name: caption
+        type: textarea
+      - name: channels
+        type: multiselect
+        options:
+        - site
+        - tiktok
+        - instagram
+      - name: status
+        type: select
+        default: draft
+        options:
+        - draft
+        - approved
+        - published
+      - name: publish_on
+        type: date
+    - name: creators
+      ownedBy: org
+      description: Creator directory
+      access:
+      - role: marketer
+        can:
+        - read
+        - write
+      - role: creator
+        where:
+          email: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: handle
+        type: text
+        required: true
+      - name: name
+        type: text
+      - name: email
+        type: email
+        required: true
+      - name: platform
+        type: select
+        options:
+        - tiktok
+        - instagram
+        - both
+      - name: audience
+        type: number
+      - name: rate_gbp
+        type: number
+        label: Rate per video (GBP)
+      - name: commission_pct
+        type: number
+        default: 10
+      - name: contract_end
+        type: date
+      - name: contract_notes
+        type: textarea
+      - name: content_delivered
+        type: number
+        default: 0
+    - name: briefs
+      ownedBy: org
+      description: Briefs creators work from
+      access:
+      - role: marketer
+        can:
+        - read
+        - write
+      - role: creator
+      fields:
+      - name: title
+        type: text
+        required: true
+      - name: details
+        type: textarea
+        required: true
+      - name: products
+        type: text
+      - name: due
+        type: date
+    - name: submissions
+      ownedBy: user
+      description: Content uploaded by creators, awaiting brand approval
+      retentionDays: 730
+      access:
+      - role: marketer
+        can:
+        - read
+        - write
+      fields:
+      - name: brief
+        type: text
+        required: true
+      - name: video_url
+        type: url
+        required: true
+        help: Link to the video you uploaded
+      - name: caption
+        type: textarea
+      - name: status
+        type: select
+        default: pending
+        options:
+        - pending
+        - approved
+        - changes_requested
+      - name: review_notes
+        type: textarea
+    - name: performance
+      ownedBy: org
+      description: Daily results per video, creator and product, received from the store and official platform analytics
+      access:
+      - role: marketer
+      fields:
+      - name: event_id
+        type: text
+      - name: date
+        type: date
+      - name: video_title
+        type: text
+      - name: creator_handle
+        type: text
+      - name: creator_email
+        type: email
+      - name: product_sku
+        type: text
+      - name: views
+        type: number
+      - name: clicks
+        type: number
+      - name: add_to_carts
+        type: number
+      - name: orders
+        type: number
+      - name: revenue
+        type: number
+    - name: earnings
+      ownedBy: org
+      description: Monthly creator earnings statements
+      access:
+      - role: marketer
+      - role: creator
+        where:
+          creator_email: '{user.email}'
+      fields:
+      - name: month
+        type: text
+      - name: creator_email
+        type: email
+      - name: creator_handle
+        type: text
+      - name: sales
+        type: number
+      - name: commission_pct
+        type: number
+      - name: commission
+        type: number
+      - name: status
+        type: text
+  views:
+  - key: home
+    type: page
+    title: Shopreel
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: Social commerce for brands
+      title: Turn short videos into **sales you can measure**.
+      text: Sync your catalogue, tag products in videos, work with creators, approve content and see views, clicks, add-to-cart
+        and revenue per video, creator and product.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Sync your store
+        text: Connect Shopify with your API key; names, prices, stock and images stay current.
+        badge: 🛍️
+      - title: Tag and publish
+        text: Add videos, tag products at timestamps and choose where they go.
+        badge: 🎬
+      - title: Work with creators
+        text: Invite creators, send briefs, approve their content and pay commission.
+        badge: 🤝
+      - title: See what sells
+        text: Dashboards per video, creator and product, plus AI caption and product suggestions.
+        badge: 📈
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: £199 / month
+        text: Everything included, plus a percentage of sales attributed to your videos.
+        badge: 💷
+    - type: note
+      content: Social data comes only from official platform APIs. Decision support, not financial advice.
+  - key: new_run
+    type: new_run
+    title: AI assistant
+    roles:
+    - admin
+    - marketer
+  - key: history
+    type: history
+    title: Assistant history
+    source: run
+    roles:
+    - admin
+    - marketer
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: analytics
+    type: page
+    title: Analytics
+    roles:
+    - admin
+    - marketer
+    sections:
+    - type: data
+      title: Totals
+      source: collection:performance
+      display: kpi
+      kpis:
+      - label: Views
+        agg: sum
+        field: views
+        format: number
+      - label: Clicks
+        agg: sum
+        field: clicks
+        format: number
+      - label: Add to cart
+        agg: sum
+        field: add_to_carts
+        format: number
+      - label: Revenue
+        agg: sum
+        field: revenue
+        format: money
+    - type: data
+      title: Per video
+      source: collection:performance
+      display: table
+      groupBy:
+        field: video_title
+        aggs:
+        - key: views
+          agg: sum
+          field: views
+        - key: clicks
+          agg: sum
+          field: clicks
+        - key: add_to_carts
+          agg: sum
+          field: add_to_carts
+        - key: revenue
+          agg: sum
+          field: revenue
+      fields:
+      - key: video_title
+        label: Video
+      - key: views
+        format: number
+      - key: clicks
+        format: number
+      - key: add_to_carts
+        label: Add to cart
+        format: number
+      - key: revenue
+        format: money
+      sort:
+        field: revenue
+        dir: desc
+    - type: data
+      title: Revenue per creator
+      source: collection:performance
+      display: chart
+      chart: bar
+      groupBy:
+        field: creator_handle
+        aggs:
+        - key: revenue
+          agg: sum
+          field: revenue
+      fields:
+      - key: creator_handle
+        label: Creator
+      - key: revenue
+        format: money
+    - type: data
+      title: Per product
+      source: collection:performance
+      display: table
+      groupBy:
+        field: product_sku
+        aggs:
+        - key: clicks
+          agg: sum
+          field: clicks
+        - key: add_to_carts
+          agg: sum
+          field: add_to_carts
+        - key: orders
+          agg: sum
+          field: orders
+        - key: revenue
+          agg: sum
+          field: revenue
+      fields:
+      - key: product_sku
+        label: Product
+      - key: clicks
+        format: number
+      - key: add_to_carts
+        label: Add to cart
+        format: number
+      - key: orders
+        format: number
+      - key: revenue
+        format: money
+      sort:
+        field: revenue
+        dir: desc
+  - key: products
+    type: table
+    title: Catalogue
+    source: collection:products
+    roles:
+    - admin
+    - marketer
+    export: true
+    data:
+      display: table
+      fields:
+      - key: name
+      - key: sku
+      - key: price
+        format: money
+      - key: stock
+        format: number
+      - key: category
+      - key: image_url
+        label: Image
+        format: link
+      sort:
+        field: stock
+        dir: asc
+  - key: videos
+    type: table
+    title: Shoppable videos
+    source: collection:videos
+    roles:
+    - admin
+    - marketer
+    data:
+      display: table
+      fields:
+      - key: title
+      - key: creator_handle
+        label: Creator
+      - key: status
+        format: badge
+      - key: publish_on
+        format: date
+      - key: video_url
+        label: Video
+        format: link
+  - key: video_form
+    type: form
+    title: Add or edit a video
+    collection: videos
+    edit: true
+    roles:
+    - admin
+    - marketer
+    submit:
+      label: Save video
+      message: Video saved.
+      redirect: videos
+  - key: creators
+    type: table
+    title: Creators
+    source: collection:creators
+    roles:
+    - admin
+    - marketer
+    export: true
+    data:
+      display: table
+      fields:
+      - key: handle
+      - key: platform
+        format: badge
+      - key: audience
+        format: number
+      - key: rate_gbp
+        label: Rate
+        format: money
+      - key: commission_pct
+        label: Commission %
+        format: number
+      - key: contract_end
+        format: date
+      - key: content_delivered
+        label: Delivered
+        format: number
+  - key: creator_form
+    type: form
+    title: Invite or edit a creator
+    collection: creators
+    edit: true
+    roles:
+    - admin
+    - marketer
+    submit:
+      label: Save and invite
+      message: Creator saved. They receive an invitation by email.
+      redirect: creators
+  - key: brief_form
+    type: form
+    title: New brief
+    collection: briefs
+    edit: true
+    roles:
+    - admin
+    - marketer
+    submit:
+      label: Publish brief
+      message: Brief published.
+      redirect: briefs
+  - key: briefs
+    type: cards
+    title: Briefs
+    source: collection:briefs
+    roles:
+    - admin
+    - marketer
+    - creator
+    data:
+      display: cards
+      fields:
+      - key: title
+      - key: details
+      - key: products
+      - key: due
+        format: date
+  - key: submit_content
+    type: form
+    title: Upload content
+    collection: submissions
+    fields:
+    - brief
+    - video_url
+    - caption
+    roles:
+    - creator
+    submit:
+      label: Send for approval
+      message: Sent. The brand will review it.
+      redirect: my_content
+  - key: my_content
+    type: table
+    title: My content
+    source: collection:submissions
+    roles:
+    - creator
+    data:
+      display: table
+      fields:
+      - key: brief
+      - key: status
+        format: badge
+      - key: review_notes
+        label: Feedback
+  - key: review
+    type: table
+    title: Content to approve
+    source: collection:submissions
+    roles:
+    - admin
+    - marketer
+    data:
+      display: table
+      fields:
+      - key: brief
+      - key: video_url
+        label: Video
+        format: link
+      - key: caption
+      - key: status
+        format: badge
+      - key: review_notes
+      filters:
+      - field: status
+        op: '='
+        value: pending
+  - key: review_form
+    type: form
+    title: Review content
+    collection: submissions
+    edit: true
+    fields:
+    - status
+    - review_notes
+    roles:
+    - admin
+    - marketer
+    nav: false
+    submit:
+      label: Save decision
+      message: Decision saved and the creator notified.
+      redirect: review
+  - key: earnings
+    type: table
+    title: Earnings
+    source: collection:earnings
+    roles:
+    - admin
+    - marketer
+    - creator
+    export: true
+    data:
+      display: table
+      fields:
+      - key: month
+      - key: creator_handle
+        label: Creator
+      - key: sales
+        format: money
+      - key: commission_pct
+        format: number
+      - key: commission
+        format: money
+      - key: status
+        format: badge
+      sort:
+        field: month
+        dir: desc
+  - key: account
+    type: account
+    title: Plan and store connection
+    roles:
+    - admin
+  schedules:
+  - agent: statements
+    cron: 0 7 1 * *
+    action: run
+    owner: app
+    goal: Prepare the earnings statements for the previous calendar month.
+  triggers:
+  - key: creator_invited
+    'on':
+      collection: creators
+      op: insert
+    notify:
+      to:
+      - record.email
+      subject: You are invited to work with a brand on Shopreel
+      body: Hi {record.handle}, you have been invited to Shopreel. Sign in with this email address to see briefs, upload content
+        and track your commission.
+      link: briefs
+  - key: content_submitted
+    'on':
+      collection: submissions
+      op: insert
+    notify:
+      to:
+      - admins
+      - role:marketer
+      subject: New creator content to approve
+      body: A creator submitted content for brief {record.brief}. Please review it.
+      link: review
+  - key: content_approved
+    'on':
+      collection: submissions
+      op: update
+      where:
+        status: approved
+    notify:
+      to:
+      - owner
+      subject: Your content was approved
+      body: Your content for {record.brief} was approved.
+      link: my_content
+  - key: content_changes
+    'on':
+      collection: submissions
+      op: update
+      where:
+        status: changes_requested
+    notify:
+      to:
+      - owner
+      subject: Changes requested on your content
+      body: 'The brand asked for changes on {record.brief}: {record.review_notes}'
+      link: my_content
+  - key: earnings_statement
+    'on':
+      collection: earnings
+      op: insert
+    notify:
+      to:
+      - record.creator_email
+      subject: Your earnings statement for {record.month}
+      body: 'Hi {record.creator_handle}, attributed sales for {record.month}: {record.sales}. Commission at {record.commission_pct}%:
+        {record.commission}. Status: {record.status}.'
+      link: earnings
+  - key: performance_feed
+    'on':
+      webhook: true
+    write:
+      collection: performance
+      fields:
+        event_id: event_id
+        date: date
+        video_title: video_title
+        creator_handle: creator_handle
+        creator_email: creator_email
+        product_sku: sku
+        views: views
+        clicks: clicks
+        add_to_carts: add_to_carts
+        orders: orders
+        revenue: revenue
+      keyBy: event_id
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: brand
+      price: 199
+      interval: month
+      label: Shopreel Brand
+      includes:
+      - Catalogue sync
+      - Shoppable videos
+      - Creator directory and approvals
+      - Dashboards
+      - AI captions and product suggestions
+      roles:
+      - admin
+  notifications:
+    emailOnRunDone: false
+  extensions:
+  - key: oauth_social_accounts
+    description: Connecting TikTok and Instagram (and Shopify/WooCommerce) through OAuth is not available yet. Shopify connects
+      with an API key on the account page. Official-API social metrics must arrive through the performance webhook until OAuth
+      exists.
+  - key: woocommerce_sync
+    description: WooCommerce stores live on arbitrary hosts, which the egress list cannot cover yet; only Shopify catalogue
+      sync is included.
+  - key: video_upload_transcoding
+    description: 'Video file upload, processing and transcoding are not available: file fields accept documents and images
+      only and agents cannot run code. Videos are added as links to hosted files, with product tags at timestamps stored on
+      the video.'
+  - key: publish_to_channels
+    description: Publishing shoppable videos to the brand site and to TikTok/Instagram needs OAuth and an embed widget. For
+      now status and channels are recorded on the video.
+  - key: sales_percentage
+    description: The percentage of attributed sales on top of the £199 monthly plan is not supported by billing; it must be
+      invoiced by the owner from the earnings and performance data.
+  - key: brand_isolation
+    description: Records are shared by the brand's admin and marketers inside one app; one app instance serves one brand.

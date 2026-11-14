@@ -1,0 +1,771 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: conduit
+  displayName: Conduit
+  tagline:
+    en: Orchestrate and observe your data pipelines.
+  description:
+    en: 'The control plane for data teams: define pipelines, see every run, get alerted when a task fails, and let an AI agent
+      propose the likely cause and fix.'
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#16213e'
+      accent: '#0ea5a4'
+      background: '#f6f8fb'
+      foreground: '#16213e'
+    fonts:
+      body: Inter
+      display: Space Grotesk
+    wordmark:
+    - text: Con
+      color: primary
+    - text: duit
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: engineer
+      label: Engineer
+      assignedBy: invite
+    - key: viewer
+      label: Viewer
+      assignedBy: signup
+  agents:
+  - key: rca
+    role: helper
+    description: Reads the logs of a failed task and proposes a likely cause and fix.
+    writesTo:
+      collection: incidents
+      parse: whole
+    awaits:
+    - fix_review
+    appTools:
+    - name: read_task_runs
+      description: Read task runs of the workspace
+      action: read
+      collection: task_runs
+      scope: all
+    - name: read_pipelines
+      description: Read pipeline definitions
+      action: read
+      collection: pipelines
+      scope: all
+    profile:
+      inline:
+        display_name: Conduit root-cause analyst
+        crews:
+        - id: rca
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a senior data engineer. A pipeline task failed. Use read_task_runs and read_pipelines to
+            read the task''s log, its upstream tasks and the pipeline definition. Write a report starting with a level-1 title
+            "# Incident: <pipeline> / <task>". Sections with ## headings: Likely cause, Evidence (quote log lines), Proposed
+            fix (concrete steps or a YAML change), Confidence (low/medium/high), Risks. Never invent log lines or facts not
+            in the data; say when the logs are insufficient. Then call request_fix_review with the proposed fix so an engineer
+            can accept or reject it.'
+  - key: dq_gate
+    role: helper
+    description: Summarises a failed data-quality check and asks an engineer to release or keep blocked the downstream tasks.
+    awaits:
+    - dq_release
+    appTools:
+    - name: read_dq_results
+      description: Read data-quality results
+      action: read
+      collection: dq_results
+      scope: all
+    profile:
+      inline:
+        display_name: Conduit data-quality gate
+        crews:
+        - id: dq_gate
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'A data-quality check failed after a load and downstream tasks are blocked. Use read_dq_results to
+            see the check, observed value and threshold. Write a short note (title "# DQ check: <table> / <check>") explaining
+            the deviation, what is likely affected downstream, and a recommendation (release or keep blocked). Then call request_dq_release.
+            Never invent numbers.'
+  approvals:
+  - key: fix_review
+    title: Accept or reject the proposed fix
+    role: engineer
+    description: An engineer reviews the agent's proposed cause and fix.
+  - key: dq_release
+    title: Release blocked downstream tasks
+    role: engineer
+    description: Approve to let downstream tasks run despite a failed data-quality check.
+    timeoutMinutes: 1440
+    onTimeout: reject
+  data:
+    collections:
+    - name: pipelines
+      ownedBy: user
+      description: Pipeline definitions of a workspace
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Name
+      - name: definition
+        type: textarea
+        required: true
+        label: 'Definition (YAML: tasks and depends_on)'
+        help: "tasks:\n  - id: load\n    depends_on: []"
+      - name: schedule
+        type: text
+        label: Schedule (cron)
+      - name: retries
+        type: number
+        label: Retries
+        default: 2
+      - name: timeout_minutes
+        type: number
+        label: Timeout (minutes)
+        default: 60
+      - name: owner_email
+        type: email
+        required: true
+        label: Owner email
+      - name: members
+        type: array
+        label: Workspace members (emails)
+      access:
+      - role: engineer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: viewer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: pipeline_runs
+      ownedBy: user
+      description: One record per pipeline run, written by the customer-side agent
+      retentionDays: 365
+      fields:
+      - name: run_id
+        type: text
+      - name: pipeline
+        type: text
+      - name: started_at
+        type: date
+      - name: ended_at
+        type: date
+      - name: status
+        type: select
+        options:
+        - running
+        - success
+        - failed
+        - blocked
+      - name: rows_processed
+        type: number
+      - name: cost_gbp
+        type: number
+      - name: members
+        type: array
+      access:
+      - role: engineer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: viewer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: task_runs
+      ownedBy: user
+      description: Status, rows, cost and logs per task
+      retentionDays: 365
+      fields:
+      - name: task_run_id
+        type: text
+      - name: run_id
+        type: text
+      - name: pipeline
+        type: text
+      - name: task
+        type: text
+      - name: started_at
+        type: date
+      - name: ended_at
+        type: date
+      - name: duration_s
+        type: number
+      - name: status
+        type: select
+        options:
+        - running
+        - success
+        - failed
+        - skipped
+        - blocked
+      - name: rows_processed
+        type: number
+      - name: cost_gbp
+        type: number
+      - name: log
+        type: textarea
+      - name: owner_email
+        type: email
+      - name: members
+        type: array
+      access:
+      - role: engineer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: viewer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: table_freshness
+      ownedBy: user
+      description: Last successful load per table
+      fields:
+      - name: table_name
+        type: text
+      - name: last_loaded_at
+        type: date
+      - name: expected_hours
+        type: number
+      - name: freshness_hours
+        type: number
+      - name: members
+        type: array
+      access:
+      - role: engineer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: viewer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: dq_results
+      ownedBy: user
+      description: Data-quality check results after each load
+      retentionDays: 365
+      fields:
+      - name: run_id
+        type: text
+      - name: result_id
+        type: text
+      - name: table_name
+        type: text
+      - name: check
+        type: select
+        options:
+        - row_count
+        - null_rate
+        - custom
+      - name: observed
+        type: number
+      - name: threshold
+        type: number
+      - name: status
+        type: select
+        options:
+        - passed
+        - failed
+      - name: blocking
+        type: boolean
+      - name: owner_email
+        type: email
+      - name: members
+        type: array
+      access:
+      - role: engineer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: viewer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: incidents
+      ownedBy: user
+      description: Root-cause reports proposed by the agent
+      fields:
+      - name: title
+        type: text
+      - name: report
+        type: textarea
+      - name: members
+        type: array
+      access:
+      - role: engineer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: viewer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    credentials:
+    - provider: git
+      kind: api_key
+      scope: user
+      label: Git repository token
+      help: A read-only access token for your repository.
+    - provider: warehouse
+      kind: api_key
+      scope: user
+      label: Warehouse key (Snowflake)
+      help: A key or token for a read-only warehouse user.
+    - provider: dbt
+      kind: api_key
+      scope: user
+      label: dbt API token
+    - provider: fivetran
+      kind: api_key
+      scope: user
+      label: Fivetran API key
+    - provider: airbyte
+      kind: api_key
+      scope: user
+      label: Airbyte API key
+  triggers:
+  - key: run_event
+    'on':
+      webhook: true
+    write:
+      collection: pipeline_runs
+      keyBy: run_id
+  - key: task_event
+    'on':
+      webhook: true
+    write:
+      collection: task_runs
+      keyBy: task_run_id
+  - key: freshness_event
+    'on':
+      webhook: true
+    write:
+      collection: table_freshness
+      keyBy: table_name
+  - key: dq_event
+    'on':
+      webhook: true
+    write:
+      collection: dq_results
+      keyBy: result_id
+  - key: task_failed_email
+    'on':
+      collection: task_runs
+      op: any
+      where:
+        status: failed
+    notify:
+      to:
+      - record.owner_email
+      - role:admin
+      subject: 'Task failed: {record.pipeline} / {record.task}'
+      body: The task {record.task} of pipeline {record.pipeline} failed (run {record.run_id}). An agent is analysing the logs
+        and will propose a fix.
+      link: failures
+  - key: task_failed_rca
+    'on':
+      collection: task_runs
+      op: any
+      where:
+        status: failed
+    start:
+      agent: rca
+    goal: 'Task {record.task} of pipeline {record.pipeline} failed in run {record.run_id}. Log excerpt: {record.log}. Find
+      the likely cause and propose a fix.'
+  - key: dq_failed_email
+    'on':
+      collection: dq_results
+      op: any
+      where:
+        status: failed
+    notify:
+      to:
+      - record.owner_email
+      subject: Data-quality check failed on {record.table_name}
+      body: Check {record.check} on {record.table_name} observed {record.observed} against threshold {record.threshold}. Blocking
+        checks hold downstream tasks until an engineer approves.
+      link: approvals
+  - key: dq_failed_gate
+    'on':
+      collection: dq_results
+      op: any
+      where:
+        status: failed
+        blocking: true
+    start:
+      agent: dq_gate
+    goal: 'Blocking data-quality check {record.check} failed on table {record.table_name} in run {record.run_id}: observed
+      {record.observed}, threshold {record.threshold}. Summarise and ask for release approval.'
+  - key: bill_task_run
+    'on':
+      collection: task_runs
+      op: insert
+    charge:
+      credits: 1
+      reason: task run
+  inputForm:
+    title: Unused
+    fields: []
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Conduit
+    sections:
+    - type: hero
+      title: Run your data pipelines with **full visibility**.
+      text: Define pipelines, schedule them, watch every task, and let an AI agent explain failures. Your data stays in your
+        infrastructure; Conduit is the control plane.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      band: true
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Define
+        text: Tasks, dependencies, schedule, retries, timeout and owners in a form or YAML.
+      - title: Observe
+        text: Status per task, rows, cost and logs, plus freshness per table.
+      - title: Fix
+        text: On failure the owner is emailed and an agent proposes a cause and fix for an engineer to accept or reject.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: Free
+        text: Up to 1,000 task runs.
+        badge: £0
+      - title: Pay as you go
+        text: £0.02 per task run.
+        badge: £0.02
+      - title: Team
+        text: £300 a month.
+        badge: £300
+    - type: note
+      content: Conduit is decision support; always review proposed fixes before applying them.
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - admin
+    - engineer
+    - viewer
+    sections:
+    - type: data
+      title: Overview
+      source: collection:task_runs
+      display: kpi
+      kpis:
+      - label: Task runs
+        agg: count
+      - label: Rows processed
+        agg: sum
+        field: rows_processed
+        format: number
+      - label: Cost (GBP)
+        agg: sum
+        field: cost_gbp
+        format: money
+    - type: data
+      title: Runs per day
+      source: collection:pipeline_runs
+      display: chart
+      chart: line
+      fields:
+      - key: started_at
+      - key: count
+      groupBy:
+        field: started_at
+        bucket: day
+        aggs:
+        - key: failed
+          agg: count
+    - type: data
+      title: Failure rate by status
+      source: collection:task_runs
+      display: chart
+      chart: pie
+      fields:
+      - key: status
+      - key: count
+      groupBy:
+        field: status
+        aggs: []
+    - type: data
+      title: Slowest tasks
+      source: collection:task_runs
+      display: table
+      fields:
+      - key: pipeline
+      - key: task
+      - key: duration_s
+        label: Seconds
+        format: number
+      - key: status
+        format: badge
+      sort:
+        field: duration_s
+        dir: desc
+      limit: 10
+    - type: data
+      title: Data freshness per table
+      source: collection:table_freshness
+      display: table
+      fields:
+      - key: table_name
+      - key: last_loaded_at
+        format: date
+      - key: freshness_hours
+        label: Hours since load
+        format: number
+      - key: expected_hours
+        label: Expected max
+        format: number
+      sort:
+        field: freshness_hours
+        dir: desc
+  - key: pipeline_new
+    type: form
+    title: New pipeline
+    collection: pipelines
+    roles:
+    - admin
+    - engineer
+    submit:
+      label: Save pipeline
+      message: Pipeline saved.
+      redirect: pipelines
+    edit: true
+  - key: pipelines
+    type: table
+    title: Pipelines
+    source: collection:pipelines
+    roles:
+    - admin
+    - engineer
+    - viewer
+    data:
+      display: table
+      fields:
+      - key: name
+      - key: schedule
+      - key: retries
+        format: number
+      - key: timeout_minutes
+        format: number
+      - key: owner_email
+  - key: runs
+    type: table
+    title: Runs
+    source: collection:pipeline_runs
+    roles:
+    - admin
+    - engineer
+    - viewer
+    export: true
+    data:
+      display: table
+      fields:
+      - key: pipeline
+      - key: started_at
+        format: date
+      - key: ended_at
+        format: date
+      - key: status
+        format: badge
+      - key: rows_processed
+        format: number
+      - key: cost_gbp
+        format: money
+      sort:
+        field: started_at
+        dir: desc
+      limit: 100
+  - key: failures
+    type: table
+    title: Task runs and logs
+    source: collection:task_runs
+    roles:
+    - admin
+    - engineer
+    - viewer
+    data:
+      display: table
+      fields:
+      - key: pipeline
+      - key: task
+      - key: status
+        format: badge
+      - key: duration_s
+        format: number
+      - key: rows_processed
+        format: number
+      - key: log
+      sort:
+        field: started_at
+        dir: desc
+      limit: 100
+  - key: quality
+    type: table
+    title: Data quality
+    source: collection:dq_results
+    roles:
+    - admin
+    - engineer
+    - viewer
+    data:
+      display: table
+      fields:
+      - key: table_name
+      - key: check
+        format: badge
+      - key: observed
+        format: number
+      - key: threshold
+        format: number
+      - key: status
+        format: badge
+      - key: blocking
+      limit: 100
+  - key: incidents_view
+    type: table
+    title: Incidents
+    source: collection:incidents
+    roles:
+    - admin
+    - engineer
+    - viewer
+    data:
+      display: list
+      fields:
+      - key: title
+      - key: report
+  - key: approvals
+    type: approvals
+    title: Approvals
+    roles:
+    - admin
+    - engineer
+  - key: account
+    type: account
+    title: Billing and connections
+    roles:
+    - admin
+    - engineer
+  billing:
+    modes:
+    - credits
+    - subscription
+    currency: gbp
+    signupCredits: 1000
+    metering:
+      creditEur: 0.02
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:rca:
+        estimate: 10
+        metered: true
+      agent:dq_gate:
+        estimate: 5
+        metered: true
+    packs:
+    - key: payg
+      credits: 5000
+      price: 100
+      label: 5,000 task runs
+    plans:
+    - key: team
+      price: 300
+      interval: month
+      label: Team
+      includes:
+      - Unlimited pipelines
+      - All roles
+      - Priority alerts
+      credits: 15000
+      creditsReset: monthly
+  extensions:
+  - key: oauth_connections
+    description: Connecting Git and warehouse through OAuth is not available yet; API keys/tokens are pasted on the account
+      page instead.
+  - key: slack_alerts
+    description: Slack messages are not available yet; failures are alerted by email only.
+  - key: customer_agent_dispatch
+    description: The lightweight agent in the customer's infrastructure posts run, task, freshness and data-quality events
+      to the app webhooks (run_event, task_event, freshness_event, dq_event) with the workspace members' emails in each payload.
+      Cron dispatch of runs to that agent and blocking downstream tasks on a failed check must be implemented on the agent
+      side; the control plane records and approves.
+  - key: yaml_validation
+    description: The pipeline definition is stored as YAML text; dependency-graph validation is not available yet.
+  - key: free_tier_monthly_reset
+    description: The free tier is granted as 1,000 signup credits (one per task run), not a monthly reset.

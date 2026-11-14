@@ -1,0 +1,975 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: ravelto
+  displayName: Ravelto
+  tagline: Records and reporting for children's homes.
+  description: Ravelto helps children's social care providers keep daily records, documents and key-work notes in one place,
+    and drafts Regulation 44 and 45 reports, incident notifications and placing-authority updates from those records. Every
+    draft cites the entries it used, and nothing is released until the registered manager approves it.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f3a4d'
+      accent: '#2a8a7a'
+      background: '#f6f8f9'
+      foreground: '#1c2b33'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Rave
+      color: primary
+    - text: lto
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Safeguards
+      href: '#safeguards'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Ravelto admin
+      assignedBy: admin_emails
+    - key: user
+      label: Provider account
+      assignedBy: signup
+    - key: registered_manager
+      label: Registered manager
+      assignedBy: derived
+      from: collection:homes.manager_email
+    - key: deputy
+      label: Deputy manager
+      assignedBy: derived
+      from: collection:homes.deputy_email
+    - key: responsible_individual
+      label: Responsible individual
+      assignedBy: derived
+      from: collection:homes.ri_email
+    - key: support_worker
+      label: Residential support worker
+      assignedBy: invite
+  limits:
+  - action: create:homes
+    max: 1
+    window: total
+    plans:
+      home_3: 3
+      home_5: 5
+      home_10: 10
+  - action: agent:drafter
+    per: user
+    max: 20
+    window: day
+  agents:
+  - key: drafter
+    role: main
+    description: Drafts Regulation 44/45 reports, incident notifications and placing-authority updates from the records, citing
+      entries, and asks the registered manager for approval.
+    awaits:
+    - release
+    profile:
+      inline:
+        display_name: Ravelto report drafter
+        crews:
+        - id: drafter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a records analyst for a children''s home in England. You draft documents from the home''s
+            own records only, using the tools read_daily, read_young_people, read_voice_notes, read_documents and read_upload
+            (for scanned documents). You see only what the requesting user is allowed to see.
+
+
+            Document types: reg44 (monthly independent-visitor style report on the quality of care, drawn from the records),
+            reg45 (quality of care review: patterns, strengths, areas for improvement, actions), incident (a notification
+            of one or more incidents), placing_update (an update for the placing authority and social worker about one young
+            person).
+
+
+            Structure: start with a level-1 title "# <Document type> — <Home> — <period>". Then ## Summary, ## Findings (grouped
+            by theme: wellbeing and mood, education, health, incidents, restraint, missing-from-care, key-work and voice notes),
+            ## Gaps and concerns, ## Recommended actions, ## Evidence used. Every factual statement ends with a citation in
+            the form [date, shift, young person initials or record id]. The Evidence used section lists every entry cited.
+
+
+            Rules: never invent facts, figures, dates or outcomes; if records are missing or inconsistent say so under Gaps.
+            Report restraint and missing-from-care episodes factually and completely. Use neutral, respectful, non-judgemental
+            language about children; use initials or the identifiers in the records, not extra personal detail. Do not give
+            legal advice or state that the home is compliant. Include only the young person asked for in placing_update. Write
+            in British English.
+
+
+            When the draft is complete, call request_release once with the title and the full draft, then tell the user it
+            is waiting for the registered manager''s approval. Nothing may be sent outside the system before approval.'
+    appTools:
+    - name: read_daily
+      description: Read the daily records the user may see (filter by home, young person, date range)
+      action: read
+      collection: daily_records
+      scope: user
+    - name: read_young_people
+      description: Read the young people the user may see
+      action: read
+      collection: young_people
+      scope: user
+    - name: read_voice_notes
+      description: Read after-shift voice notes and key-work or meeting notes
+      action: read
+      collection: voice_notes
+      scope: user
+    - name: read_documents
+      description: Read the list of uploaded documents with their extracted text
+      action: read
+      collection: documents
+      scope: user
+    - name: read_upload
+      description: Read an uploaded file by id (scans and photos, OCR included)
+      action: read_file
+    goalTemplate: 'Document type: {report_type_label}
+
+      Home: {home}
+
+      {?young_person}Young person: {young_person}{/young_person}
+
+      Period: {period_start} to {period_end}
+
+      {?notes}Manager''s instructions: {notes}{/notes}
+
+      Today is {date}. Read the records for this scope with the tools, then draft the document in the language with ISO code
+      {lang}.'
+    output: markdown
+    writesTo:
+      collection: drafts
+      parse: whole
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 1.5
+  - key: digest
+    role: helper
+    description: Weekly list of overdue records and unreviewed incidents for one home.
+    memory: none
+    profile:
+      inline:
+        display_name: Ravelto weekly digest
+        crews:
+        - id: digest
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare a short weekly digest of overdue records for a registered manager of a children''s home.
+            Use read_daily and read_young_people for the home given. Start with "# Overdue records — <home> — week of <date>".
+            Sections: ## Young people with no daily record in the last 7 days, ## Days or shifts with gaps, ## Incidents,
+            restraints or missing-from-care episodes not yet reviewed (manager_review is pending), ## Suggested follow-up.
+            Cite the record dates. Use initials, no extra personal detail. If nothing is overdue, say so in one line. Never
+            invent records.'
+    appTools:
+    - name: read_daily
+      description: Read the daily records the user may see (filter by home, young person, date range)
+      action: read
+      collection: daily_records
+      scope: user
+    - name: read_young_people
+      description: Read the young people the user may see
+      action: read
+      collection: young_people
+      scope: user
+    goalTemplate: 'Home: {home}. Today is {date}. Prepare this week''s digest of overdue records. Write in the language with
+      ISO code {lang}.'
+    output: markdown
+    writesTo:
+      collection: digests
+      parse: whole
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.4
+  templates:
+  - key: overdue_digest
+    title: Weekly overdue-records digest
+    description: Every Monday, an email of overdue records and unreviewed incidents for your home.
+    agent: digest
+    params:
+    - name: home
+      type: select
+      required: true
+      label: Home
+      optionsFrom: collection:homes
+    goal: Prepare the weekly digest of overdue records for the home {home}. Today is {date}. Write in the language with ISO
+      code {lang}.
+    schedule:
+      cron: 0 7 * * 1
+      userCanChange: true
+    maxPerUser: 10
+    roles:
+    - registered_manager
+    - deputy
+    - user
+    cost:
+      perRun: 2
+    deliver:
+      to: owner
+      subject: 'Ravelto: overdue records this week'
+      onlyIfNew: false
+  approvals:
+  - key: release
+    title: Release a drafted document
+    description: The registered manager reviews a draft report, notification or update before anything leaves the system.
+    role: registered_manager
+    fields:
+    - title
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: serious_incident
+    description: Tell the home's manager when a serious incident is logged
+    'on':
+      collection: daily_records
+      op: insert
+      where:
+        incident_severity: serious
+    notify:
+      to:
+      - record.manager_email
+      - record.deputy_email
+      subject: Serious incident logged
+      body: A serious incident has been recorded for {record.date}. Please review it and decide on any notifications.
+      link: daily_table
+  - key: draft_approved
+    description: Tell the requester that the registered manager has approved a draft
+    'on':
+      approval: release
+      decision: approved
+    notify:
+      to:
+      - owner
+      - admins
+      subject: Draft approved by the registered manager
+      body: A drafted document has been approved and is ready to release.
+      link: drafts
+  data:
+    collections:
+    - name: homes
+      description: Children's homes of the provider
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Home name
+      - name: address
+        type: text
+        label: Address
+      - name: manager_email
+        type: email
+        required: true
+        label: Registered manager email
+      - name: deputy_email
+        type: email
+        label: Deputy manager email
+      - name: ri_email
+        type: email
+        required: true
+        label: Responsible individual email
+      access:
+      - role: registered_manager
+        where:
+          manager_email: '{user.email}'
+      - role: deputy
+        where:
+          deputy_email: '{user.email}'
+      - role: responsible_individual
+        where:
+          ri_email: '{user.email}'
+    - name: young_people
+      description: Young people living in the homes
+      ownedBy: user
+      fields:
+      - name: home
+        type: select
+        required: true
+        label: Home
+        optionsFrom: collection:homes
+      - name: initials
+        type: text
+        required: true
+        label: Initials or reference
+      - name: date_of_birth
+        type: date
+        label: Date of birth
+      - name: placing_authority
+        type: text
+        label: Placing authority
+      - name: social_worker_name
+        type: text
+        label: Social worker
+      - name: social_worker_email
+        type: email
+        label: Social worker email
+      - name: worker_emails
+        type: array
+        label: Allocated support workers (emails)
+        help: One email per entry. Only these workers see this young person.
+      - name: manager_email
+        type: email
+        label: Registered manager email
+        help: Same as on the home.
+      - name: deputy_email
+        type: email
+        label: Deputy email
+      - name: ri_email
+        type: email
+        label: Responsible individual email
+      access:
+      - role: registered_manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: deputy
+        where:
+          deputy_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: responsible_individual
+        where:
+          ri_email: '{user.email}'
+      - role: support_worker
+        where:
+          worker_emails: '{user.email}'
+    - name: daily_records
+      description: Daily shift records, incidents, restraints and missing-from-care episodes
+      ownedBy: user
+      fields:
+      - name: date
+        type: date
+        required: true
+        label: Date
+      - name: shift
+        type: select
+        required: true
+        label: Shift
+        options:
+        - Early
+        - Day
+        - Late
+        - Waking night
+        - Sleep-in
+      - name: home
+        type: select
+        required: true
+        label: Home
+        optionsFrom: collection:homes
+      - name: young_person
+        type: select
+        required: true
+        label: Young person
+        optionsFrom: collection:young_people
+      - name: mood
+        type: select
+        label: Mood
+        options:
+        - Settled
+        - Happy
+        - Anxious
+        - Low
+        - Angry
+        - Withdrawn
+        - Mixed
+      - name: activities
+        type: textarea
+        label: Activities
+      - name: education_attendance
+        type: select
+        label: Education attendance
+        options:
+        - Attended
+        - Part-day
+        - Absent
+        - Not applicable
+      - name: health
+        type: textarea
+        label: Health
+      - name: incident
+        type: boolean
+        label: Incident occurred
+      - name: incident_category
+        type: select
+        label: Incident category
+        visibleWhen: incident == true
+        options:
+        - Physical aggression
+        - Self-harm
+        - Substance use
+        - Allegation
+        - Property damage
+        - Peer conflict
+        - Police involvement
+        - Other
+      - name: incident_severity
+        type: select
+        label: Severity
+        visibleWhen: incident == true
+        options:
+        - minor
+        - moderate
+        - serious
+      - name: incident_details
+        type: textarea
+        label: Incident details
+        visibleWhen: incident == true
+      - name: restraint_used
+        type: boolean
+        label: Restraint used
+      - name: missing_from_care
+        type: boolean
+        label: Missing-from-care episode
+      - name: missing_details
+        type: textarea
+        label: Missing episode details (times, police, return)
+        visibleWhen: missing_from_care == true
+      - name: manager_review
+        type: select
+        label: Manager review
+        options:
+        - pending
+        - reviewed
+        default: pending
+        roles:
+        - registered_manager
+        - deputy
+        - admin
+      - name: manager_email
+        type: email
+        label: Registered manager email
+        help: Same as on the home.
+      - name: deputy_email
+        type: email
+        label: Deputy email
+      - name: ri_email
+        type: email
+        label: Responsible individual email
+      - name: worker_emails
+        type: array
+        label: Allocated workers (emails)
+      access:
+      - role: registered_manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: deputy
+        where:
+          deputy_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: responsible_individual
+        where:
+          ri_email: '{user.email}'
+      - role: support_worker
+        where:
+          worker_emails: '{user.email}'
+    - name: documents
+      description: Care plans, placement agreements and other documents, with extracted text
+      ownedBy: user
+      fields:
+      - name: title
+        type: text
+        required: true
+        label: Title
+      - name: kind
+        type: select
+        label: Type
+        options:
+        - Care plan
+        - Placement agreement
+        - Risk assessment
+        - Review minutes
+        - Other
+      - name: young_person
+        type: select
+        label: Young person
+        optionsFrom: collection:young_people
+      - name: file
+        type: file
+        required: true
+        label: File
+        accept:
+        - pdf
+        - docx
+        - txt
+        - jpg
+        - png
+        maxMb: 15
+        extract: text
+      - name: manager_email
+        type: email
+        label: Registered manager email
+      - name: deputy_email
+        type: email
+        label: Deputy email
+      - name: ri_email
+        type: email
+        label: Responsible individual email
+      - name: worker_emails
+        type: array
+        label: Allocated workers (emails)
+      access:
+      - role: registered_manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: deputy
+        where:
+          deputy_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: responsible_individual
+        where:
+          ri_email: '{user.email}'
+      - role: support_worker
+        where:
+          worker_emails: '{user.email}'
+    - name: voice_notes
+      description: After-shift notes, key-work sessions and meetings (typed or pasted transcripts)
+      ownedBy: user
+      fields:
+      - name: date
+        type: date
+        required: true
+        label: Date
+      - name: kind
+        type: select
+        label: Type
+        options:
+        - After-shift note
+        - Key-work session
+        - Meeting
+      - name: young_person
+        type: select
+        label: Young person
+        optionsFrom: collection:young_people
+      - name: transcript
+        type: textarea
+        required: true
+        label: Note or transcript
+      - name: manager_email
+        type: email
+        label: Registered manager email
+      - name: deputy_email
+        type: email
+        label: Deputy email
+      - name: ri_email
+        type: email
+        label: Responsible individual email
+      - name: worker_emails
+        type: array
+        label: Allocated workers (emails)
+      access:
+      - role: registered_manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: deputy
+        where:
+          deputy_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: responsible_individual
+        where:
+          ri_email: '{user.email}'
+      - role: support_worker
+        where:
+          worker_emails: '{user.email}'
+    - name: drafts
+      description: Documents drafted by the agent, awaiting or past approval
+      ownedBy: user
+      fields:
+      - name: title
+        type: text
+      - name: content
+        type: textarea
+      - name: status
+        type: text
+      access:
+      - role: registered_manager
+        can:
+        - read
+        where:
+          manager_email: '{user.email}'
+    - name: digests
+      description: Weekly overdue-records digests
+      ownedBy: instance
+      fields:
+      - name: title
+        type: text
+      - name: content
+        type: textarea
+  inputForm:
+    title: New draft
+    fields:
+    - name: report_type
+      type: select
+      required: true
+      label: Document
+      options:
+      - value: reg44
+        label: Regulation 44 monthly report
+      - value: reg45
+        label: Regulation 45 quality of care review
+      - value: incident
+        label: Incident notification
+      - value: placing_update
+        label: Placing-authority update
+    - name: home
+      type: select
+      required: true
+      label: Home
+      optionsFrom: collection:homes
+    - name: young_person
+      type: select
+      label: Young person (for updates and incidents)
+      optionsFrom: collection:young_people
+    - name: period_start
+      type: date
+      required: true
+      label: From
+    - name: period_end
+      type: date
+      required: true
+      label: To
+    - name: notes
+      type: textarea
+      maxLength: 600
+      label: Instructions (optional)
+  views:
+  - key: home
+    type: page
+    title: Ravelto
+    nav: false
+    sections:
+    - type: hero
+      eyebrow: For children's homes
+      title: Daily records that turn into **reports you can trust**.
+      text: Staff log shifts, incidents and key-work in minutes. Ravelto drafts Regulation 44 and 45 reports, incident notifications
+        and placing-authority updates, citing every entry used. Nothing leaves until the registered manager approves.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      note: £120 per home per month.
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Log
+        text: Daily records, documents and after-shift notes, by the people allocated to each young person.
+        badge: 📝
+      - title: Draft
+        text: The agent reads the records and drafts the report, with evidence cited.
+        badge: 🤖
+      - title: Approve
+        text: The registered manager reviews and approves before release.
+        badge: ✅
+    - type: cards
+      id: safeguards
+      title: Safeguards
+      items:
+      - title: Need-to-know access
+        text: Workers see only the young people allocated to them; managers see their home; the responsible individual sees
+          their homes.
+      - title: Human approval
+        text: No draft is released without the registered manager's decision.
+      - title: Special category data
+        text: Built for UK GDPR special category data; no invented facts in drafts.
+    - type: note
+      content: Ravelto supports record keeping and drafting. Registered managers remain responsible for the content and accuracy
+        of everything they release.
+  - key: homes_form
+    type: form
+    title: Add a home
+    collection: homes
+    submit:
+      label: Save home
+      message: Home saved.
+    roles:
+    - user
+    - admin
+  - key: young_person_form
+    type: form
+    title: Add a young person
+    collection: young_people
+    submit:
+      label: Save
+      message: Saved.
+    roles:
+    - user
+    - registered_manager
+    - deputy
+    - admin
+  - key: log_daily
+    type: form
+    title: Daily record
+    collection: daily_records
+    submit:
+      label: Save record
+      message: Record saved.
+    roles:
+    - user
+    - registered_manager
+    - deputy
+    - support_worker
+  - key: upload_doc
+    type: form
+    title: Upload a document
+    collection: documents
+    submit:
+      label: Upload
+      message: Document uploaded.
+    roles:
+    - user
+    - registered_manager
+    - deputy
+  - key: voice_note
+    type: form
+    title: Note or key-work session
+    collection: voice_notes
+    submit:
+      label: Save note
+      message: Note saved.
+    roles:
+    - user
+    - registered_manager
+    - deputy
+    - support_worker
+  - key: daily_table
+    type: table
+    title: Daily records
+    source: collection:daily_records
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: shift
+        label: Shift
+      - key: young_person
+        label: Young person
+      - key: mood
+        label: Mood
+        format: badge
+      - key: incident_severity
+        label: Severity
+        format: badge
+      - key: restraint_used
+        label: Restraint
+      - key: missing_from_care
+        label: Missing
+      - key: manager_review
+        label: Review
+        format: badge
+      sort:
+        field: date
+        dir: desc
+      limit: 100
+    roles:
+    - user
+    - registered_manager
+    - deputy
+    - responsible_individual
+    - support_worker
+    - admin
+  - key: people_table
+    type: table
+    title: Young people
+    source: collection:young_people
+    data:
+      display: table
+      fields:
+      - key: initials
+        label: Young person
+      - key: home
+        label: Home
+      - key: placing_authority
+        label: Placing authority
+      - key: social_worker_name
+        label: Social worker
+      limit: 100
+    roles:
+    - user
+    - registered_manager
+    - deputy
+    - responsible_individual
+    - support_worker
+    - admin
+  - key: new_draft
+    type: new_run
+    title: New draft
+    roles:
+    - deputy
+    - responsible_individual
+    - user
+    - admin
+  - key: drafts
+    type: history
+    title: Drafts
+    source: run
+    roles:
+    - user
+    - deputy
+    - responsible_individual
+    - registered_manager
+    - admin
+  - key: draft
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: approvals_view
+    type: approvals
+    title: Approvals
+    approvals:
+    - release
+    roles:
+    - registered_manager
+    - admin
+  - key: digests_view
+    type: instances
+    template: overdue_digest
+    title: Weekly digest
+    roles:
+    - registered_manager
+    - deputy
+    - user
+  - key: account
+    type: account
+    title: Plan and credits
+    roles:
+    - user
+  schedules: []
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: gbp
+    signupCredits: 20
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:drafter:
+        estimate: 15
+        metered: true
+    packs:
+    - key: credits_1000
+      credits: 1000
+      price: 10
+      label: 1,000 credits
+    plans:
+    - key: home_1
+      price: 120
+      interval: month
+      label: 1 home
+      credits: 500
+      creditsReset: monthly
+      roles:
+      - user
+    - key: home_3
+      price: 360
+      interval: month
+      label: 3 homes
+      credits: 1500
+      creditsReset: monthly
+      roles:
+      - user
+    - key: home_5
+      price: 600
+      interval: month
+      label: 5 homes
+      credits: 2500
+      creditsReset: monthly
+      roles:
+      - user
+    - key: home_10
+      price: 1200
+      interval: month
+      label: 10 homes
+      credits: 5000
+      creditsReset: monthly
+      roles:
+      - user
+  notifications:
+    emailOnRunDone: true
+  extensions:
+  - key: access_audit_log
+    description: Mandatory logging of who viewed or changed each record is not yet declarable in the manifest; it needs a
+      platform audit trail of reads. Required before handling live special category data.
+  - key: audio_transcription
+    description: Transcribing voice notes and key-work or meeting audio is not available yet (file uploads accept documents
+      and images only). For now staff paste or type the note; an audio-to-text step is needed.
+  - key: local_authority_integration
+    description: Sending updates directly into local authority case-management systems needs per-authority APIs or OAuth,
+      not available yet. Approved drafts are exported and emailed to the registered manager to forward; social workers' emails
+      are stored for a later integration.
+  - key: auto_routing_fields
+    description: manager_email, deputy_email, ri_email and worker_emails on records should be copied automatically from the
+      home and young person; today they are entered or copied by hand.
+  - key: self_approval_gap
+    description: A registered manager cannot approve a draft they requested themselves, so drafts are requested by the deputy
+      or responsible individual. A second approver or a rule for sole managers is needed.
+  - key: retention_policy
+    description: Retention periods for children's records are long and set by statutory guidance and the provider; none is
+      set here, so confirm and add retentionDays per collection.

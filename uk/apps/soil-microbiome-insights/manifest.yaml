@@ -1,0 +1,800 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: soilvana
+  displayName: Soilvana
+  tagline: Soil microbiome intelligence from DNA sequencing and AI.
+  description: Order a sampling kit, register your fields and samples, track them through the lab and get an agronomist-reviewed
+    microbiome report in plain English.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#3b2f22'
+      accent: '#5a8f3c'
+      background: '#f7f4ec'
+      foreground: '#22281c'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Soil
+      color: primary
+    - text: vana
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Who it is for
+      href: '#roles'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: farmer
+      label: Farmer
+      assignedBy: signup
+    - key: agronomist
+      label: Agronomist
+      assignedBy: derived
+      from:
+      - collection:fields.agronomist_email
+      - collection:samples.agronomist_email
+    - key: lab_tech
+      label: Lab technician
+      assignedBy: invite
+  limits:
+  - action: create:fields
+    max: 2
+    window: total
+    roles:
+    - farmer
+    plans:
+      season_pro: -1
+  agents:
+  - key: analyst
+    role: main
+    description: Explains a sample's microbiome profile in plain English and drafts management practices for agronomist review.
+    profile:
+      inline:
+        display_name: Soilvana microbiome analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a soil microbiome analyst writing for farmers. Input: one sequenced soil sample (barcode,
+            field, season) whose lab metrics are in the goal. Steps: 1) call read_sample to get the full sample record, read_field
+            for the field (crop, soil type, area) and past_reports for earlier reports of the same field so you can compare
+            with previous seasons. 2) Write the report in plain English, no jargon without a short explanation. Start with
+            a level-1 title "# <Field> — soil microbiome, <season>". Sections with ## headings: Summary, What the numbers
+            mean (diversity, richness, fungal:bacterial ratio, pH, organic matter, key taxa), Compared with earlier seasons
+            (only if previous reports exist), Suggested management practices (3-6 concrete, prioritised, tied to the crop
+            and soil), Limits of this analysis. Add a chart block when comparing seasons: a fenced block ```chart with JSON
+            {"type":"bar","title":"...","labels":[...],"series":[{"name":"...","values":[...]}]} using real figures only.
+            3) Call save_report once with barcode, field_name, season, title, summary (short plain-English summary), practices
+            (the practices section), agronomist_email (from the sample, may be empty) and status "in_review". Rules: never
+            invent figures or taxa not in the data; say plainly when data is missing; present practices as suggestions pending
+            agronomist review, not guarantees; no fertiliser or chemical doses; no financial or legal advice. Write in English.'
+    goalTemplate: 'Sample barcode: {record.barcode}
+
+      Field: {record.field_name}
+
+      Season: {record.season}
+
+      Lab metrics: Shannon diversity {record.shannon_index}, richness {record.richness}, fungal:bacterial ratio {record.fungal_bacterial_ratio},
+      pH {record.ph}, organic matter % {record.organic_matter_pct}. Top taxa: {record.top_taxa}
+
+      Today is {date}. Write the report in English.'
+    appTools:
+    - name: read_sample
+      description: Read the farmer's soil samples with their lab results
+      action: read
+      collection: samples
+      scope: user
+    - name: read_field
+      description: Read the farmer's registered fields
+      action: read
+      collection: fields
+      scope: user
+    - name: past_reports
+      description: Read earlier reports of the farmer
+      action: read
+      collection: reports
+      scope: user
+    - name: save_report
+      description: Save the drafted report for agronomist review
+      action: write
+      collection: reports
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.6
+  data:
+    collections:
+    - name: fields
+      description: A farmer's registered fields
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Field name
+      - name: crop
+        type: text
+        required: true
+        label: Main crop
+      - name: area_ha
+        type: number
+        label: Area (ha)
+      - name: soil_type
+        type: select
+        label: Soil type
+        options:
+        - sand
+        - loam
+        - clay
+        - silt
+        - peat
+        - other
+      - name: location
+        type: location
+        label: Field position
+      - name: agronomist_email
+        type: email
+        label: Invite an agronomist (email)
+        help: Optional. This agronomist will see this field, its samples and reports.
+      access:
+      - role: agronomist
+        where:
+          agronomist_email: '{user.email}'
+        can:
+        - read
+    - name: kits
+      description: Sampling kit orders
+      ownedBy: user
+      fields:
+      - name: kit_type
+        type: select
+        required: true
+        label: Kit
+        options:
+        - value: single
+          label: Single field kit
+        - value: multi
+          label: Multi-point kit (4 samples)
+      - name: ship_to
+        type: textarea
+        required: true
+        label: Shipping address
+      - name: phone
+        type: text
+        label: Phone
+      - name: status
+        type: select
+        label: Status
+        default: ordered
+        options:
+        - ordered
+        - packed
+        - shipped
+        - delivered
+      access:
+      - role: lab_tech
+        can:
+        - read
+        - write
+    - name: samples
+      description: Soil samples with their lab status and results
+      ownedBy: user
+      fields:
+      - name: field_name
+        type: select
+        required: true
+        label: Field
+        optionsFrom: collection:fields
+      - name: barcode
+        type: barcode
+        required: true
+        label: Kit barcode
+      - name: collected_date
+        type: date
+        required: true
+        label: Collection date
+      - name: season
+        type: text
+        required: true
+        label: Season (e.g. Spring 2027)
+      - name: depth_cm
+        type: number
+        label: Sampling depth (cm)
+      - name: notes
+        type: textarea
+        label: Notes
+      - name: agronomist_email
+        type: email
+        label: Agronomist (optional)
+        help: The agronomist invited to this farm.
+      - name: status
+        type: select
+        label: Lab status
+        default: registered
+        options:
+        - registered
+        - shipped
+        - received
+        - extracted
+        - sequencing
+        - results_ready
+      - name: shannon_index
+        type: number
+        label: Shannon diversity
+      - name: richness
+        type: number
+        label: Richness (taxa)
+      - name: fungal_bacterial_ratio
+        type: number
+        label: Fungal:bacterial ratio
+      - name: ph
+        type: number
+        label: pH
+      - name: organic_matter_pct
+        type: number
+        label: Organic matter (%)
+      - name: top_taxa
+        type: textarea
+        label: Dominant taxa
+      - name: result_file
+        type: file
+        accept:
+        - pdf
+        - csv
+        - xlsx
+        - json
+        maxMb: 15
+        label: Result file
+      - name: lab_notes
+        type: textarea
+        label: Lab notes
+      access:
+      - role: agronomist
+        where:
+          agronomist_email: '{user.email}'
+        can:
+        - read
+      - role: lab_tech
+        can:
+        - read
+        - write
+    - name: reports
+      description: 'Microbiome reports: drafted by the agent, reviewed and released by the agronomist'
+      ownedBy: user
+      fields:
+      - name: barcode
+        type: text
+        label: Sample barcode
+      - name: field_name
+        type: text
+        label: Field
+      - name: season
+        type: text
+        label: Season
+      - name: title
+        type: text
+        label: Title
+      - name: summary
+        type: textarea
+        label: Summary
+      - name: practices
+        type: textarea
+        label: Suggested practices
+      - name: agronomist_notes
+        type: textarea
+        label: Agronomist notes
+      - name: agronomist_email
+        type: email
+        label: Agronomist
+      - name: status
+        type: select
+        label: Status
+        default: in_review
+        options:
+        - in_review
+        - released
+      access:
+      - role: agronomist
+        where:
+          agronomist_email: '{user.email}'
+        can:
+        - read
+        - write
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Soilvana
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: Soil microbiome intelligence
+      title: Know what lives in your **soil** — and what to do about it.
+      text: Order a sampling kit, post your soil to our lab, and get a DNA-based microbiome report in plain English, reviewed
+        by an agronomist.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Order a kit
+        text: Choose a kit and we post it to you.
+        badge: 📦
+      - title: Sample and register
+        text: Take soil samples, scan the barcode and link them to your field.
+        badge: 🌱
+      - title: Track the lab
+        text: Follow each sample from received to sequenced.
+        badge: 🧬
+      - title: Read your report
+        text: An AI explains the profile, an agronomist reviews it, and you get practices to try.
+        badge: 📄
+    - type: cards
+      id: roles
+      title: Who it is for
+      items:
+      - title: Farmers
+        text: Register fields, track samples, compare seasons.
+      - title: Agronomists
+        text: Review reports for the farms that invite you and add your notes.
+      - title: Lab technicians
+        text: Update sample status and upload results.
+    - type: note
+      content: Soilvana reports support decisions and are not a guarantee of yield. Suggested practices are reviewed by an
+        agronomist before release.
+  - key: add_field
+    type: form
+    title: Add a field
+    collection: fields
+    roles:
+    - farmer
+    - admin
+    submit:
+      label: Save field
+      message: Field saved.
+      redirect: my_fields
+  - key: my_fields
+    type: cards
+    title: My fields
+    source: collection:fields
+    roles:
+    - farmer
+    - admin
+    data:
+      display: cards
+      fields:
+      - key: name
+        label: Field
+      - key: crop
+        label: Crop
+      - key: area_ha
+        label: Area (ha)
+        format: number
+      - key: soil_type
+        label: Soil
+        format: badge
+      - key: location
+        label: Position
+        format: location
+      actions:
+      - type: directions
+        field: location
+        label: Directions
+  - key: order_kit
+    type: form
+    title: Order a kit
+    collection: kits
+    fields:
+    - kit_type
+    - ship_to
+    - phone
+    roles:
+    - farmer
+    - admin
+    submit:
+      label: Order kit
+      message: Kit ordered. Credits are charged and we will post it soon.
+      redirect: my_kits
+  - key: my_kits
+    type: table
+    title: My kits
+    source: collection:kits
+    roles:
+    - farmer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: kit_type
+        label: Kit
+      - key: ship_to
+        label: Ship to
+      - key: status
+        label: Status
+        format: badge
+  - key: add_sample
+    type: form
+    title: Register a sample
+    collection: samples
+    fields:
+    - field_name
+    - barcode
+    - collected_date
+    - season
+    - depth_cm
+    - agronomist_email
+    - notes
+    roles:
+    - farmer
+    - admin
+    submit:
+      label: Register sample
+      message: Sample registered. Post it to the lab.
+      redirect: my_samples
+  - key: my_samples
+    type: table
+    title: My samples
+    source: collection:samples
+    roles:
+    - farmer
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: barcode
+        label: Barcode
+      - key: field_name
+        label: Field
+      - key: season
+        label: Season
+      - key: collected_date
+        label: Collected
+        format: date
+      - key: status
+        label: Lab status
+        format: badge
+      sort:
+        field: collected_date
+        dir: desc
+  - key: my_reports
+    type: cards
+    title: My reports
+    source: collection:reports
+    roles:
+    - farmer
+    - admin
+    data:
+      display: cards
+      fields:
+      - key: title
+        label: Report
+      - key: season
+        label: Season
+      - key: summary
+        label: Summary
+      - key: practices
+        label: Suggested practices
+      - key: agronomist_notes
+        label: Agronomist notes
+      filters:
+      - field: status
+        op: '='
+        value: released
+      empty: No released reports yet.
+      limit: 50
+  - key: trends
+    type: page
+    title: Seasons compared
+    roles:
+    - farmer
+    - agronomist
+    - admin
+    sections:
+    - type: data
+      title: Average microbial diversity by season
+      source: collection:samples
+      display: chart
+      chart: line
+      groupBy:
+        field: season
+        aggs:
+        - key: shannon
+          agg: avg
+          field: shannon_index
+        - key: ratio
+          agg: avg
+          field: fungal_bacterial_ratio
+      fields:
+      - key: season
+        label: Season
+      - key: shannon
+        label: Shannon diversity
+      - key: ratio
+        label: Fungal:bacterial
+      empty: Results will appear here once your samples are sequenced.
+    - type: data
+      title: Field by field
+      source: collection:samples
+      display: table
+      fields:
+      - key: field_name
+        label: Field
+      - key: season
+        label: Season
+      - key: shannon_index
+        label: Diversity
+        format: number
+      - key: richness
+        label: Richness
+        format: number
+      - key: fungal_bacterial_ratio
+        label: F:B ratio
+        format: number
+      - key: ph
+        label: pH
+        format: number
+      - key: organic_matter_pct
+        label: Organic matter %
+        format: number
+      filters:
+      - field: status
+        op: '='
+        value: results_ready
+      sort:
+        field: collected_date
+        dir: desc
+      limit: 100
+  - key: lab_queue
+    type: table
+    title: Lab queue
+    source: collection:samples
+    roles:
+    - lab_tech
+    - admin
+    data:
+      display: table
+      fields:
+      - key: barcode
+        label: Barcode
+      - key: field_name
+        label: Field
+      - key: status
+        label: Status
+        format: badge
+      - key: collected_date
+        label: Collected
+        format: date
+      filters:
+      - field: status
+        op: '!='
+        value: results_ready
+      sort:
+        field: collected_date
+        dir: asc
+      limit: 200
+  - key: lab_update
+    type: form
+    title: Update a sample (open with ?id=)
+    collection: samples
+    fields:
+    - status
+    - shannon_index
+    - richness
+    - fungal_bacterial_ratio
+    - ph
+    - organic_matter_pct
+    - top_taxa
+    - result_file
+    - lab_notes
+    edit: true
+    roles:
+    - lab_tech
+    - admin
+    submit:
+      label: Save
+      message: Sample updated.
+      redirect: lab_queue
+  - key: kit_queue
+    type: table
+    title: Kit orders
+    source: collection:kits
+    roles:
+    - lab_tech
+    - admin
+    data:
+      display: table
+      fields:
+      - key: kit_type
+        label: Kit
+      - key: ship_to
+        label: Ship to
+      - key: status
+        label: Status
+        format: badge
+      limit: 200
+  - key: review_queue
+    type: table
+    title: Reports to review
+    source: collection:reports
+    roles:
+    - agronomist
+    - admin
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Report
+      - key: field_name
+        label: Field
+      - key: season
+        label: Season
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: season
+        dir: desc
+      limit: 100
+  - key: review_report
+    type: form
+    title: Review a report (open with ?id=)
+    collection: reports
+    fields:
+    - summary
+    - practices
+    - agronomist_notes
+    - status
+    edit: true
+    roles:
+    - agronomist
+    - admin
+    submit:
+      label: Save review
+      message: Review saved. Set status to released to send it to the farmer.
+      redirect: review_queue
+  - key: run_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: account
+    type: account
+    title: Credits and plan
+    roles:
+    - farmer
+  triggers:
+  - key: analyse_sample
+    'on':
+      collection: samples
+      op: update
+      where:
+        status: results_ready
+    start:
+      agent: analyst
+    goal: Analyse sample {record.barcode} of field {record.field_name}, season {record.season}.
+  - key: report_for_review
+    'on':
+      collection: reports
+      op: insert
+    notify:
+      to:
+      - record.agronomist_email
+      subject: 'Soilvana: a report is waiting for your review'
+      body: A microbiome report for {record.field_name} ({record.season}) is ready for your review.
+      link: review_queue
+  - key: report_released
+    'on':
+      collection: reports
+      op: update
+      where:
+        status: released
+    notify:
+      to: owner
+      subject: Your Soilvana results are ready
+      body: Your soil microbiome report for {record.field_name} ({record.season}) has been reviewed and is ready to read.
+      link: my_reports
+  - key: resample_reminder
+    'on':
+      date:
+        collection: samples
+        field: collected_date
+        offsetDays: 330
+        hour: 8
+    notify:
+      to: owner
+      subject: Time to resample your soil
+      body: It is nearly a year since you sampled {record.field_name}. Order a new kit to compare this season with the last.
+      link: order_kit
+  - key: kit_fee
+    'on':
+      collection: kits
+      op: insert
+    charge:
+      credits: 100
+      reason: Sampling kit
+  - key: kit_alert
+    'on':
+      collection: kits
+      op: insert
+    notify:
+      to:
+      - admins
+      - role:lab_tech
+      subject: New Soilvana kit order
+      body: 'A {record.kit_type} kit was ordered. Ship to: {record.ship_to}'
+      link: kit_queue
+  approvals: []
+  billing:
+    modes:
+    - credits
+    - subscription
+    currency: eur
+    signupCredits: 0
+    costs:
+      agent:analyst: 20
+    packs:
+    - key: kit_single
+      credits: 120
+      price: 89
+      label: 1 kit + report
+    - key: kit_three
+      credits: 360
+      price: 240
+      label: 3 kits + reports
+    plans:
+    - key: season_pro
+      price: 449
+      interval: year
+      label: Seasonal plan — multiple fields
+      credits: 1500
+      creditsReset: never
+      roles:
+      - farmer
+      includes:
+      - Unlimited fields
+      - 1500 credits for kits and reports
+  notifications:
+    emailOnRunDone: false

@@ -1,0 +1,957 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: loopwear
+  displayName: Loopwear
+  tagline: Trade-in and resale for fashion and sports brands.
+  description: Brands let shoppers trade in used items for store credit and resell them on their own pre-loved shop. An AI
+    agent values the items from photos, the brand's team approves the doubtful ones, and returns, gift cards and resale listings
+    follow.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/Rome
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f3d2b'
+      accent: '#e4572e'
+      background: '#f7f5f0'
+      foreground: '#1a1d1b'
+    fonts:
+      body: Inter
+      display: Space Grotesk
+    wordmark:
+    - text: Loop
+      color: primary
+    - text: wear
+      color: accent
+    buttonShape: rounded
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: For brands
+      href: '#brands'
+    cta:
+      label: Trade in an item
+      href: /v/new_tradein
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+      - apply
+    roles:
+    - key: admin
+      label: Loopwear admin
+      assignedBy: admin_emails
+    - key: brand
+      label: Brand team
+      assignedBy: invite
+    - key: shopper
+      label: Shopper
+      assignedBy: signup
+  agents:
+  - key: importer
+    role: main
+    description: Imports a brand's Shopify catalogue into the Loopwear catalogue.
+    profile:
+      inline:
+        display_name: Loopwear catalogue importer
+        crews:
+        - id: importer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You import a brand's product catalogue. Look up the brand record whose brand_email equals the signed-in
+            user's email (tool find_brand). Call shop_products_list to read the brand's Shopify products (page through with
+            query page_info if given). For each product call add_catalogue once with fields brand (the brand name), sku, title,
+            category (product_type), retail_price (first variant price, number), shopify_product_id, image_url. Do not invent
+            products. If Shopify is not connected, say so and stop. Start with a level-1 title '# Catalogue import' and then
+            list how many products were imported and any problems.
+    appTools:
+    - name: find_brand
+      description: Find brand records
+      action: search
+      collection: brands
+      scope: all
+    - name: shop_products_list
+      description: List products of the brand's Shopify store
+      action: http
+      http:
+        method: GET
+        url: https://{host}/admin/api/2025-01/products.json
+        allowPath: false
+        credential:
+          provider: shopify
+          header: X-Shopify-Access-Token
+          format: '{secret}'
+    - name: add_catalogue
+      description: Add a product to the catalogue
+      action: append
+      collection: catalogue
+      scope: all
+    goalTemplate: 'Import the Shopify catalogue for the brand of user {user}. {?scope_note}Note: {scope_note}{/scope_note}
+      Today is {date}.'
+    output: markdown
+  - key: valuer
+    role: helper
+    description: Grades a trade-in from photos and description and proposes a credit.
+    profile:
+      inline:
+        display_name: Loopwear valuer
+        crews:
+        - id: valuer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You value used fashion and sports items for a brand''s trade-in programme. Steps: 1) search_catalogue
+            for the item to get its retail_price and category; 2) search_rules for that brand and category: accepted, condition
+            grades (A,B,C), credit_pct per grade and auto_approve_limit; 3) call read_upload with each photo file id and inspect
+            wear, stains, damage, labels; 4) choose grade A/B/C or ''reject'', compute credit_amount = retail_price x credit_pct,
+            and carbon_kg as a conservative estimate for reusing the item (garment about 10 kg CO2e, shoes about 12, never
+            more than needed); 5) find the brand''s brand_email with search_brands; 6) call update_tradein once with grade,
+            credit_amount, carbon_kg, confidence (high|medium|low), valuation_notes, brand_email and status: ''pending_brand''
+            if credit_amount exceeds auto_approve_limit, or confidence is not high, or photos are unclear or the item looks
+            fake; ''declined'' if the product is not accepted or grade is reject; otherwise ''offered''. Never invent rules
+            or prices: if rules are missing, set pending_brand. Start your answer with ''# Valuation: <item>'' and a short
+            summary with the grade, credit and reasons.'
+    appTools:
+    - name: search_catalogue
+      description: Search the product catalogue
+      action: search
+      collection: catalogue
+      scope: all
+    - name: search_rules
+      description: Search the brand's trade-in rules
+      action: search
+      collection: rules
+      scope: all
+    - name: search_brands
+      description: Search brands
+      action: search
+      collection: brands
+      scope: all
+    - name: read_upload
+      description: Read a photo the shopper uploaded
+      action: read_file
+    - name: update_tradein
+      description: Update the shopper's trade-in record
+      action: write
+      collection: tradeins
+      scope: user
+    output: markdown
+  - key: logistics
+    role: helper
+    description: Creates the prepaid returns label with the carrier.
+    profile:
+      inline:
+        display_name: Loopwear returns
+        crews:
+        - id: logistics
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You create a prepaid returns label for an accepted trade-in. Look up the brand (search_brands) for
+            its returns address (returns_address). Call carrier_create_shipment with a JSON body for the carrier''s shipment
+            API: from = the shopper''s address as given in the goal, to = the brand''s returns address, a parcel of about
+            1 kg, and a return label request. Read tracking_code and the label URL from the response, then call update_tradein
+            once with label_url, tracking and status ''label_issued''. If the carrier call fails or an address is missing,
+            set nothing and explain. Start with ''# Returns label'' and give the shopper the steps to pack and drop off the
+            parcel.'
+    appTools:
+    - name: search_brands
+      description: Search brands
+      action: search
+      collection: brands
+      scope: all
+    - name: carrier_create_shipment
+      description: Create a prepaid returns shipment with the carrier
+      action: http
+      http:
+        method: POST
+        url: https://api.easypost.com/v2/shipments
+        attribution: Carrier API
+        credential:
+          provider: carrier
+          header: Authorization
+          format: Basic {secret}
+    - name: update_tradein
+      description: Update the shopper's trade-in record
+      action: write
+      collection: tradeins
+      scope: user
+    output: markdown
+  - key: settler
+    role: helper
+    description: 'After the item is checked: issues the gift card and lists the item for resale.'
+    profile:
+      inline:
+        display_name: Loopwear settlement
+        crews:
+        - id: settler
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'An item has arrived and passed the brand''s check. 1) Issue store credit: call shop_gift_card_create
+            with body {"gift_card":{"initial_value":"<credit_amount>","note":"Loopwear trade-in <id>"}} and read the code.
+            Use the credit amount in the goal (the brand may have set final_grade, then recompute from the rules via search_rules
+            if the grade changed). 2) List the item for resale on the brand''s Shopify store: call shop_product_create with
+            a draft-free active product titled ''<item> (Pre-loved, grade X)'', price = resale_price from the goal or retail_price
+            x resale_pct from the rules, tag ''loopwear-preloved''. 3) append_resale to record the listing (brand_email, item,
+            grade, list_price, shopify_product_id, status ''listed'', sale_price 0, carbon_kg). 4) update_tradein with gift_card_code
+            and status ''credited'' (or ''listed''). If Shopify is not connected or a call fails, say what is missing and
+            do not fake codes. Start with ''# Trade-in settled'' and summarise credit and listing.'
+    appTools:
+    - name: search_rules
+      description: Search the brand's trade-in rules
+      action: search
+      collection: rules
+      scope: all
+    - name: shop_gift_card_create
+      description: Create a gift card in the brand's Shopify store
+      action: http
+      http:
+        method: POST
+        url: https://{host}/admin/api/2025-01/gift_cards.json
+        credential:
+          provider: shopify
+          header: X-Shopify-Access-Token
+          format: '{secret}'
+    - name: shop_product_create
+      description: Create a product in the brand's Shopify store
+      action: http
+      http:
+        method: POST
+        url: https://{host}/admin/api/2025-01/products.json
+        credential:
+          provider: shopify
+          header: X-Shopify-Access-Token
+          format: '{secret}'
+    - name: append_resale
+      description: Record a resale listing
+      action: append
+      collection: resale_items
+      scope: user
+    - name: update_tradein
+      description: Update the shopper's trade-in record
+      action: write
+      collection: tradeins
+      scope: user
+    output: markdown
+  inputForm:
+    title: Import catalogue
+    fields:
+    - name: scope_note
+      type: text
+      label: Note (optional)
+      maxLength: 200
+      help: e.g. only the footwear collection
+  data:
+    collections:
+    - name: brands
+      description: Participating brands, kept by the admins
+      ownedBy: shared
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: brand_email
+        type: email
+        required: true
+      - name: shop_domain
+        type: text
+      - name: returns_address
+        type: textarea
+    - name: catalogue
+      description: Products imported from each brand's Shopify store
+      ownedBy: shared
+      fields:
+      - name: brand
+        type: text
+      - name: sku
+        type: text
+      - name: title
+        type: text
+      - name: category
+        type: text
+      - name: retail_price
+        type: number
+      - name: shopify_product_id
+        type: text
+      - name: image_url
+        type: url
+    - name: rules
+      description: Trade-in rules set by each brand
+      ownedBy: app
+      fields:
+      - name: brand
+        type: text
+        required: true
+      - name: category
+        type: text
+        required: true
+      - name: accepted
+        type: boolean
+        default: true
+      - name: grade
+        type: select
+        options:
+        - A
+        - B
+        - C
+        required: true
+      - name: grade_criteria
+        type: textarea
+      - name: credit_pct
+        type: number
+        required: true
+        help: Credit as % of retail price
+      - name: resale_pct
+        type: number
+        help: Resale price as % of retail price
+      - name: auto_approve_limit
+        type: number
+        help: Credit above this goes to the brand team
+    - name: tradeins
+      description: Shoppers' trade-ins
+      ownedBy: user
+      retentionDays: 730
+      fields:
+      - name: brand
+        type: select
+        optionsFrom: collection:brands
+        required: true
+        label: Brand
+      - name: item
+        type: select
+        optionsFrom: collection:catalogue
+        required: true
+        label: Item
+      - name: size
+        type: text
+        required: true
+      - name: condition
+        type: select
+        required: true
+        options:
+        - value: new_tags
+          label: New with tags
+        - value: like_new
+          label: Like new
+        - value: good
+          label: Good
+        - value: worn
+          label: Worn
+      - name: description
+        type: textarea
+        maxLength: 800
+      - name: photos
+        type: file
+        accept:
+        - jpg
+        - jpeg
+        - png
+        maxMb: 10
+        multiple: true
+        capture: true
+        required: true
+        label: Photos
+      - name: shipping_address
+        type: textarea
+        required: true
+        label: Your address for the returns label
+      - name: status
+        type: select
+        options:
+        - submitted
+        - pending_brand
+        - offered
+        - brand_approved
+        - accepted
+        - declined
+        - label_issued
+        - received_ok
+        - received_rejected
+        - credited
+        - listed
+        default: submitted
+      - name: brand_email
+        type: email
+      - name: grade
+        type: text
+      - name: final_grade
+        type: text
+      - name: credit_amount
+        type: number
+      - name: confidence
+        type: text
+      - name: valuation_notes
+        type: textarea
+      - name: label_url
+        type: url
+      - name: tracking
+        type: text
+      - name: gift_card_code
+        type: text
+      - name: resale_price
+        type: number
+      - name: carbon_kg
+        type: number
+      access:
+      - role: brand
+        where:
+          brand_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: resale_items
+      description: Items listed on each brand's pre-loved shop
+      ownedBy: user
+      fields:
+      - name: brand_email
+        type: email
+      - name: item
+        type: text
+      - name: grade
+        type: text
+      - name: list_price
+        type: number
+      - name: sale_price
+        type: number
+      - name: shopify_product_id
+        type: text
+      - name: status
+        type: select
+        options:
+        - listed
+        - sold
+      - name: carbon_kg
+        type: number
+      access:
+      - role: brand
+        where:
+          brand_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: brand_applications
+      description: Brands asking to join
+      ownedBy: org
+      fields:
+      - name: company
+        type: text
+        required: true
+      - name: contact_name
+        type: text
+        required: true
+      - name: contact_email
+        type: email
+        required: true
+      - name: shop_url
+        type: url
+        required: true
+      - name: message
+        type: textarea
+    credentials:
+    - provider: shopify
+      kind: api_key
+      scope: user
+      label: Shopify store
+      help: 'In Shopify admin: Settings > Apps > Develop apps > create a custom app with product and gift card scopes and
+        paste its Admin API access token.'
+      hostLabel: your-store.myshopify.com
+    - provider: carrier
+      kind: api_key
+      scope: org
+      label: Returns carrier API key
+      help: Set by the Loopwear admins.
+  egress:
+    hosts:
+    - '*.myshopify.com'
+    - api.easypost.com
+    notes: Shopify Admin API on each brand's own store with the brand's key; carrier API for prepaid returns labels, under
+      the carrier's terms.
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Loopwear
+    sections:
+    - type: hero
+      band: true
+      eyebrow: Trade-in & resale
+      title: Give clothes and gear a **second life**, and your brand a loop.
+      text: Shoppers trade in used items for store credit. AI grades them from photos, your team approves the doubtful ones,
+        and graded items go on your own pre-loved shop.
+      actions:
+      - label: Trade in an item
+        href: /v/new_tradein
+        style: primary
+      - label: 'Brands: apply'
+        href: /v/apply
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Pick your item
+        text: Find it in the brand's catalogue and add size, condition and photos.
+        badge: 📷
+      - title: Get an offer
+        text: Our valuation agent proposes a grade and credit. Big or doubtful offers are checked by the brand.
+        badge: 🤖
+      - title: Send it back
+        text: Accept and receive a prepaid returns label.
+        badge: 📦
+      - title: Get store credit
+        text: Once checked, you get a gift card for the brand's store.
+        badge: 🎁
+    - type: cards
+      id: brands
+      title: For brands
+      items:
+      - title: Your rules
+        text: Accepted products, grades, credit values, resale prices and approval limits.
+      - title: Your Shopify shop
+        text: Catalogue imported, gift cards issued and pre-loved items listed on your own store.
+      - title: Your numbers
+        text: Trade-ins, credit issued, resale revenue and carbon saved.
+    - type: note
+      content: Credit values are proposals until the brand has checked the item. Carbon figures are estimates.
+  - key: apply
+    type: form
+    collection: brand_applications
+    title: 'Brands: apply'
+    nav: false
+    submit:
+      label: Send application
+      message: Thanks! We will contact you to set up your brand.
+  - key: new_tradein
+    type: form
+    collection: tradeins
+    title: Trade in an item
+    roles:
+    - shopper
+    - admin
+    fields:
+    - brand
+    - item
+    - size
+    - condition
+    - description
+    - photos
+    - shipping_address
+    submit:
+      label: Get my offer
+      message: Received! Your offer will appear in My trade-ins shortly.
+      redirect: my_tradeins
+  - key: my_tradeins
+    type: table
+    source: collection:tradeins
+    title: My trade-ins
+    roles:
+    - shopper
+    data:
+      display: table
+      fields:
+      - key: item
+        label: Item
+      - key: status
+        format: badge
+        label: Status
+      - key: grade
+        label: Grade
+      - key: credit_amount
+        format: money
+        label: Credit
+      - key: tracking
+        label: Tracking
+      - key: label_url
+        format: link
+        label: Label
+      - key: gift_card_code
+        label: Gift card
+      sort:
+        field: createdAt
+        dir: desc
+      kpis:
+      - label: Trade-ins
+        agg: count
+      - label: Credit
+        agg: sum
+        field: credit_amount
+        format: money
+  - key: respond
+    type: form
+    collection: tradeins
+    edit: true
+    title: Your offer
+    nav: false
+    roles:
+    - shopper
+    fields:
+    - status
+    submit:
+      label: Confirm
+      message: Thanks! Accept to get your returns label.
+      redirect: my_tradeins
+  - key: brand_inbox
+    type: table
+    source: collection:tradeins
+    title: Trade-ins to review
+    roles:
+    - brand
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: brand
+        label: Brand
+      - key: item
+        label: Item
+      - key: size
+        label: Size
+      - key: grade
+        label: Proposed grade
+      - key: credit_amount
+        format: money
+        label: Credit
+      - key: confidence
+        label: Confidence
+      - key: status
+        format: badge
+        label: Status
+      - key: valuation_notes
+        label: Notes
+      sort:
+        field: createdAt
+        dir: desc
+  - key: brand_review
+    type: form
+    collection: tradeins
+    edit: true
+    title: Review a trade-in
+    nav: false
+    roles:
+    - brand
+    - admin
+    fields:
+    - status
+    - final_grade
+    - resale_price
+    submit:
+      label: Save decision
+      message: Saved.
+      redirect: brand_inbox
+  - key: rules_form
+    type: form
+    collection: rules
+    title: Add a trade-in rule
+    roles:
+    - brand
+    - admin
+    submit:
+      label: Save rule
+      message: Rule saved.
+      redirect: rules_list
+  - key: rules_list
+    type: table
+    source: collection:rules
+    title: Trade-in rules
+    roles:
+    - brand
+    - admin
+    data:
+      display: table
+      fields:
+      - key: brand
+      - key: category
+      - key: grade
+      - key: accepted
+        format: badge
+      - key: credit_pct
+        format: percent
+      - key: resale_pct
+        format: percent
+      - key: auto_approve_limit
+        format: money
+  - key: import
+    type: new_run
+    title: Import Shopify catalogue
+    roles:
+    - brand
+    - admin
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - brand
+    - admin
+    sections:
+    - type: data
+      title: Trade-ins
+      source: collection:tradeins
+      display: kpi
+      kpis:
+      - label: Trade-ins
+        agg: count
+      - label: Credit issued
+        agg: sum
+        field: credit_amount
+        format: money
+      - label: Carbon saved (kg CO2e)
+        agg: sum
+        field: carbon_kg
+        format: number
+      fields:
+      - key: credit_amount
+    - type: data
+      title: Resale
+      source: collection:resale_items
+      display: kpi
+      kpis:
+      - label: Items listed
+        agg: count
+      - label: Resale revenue
+        agg: sum
+        field: sale_price
+        format: money
+      fields:
+      - key: sale_price
+    - type: data
+      title: Trade-ins by status
+      source: collection:tradeins
+      display: chart
+      chart: bar
+      fields:
+      - key: status
+      - key: count
+      groupBy:
+        field: status
+        aggs:
+        - key: credit
+          agg: sum
+          field: credit_amount
+  - key: resale
+    type: table
+    source: collection:resale_items
+    title: Resale items
+    roles:
+    - brand
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: item
+      - key: grade
+      - key: list_price
+        format: money
+      - key: sale_price
+        format: money
+      - key: status
+        format: badge
+  - key: runs
+    type: history
+    source: run
+    title: Imports
+    roles:
+    - brand
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: account
+    type: account
+    title: Shopify & plan
+    roles:
+    - brand
+  triggers:
+  - key: t_valuation
+    'on':
+      collection: tradeins
+      op: insert
+      where:
+        status: submitted
+    start:
+      agent: valuer
+    goal: 'Value this trade-in. Record id {record.id}. Brand: {record.brand}. Item: {record.item}. Size: {record.size}. Condition
+      declared: {record.condition}. Description: {record.description}. Photo file ids: {record.photos}. Shopper address: {record.shipping_address}.
+      Date {date}.'
+  - key: t_pending
+    'on':
+      collection: tradeins
+      op: update
+      where:
+        status: pending_brand
+    notify:
+      to: record.brand_email
+      subject: 'Loopwear: a trade-in needs your approval'
+      body: A trade-in for {record.item} (proposed credit {record.credit_amount}) is waiting for your team's decision.
+      link: brand_inbox
+  - key: t_offered
+    'on':
+      collection: tradeins
+      op: update
+      where:
+        status: offered
+    notify:
+      to: owner
+      subject: Your Loopwear offer for {record.item}
+      body: Grade {record.grade}, store credit {record.credit_amount}. Open your trade-ins to accept.
+      link: my_tradeins
+  - key: t_approved
+    'on':
+      collection: tradeins
+      op: update
+      where:
+        status: brand_approved
+    notify:
+      to: owner
+      subject: Your trade-in offer is approved
+      body: 'The brand approved your trade-in of {record.item}: store credit {record.credit_amount}. Open your trade-ins to
+        accept.'
+      link: my_tradeins
+  - key: t_accepted
+    'on':
+      collection: tradeins
+      op: update
+      where:
+        status: accepted
+    start:
+      agent: logistics
+    goal: 'Create the returns label. Record id {record.id}. Brand: {record.brand}. Item: {record.item}. Shopper address: {record.shipping_address}.'
+  - key: t_received
+    'on':
+      collection: tradeins
+      op: update
+      where:
+        status: received_ok
+    start:
+      agent: settler
+    goal: 'Settle trade-in {record.id}. Brand: {record.brand}. Item: {record.item}. Size: {record.size}. Grade: {record.grade},
+      final grade set by brand: {record.final_grade}. Credit amount: {record.credit_amount}. Resale price set by brand: {record.resale_price}.
+      Carbon kg: {record.carbon_kg}. Brand email: {record.brand_email}.'
+  - key: t_credited
+    'on':
+      collection: tradeins
+      op: update
+      where:
+        status: credited
+    notify:
+      to: owner
+      subject: Your store credit is ready
+      body: 'Your {record.item} was checked. Your gift card code: {record.gift_card_code}.'
+      link: my_tradeins
+  - key: t_rejected
+    'on':
+      collection: tradeins
+      op: update
+      where:
+        status: received_rejected
+    notify:
+      to: owner
+      subject: About your trade-in
+      body: Unfortunately {record.item} did not pass the brand's check. The brand will contact you about next steps.
+      link: my_tradeins
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: starter
+      price: 99
+      interval: month
+      label: Starter
+      roles:
+      - brand
+      includes:
+      - Up to 100 trade-ins a month
+      - Per-item fee on top
+    - key: growth
+      price: 299
+      interval: month
+      label: Growth
+      roles:
+      - brand
+      includes:
+      - Up to 1000 trade-ins a month
+      - Lower per-item fee
+  mobile:
+    appId: com.loopwear.app
+    appName: Loopwear
+    capabilities:
+    - name: camera
+      reason: To photograph the item you want to trade in
+    - name: push
+  extensions:
+  - key: shopify_oauth
+    description: 'OAuth sign-in to Shopify is not available yet: brands paste a custom-app Admin API token on the account
+      page. Gift cards need a Shopify plan that supports the Gift Cards API.'
+  - key: per_item_fee
+    description: The per-item fee on top of the subscription cannot yet be charged to the brand on each credited item; it
+      needs a billing hook on the brand's account.
+  - key: brand_isolation
+    description: Rules and catalogue are shared collections without per-brand write isolation; brand-level edit limits and
+      a settler run using the brand's Shopify key (rather than the shopper's session) need platform support.
+  - key: shopper_status_guard
+    description: Shoppers confirm offers through the status field; a guard limiting them to accepted or declined is not yet
+      expressible.
+  - key: carrier
+    description: The carrier is an EasyPost-style shipments API with one org key; swap the host and body for the chosen carrier.
+      Tracking-based arrival is checked by the brand team by hand.

@@ -1,0 +1,858 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: changeguard
+  displayName: Changeguard
+  tagline: Govern the risk of software changes in the age of AI coding tools.
+  description: Changeguard logs every pull request and deployment in a change register, scores its risk with an explanation,
+    applies your approval rules and keeps an audit trail for SOC 2 and ISO 27001.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#12263f'
+      accent: '#d9480f'
+      background: '#f6f8fb'
+      foreground: '#14202e'
+    fonts:
+      body: Inter
+      display: Inter
+    wordmark:
+    - text: Change
+      color: primary
+    - text: guard
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Rules
+      href: '#rules'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: lead
+      label: Engineering lead
+      assignedBy: invite
+    - key: champion
+      label: Security champion
+      assignedBy: invite
+    - key: developer
+      label: Developer
+      assignedBy: signup
+  agents:
+  - key: scorer
+    role: main
+    description: Scores the risk of one change, explains it and applies the approval rules.
+    awaits:
+    - high_risk_signoff
+    writesTo:
+      collection: risk_assessments
+      parse: json_last
+      keyBy: change_id
+    output: markdown+json
+    resultSchema:
+      type: object
+      properties:
+        change_id:
+          type: string
+        repo:
+          type: string
+        team:
+          type: string
+        score:
+          type: number
+        band:
+          type: string
+          enum:
+          - low
+          - medium
+          - high
+        decision:
+          type: string
+        explanation:
+          type: string
+        factors:
+          type: string
+        lead_email:
+          type: string
+        members:
+          type: array
+          items:
+            type: string
+    appTools:
+    - name: read_change
+      description: Read change register records
+      action: read
+      collection: changes
+      scope: user
+    - name: log_audit
+      description: Append an entry to the audit log
+      action: append
+      collection: audit_log
+      scope: user
+    - name: github_api
+      description: Read PR details, files and checks from the customer's own GitHub repository (path after the base URL, e.g.
+        /repos/<owner>/<repo>/pulls/<n>/files)
+      action: http
+      http:
+        method: GET
+        url: https://api.github.com
+        allowPath: true
+        attribution: GitHub REST API
+        credential:
+          provider: github
+          format: Bearer {secret}
+    - name: gitlab_api
+      description: Read merge request details and changes from the customer's own GitLab project (path after the base URL,
+        e.g. /projects/<id>/merge_requests/<iid>/changes)
+      action: http
+      http:
+        method: GET
+        url: https://gitlab.com/api/v4
+        allowPath: true
+        attribution: GitLab REST API
+        credential:
+          provider: gitlab
+          header: PRIVATE-TOKEN
+          format: '{secret}'
+    profile:
+      inline:
+        display_name: Changeguard risk scorer
+        crews:
+        - id: scorer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the change-risk scorer for an engineering organisation. For ONE change (pull request or
+            deployment) you receive its register record. If the record lacks details (files, checks) you may fetch them with
+            github_api or gitlab_api, only for the customer''s own repository. Score risk 0-100 from: sensitive areas touched
+            (authentication, authorisation, payments, secrets, crypto, infrastructure, database migrations), missing or failing
+            tests, size (lines and files), dependencies added, security scan findings (critical/high), AI-written code with
+            thin human review, and too few reviewers. Never invent facts; if data is missing, say so and treat it as a risk
+            factor. Bands: 0-39 low, 40-69 medium, 70-100 high. Rules: low = passes automatically (decision ''auto-pass'');
+            medium = needs one extra reviewer (decision ''extra-reviewer''); high = you MUST call request_high_risk_signoff
+            with the change summary, score and reasons, and the decision is ''security-champion-approval'' until a champion
+            decides. Call log_audit once with the change id, score, band, decision and time. Write a Markdown report starting
+            with a level-1 title ''# Risk <score> (<band>) - <repo> <change ref>'', then sections ## Why this score (bullet
+            per factor with its weight), ## Required action, ## How to lower the risk. Finish with a fenced ```json block
+            holding exactly: change_id, repo, team, score, band, decision, explanation (2-3 sentences), factors (comma-separated),
+            lead_email and members copied from the record.'
+  - key: reporter
+    role: scheduled
+    description: Writes the weekly lead digest and the monthly audit report for the owner of the instance.
+    memory: instance
+    appTools:
+    - name: read_changes
+      description: Read the change register
+      action: read
+      collection: changes
+      scope: user
+    - name: read_assessments
+      description: Read risk assessments
+      action: read
+      collection: risk_assessments
+      scope: user
+    - name: read_incidents
+      description: Read incidents linked to changes
+      action: read
+      collection: incidents
+      scope: user
+    - name: read_audit
+      description: Read the audit log
+      action: read
+      collection: audit_log
+      scope: user
+    profile:
+      inline:
+        display_name: Changeguard reporter
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write governance reports from the user''s own change register, assessments, incidents and audit
+            log, using the read tools only. Never invent figures; if data is missing say so. For a WEEKLY digest: start with
+            ''# Changeguard weekly digest - <team> - <date>''; sections ## Volume (changes, AI-assisted share), ## Risk by
+            team (trend vs last week), ## Approvals (counts, slowest approval time, overrides), ## Incidents linked to changes,
+            ## Needs attention. Under 400 words, with one ```chart block of risk by team. For a MONTHLY audit report: start
+            with ''# Change management evidence - <month>''; sections ## Scope and period, ## Change volume and risk distribution,
+            ## Controls operated (how low/medium/high rules were applied, with counts), ## Approvals and overrides (each override
+            with who, when, why), ## Exceptions and incidents, ## Mapping to SOC 2 (CC8.1 change management) and ISO 27001
+            (A.8.32 change management), ## Conclusions. Factual and audit-ready; state clearly that this supports, not replaces,
+            the auditor''s judgement. Chart format: ```chart {"type":"bar","title":"...","labels":[...],"series":[{"name":"...","values":[...]}]}
+            ```. At the end call remember with the 5 key figures.'
+  approvals:
+  - key: high_risk_signoff
+    title: High-risk change sign-off
+    description: A security champion must approve a high-risk change before merge.
+    role: champion
+    fields:
+    - repo
+    - change_id
+    - score
+    - reasons
+    timeoutMinutes: 2880
+    onTimeout: reject
+    decidedBy: role
+  templates:
+  - key: weekly_digest
+    title: Weekly lead digest
+    description: A weekly email with volume, risk trends, approvals and incidents for a team.
+    agent: reporter
+    params:
+    - name: team
+      type: text
+      required: true
+      label: Team or area (e.g. Payments, All)
+    goal: 'Write the WEEKLY digest for "{instance}" (team: {team}). Today is {date}. Write in English.'
+    schedule:
+      cron: 0 7 * * 1
+      userCanChange: true
+    maxPerUser: 5
+    roles:
+    - admin
+    - lead
+    deliver:
+      to: owner
+      subject: Changeguard weekly digest - {date}
+      onlyIfNew: true
+  - key: monthly_audit
+    title: Monthly audit report
+    description: A monthly SOC 2 / ISO 27001 change-management evidence report.
+    agent: reporter
+    params:
+    - name: team
+      type: text
+      required: true
+      label: Scope (team or All)
+    goal: 'Write the MONTHLY audit report for "{instance}" (scope: {team}), covering the previous calendar month. Today is
+      {date}. Write in English.'
+    schedule:
+      cron: 0 6 1 * *
+      userCanChange: true
+    maxPerUser: 3
+    roles:
+    - admin
+    - lead
+    deliver:
+      to: owner
+      subject: Changeguard monthly audit report - {date}
+      onlyIfNew: true
+  triggers:
+  - key: ci_hook
+    description: CI or Git provider webhook logs a PR or deployment in the register
+    'on':
+      webhook: true
+    write:
+      collection: changes
+      fields:
+        change_id: id
+        kind: kind
+        provider: provider
+        repo: repo
+        ref: ref
+        url: url
+        author: author
+        team: team
+        files: files
+        sensitive_areas: sensitive_areas
+        lines_changed: lines_changed
+        files_count: files_count
+        ai_assisted: ai_assisted
+        tests_run: tests_run
+        tests_passed: tests_passed
+        reviewers: reviewers
+        deps_added: deps_added
+        scan_critical: scan_critical
+        scan_high: scan_high
+        lead_email: lead_email
+        members: members
+      keyBy: change_id
+  - key: score_change
+    description: Every new change is scored
+    'on':
+      collection: changes
+      op: insert
+    start:
+      agent: scorer
+    goal: Score this change. change_id={record.change_id}, kind={record.kind}, provider={record.provider}, repo={record.repo},
+      ref={record.ref}, author={record.author}, team={record.team}, files={record.files}, sensitive_areas={record.sensitive_areas},
+      lines_changed={record.lines_changed}, files_count={record.files_count}, ai_assisted={record.ai_assisted}, tests_run={record.tests_run},
+      tests_passed={record.tests_passed}, reviewers={record.reviewers}, deps_added={record.deps_added}, scan_critical={record.scan_critical},
+      scan_high={record.scan_high}, lead_email={record.lead_email}, members={record.members}. Today is {date}. English.
+    asUser: true
+  - key: medium_rule
+    description: Medium risk needs one extra reviewer
+    'on':
+      collection: risk_assessments
+      op: insert
+      where:
+        band: medium
+    notify:
+      to:
+      - role:lead
+      - record.lead_email
+      subject: 'Extra reviewer needed: {record.repo} {record.change_id}'
+      body: 'Risk score {record.score} (medium). Rule: one extra reviewer is required before merge.
+
+
+        {record.explanation}'
+      link: change
+  - key: signoff_decided
+    description: Approvals and overrides are announced and kept in the approval history
+    'on':
+      approval: high_risk_signoff
+      decision: any
+    notify:
+      to:
+      - owner
+      - role:lead
+      subject: High-risk change sign-off decided
+      body: A security champion decided a high-risk change. See the approval history for who decided, when and why.
+      link: approvals
+  data:
+    collections:
+    - name: changes
+      description: 'Change register: one record per pull request or deployment'
+      ownedBy: user
+      fields:
+      - name: change_id
+        type: text
+        required: true
+      - name: kind
+        type: select
+        options:
+        - pull_request
+        - deployment
+      - name: provider
+        type: select
+        options:
+        - github
+        - gitlab
+        - other
+      - name: repo
+        type: text
+        required: true
+      - name: ref
+        type: text
+      - name: url
+        type: url
+      - name: author
+        type: text
+      - name: team
+        type: text
+      - name: files
+        type: textarea
+      - name: sensitive_areas
+        type: text
+      - name: lines_changed
+        type: number
+      - name: files_count
+        type: number
+      - name: ai_assisted
+        type: boolean
+      - name: tests_run
+        type: number
+      - name: tests_passed
+        type: number
+      - name: reviewers
+        type: text
+      - name: deps_added
+        type: number
+      - name: scan_critical
+        type: number
+      - name: scan_high
+        type: number
+      - name: lead_email
+        type: email
+      - name: members
+        type: array
+        fields:
+        - name: email
+          type: email
+      access:
+      - role: developer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: lead
+        where:
+          lead_email: '{user.email}'
+        can:
+        - read
+      retentionDays: 1095
+    - name: risk_assessments
+      description: Risk score, band, decision and explanation per change
+      ownedBy: user
+      fields:
+      - name: change_id
+        type: text
+      - name: repo
+        type: text
+      - name: team
+        type: text
+      - name: score
+        type: number
+      - name: band
+        type: select
+        options:
+        - low
+        - medium
+        - high
+      - name: decision
+        type: text
+      - name: explanation
+        type: textarea
+      - name: factors
+        type: text
+      - name: lead_email
+        type: email
+      - name: members
+        type: array
+        fields:
+        - name: email
+          type: email
+      access:
+      - role: developer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: lead
+        where:
+          lead_email: '{user.email}'
+        can:
+        - read
+      retentionDays: 1095
+    - name: audit_log
+      description: Append-only record of scores, rule decisions and overrides
+      ownedBy: user
+      fields:
+      - name: change_id
+        type: text
+      - name: event
+        type: text
+      - name: score
+        type: number
+      - name: band
+        type: text
+      - name: decision
+        type: text
+      - name: note
+        type: textarea
+      retentionDays: 2555
+    - name: incidents
+      description: Production incidents linked to a change
+      ownedBy: user
+      fields:
+      - name: change_id
+        type: text
+        required: true
+      - name: repo
+        type: text
+      - name: team
+        type: text
+      - name: severity
+        type: select
+        options:
+        - sev1
+        - sev2
+        - sev3
+        - sev4
+      - name: occurred_on
+        type: date
+      - name: summary
+        type: textarea
+      retentionDays: 2555
+    credentials:
+    - provider: github
+      kind: api_key
+      scope: user
+      label: GitHub token
+      help: Create a fine-grained token with read-only access to your own repositories (Pull requests, Contents, Metadata).
+    - provider: gitlab
+      kind: api_key
+      scope: user
+      label: GitLab token
+      help: Create a project or group access token with read_api scope for your own projects.
+  egress:
+    hosts:
+    - api.github.com
+    - gitlab.com
+    notes: Read-only calls to the customer's own repositories with the customer's own token, under the GitHub and GitLab API
+      terms.
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Changeguard
+    sections:
+    - type: hero
+      eyebrow: Change risk governance
+      title: Ship faster with AI tools, **without shipping blind**.
+      text: Changeguard logs every pull request and deployment, scores its risk with a clear explanation, enforces your approval
+        rules and keeps the audit trail for SOC 2 and ISO 27001.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: See how it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Connect
+        text: Add your GitHub or GitLab token and point your CI hooks at Changeguard.
+        badge: 🔌
+      - title: Score
+        text: An agent scores each change on sensitive areas, tests, size, dependencies and scans, and explains why.
+        badge: 🧮
+      - title: Decide
+        text: Rules route the change and record every approval and override.
+        badge: ✅
+      - title: Report
+        text: Dashboards, a weekly lead digest and monthly audit evidence.
+        badge: 📊
+    - type: cards
+      id: rules
+      title: Approval rules
+      items:
+      - title: Low risk
+        text: Passes automatically and is logged.
+        badge: 🟢
+      - title: Medium risk
+        text: One extra reviewer is required.
+        badge: 🟡
+      - title: High risk
+        text: A security champion must approve before merge.
+        badge: 🔴
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: £15 per developer a month
+        text: All features included. Only your own repositories are ever read.
+    - type: note
+      content: Changeguard supports, and does not replace, your auditor's judgement. Only the customer's own repositories
+        are accessed.
+  - key: connect
+    type: account
+    title: Connections & plan
+    roles:
+    - admin
+    - lead
+    - champion
+    - developer
+  - key: overview
+    type: page
+    title: Dashboard
+    roles:
+    - admin
+    - lead
+    - champion
+    - developer
+    sections:
+    - type: data
+      title: Change volume per week
+      source: collection:changes
+      display: chart
+      chart: bar
+      fields:
+      - key: date
+        label: Week
+      - key: count
+        label: Changes
+      groupBy:
+        field: date
+        bucket: week
+        aggs:
+        - key: ai
+          agg: count
+      empty: No changes logged yet.
+    - type: data
+      title: Average risk per team
+      source: collection:risk_assessments
+      display: chart
+      chart: bar
+      fields:
+      - key: team
+        label: Team
+      - key: avg_score
+        label: Avg risk
+      groupBy:
+        field: team
+        aggs:
+        - key: avg_score
+          agg: avg
+          field: score
+      empty: No assessments yet.
+    - type: data
+      title: Risk bands
+      source: collection:risk_assessments
+      display: chart
+      chart: pie
+      fields:
+      - key: band
+        label: Band
+      - key: count
+        label: Changes
+      groupBy:
+        field: band
+        aggs: []
+    - type: data
+      title: Incidents per team
+      source: collection:incidents
+      display: bar
+      fields:
+      - key: team
+        label: Team
+      - key: count
+        label: Incidents
+      groupBy:
+        field: team
+        aggs: []
+      empty: No incidents recorded.
+    - type: view
+      title: Approvals
+      view: approvals
+  - key: changes_table
+    type: table
+    title: Change register
+    source: collection:changes
+    export: true
+    roles:
+    - admin
+    - lead
+    - champion
+    - developer
+    data:
+      display: table
+      fields:
+      - key: repo
+        label: Repository
+      - key: ref
+        label: Change
+      - key: author
+        label: Author
+      - key: team
+        label: Team
+      - key: lines_changed
+        label: Lines
+        format: number
+      - key: files_count
+        label: Files
+        format: number
+      - key: ai_assisted
+        label: AI-assisted
+        format: badge
+      - key: tests_run
+        label: Tests run
+        format: number
+      - key: reviewers
+        label: Reviewers
+      - key: url
+        label: Link
+        format: link
+      sort:
+        field: created_at
+        dir: desc
+      limit: 200
+  - key: assessments
+    type: table
+    title: Risk scores
+    source: collection:risk_assessments
+    export: true
+    roles:
+    - admin
+    - lead
+    - champion
+    - developer
+    data:
+      display: table
+      fields:
+      - key: repo
+        label: Repository
+      - key: change_id
+        label: Change
+      - key: team
+        label: Team
+      - key: score
+        label: Score
+        format: number
+      - key: band
+        label: Band
+        format: badge
+      - key: decision
+        label: Decision
+      - key: explanation
+        label: Why
+      sort:
+        field: score
+        dir: desc
+      limit: 200
+  - key: change
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: approvals
+    type: approvals
+    title: Approvals & overrides
+    roles:
+    - admin
+    - lead
+    - champion
+  - key: audit
+    type: table
+    title: Audit log
+    source: collection:audit_log
+    export: true
+    roles:
+    - admin
+    - lead
+    - champion
+    data:
+      display: table
+      fields:
+      - key: change_id
+        label: Change
+      - key: event
+        label: Event
+      - key: score
+        label: Score
+        format: number
+      - key: band
+        label: Band
+        format: badge
+      - key: decision
+        label: Decision
+      - key: note
+        label: Note
+      limit: 200
+  - key: log_incident
+    type: form
+    title: Log an incident
+    collection: incidents
+    submit:
+      label: Save incident
+      message: Incident recorded and linked to its change.
+    roles:
+    - admin
+    - lead
+    - champion
+  - key: incidents_table
+    type: table
+    title: Incidents
+    source: collection:incidents
+    export: true
+    roles:
+    - admin
+    - lead
+    - champion
+    - developer
+    data:
+      display: table
+      fields:
+      - key: change_id
+        label: Change
+      - key: repo
+        label: Repository
+      - key: team
+        label: Team
+      - key: severity
+        label: Severity
+        format: badge
+      - key: occurred_on
+        label: Date
+        format: date
+      - key: summary
+        label: Summary
+      limit: 200
+  - key: reports
+    type: instances
+    template: weekly_digest
+    title: Weekly digests
+    roles:
+    - admin
+    - lead
+  - key: audit_reports
+    type: instances
+    template: monthly_audit
+    title: Audit reports
+    roles:
+    - admin
+    - lead
+  notifications:
+    emailOnRunDone: false
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: team
+      price: 15
+      interval: month
+      label: Per developer, per month
+      includes:
+      - Change register
+      - AI risk scoring
+      - Approval rules and audit trail
+      - Dashboards, weekly digest, monthly audit reports
+      roles:
+      - admin
+  extensions:
+  - key: oauth_git_connect
+    description: 'OAuth sign-in/connection to GitHub and GitLab is not available yet: users paste a read-only API token on
+      the account page, and CI or Git provider webhooks post changes to /api/hooks/ci_hook.'
+  - key: per_developer_seats
+    description: 'Billing per developer seat (£15 per developer a month) is not available yet: the plan is a flat £15 per
+      month and the seat count must be handled by the owner. Roles are assigned per user; merge blocking in the Git provider
+      (required status check) needs a CI step calling the app.'
+  - key: org_wide_team_roles
+    description: Engineering lead and security champion see records of their organisation through the members and lead_email
+      fields on each change; webhooks must supply them.

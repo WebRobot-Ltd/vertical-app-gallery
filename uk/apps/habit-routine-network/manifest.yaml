@@ -1,0 +1,866 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: habitide
+  displayName: Habitide
+  tagline: Build routines, keep streaks, grow together.
+  description: 'A social habit tracker: build routines from timed steps, tick them off daily, keep streaks, share with friends
+    and groups, and get an AI coach and weekly review.'
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#12355b'
+      accent: '#1fa38a'
+      background: '#f6faf9'
+      foreground: '#16222e'
+    fonts:
+      body: Inter
+      display: Poppins
+    wordmark:
+    - text: Habi
+      color: primary
+    - text: tide
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Premium
+      href: '#premium'
+    cta:
+      label: Get started
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      assignedBy: signup
+    - key: moderator
+      label: Group moderator
+      assignedBy: derived
+      from: collection:group_posts.group_owner_email
+  limits:
+  - action: create:routines
+    max: 3
+    window: total
+    plans:
+      premium: -1
+  - action: agent:coach
+    max: 5
+    window: month
+    plans:
+      premium: 300
+  - action: chat
+    per: user
+    max: 60
+    window: day
+  mobile:
+    appId: com.habitide.app
+    appName: Habitide
+    capabilities:
+    - name: camera
+      reason: To take a photo of your progress for a check-in
+    - name: push
+  agents:
+  - key: coach
+    role: main
+    description: 'AI coach: suggests routines for the user''s goals and proposes changes when a step keeps being skipped.'
+    context:
+    - key: goals
+      from: collection:profiles.goals
+    goalTemplate: 'User goals: {goals}.
+
+      Conversation so far:
+
+      {history}
+
+      New message: {message}
+
+      Reply in the language with ISO code {lang}. Today is {date}.'
+    output: markdown
+    profile:
+      inline:
+        display_name: Habitide coach
+        crews:
+        - id: coach
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a warm, practical habit coach in the Habitide app. Goals are fitness, focus, sleep or learning.
+            Use read_templates to find curated routines and read_routines, read_checkins and read_streaks to see what the
+            user really does. Suggest small routines made of steps with a time and a duration. When a step has been skipped
+            repeatedly, say so kindly and propose a concrete change (shift the time, shorten it, split it, drop it) and save
+            it with add_suggestion. Only call add_routine when the user clearly asks you to create a routine. Never invent
+            the user''s data. You are not a medical professional: give no medical advice and tell users with health concerns
+            to see a clinician. Keep replies under 200 words.'
+    appTools:
+    - name: read_routines
+      description: The user's routines
+      action: read
+      collection: routines
+      scope: user
+    - name: read_checkins
+      description: The user's daily check-ins
+      action: read
+      collection: checkins
+      scope: user
+    - name: read_streaks
+      description: The user's streaks
+      action: read
+      collection: streaks
+      scope: user
+    - name: read_templates
+      description: Curated routine templates
+      action: search
+      collection: routine_templates
+      scope: all
+    - name: add_routine
+      description: Create a routine for the user
+      action: append
+      collection: routines
+      scope: user
+    - name: add_suggestion
+      description: Save a proposed change for the user to accept
+      action: append
+      collection: suggestions
+      scope: user
+  - key: reviewer
+    role: helper
+    description: Writes the weekly review for one user.
+    memory: instance
+    writesTo:
+      collection: weekly_reviews
+    goalTemplate: 'Write the weekly review for "{instance}". Focus: {focus}. Today is {date}. Language ISO code {lang}.'
+    output: markdown
+    profile:
+      inline:
+        display_name: Habitide weekly reviewer
+        crews:
+        - id: reviewer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write a short, encouraging weekly review of the user''s habits from read_checkins, read_routines
+            and read_streaks (last 7 days). Start with "# Your week — <date>". Sections: ## Wins, ## Skipped steps (name steps
+            skipped 3 or more times and propose a concrete change), ## Streaks, ## Next week. Add a chart block for completion
+            per day: ```chart
+
+            {"type":"bar","title":"Steps done per day","labels":[...],"series":[{"name":"Done","values":[...]}]}
+
+            ``` using real figures only. Under 250 words. No medical advice; never invent data. Use remember to store the
+            3 key points.'
+    appTools:
+    - name: read_routines
+      description: The user's routines
+      action: read
+      collection: routines
+      scope: user
+    - name: read_checkins
+      description: The user's daily check-ins
+      action: read
+      collection: checkins
+      scope: user
+    - name: read_streaks
+      description: The user's streaks
+      action: read
+      collection: streaks
+      scope: user
+  - key: keeper
+    role: helper
+    description: Updates the streak after each check-in.
+    goalTemplate: 'A check-in was saved: routine {record.routine}, date {record.date}, done {record.done}. Update the streak
+      for that routine.'
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.1
+    profile:
+      inline:
+        display_name: Habitide streak keeper
+        crews:
+        - id: keeper
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You maintain streaks. Read the routine (read_routines) and its check-ins (read_checkins), compute
+            the current consecutive-day streak and the best streak, and save one record per routine with write_streak: fields
+            routine, current, best, last_done (YYYY-MM-DD of the last day with a completed step), viewers (copy the routine''s
+            viewers when its visibility is not private, else empty). Never invent days. Reply with one line.'
+    appTools:
+    - name: read_routines
+      description: The user's routines
+      action: read
+      collection: routines
+      scope: user
+    - name: read_checkins
+      description: The user's daily check-ins
+      action: read
+      collection: checkins
+      scope: user
+    - name: write_streak
+      description: Create or update the streak record of a routine
+      action: write
+      collection: streaks
+      scope: user
+  templates:
+  - key: weekly_review
+    title: Weekly review
+    description: Your AI coach reviews your week every Sunday morning (Premium).
+    agent: reviewer
+    params:
+    - name: focus
+      type: select
+      required: true
+      label: Focus
+      options:
+      - value: fitness
+        label: Fitness
+      - value: focus
+        label: Focus
+      - value: sleep
+        label: Sleep
+      - value: learning
+        label: Learning
+      - value: all
+        label: Everything
+    goal: 'Write the weekly review for "{instance}". Focus: {focus}. Today is {date}. Language ISO code {lang}.'
+    schedule:
+      cron: 0 8 * * 0
+      userCanChange: false
+    maxPerUser: 1
+    deliver:
+      to: owner
+      onlyIfNew: true
+  data:
+    collections:
+    - name: profiles
+      ownedBy: user
+      description: The user's profile and goals
+      fields:
+      - name: display_name
+        type: text
+        required: true
+        label: Display name
+      - name: goals
+        type: multiselect
+        label: Goals
+        options:
+        - value: fitness
+          label: Fitness
+        - value: focus
+          label: Focus
+        - value: sleep
+          label: Sleep
+        - value: learning
+          label: Learning
+    - name: routines
+      ownedBy: user
+      description: Routines made of timed steps
+      fields:
+      - name: title
+        type: text
+        required: true
+        label: Routine name
+      - name: goal
+        type: select
+        label: Goal
+        options:
+        - value: fitness
+          label: Fitness
+        - value: focus
+          label: Focus
+        - value: sleep
+          label: Sleep
+        - value: learning
+          label: Learning
+      - name: steps
+        type: array
+        label: Steps
+        fields:
+        - name: name
+          type: text
+          label: Step
+        - name: time
+          type: text
+          label: Time (HH:MM)
+        - name: minutes
+          type: number
+          label: Minutes
+      - name: visibility
+        type: select
+        required: true
+        default: private
+        label: Who can see it
+        options:
+        - value: private
+          label: Only me
+        - value: friends
+          label: Friends I list
+        - value: public
+          label: Public
+      - name: viewers
+        type: array
+        label: Friends' emails
+        help: Emails of friends who can see this routine
+        fields:
+        - name: email
+          type: email
+      access:
+      - role: user
+        where:
+          viewers: '{user.email}'
+        can:
+        - read
+    - name: checkins
+      ownedBy: user
+      description: Daily ticks with note and photo
+      fields:
+      - name: date
+        type: date
+        required: true
+        label: Date
+      - name: routine
+        type: relation
+        relation: routines
+        required: true
+        label: Routine
+      - name: step
+        type: text
+        label: Step
+      - name: done
+        type: boolean
+        default: true
+        label: Done
+      - name: note
+        type: textarea
+        maxLength: 500
+        label: Note
+      - name: photo
+        type: file
+        accept:
+        - jpg
+        - jpeg
+        - png
+        maxMb: 8
+        capture: true
+        label: Photo
+    - name: streaks
+      ownedBy: user
+      description: Current and best streak per routine
+      fields:
+      - name: routine
+        type: text
+        label: Routine
+      - name: current
+        type: number
+        label: Current streak
+      - name: best
+        type: number
+        label: Best streak
+      - name: last_done
+        type: date
+        label: Last done
+      - name: viewers
+        type: array
+        fields:
+        - name: email
+          type: email
+      access:
+      - role: user
+        where:
+          viewers: '{user.email}'
+        can:
+        - read
+    - name: suggestions
+      ownedBy: user
+      description: Changes proposed by the coach
+      fields:
+      - name: title
+        type: text
+        label: Suggestion
+      - name: reason
+        type: textarea
+        label: Why
+      - name: status
+        type: select
+        default: new
+        label: Status
+        options:
+        - new
+        - accepted
+        - dismissed
+    - name: routine_templates
+      ownedBy: shared
+      description: Curated routines everyone can copy
+      fields:
+      - name: title
+        type: text
+        label: Routine
+      - name: goal
+        type: text
+        label: Goal
+      - name: steps
+        type: textarea
+        label: Steps with times
+    - name: groups
+      ownedBy: user
+      description: Shared routine groups; the creator is the owner and moderator
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Group name
+      - name: description
+        type: textarea
+        label: About
+      - name: members
+        type: array
+        label: Members' emails
+        fields:
+        - name: email
+          type: email
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: group_posts
+      ownedBy: user
+      description: Posts and progress shared in a group
+      retentionDays: 730
+      fields:
+      - name: group
+        type: relation
+        relation: groups
+        required: true
+        label: Group
+      - name: body
+        type: textarea
+        required: true
+        maxLength: 600
+        label: Update
+      - name: photo
+        type: file
+        accept:
+        - jpg
+        - jpeg
+        - png
+        maxMb: 8
+        capture: true
+        label: Photo
+      - name: group_owner_email
+        type: email
+        label: Group owner's email
+      - name: members
+        type: array
+        label: Members' emails
+        fields:
+        - name: email
+          type: email
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: moderator
+        where:
+          group_owner_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: reactions
+      ownedBy: user
+      description: Reactions to group posts
+      fields:
+      - name: post
+        type: text
+        required: true
+        label: Post id
+      - name: kind
+        type: select
+        label: Reaction
+        options:
+        - cheer
+        - fire
+        - clap
+        - strong
+      - name: post_owner_email
+        type: email
+        label: Post author
+      access:
+      - role: user
+        where:
+          post_owner_email: '{user.email}'
+        can:
+        - read
+    - name: weekly_reviews
+      ownedBy: instance
+      description: Weekly AI reviews
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Habitide
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: Routines, together
+      title: Build habits that **stick**, with friends and an AI coach.
+      text: Create routines from timed steps, tick them off each day, keep your streaks and share your progress with the people
+        you choose.
+      actions:
+      - label: Get started free
+        href: /login
+        style: primary
+      note: Free forever. Premium unlocks unlimited routines and the AI coach.
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Pick your goals
+        text: Fitness, focus, sleep or learning.
+        badge: 🎯
+      - title: Build or copy a routine
+        text: Add steps with times and durations, or copy a curated one.
+        badge: 🧩
+      - title: Tick off each day
+        text: Add a note or photo and watch your streak grow.
+        badge: ✅
+      - title: Share and review
+        text: Follow friends, join groups like the 5am club, get a weekly review.
+        badge: 🤝
+    - type: cards
+      id: premium
+      title: Free and Premium
+      items:
+      - title: Free
+        text: Up to 3 routines, check-ins, streaks, friends and groups.
+        badge: 🌱
+      - title: Premium — £4.99/month
+        text: Unlimited routines, AI coach and weekly review. Cancel any time in your account, in two taps.
+        badge: ⭐
+    - type: note
+      content: 'Habitide gives general wellbeing support, not medical advice. You choose who sees each routine: only you,
+        friends you list, or public.'
+  - key: today
+    type: form
+    title: Check in
+    collection: checkins
+    submit:
+      label: Save check-in
+      message: Saved. Keep going!
+    roles:
+    - user
+    - admin
+  - key: routine_new
+    type: form
+    title: New routine
+    collection: routines
+    edit: true
+    submit:
+      label: Save routine
+      message: Routine saved.
+      redirect: my_routines
+    roles:
+    - user
+    - admin
+  - key: my_routines
+    type: cards
+    title: My routines
+    source: collection:routines
+    export: true
+    data:
+      display: cards
+      fields:
+      - key: title
+        label: Routine
+      - key: goal
+        label: Goal
+        format: badge
+      - key: visibility
+        label: Visibility
+        format: badge
+    roles:
+    - user
+    - admin
+  - key: streaks_view
+    type: table
+    title: Streaks and friends' progress
+    source: collection:streaks
+    data:
+      display: table
+      fields:
+      - key: routine
+        label: Routine
+      - key: current
+        label: Streak
+        format: number
+      - key: best
+        label: Best
+        format: number
+      - key: last_done
+        label: Last done
+        format: date
+      sort:
+        field: current
+        dir: desc
+    roles:
+    - user
+    - admin
+  - key: discover
+    type: cards
+    title: Routine ideas
+    source: collection:routine_templates
+    data:
+      display: cards
+      fields:
+      - key: title
+        label: Routine
+      - key: goal
+        label: Goal
+        format: badge
+      - key: steps
+        label: Steps
+    roles:
+    - user
+    - admin
+  - key: coach_chat
+    type: chat
+    title: AI coach
+    source: agent:coach
+    placeholder: Ask for a routine or a change…
+    examples:
+    - Suggest a 20-minute morning focus routine
+    - I keep skipping my evening stretch, what should I change?
+    roles:
+    - user
+    - admin
+  - key: suggestions_view
+    type: table
+    title: Coach suggestions
+    source: collection:suggestions
+    data:
+      display: list
+      fields:
+      - key: title
+        label: Suggestion
+      - key: reason
+        label: Why
+      - key: status
+        label: Status
+        format: badge
+    roles:
+    - user
+    - admin
+  - key: reviews
+    type: instances
+    template: weekly_review
+    title: Weekly review
+    roles:
+    - user
+    - admin
+  - key: group_new
+    type: form
+    title: Create a group
+    collection: groups
+    edit: true
+    submit:
+      label: Create group
+      message: Group created.
+      redirect: groups
+    roles:
+    - user
+    - admin
+  - key: groups
+    type: cards
+    title: Groups
+    source: collection:groups
+    data:
+      display: cards
+      fields:
+      - key: name
+        label: Group
+      - key: description
+        label: About
+    roles:
+    - user
+    - admin
+  - key: group_post
+    type: form
+    title: Post to a group
+    collection: group_posts
+    submit:
+      label: Post
+      message: Posted.
+    roles:
+    - user
+    - admin
+  - key: group_feed
+    type: cards
+    title: Group feed
+    source: collection:group_posts
+    data:
+      display: cards
+      fields:
+      - key: body
+        label: Update
+      - key: photo
+        label: Photo
+    roles:
+    - user
+    - moderator
+    - admin
+  - key: react
+    type: form
+    title: React to a post
+    collection: reactions
+    submit:
+      label: React
+      message: Sent.
+    roles:
+    - user
+    - admin
+  - key: profile
+    type: form
+    title: My profile and goals
+    collection: profiles
+    edit: true
+    submit:
+      label: Save
+      message: Profile saved.
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title: Premium and billing
+    roles:
+    - user
+  - key: admin
+    type: admin
+    title: Usage
+    roles:
+    - admin
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: premium
+      price: 4.99
+      interval: month
+      label: Habitide Premium
+      includes:
+      - Unlimited routines
+      - AI coach
+      - Weekly review
+      roles:
+      - user
+    costs:
+      agent:reviewer:
+        requiresPlan: premium
+  triggers:
+  - key: streak_update
+    'on':
+      collection: checkins
+      op: insert
+    start:
+      agent: keeper
+    goal: 'A check-in was saved: routine {record.routine}, date {record.date}, done {record.done}. Update the streak for that
+      routine.'
+  - key: streak_nudge
+    'on':
+      date:
+        collection: streaks
+        field: last_done
+        offsetDays: 1
+        hour: 18
+    notify:
+      to: owner
+      subject: Your streak is at risk
+      body: Your streak on {record.routine} is {record.current} days. Tick off a step today to keep it going.
+      link: today
+  - key: group_post_alert
+    'on':
+      collection: group_posts
+      op: insert
+    notify:
+      to: record.group_owner_email
+      subject: New post in your group
+      body: 'A new update was posted: {record.body}'
+      link: group_feed
+  - key: premium_started
+    'on':
+      payment: premium
+    notify:
+      to: owner
+      subject: 'Habitide Premium: your subscription'
+      body: Thanks for subscribing. £4.99 renews monthly until you cancel. You can cancel at any time under Premium and billing
+        in the app, and you keep Premium until the end of the paid period.
+      link: account
+  notifications:
+    emailOnRunDone: true
+  extensions:
+  - key: step_time_push
+    description: Push reminders at the exact time of each step need on-device scheduled notifications (localNotifications),
+      which are not available yet. The streak-at-risk nudge and group alerts are push; per-step time reminders are a gap.
+  - key: public_and_friends_visibility
+    description: Visibility 'public' (discovery by everyone) and automatic follower lists are not expressible yet. Friends-only
+      works by listing friends' emails per routine; public discovery and a follow graph need a platform extension.
+  - key: renewal_reminder
+    description: A reminder email before each renewal (UK consumer subscription rules) needs the subscription renewal date,
+      not yet exposed as a trigger. The sign-up email states the price and cancellation; the account page cancels the plan.
+      Add a pre-renewal reminder once available.
+  - key: group_join
+    description: Joining a group is done by the owner adding the member's email; self-service join requests are not available
+      yet.

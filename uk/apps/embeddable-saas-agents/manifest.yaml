@@ -1,0 +1,849 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: embedra
+  displayName: Embedra
+  tagline: Embed AI agents inside your own product.
+  description: Embedra lets software companies give their customers an AI agent that answers with citations, acts only after
+    the user confirms, and hands over to a human when unsure.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/Rome
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#1d2b53'
+      accent: '#6c5ce7'
+      background: '#f7f8fc'
+      foreground: '#171a26'
+    fonts:
+      body: Inter
+      display: Space Grotesk
+    wordmark:
+    - text: Embed
+      color: primary
+    - text: ra
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Features
+      href: '#features'
+    cta:
+      label: Start free
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Embedra admin
+      assignedBy: admin_emails
+    - key: user
+      label: Tenant owner
+      assignedBy: signup
+    - key: content_manager
+      label: Content manager
+      assignedBy: invite
+    - key: developer
+      label: Developer
+      assignedBy: invite
+  limits:
+  - action: chat
+    per: user
+    max: 500
+    window: day
+    roles:
+    - user
+    plans:
+      growth: 5000
+  - action: create:agent_configs
+    max: 3
+    window: total
+    plans:
+      starter: 10
+      growth: -1
+  agents:
+  - key: assistant
+    role: main
+    description: Answers an end user's questions from the tenant's knowledge with citations, acts through tools only after
+      confirmation, and escalates to the human queue when unsure.
+    memory: user
+    awaits:
+    - confirm_action
+    profile:
+      inline:
+        display_name: Embedra assistant
+        chat_mode: true
+        crews:
+        - id: assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are an AI support agent embedded in a software product. Your name, instructions, tone and escalation
+            rules come from the agent configuration in your context: follow them. Always call search_knowledge before answering
+            and answer ONLY from what it returns; end every answer with a ''Sources:'' list naming the titles of the articles
+            used. Use read_end_user_data to see the data of the end user who is talking to you (identified by the end_user_email
+            in the message) and never reveal data of any other user or customer. To perform an action (change a setting, cancel,
+            refund, call a tenant API) first call request_confirm_action describing exactly what will happen, and do nothing
+            until the user has confirmed. If you are not sure, the knowledge does not cover the question, the user is upset
+            or asks for a human, or an escalation rule matches: call escalate_to_human with a short summary, and tell the
+            user a person will follow up. After every conversation turn call log_conversation with the question, your answer,
+            the sources, whether it was resolved (yes/no) and the end customer. Never invent facts, prices or policies. Keep
+            answers short and in the user''s language.'
+    context:
+    - key: agent_name
+      from: collection:agent_configs.name
+    - key: agent_instructions
+      from: collection:agent_configs.instructions
+    - key: agent_tone
+      from: collection:agent_configs.tone
+    - key: agent_escalation
+      from: collection:agent_configs.escalation_rules
+    goalTemplate: 'Agent: {agent_name}
+
+      Instructions: {agent_instructions}
+
+      Tone: {agent_tone}
+
+      Escalation rules: {agent_escalation}
+
+
+      Conversation so far:
+
+      {history}
+
+
+      New message from the end user:
+
+      {message}
+
+      Today is {date}. Reply in the language with ISO code {lang}.'
+    appTools:
+    - name: search_knowledge
+      description: Search the tenant's knowledge base (help articles, guides, course material)
+      action: search
+      collection: knowledge
+      scope: user
+    - name: read_end_user_data
+      description: Read the records of the end user and end customer in conversation
+      action: read
+      collection: end_user_records
+      scope: user
+    - name: escalate_to_human
+      description: Add the conversation to the human support queue
+      action: append
+      collection: support_queue
+      scope: user
+    - name: log_conversation
+      description: Save one conversation turn for review and dashboards
+      action: append
+      collection: conversations
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  - key: gap_analyst
+    role: helper
+    description: Every week proposes the knowledge gaps found in low-rated or escalated conversations.
+    memory: instance
+    writesTo:
+      collection: knowledge_gaps
+      parse: markdown_sections
+    profile:
+      inline:
+        display_name: Knowledge gap analyst
+        crews:
+        - id: gap_analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You review the last week''s conversations of one software company''s support agent. Use read_conversations
+            and read_queue to find questions that were escalated, unresolved or rated badly, and group them by topic. Start
+            with ''# Knowledge gaps — week of <date>''. Then one ''## <topic>'' section per gap (at most 8) with: how many
+            conversations, 2 example questions, and a draft of the missing article (max 120 words). Never invent conversations;
+            if there are none, say so. Finally call remember with the topics you listed.'
+    appTools:
+    - name: read_conversations
+      description: Read the conversations of the tenant
+      action: read
+      collection: conversations
+      scope: user
+    - name: read_queue
+      description: Read the human support queue
+      action: read
+      collection: support_queue
+      scope: user
+    output: markdown
+  templates:
+  - key: gap_review
+    title: Weekly knowledge gaps
+    description: Every week the agent proposes the articles your knowledge base is missing.
+    agent: gap_analyst
+    params:
+    - name: product
+      type: text
+      required: true
+      label: Product or agent name
+    goal: 'Review the conversations of "{instance}" (product: {product}) for the last 7 days. Today is {date}. Write in the
+      language with ISO code {lang}.'
+    schedule:
+      cron: 0 7 * * 1
+      userCanChange: true
+    maxPerUser: 3
+    cost:
+      perRun: 10
+    deliver:
+      to: owner
+      onlyIfNew: true
+  approvals:
+  - key: confirm_action
+    title: Confirm the action
+    description: The end user confirms what the agent is about to do.
+    decidedBy: requester
+    fields:
+    - action
+    - details
+  data:
+    collections:
+    - name: agent_configs
+      ownedBy: user
+      description: Agents defined with the agent builder
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Agent name
+      - name: instructions
+        type: textarea
+        required: true
+        label: Instructions
+      - name: knowledge_collections
+        type: text
+        label: Knowledge collections (comma separated)
+      - name: tools
+        type: textarea
+        label: 'Tools: HTTP calls or MCP servers'
+      - name: tone
+        type: select
+        label: Tone
+        options:
+        - friendly
+        - professional
+        - concise
+        - playful
+      - name: escalation_rules
+        type: textarea
+        label: When to hand over to a human
+      - name: members
+        type: array
+        label: Team members
+        fields:
+        - name: email
+          type: email
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: knowledge
+      ownedBy: user
+      searchable: true
+      description: Help articles, guides, course material
+      fields:
+      - name: title
+        type: text
+        required: true
+        label: Title
+      - name: collection_name
+        type: text
+        label: Knowledge collection
+      - name: content
+        type: textarea
+        required: true
+        label: Content
+      - name: document
+        type: file
+        accept:
+        - pdf
+        - docx
+        - md
+        - txt
+        label: Document
+      - name: members
+        type: array
+        label: Team members
+        fields:
+        - name: email
+          type: email
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: customers
+      ownedBy: user
+      description: The tenant's own customers (sub-organisations)
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Customer
+      - name: contact_email
+        type: email
+        label: Contact email
+      - name: plan
+        type: text
+        label: Resale plan
+      - name: members
+        type: array
+        label: Team members
+        fields:
+        - name: email
+          type: email
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: end_user_records
+      ownedBy: user
+      description: Data of end users, by customer; filled from the tenant's API or by the team
+      fields:
+      - name: customer
+        type: text
+        label: Customer
+      - name: end_user_email
+        type: email
+        label: End user email
+      - name: data
+        type: textarea
+        label: Data
+    - name: conversations
+      ownedBy: user
+      retentionDays: 365
+      description: Conversation turns logged by the agent
+      fields:
+      - name: customer
+        type: text
+        label: Customer
+      - name: end_user_email
+        type: email
+        label: End user
+      - name: question
+        type: textarea
+        label: Question
+      - name: answer
+        type: textarea
+        label: Answer
+      - name: sources
+        type: text
+        label: Sources
+      - name: resolved
+        type: select
+        label: Resolved
+        options:
+        - 'yes'
+        - 'no'
+      - name: rating
+        type: select
+        label: Rating
+        options:
+        - good
+        - bad
+      - name: tool_used
+        type: text
+        label: Tool used
+      - name: cost_credits
+        type: number
+        label: Cost (credits)
+      - name: date
+        type: date
+        label: Date
+      - name: members
+        type: array
+        label: Team members
+        fields:
+        - name: email
+          type: email
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: support_queue
+      ownedBy: user
+      description: Conversations handed over to humans
+      fields:
+      - name: customer
+        type: text
+        label: Customer
+      - name: end_user_email
+        type: email
+        label: End user
+      - name: summary
+        type: textarea
+        label: Summary
+      - name: status
+        type: select
+        label: Status
+        options:
+        - open
+        - in_progress
+        - closed
+      - name: members
+        type: array
+        label: Team members
+        fields:
+        - name: email
+          type: email
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: knowledge_gaps
+      ownedBy: instance
+      description: Weekly gaps proposed by the agent
+    - name: usage_events
+      ownedBy: org
+      description: Usage reports from the platform meter
+      fields:
+      - name: contact_email
+        type: email
+      - name: tenant
+        type: text
+      - name: level
+        type: text
+      - name: used
+        type: number
+      - name: limit
+        type: number
+  triggers:
+  - key: usage_event
+    'on':
+      webhook: true
+    write:
+      collection: usage_events
+      fields:
+        contact_email: email
+        tenant: tenant
+        level: level
+        used: used
+        limit: limit
+  - key: usage_alert
+    'on':
+      collection: usage_events
+      op: insert
+      where:
+        level: near_limit
+    notify:
+      to:
+      - record.contact_email
+      - admins
+      subject: 'Embedra: {record.tenant} is nearing its usage limit'
+      body: Usage is at {record.used} of {record.limit} credits. Top up credits or upgrade your plan to keep your agents answering.
+      link: account
+  - key: queue_new
+    'on':
+      collection: support_queue
+      op: insert
+    notify:
+      to: owner
+      subject: New conversation handed over to a human
+      body: 'A conversation from {record.customer} needs a person: {record.summary}'
+      link: queue
+  views:
+  - key: home
+    type: page
+    title: Embedra
+    nav: false
+    sections:
+    - type: hero
+      title: Put an **AI agent** inside your product.
+      text: Upload your knowledge, define an agent with a form, and embed it for your customers. Answers with citations, actions
+        only after the user confirms, and a human queue when the agent is unsure.
+      actions:
+      - label: Start free
+        href: /login
+        style: primary
+      eyebrow: For software companies
+      layout: stack
+      band: true
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Add knowledge
+        text: Content managers upload help articles, guides and course material.
+      - title: Build the agent
+        text: Name, instructions, tools, tone and escalation rules in one form.
+      - title: Embed and review
+        text: Developers add the widget; you review conversations and weekly knowledge gaps.
+    - type: cards
+      id: features
+      title: Features
+      items:
+      - title: Citations
+        text: Every answer lists its sources.
+        badge: 📚
+      - title: Confirmed actions
+        text: Tools run only after the end user says yes.
+        badge: ✅
+      - title: Customer isolation
+        text: Each end user sees only their own data.
+        badge: 🔒
+      - title: Cost per customer
+        text: Dashboards for conversations, resolution, tools and cost.
+        badge: 📊
+    - type: note
+      content: Embedra · powered by WebRobot
+  - key: chat
+    type: chat
+    title: Test your agent
+    source: agent:assistant
+    examples:
+    - How do I reset my password?
+    - Cancel my subscription
+    placeholder: Ask as an end user, include your email…
+    roles:
+    - user
+    - admin
+    - developer
+    - content_manager
+  - key: agent_builder
+    type: form
+    title: Agent builder
+    collection: agent_configs
+    submit:
+      label: Save agent
+      message: Agent saved.
+      redirect: agents
+    edit: true
+    roles:
+    - user
+    - admin
+    - developer
+  - key: agents
+    type: table
+    title: Agents
+    source: collection:agent_configs
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Name
+      - key: tone
+        label: Tone
+      - key: knowledge_collections
+        label: Knowledge
+    roles:
+    - user
+    - admin
+    - developer
+  - key: add_knowledge
+    type: form
+    title: Add knowledge
+    collection: knowledge
+    submit:
+      label: Save article
+      message: Knowledge saved.
+      redirect: knowledge_list
+    edit: true
+    roles:
+    - user
+    - admin
+    - content_manager
+  - key: knowledge_list
+    type: table
+    title: Knowledge base
+    source: collection:knowledge
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Title
+      - key: collection_name
+        label: Collection
+    export: true
+    roles:
+    - user
+    - admin
+    - content_manager
+  - key: add_customer
+    type: form
+    title: Add customer
+    collection: customers
+    submit:
+      label: Save customer
+      message: Customer saved.
+      redirect: customer_list
+    roles:
+    - user
+    - admin
+  - key: customer_list
+    type: table
+    title: Customers
+    source: collection:customers
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Customer
+      - key: contact_email
+        label: Contact
+      - key: plan
+        label: Plan
+    roles:
+    - user
+    - admin
+  - key: conversations_list
+    type: table
+    title: Conversations
+    source: collection:conversations
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: customer
+        label: Customer
+      - key: question
+        label: Question
+      - key: answer
+        label: Answer
+      - key: sources
+        label: Sources
+      - key: resolved
+        label: Resolved
+        format: badge
+      - key: rating
+        label: Rating
+        format: badge
+      sort:
+        field: date
+        dir: desc
+      limit: 100
+    export: true
+    roles:
+    - user
+    - admin
+  - key: rate_answer
+    type: form
+    title: Rate an answer
+    collection: conversations
+    fields:
+    - rating
+    edit: true
+    submit:
+      label: Save rating
+      message: Rating saved.
+    nav: false
+    roles:
+    - user
+    - admin
+  - key: queue
+    type: table
+    title: Human support queue
+    source: collection:support_queue
+    data:
+      display: table
+      fields:
+      - key: customer
+        label: Customer
+      - key: end_user_email
+        label: End user
+      - key: summary
+        label: Summary
+      - key: status
+        label: Status
+        format: badge
+      actions:
+      - type: share
+        field: summary
+        label: Share
+    roles:
+    - user
+    - admin
+  - key: approvals_view
+    type: approvals
+    title: Confirmations
+    approvals:
+    - confirm_action
+    roles:
+    - user
+    - admin
+  - key: gaps
+    type: instances
+    title: Knowledge gaps
+    template: gap_review
+    roles:
+    - user
+    - admin
+    - content_manager
+  - key: usage
+    type: dashboard
+    title: Dashboard
+    children:
+    - by_day
+    - cost_by_customer
+    - resolution
+    roles:
+    - user
+    - admin
+  - key: by_day
+    type: chart
+    title: Conversations per day
+    source: collection:conversations
+    data:
+      display: chart
+      chart: line
+      fields:
+      - key: date
+      - key: count
+      groupBy:
+        field: date
+        bucket: day
+        aggs: []
+    nav: false
+  - key: cost_by_customer
+    type: chart
+    title: Cost per end customer
+    source: collection:conversations
+    data:
+      display: chart
+      chart: bar
+      fields:
+      - key: customer
+      - key: cost
+      groupBy:
+        field: customer
+        aggs:
+        - key: cost
+          agg: sum
+          field: cost_credits
+    nav: false
+  - key: resolution
+    type: table
+    title: Resolution and tool usage
+    source: collection:conversations
+    data:
+      display: table
+      fields:
+      - key: resolved
+        label: Resolved
+      - key: count
+        label: Conversations
+      groupBy:
+        field: resolved
+        aggs: []
+    nav: false
+  - key: account
+    type: account
+    title: Plan and credits
+    roles:
+    - user
+  notifications:
+    emailOnRunDone: false
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 100
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:assistant:
+        estimate: 5
+        metered: true
+    packs:
+    - key: credits_5k
+      credits: 5000
+      price: 45
+      label: 5,000 conversation credits
+    - key: credits_25k
+      credits: 25000
+      price: 190
+      label: 25,000 conversation credits
+    plans:
+    - key: starter
+      price: 49
+      interval: month
+      label: Starter
+      credits: 2000
+      creditsReset: monthly
+      includes:
+      - up to 10 agents
+    - key: growth
+      price: 199
+      interval: month
+      label: Growth
+      credits: 15000
+      creditsReset: monthly
+      includes:
+      - unlimited agents
+      - sub-organisations
+  extensions:
+  - key: embed_widget
+    description: 'Embeddable chat widget and API key for developers, passing the logged-in end user''s identity so the agent
+      sees only that user''s data. Not available yet: the app offers the chat view for testing, and end-user data is loaded
+      into end_user_records.'
+  - key: sub_organisations
+    description: True sub-organisations per tenant customer with their own users. Modelled for now as the customers collection
+      and end_user_records filtered by end user email; team sharing via the members list.
+  - key: tenant_tools
+    description: Per-tenant HTTP tools to the tenant's own API and tenant MCP servers configured in the agent form. Not available
+      yet as free-form tools; they need egress hosts and credentials declared per tenant.
+  - key: resale
+    description: Tenants reselling credits and plans to their own customers through Stripe Connect (per_transaction billing
+      with sellers). Not configured in this first version.
+  - key: ratings_widget
+    description: End users rating answers directly in the widget; for now tenants rate in the conversations review.

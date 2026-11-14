@@ -1,0 +1,826 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: retainly
+  displayName: Retainly
+  tagline: Spot client churn risk and upsell chances before your renewal calendar does.
+  description: Retainly scores the health of every client account from emails, meeting notes and transcripts, flags upsell
+    signals, suggests next actions for the account lead and drafts renewal briefs.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#17324d'
+      accent: '#e0703a'
+      background: '#f7f8fa'
+      foreground: '#1a2230'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Retain
+      color: primary
+    - text: ly
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: partner
+      label: Partner
+      assignedBy: invite
+    - key: lead
+      label: Account lead
+      assignedBy: derived
+      from: collection:accounts.lead_email
+    - key: user
+      label: Firm user
+      assignedBy: signup
+  agents:
+  - key: analyst
+    role: main
+    description: Scores the health of one account from its logged interactions and flags upsell signals.
+    profile:
+      inline:
+        display_name: Retainly health analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a client-retention analyst for a professional-services firm. For ONE account you read the
+            account record and all its logged interactions (emails, meeting notes, transcripts) with the tools. Judge: sentiment
+            trend, response times, meeting frequency, escalations, mentions of budget or competitors. Also detect upsell signals:
+            the client asking about, or having a need for, a service the firm offers that is not in services_bought. Then
+            (1) call append_health once with account, date, score (0-100, higher is healthier), band (healthy | watch | at_risk),
+            trend (up | flat | down), reasons (short bullet text citing the interactions) and lead_email copied from the account;
+            (2) call append_action for each concrete next action (at most 4) with account, kind (risk | upsell), suggestion,
+            evidence, status ''new'' and lead_email. Use only evidence in the records; if there is too little data say so
+            in reasons and use band ''watch''. Never invent figures or quotes. Finish with a level-1 title ''# <Account> —
+            health review'' and a three-line summary.'
+    goalTemplate: 'Review the account with id/name {record.account}. Today is {date}. Interaction just logged: {record.content}.
+      Score health and suggest actions.'
+    appTools:
+    - name: read_accounts
+      description: Read client accounts
+      action: read
+      collection: accounts
+      scope: user
+    - name: read_interactions
+      description: Read logged emails, notes and transcripts
+      action: read
+      collection: interactions
+      scope: user
+    - name: append_health
+      description: Save a health score
+      action: append
+      collection: health_scores
+      scope: user
+    - name: append_action
+      description: Save a suggested next action
+      action: append
+      collection: actions
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.4
+  - key: briefer
+    role: helper
+    description: Drafts the renewal brief before a renewal date.
+    profile:
+      inline:
+        display_name: Retainly renewal briefer
+        crews:
+        - id: briefer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You draft a renewal brief for an account lead to edit. Read the account, its interactions, health
+            scores and actions with the tools. Write: ''# Renewal brief — <Account>'' then ## Snapshot (contract value, renewal
+            date, services), ## Relationship health (score trend and reasons), ## Wins to mention, ## Risks and objections
+            to prepare for, ## Upsell opportunities, ## Suggested renewal approach and talking points. Under 450 words, only
+            facts from the records, mark gaps as ''to confirm''. Then call append_brief once with account, renewal_date, content
+            (the brief) and lead_email.'
+    goalTemplate: 'Draft the renewal brief for account {record.name}, renewing on {record.renewal_date}. Lead: {record.lead_email}.
+      Today is {date}.'
+    appTools:
+    - name: read_accounts
+      description: Read client accounts
+      action: read
+      collection: accounts
+      scope: user
+    - name: read_interactions
+      description: Read logged emails, notes and transcripts
+      action: read
+      collection: interactions
+      scope: user
+    - name: read_health
+      description: Read health scores
+      action: read
+      collection: health_scores
+      scope: user
+    - name: read_actions
+      description: Read suggested actions
+      action: read
+      collection: actions
+      scope: user
+    - name: append_brief
+      description: Save the renewal brief
+      action: append
+      collection: briefs
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.4
+  - key: lead_digest
+    role: scheduled
+    description: Morning list of at-risk accounts for an account lead.
+    profile:
+      inline:
+        display_name: Retainly morning digest
+        crews:
+        - id: lead_digest
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.25
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You write a short morning email for an account lead. Read the accounts, latest health scores and
+            open actions you can access. Start with '# At-risk accounts — <date>'. List accounts with band at_risk or a falling
+            trend (name, score, top reason, renewal date, the next action to take), then renewals in the next 30 days, then
+            open upsell signals. If nothing is at risk say so in one line. Plain and brief, under 250 words, no invented data.
+    appTools:
+    - name: read_accounts
+      description: Read client accounts
+      action: read
+      collection: accounts
+      scope: user
+    - name: read_health
+      description: Read health scores
+      action: read
+      collection: health_scores
+      scope: user
+    - name: read_actions
+      description: Read suggested actions
+      action: read
+      collection: actions
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.25
+  - key: partner_summary
+    role: scheduled
+    description: Weekly portfolio summary for partners.
+    profile:
+      inline:
+        display_name: Retainly portfolio summary
+        crews:
+        - id: partner_summary
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the weekly portfolio summary for a partner. Read all accounts, health scores and actions.
+            Start with ''# Portfolio summary — week of <date>''. Sections: ## Headline (counts per band, contract value at
+            risk, change since last week), ## Accounts to watch (top 5 by value at risk with reasons and owner), ## Renewals
+            in the next 60 days, ## Upsell pipeline, ## Account leads needing support. Include a chart block ```chart {"type":"bar","title":"Contract
+            value by health band","labels":[...],"series":[{"name":"£","values":[...]}]}``` with real figures only. Under
+            400 words; never invent data.'
+    appTools:
+    - name: read_accounts
+      description: Read client accounts
+      action: read
+      collection: accounts
+      scope: user
+    - name: read_health
+      description: Read health scores
+      action: read
+      collection: health_scores
+      scope: user
+    - name: read_actions
+      description: Read suggested actions
+      action: read
+      collection: actions
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.4
+  data:
+    collections:
+    - name: accounts
+      description: Client accounts
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Client
+      - name: sector
+        type: text
+        label: Sector
+      - name: contract_value
+        type: number
+        label: Annual contract value (£)
+      - name: renewal_date
+        type: date
+        required: true
+        label: Renewal date
+      - name: lead_email
+        type: email
+        required: true
+        label: Account lead email
+      - name: services_bought
+        type: text
+        label: Services bought (comma separated)
+      - name: services_not_bought
+        type: text
+        label: Other services the firm offers
+      access:
+      - role: partner
+        can:
+        - read
+        - write
+      - role: lead
+        where:
+          lead_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: interactions
+      description: Emails, meeting notes and transcripts logged per account (manual fallback until connectors exist)
+      ownedBy: user
+      retentionDays: 730
+      fields:
+      - name: account
+        type: select
+        required: true
+        optionsFrom: collection:accounts
+        label: Account
+      - name: date
+        type: date
+        required: true
+        label: Date
+      - name: type
+        type: select
+        required: true
+        label: Type
+        options:
+        - value: email
+          label: Email
+        - value: meeting
+          label: Meeting notes
+        - value: transcript
+          label: Transcript
+        - value: call
+          label: Call
+      - name: content
+        type: textarea
+        required: true
+        label: Content
+        maxLength: 8000
+      - name: consent_confirmed
+        type: boolean
+        required: true
+        label: Staff and client consent to analysis confirmed
+      - name: lead_email
+        type: email
+        label: Account lead email
+      access:
+      - role: partner
+        can:
+        - read
+        - write
+      - role: lead
+        where:
+          lead_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: health_scores
+      description: Health score history per account
+      ownedBy: user
+      fields:
+      - name: account
+        type: text
+      - name: date
+        type: date
+      - name: score
+        type: number
+      - name: band
+        type: select
+        options:
+        - healthy
+        - watch
+        - at_risk
+      - name: trend
+        type: select
+        options:
+        - up
+        - flat
+        - down
+      - name: reasons
+        type: textarea
+      - name: lead_email
+        type: email
+      access:
+      - role: partner
+      - role: lead
+        where:
+          lead_email: '{user.email}'
+    - name: actions
+      description: Suggested next actions the lead accepts or dismisses
+      ownedBy: user
+      fields:
+      - name: account
+        type: text
+      - name: kind
+        type: select
+        options:
+        - risk
+        - upsell
+      - name: suggestion
+        type: textarea
+      - name: evidence
+        type: textarea
+      - name: status
+        type: select
+        label: Decision
+        options:
+        - value: new
+          label: New
+        - value: accepted
+          label: Accepted
+        - value: dismissed
+          label: Dismissed
+      - name: lead_email
+        type: email
+      access:
+      - role: partner
+        can:
+        - read
+        - write
+      - role: lead
+        where:
+          lead_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: briefs
+      description: Renewal briefs drafted for the lead to edit
+      ownedBy: user
+      fields:
+      - name: account
+        type: text
+      - name: renewal_date
+        type: date
+      - name: content
+        type: textarea
+        label: Brief
+      - name: lead_email
+        type: email
+      access:
+      - role: partner
+        can:
+        - read
+        - write
+      - role: lead
+        where:
+          lead_email: '{user.email}'
+        can:
+        - read
+        - write
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Retainly
+    sections:
+    - type: hero
+      title: Know which clients are **slipping** and which are ready to **grow**.
+      text: Retainly reads your account notes, emails and meeting transcripts, scores client health with reasons, flags upsell
+        chances and tells each account lead what to do next.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      band: true
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Add your accounts
+        text: Sector, contract value, renewal date, account lead and services bought.
+      - title: Log what happens
+        text: Paste emails, meeting notes and transcripts for each account, with consent confirmed.
+      - title: Act on the score
+        text: Health scores come with reasons; leads accept or dismiss suggested actions and get a renewal brief before the
+          date.
+    - type: cards
+      title: Who sees what
+      items:
+      - title: Partners
+        text: See every account and get a weekly portfolio summary.
+      - title: Account leads
+        text: See only their own accounts and get a morning email with the at-risk ones.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: £40 per user / month
+        text: All features included.
+    - type: note
+      content: Retainly supports decisions; scores are indicative. Analyse communications only with the consent of staff and
+        clients.
+  - key: portfolio
+    type: table
+    title: Accounts
+    source: collection:accounts
+    roles:
+    - admin
+    - partner
+    - lead
+    - user
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Client
+      - key: sector
+        label: Sector
+      - key: contract_value
+        label: Value
+        format: money
+      - key: renewal_date
+        label: Renewal
+        format: date
+      - key: lead_email
+        label: Lead
+      - key: services_bought
+        label: Services
+      sort:
+        field: renewal_date
+        dir: asc
+    export: true
+  - key: add_account
+    type: form
+    title: New account
+    collection: accounts
+    submit:
+      label: Save account
+      message: Account saved.
+      redirect: portfolio
+    roles:
+    - admin
+    - partner
+    - user
+  - key: log_note
+    type: form
+    title: Log interaction
+    collection: interactions
+    submit:
+      label: Save and analyse
+      message: Saved. The health review will update shortly.
+      redirect: timeline
+    roles:
+    - admin
+    - partner
+    - lead
+    - user
+  - key: timeline
+    type: table
+    title: Timeline
+    source: collection:interactions
+    roles:
+    - admin
+    - partner
+    - lead
+    - user
+    data:
+      display: list
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: account
+        label: Account
+      - key: type
+        label: Type
+        format: badge
+      - key: content
+        label: Content
+      sort:
+        field: date
+        dir: desc
+      limit: 100
+  - key: health
+    type: table
+    title: Account health
+    source: collection:health_scores
+    roles:
+    - admin
+    - partner
+    - lead
+    - user
+    data:
+      display: table
+      fields:
+      - key: account
+        label: Account
+      - key: score
+        label: Score
+        format: number
+      - key: band
+        label: Band
+        format: badge
+      - key: trend
+        label: Trend
+        format: badge
+      - key: reasons
+        label: Reasons
+      - key: date
+        label: Date
+        format: date
+      sort:
+        field: date
+        dir: desc
+      limit: 100
+  - key: next_actions
+    type: table
+    title: Suggested actions
+    source: collection:actions
+    roles:
+    - admin
+    - partner
+    - lead
+    - user
+    data:
+      display: cards
+      fields:
+      - key: account
+        label: Account
+      - key: kind
+        label: Type
+        format: badge
+      - key: suggestion
+        label: Suggestion
+      - key: evidence
+        label: Why
+      - key: status
+        label: Decision
+        format: badge
+      filters:
+      - field: status
+        op: '='
+        value: new
+      limit: 100
+  - key: decide
+    type: form
+    title: Accept or dismiss
+    collection: actions
+    fields:
+    - status
+    edit: true
+    nav: false
+    submit:
+      label: Save decision
+      message: Decision saved.
+      redirect: next_actions
+  - key: renewal_briefs
+    type: table
+    title: Renewal briefs
+    source: collection:briefs
+    roles:
+    - admin
+    - partner
+    - lead
+    - user
+    data:
+      display: cards
+      fields:
+      - key: account
+        label: Account
+      - key: renewal_date
+        label: Renewal
+        format: date
+      - key: content
+        label: Brief
+      sort:
+        field: renewal_date
+        dir: asc
+  - key: edit_brief
+    type: form
+    title: Edit brief
+    collection: briefs
+    fields:
+    - content
+    edit: true
+    nav: false
+    submit:
+      label: Save brief
+      message: Brief saved.
+      redirect: renewal_briefs
+  - key: watches
+    type: instances
+    title: My email digests
+    template: morning_digest
+    roles:
+    - admin
+    - lead
+    - user
+  - key: partner_watches
+    type: instances
+    title: Portfolio summary
+    template: weekly_portfolio
+    roles:
+    - admin
+    - partner
+  - key: account
+    type: account
+    title: Subscription
+    roles:
+    - admin
+    - partner
+    - lead
+    - user
+  templates:
+  - key: morning_digest
+    title: Morning at-risk email
+    description: Every weekday morning, the accounts of yours that are at risk.
+    agent: lead_digest
+    params:
+    - name: focus
+      type: select
+      label: Include
+      default: risk
+      options:
+      - value: risk
+        label: At-risk accounts
+      - value: risk_upsell
+        label: At-risk accounts and upsell signals
+    goal: Write the morning digest ({focus}) for today {date}.
+    schedule:
+      cron: 0 7 * * 1-5
+      userCanChange: false
+    maxPerUser: 1
+    deliver:
+      to: owner
+      onlyIfNew: true
+  - key: weekly_portfolio
+    title: Weekly portfolio summary
+    description: Every Monday, a summary of the whole portfolio.
+    agent: partner_summary
+    params:
+    - name: scope
+      type: select
+      label: Scope
+      default: all
+      options:
+      - value: all
+        label: All accounts
+    goal: Write the weekly portfolio summary for the week of {date}.
+    schedule:
+      cron: 0 7 * * 1
+      userCanChange: false
+    maxPerUser: 1
+    roles:
+    - admin
+    - partner
+    deliver:
+      to: owner
+      onlyIfNew: true
+  triggers:
+  - key: analyse_interaction
+    description: Re-score the account when something is logged
+    'on':
+      collection: interactions
+      op: insert
+    start:
+      agent: analyst
+  - key: risk_alert
+    'on':
+      collection: health_scores
+      op: insert
+      where:
+        band: at_risk
+    notify:
+      to:
+      - record.lead_email
+      subject: 'Account at risk: {record.account}'
+      body: 'Retainly scored {record.account} at {record.score}/100 (at risk).
+
+
+        {record.reasons}'
+      link: health
+  - key: renewal_brief_due
+    description: 30 days before renewal, draft the brief
+    'on':
+      date:
+        collection: accounts
+        field: renewal_date
+        offsetDays: -30
+        hour: 6
+    start:
+      agent: briefer
+  - key: brief_ready
+    'on':
+      collection: briefs
+      op: insert
+    notify:
+      to:
+      - record.lead_email
+      subject: 'Renewal brief ready: {record.account}'
+      body: A draft renewal brief for {record.account} is ready for you to edit.
+      link: renewal_briefs
+  notifications:
+    emailOnRunDone: false
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: seat
+      price: 40
+      interval: month
+      label: Retainly — per user
+      includes:
+      - Unlimited accounts
+      - Health scoring and upsell signals
+      - Daily and weekly emails
+      - Renewal briefs
+  extensions:
+  - key: oauth_microsoft_google
+    description: 'Not available yet: OAuth connection to Microsoft 365 and Google mail, calendar and meeting tools, with per-person
+      consent. Fallback built: manual interaction log with a consent checkbox.'
+  - key: meeting_audio
+    description: 'Not available yet: analysis of meeting audio. Paste transcripts into the interaction log instead.'
+  - key: per_seat_billing
+    description: Billing is one £40/month plan per signed-up user; automatic seat counting for invited staff needs custom
+      logic.

@@ -1,0 +1,706 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: defintra
+  displayName: Defintra
+  tagline:
+    en: Drafting and proofreading for long transactional documents.
+  description:
+    en: Defintra checks facility agreements, share purchase agreements and similar documents for undefined terms, broken cross-references,
+      inconsistent party names, numbering gaps, missing schedules and style guide deviations. Each finding has a suggested
+      fix. The associate accepts, edits or dismisses it, and a partner signs off before the clean version and change report
+      are exported.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f2a44'
+      accent: '#8b1e3f'
+      background: '#f7f6f3'
+      foreground: '#1b1f24'
+    fonts:
+      body: Inter
+      display: Source Serif 4
+    wordmark:
+    - text: Def
+      color: primary
+    - text: intra
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: What it checks
+      href: '#checks'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Knowledge team
+      assignedBy: admin_emails
+    - key: partner
+      label: Supervising lawyer
+      assignedBy: invite
+    - key: user
+      label: Associate / trainee
+      assignedBy: signup
+  limits:
+  - action: agent:checker
+    per: user
+    max: 30
+    window: day
+    roles:
+    - user
+    - partner
+  agents:
+  - key: checker
+    role: main
+    description: Proofreads an uploaded transactional document and records each finding against the matter.
+    profile:
+      inline:
+        display_name: Defintra checker
+        crews:
+        - id: checker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Defintra, a meticulous proofreader of long transactional legal documents (facility agreements,
+            share purchase agreements, shareholder agreements). You are given the document text, or a file id you open with
+            read_upload. You also have the firm''s house rules: call read_house_rules first.
+
+
+            Check for: (1) defined terms used but not defined; (2) defined terms defined but never used; (3) broken cross-references
+            to clauses, sub-clauses, schedules or annexes that do not exist or point to the wrong subject; (4) inconsistent
+            party names or capitalisation (e.g. ''the Borrower'' vs ''the Company''); (5) numbering gaps or duplicates; (6)
+            schedules referred to but missing, or present but never referred to; (7) deviations from the house rules and style
+            guide.
+
+
+            For EVERY finding call append_finding once with: matter (the matter name), document (file name), type (one of
+            undefined_term, unused_term, broken_reference, party_name, numbering, missing_schedule, style), severity (high|medium|low),
+            clause (exact clause or paragraph number, e.g. 14.2(b)), quote (the exact words, short), explanation (one sentence),
+            suggested_fix (the replacement wording or action), status ''open'', members (copy the members list you were given).
+            Only report what you can point to in the text. Never invent clauses or figures; if the text is truncated or unreadable,
+            say so. You do not give legal advice and do not change the substance of the deal: flag, do not redraft commercial
+            terms.
+
+
+            At the end call log_document once with matter, document, checked_at (today''s date), findings_count, and minutes_saved
+            (an estimate: 3 minutes per finding, state it is an estimate), and members.
+
+
+            Then write the report. Start with a level-1 title ''# Check report — <document name>''. Then ## Summary (a table
+            of finding counts per type and severity), ## Highest priority findings (the 10 most important, each with clause,
+            quote and fix), ## Limits of this check. Add a ```chart bar block of findings per type using real counts.'
+          mcp_servers: []
+    goalTemplate: 'Matter: {matter_name}
+
+      Members on the matter (copy into every record): {members}
+
+      Document type: {doc_type_label}
+
+      {?parties}Parties as the user names them: {parties}{/parties}
+
+      Document file(s): {document}
+
+      {?document_text}Document text:
+
+      {document_text}{/document_text}
+
+      Mode: first check. Today is {date}. Write the report in the language with ISO code {lang}.'
+    context:
+    - key: matter_name
+      from: collection:matters.name
+    - key: members
+      from: collection:matters.members
+    appTools:
+    - name: read_upload
+      description: Read an uploaded document by file id
+      action: read_file
+    - name: read_house_rules
+      description: Read the firm's house rules and style guide
+      action: read
+      collection: house_rules
+      scope: all
+    - name: append_finding
+      description: Record one finding on the matter
+      action: append
+      collection: findings
+      scope: user
+    - name: log_document
+      description: Record that a document was checked
+      action: append
+      collection: documents
+      scope: user
+    when: mode == 'check'
+    output: markdown
+    limits:
+      maxTurns: 60
+      maxBudgetUsd: 3
+  - key: exporter
+    role: main
+    description: Asks the supervising lawyer to sign off, then produces the clean version and the change report.
+    awaits:
+    - signoff
+    profile:
+      inline:
+        display_name: Defintra exporter
+        crews:
+        - id: exporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare the final output of a checked transactional document. Read the findings of the matter
+            and document with read_findings. Apply only findings with status accepted (suggested_fix) or edited (final_text);
+            ignore dismissed and open ones, and list open ones as unresolved. Then call request_signoff with the matter, the
+            document and the counts, and stop until the supervising lawyer decides. If approved, produce the output; if rejected,
+            say so and stop.
+
+
+            Output: a level-1 title ''# Clean version and change report — <document>''. Then ## Change report (a table: clause,
+            type, original, new wording, decided by, status), ## Unresolved and dismissed findings, ## Clean version (the
+            document text with the accepted changes applied; open the file with read_upload; never alter anything not covered
+            by an accepted or edited finding). Never invent text you cannot see in the document.'
+          mcp_servers: []
+    goalTemplate: 'Matter: {matter_name}
+
+      Members: {members}
+
+      Document file(s): {document}
+
+      {?document_text}Document text:
+
+      {document_text}{/document_text}
+
+      Mode: export. Request sign-off, then produce the clean version and change report. Today is {date}.'
+    context:
+    - key: matter_name
+      from: collection:matters.name
+    - key: members
+      from: collection:matters.members
+    appTools:
+    - name: read_upload
+      description: Read an uploaded document by file id
+      action: read_file
+    - name: read_findings
+      description: Read the findings of the user's matters
+      action: read
+      collection: findings
+      scope: user
+    when: mode == 'export'
+    output: markdown
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 3
+  approvals:
+  - key: signoff
+    title: Supervising lawyer sign-off
+    description: A supervising lawyer reviews the accepted changes before the clean version and change report are exported.
+    role: partner
+    fields:
+    - matter
+    - document
+    - accepted
+    - dismissed
+    - open
+    timeoutMinutes: 10080
+    onTimeout: reject
+    decidedBy: role
+  triggers:
+  - key: signoff_done
+    description: Continue the export once a supervising lawyer has signed off
+    'on':
+      approval: signoff
+      decision: approved
+    start:
+      agent: exporter
+    goal: The sign-off was approved. Produce the clean version and the change report now.
+    asUser: true
+  notifications:
+    emailOnRunDone: true
+  inputForm:
+    title: Check a document
+    fields:
+    - name: matter
+      type: select
+      required: true
+      label: Matter
+      optionsFrom: collection:matters
+    - name: mode
+      type: select
+      required: true
+      label: What to do
+      default: check
+      options:
+      - value: check
+        label: Check the document
+      - value: export
+        label: Export clean version and change report (after review)
+    - name: doc_type
+      type: select
+      required: true
+      label: Document type
+      options:
+      - value: facility
+        label: Facility agreement
+      - value: spa
+        label: Share purchase agreement
+      - value: sha
+        label: Shareholders' agreement
+      - value: other
+        label: Other transactional document
+    - name: document
+      type: file
+      required: true
+      label: Document
+      accept:
+      - pdf
+      - docx
+      maxMb: 15
+      multiple: false
+    - name: parties
+      type: textarea
+      maxLength: 500
+      label: Parties and short names (optional)
+      help: e.g. Alpha Bank plc (the Lender), Beta Ltd (the Borrower)
+  data:
+    collections:
+    - name: matters
+      description: Matters; only the people staffed on a matter see it
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Matter name
+      - name: client
+        type: text
+        label: Client
+      - name: members
+        type: array
+        label: Staffed (emails)
+        help: Emails of the associates, trainees and supervising lawyers on this matter
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: partner
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: house_rules
+      description: The firm's house rules and style guide, kept by the knowledge team on the data page
+      ownedBy: shared
+      fields:
+      - name: rule
+        type: text
+        required: true
+        label: Rule
+      - name: category
+        type: select
+        label: Category
+        options:
+        - defined_terms
+        - numbering
+        - party_names
+        - cross_references
+        - style
+        - other
+      - name: detail
+        type: textarea
+        label: Detail and example
+    - name: findings
+      description: Each finding of a check, linked to its clause
+      ownedBy: user
+      fields:
+      - name: matter
+        type: text
+        label: Matter
+      - name: document
+        type: text
+        label: Document
+      - name: type
+        type: select
+        label: Type
+        options:
+        - undefined_term
+        - unused_term
+        - broken_reference
+        - party_name
+        - numbering
+        - missing_schedule
+        - style
+      - name: severity
+        type: select
+        label: Severity
+        options:
+        - high
+        - medium
+        - low
+      - name: clause
+        type: text
+        label: Clause / paragraph
+      - name: quote
+        type: textarea
+        label: Text concerned
+      - name: explanation
+        type: textarea
+        label: Explanation
+      - name: suggested_fix
+        type: textarea
+        label: Suggested fix
+      - name: status
+        type: select
+        label: Decision
+        default: open
+        options:
+        - open
+        - accepted
+        - edited
+        - dismissed
+      - name: final_text
+        type: textarea
+        label: Your wording (if edited)
+      - name: members
+        type: array
+        label: Staffed (emails)
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: partner
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: documents
+      description: Log of checked documents for the dashboards
+      ownedBy: user
+      fields:
+      - name: matter
+        type: text
+        label: Matter
+      - name: document
+        type: text
+        label: Document
+      - name: checked_at
+        type: date
+        label: Checked on
+      - name: findings_count
+        type: number
+        label: Findings
+      - name: minutes_saved
+        type: number
+        label: Minutes saved (estimate)
+      - name: members
+        type: array
+        label: Staffed (emails)
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: partner
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      retentionDays: 1095
+  views:
+  - key: home
+    type: page
+    title: Defintra
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: For law firms
+      title: Proofread long **transactional documents** in minutes, not hours.
+      text: Upload a facility agreement or SPA. Defintra finds undefined terms, broken cross-references, inconsistent party
+        names, numbering gaps and style guide deviations, each with the exact clause and a suggested fix.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+      aside: '<div style="padding:16px"><strong>Clause 14.2(b)</strong><br>Refers to "Schedule 7", which does not exist.<br><em>Suggested
+        fix: refer to Schedule 6 (Form of Compliance Certificate).</em></div>'
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Staff the matter
+        text: A partner creates the matter and lists who works on it. Only they see it.
+      - title: Upload and check
+        text: The agents read the document against your house rules and record every finding.
+      - title: Review
+        text: The associate accepts, edits or dismisses each finding.
+      - title: Sign off and export
+        text: A supervising lawyer signs off, then the clean version and change report are produced.
+    - type: cards
+      id: checks
+      title: What it checks
+      items:
+      - title: Defined terms
+        text: Used but not defined, defined but never used.
+      - title: Cross-references
+        text: Clauses, sub-clauses and schedules that do not exist.
+      - title: Parties and numbering
+        text: Inconsistent party names, gaps and duplicates.
+      - title: House style
+        text: Deviations from the rules set by your knowledge team.
+    - type: note
+      content: Defintra supports lawyers and does not replace their review or give legal advice.
+  - key: new_matter
+    type: form
+    title: New matter
+    collection: matters
+    edit: true
+    submit:
+      label: Save matter
+      message: Matter saved. Only the people you listed can see it.
+      redirect: matters
+    roles:
+    - partner
+    - admin
+  - key: matters
+    type: table
+    title: My matters
+    source: collection:matters
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Matter
+      - key: client
+        label: Client
+      - key: members
+        label: Staffed
+    roles:
+    - user
+    - partner
+    - admin
+  - key: check
+    type: new_run
+    title: Check a document
+    roles:
+    - user
+    - partner
+    - admin
+  - key: runs
+    type: history
+    title: My checks
+    source: run
+    roles:
+    - user
+    - partner
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: findings
+    type: table
+    title: Findings
+    source: collection:findings
+    export: true
+    data:
+      display: table
+      fields:
+      - key: matter
+        label: Matter
+      - key: clause
+        label: Clause
+      - key: type
+        label: Type
+        format: badge
+      - key: severity
+        label: Severity
+        format: badge
+      - key: quote
+        label: Text
+      - key: suggested_fix
+        label: Suggested fix
+      - key: status
+        label: Decision
+        format: badge
+      sort:
+        field: severity
+        dir: asc
+      limit: 200
+    roles:
+    - user
+    - partner
+    - admin
+  - key: decide
+    type: form
+    title: Accept, edit or dismiss
+    collection: findings
+    fields:
+    - status
+    - final_text
+    edit: true
+    submit:
+      label: Save decision
+      message: Decision saved.
+      redirect: findings
+    nav: false
+    roles:
+    - user
+    - partner
+    - admin
+  - key: signoffs
+    type: approvals
+    title: Sign-off
+    approvals:
+    - signoff
+    roles:
+    - partner
+    - admin
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - partner
+    - admin
+    sections:
+    - type: data
+      title: Overview
+      source: collection:documents
+      display: kpi
+      kpis:
+      - label: Documents checked
+        agg: count
+      - label: Findings
+        agg: sum
+        field: findings_count
+        format: number
+      - label: Minutes saved (estimate)
+        agg: sum
+        field: minutes_saved
+        format: number
+    - type: data
+      title: Documents checked per matter
+      source: collection:documents
+      display: chart
+      chart: bar
+      groupBy:
+        field: matter
+        aggs:
+        - key: findings
+          agg: sum
+          field: findings_count
+      fields:
+      - key: matter
+      - key: count
+    - type: data
+      title: Error types
+      source: collection:findings
+      display: chart
+      chart: pie
+      groupBy:
+        field: type
+        aggs: []
+      fields:
+      - key: type
+      - key: count
+    - type: data
+      title: Time saved per month (estimate)
+      source: collection:documents
+      display: chart
+      chart: line
+      groupBy:
+        field: checked_at
+        bucket: month
+        aggs:
+        - key: minutes
+          agg: sum
+          field: minutes_saved
+      fields:
+      - key: checked_at
+      - key: minutes
+  - key: account
+    type: account
+    title: Licence
+    roles:
+    - user
+    - partner
+    - admin
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: fee_earner
+      price: 95
+      interval: month
+      label: Annual licence per fee earner, billed monthly
+      includes:
+      - Unlimited document checks within fair use
+      - Matter-level access control
+      - Sign-off and exports
+  extensions:
+  - key: word_addin
+    description: 'The real product runs inside Microsoft Word as an add-in, with a side panel showing the definition or referenced
+      clause on hover and links to the exact paragraph. Not available yet: this app works on uploaded documents and shows
+      the clause number and quoted text.'
+  - key: microsoft_oauth_sso
+    description: Sign-in with Microsoft (OAuth / Entra ID) is not available yet. Users sign in with an email link.
+  - key: dms_integration
+    description: Connection to iManage or another document management system through OAuth or enterprise integration is not
+      available yet. Documents are uploaded by hand.
+  - key: docx_export
+    description: The clean version and change report are produced as a printable report, not as a tracked-changes .docx file.
+  - key: knowledge_team_role
+    description: The knowledge team keeps house rules as admins on the data page. A separate knowledge role would need its
+      own write access to a shared collection.

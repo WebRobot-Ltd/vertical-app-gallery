@@ -1,0 +1,614 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: paywhistle
+  displayName: Paywhistle
+  tagline:
+    en: Get paid on time, without the awkward emails.
+  description:
+    en: Paywhistle chases overdue invoices for small businesses and professional firms with personalised emails, payment links
+      and a clear view of cash.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#12324a'
+      accent: '#e8833a'
+      background: '#f7f8fa'
+      foreground: '#18202a'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Pay
+      color: primary
+    - text: whistle
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: owner
+      label: Owner
+      assignedBy: admin_emails
+    - key: finance
+      label: Finance user
+      assignedBy: invite
+    - key: account_manager
+      label: Account manager
+      assignedBy: derived
+      from: collection:invoices.manager_email
+    - key: user
+      label: Firm
+      assignedBy: signup
+  limits:
+  - action: create:invoices
+    max: 100
+    window: total
+    plans:
+      growth: 500
+      scale: -1
+  agents:
+  - key: chaser
+    role: scheduled
+    description: Writes a personalised chaser email for each overdue invoice of one firm, following its chasing policy.
+    profile:
+      inline:
+        display_name: Paywhistle chaser
+        crews:
+        - id: chaser
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You write payment chaser emails for one firm. Read the firm's invoices with list_invoices and the
+            past chasers with list_chasers. For each invoice that is open or overdue (never paused, disputed, promised or
+            paid) whose due date falls on a chasing day of the policy (days before or after the due date given in your goal),
+            write ONE email and save it with save_chaser (invoice_no, contact_email, subject, body, step). Refer to the invoice
+            number, amount, due date and the history of earlier chasers; escalate the step as the policy says. Use the tone
+            and signatory from the policy. Always include the payment link of the invoice if present. Never invent amounts,
+            never threaten legal action unless the escalation policy says so, keep each email under 150 words. Finish with
+            a short markdown summary starting with a level-1 title '# Chasing run' listing what you wrote.
+    context:
+    - key: days_before
+      from: collection:policy.days_before
+    - key: days_after
+      from: collection:policy.days_after
+    - key: tone
+      from: collection:policy.tone
+    - key: escalation
+      from: collection:policy.escalation
+    - key: signatory
+      from: collection:policy.signatory
+    goalTemplate: 'Today is {date}. Chasing policy: chase {days_before} days before the due date and then every step of {days_after}
+      days after it. Tone: {tone}. Escalation: {escalation}. Sign emails as: {signatory}. Write the chasers due today.'
+    appTools:
+    - name: list_invoices
+      description: The firm's invoices
+      action: read
+      collection: invoices
+      scope: user
+    - name: list_chasers
+      description: Chasers already sent
+      action: read
+      collection: chasers
+      scope: user
+    - name: save_chaser
+      description: Save a chaser email (it is sent to the customer)
+      action: append
+      collection: chasers
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 0.8
+  - key: replies
+    role: helper
+    description: Reads customer replies, updates the invoice and pauses chasing; asks the account manager to approve payment
+      plans and write-offs.
+    awaits:
+    - payment_plan
+    - write_off
+    profile:
+      inline:
+        display_name: Paywhistle reply reader
+        crews:
+        - id: replies
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You read a customer''s email reply about an overdue invoice. Find the invoice with find_invoice.
+            Classify the reply: dispute, promise to pay on a date, request for a payment plan, request for write-off, or other.
+            Then update the invoice with update_invoice: status disputed (dispute), promised plus promised_date (promise),
+            paused (plan or write-off pending), and a short note. For a payment plan or a write-off, call the matching approval
+            request; never agree to either yourself. Never promise anything to the customer. Reply with a short markdown summary
+            starting with ''# Reply handled''.'
+    goalTemplate: 'Customer reply received.
+
+      History: {history}
+
+      Message: {message}'
+    appTools:
+    - name: find_invoice
+      description: Search invoices by number or customer
+      action: search
+      collection: invoices
+      scope: all
+    - name: update_invoice
+      description: Update an invoice status, promised date and note
+      action: write
+      collection: invoices
+      scope: all
+    output: markdown
+  channels:
+  - key: inbox
+    type: email
+    agent: replies
+  templates:
+  - key: chasing
+    title: Automatic chasing
+    description: Every morning the agent writes and sends the chasers due for your firm.
+    agent: chaser
+    params:
+    - name: label
+      type: text
+      label: Name
+      required: true
+    schedule:
+      cron: 0 7 * * 1-5
+      userCanChange: true
+    maxPerUser: 1
+    goal: Run the daily chasing for {instance}. Today is {date}.
+  triggers:
+  - key: send_chaser
+    description: Send each saved chaser by email
+    'on':
+      collection: chasers
+      op: insert
+    notify:
+      to: record.contact_email
+      subject: '{record.subject}'
+      body: '{record.body}'
+  - key: payment_in
+    description: Payment webhook from the payment partner, reconciled to the ledger
+    'on':
+      webhook: true
+    write:
+      collection: payments
+      fields:
+        invoice_no: invoice
+        amount: amount
+        method: method
+        paid_at: paid_at
+        days_to_pay: days_to_pay
+      keyBy: invoice_no
+  - key: fee
+    description: Fee per payment collected
+    'on':
+      collection: payments
+      op: insert
+    charge:
+      credits: 1
+      reason: collection fee
+  approvals:
+  - key: payment_plan
+    title: Approve payment plan
+    role: account_manager
+    fields:
+    - invoice_no
+    - customer
+    - amount_due
+    timeoutMinutes: 4320
+  - key: write_off
+    title: Approve write-off
+    role: account_manager
+    fields:
+    - invoice_no
+    - customer
+    - amount_due
+    timeoutMinutes: 4320
+  data:
+    collections:
+    - name: invoices
+      ownedBy: user
+      description: Outstanding invoices of the firm
+      fields:
+      - name: invoice_no
+        type: text
+        required: true
+      - name: customer
+        type: text
+        required: true
+      - name: contact_email
+        type: email
+        required: true
+      - name: amount_due
+        type: number
+        required: true
+      - name: currency
+        type: text
+        default: GBP
+      - name: due_date
+        type: date
+        required: true
+      - name: status
+        type: select
+        options:
+        - open
+        - overdue
+        - disputed
+        - promised
+        - paused
+        - paid
+        default: open
+      - name: promised_date
+        type: date
+      - name: manager_email
+        type: email
+      - name: payment_link
+        type: url
+      - name: note
+        type: textarea
+      access:
+      - role: finance
+        can:
+        - read
+        - write
+      - role: account_manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+        - write
+      retentionDays: 1095
+    - name: payments
+      ownedBy: user
+      description: Payments reconciled to the ledger
+      fields:
+      - name: invoice_no
+        type: text
+      - name: amount
+        type: number
+      - name: method
+        type: select
+        options:
+        - card
+        - pay_by_bank
+        - direct_debit
+      - name: paid_at
+        type: date
+      - name: days_to_pay
+        type: number
+      access:
+      - role: finance
+    - name: chasers
+      ownedBy: user
+      description: Chaser emails written and sent
+      fields:
+      - name: invoice_no
+        type: text
+      - name: contact_email
+        type: email
+      - name: subject
+        type: text
+      - name: body
+        type: textarea
+      - name: step
+        type: number
+      access:
+      - role: finance
+      retentionDays: 730
+    - name: policy
+      ownedBy: user
+      description: The firm's chasing policy
+      fields:
+      - name: days_before
+        type: number
+        required: true
+        default: 3
+        label: Days before due date to send a reminder
+      - name: days_after
+        type: number
+        required: true
+        default: 7
+        label: Days between chasers after the due date
+      - name: tone
+        type: select
+        required: true
+        options:
+        - friendly
+        - neutral
+        - firm
+        default: friendly
+      - name: escalation
+        type: textarea
+        label: Escalation steps
+        help: e.g. step 1 reminder, step 2 firm notice, step 3 call from account manager
+      - name: signatory
+        type: text
+        required: true
+        label: Who signs the emails
+    credentials: []
+  views:
+  - key: home
+    type: page
+    nav: false
+    sections:
+    - type: hero
+      title: Get paid **on time**
+      text: Paywhistle chases overdue invoices with personalised emails, a payment link in every one, and a clear view of
+        your cash.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Add your invoices
+        text: Import outstanding invoices from your accounting software.
+      - title: Set your policy
+        text: Choose timing, tone, escalation and who signs.
+      - title: We chase and reconcile
+        text: The agent writes each chaser, reads replies and records payments.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: Starter £29/month
+        text: Up to 100 invoices
+      - title: Growth £79/month
+        text: Up to 500 invoices
+      - title: Scale £199/month
+        text: Unlimited invoices
+    - type: note
+      content: A small fee applies per payment collected. Card, Pay by Bank and Direct Debit are handled by a licensed payment
+        partner.
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - owner
+    - finance
+    - user
+    sections:
+    - type: data
+      title: Cash position
+      source: collection:invoices
+      display: kpi
+      kpis:
+      - label: Overdue balance
+        agg: sum
+        field: amount_due
+        format: money
+      - label: Overdue invoices
+        agg: count
+      filters:
+      - field: status
+        op: '='
+        value: overdue
+    - type: data
+      title: Expected cash this week (promised)
+      source: collection:invoices
+      display: kpi
+      kpis:
+      - label: Promised
+        agg: sum
+        field: amount_due
+        format: money
+      filters:
+      - field: status
+        op: '='
+        value: promised
+    - type: data
+      title: Average days to pay
+      source: collection:payments
+      display: kpi
+      kpis:
+      - label: Days to pay
+        agg: avg
+        field: days_to_pay
+        format: number
+    - type: data
+      title: Due by week
+      source: collection:invoices
+      display: chart
+      chart: bar
+      groupBy:
+        field: due_date
+        bucket: week
+        aggs:
+        - key: total
+          agg: sum
+          field: amount_due
+      fields:
+      - key: due_date
+        label: Week
+      - key: total
+        label: Amount
+  - key: invoices
+    type: table
+    title: Invoices
+    source: collection:invoices
+    roles:
+    - owner
+    - finance
+    - account_manager
+    - user
+    columns:
+    - invoice_no
+    - customer
+    - amount_due
+    - due_date
+    - status
+    - promised_date
+    export: true
+    data:
+      display: table
+      fields:
+      - key: invoice_no
+        label: Invoice
+      - key: customer
+        label: Customer
+      - key: amount_due
+        label: Due
+        format: money
+      - key: due_date
+        label: Due date
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      - key: contact_email
+        label: Email
+      actions:
+      - type: call
+        field: contact_email
+        label: Contact
+  - key: add_invoice
+    type: form
+    title: Add invoice
+    collection: invoices
+    roles:
+    - owner
+    - finance
+    - user
+    submit:
+      label: Save invoice
+      message: Invoice saved
+      redirect: invoices
+  - key: policy_form
+    type: form
+    title: Chasing policy
+    collection: policy
+    roles:
+    - owner
+    - finance
+    - user
+    edit: true
+    submit:
+      label: Save policy
+      message: Policy saved
+  - key: chasing
+    type: instances
+    template: chasing
+    title: Automatic chasing
+    roles:
+    - owner
+    - finance
+    - user
+  - key: sent
+    type: table
+    title: Chasers sent
+    source: collection:chasers
+    roles:
+    - owner
+    - finance
+    - user
+    columns:
+    - invoice_no
+    - contact_email
+    - subject
+    - step
+  - key: payments
+    type: table
+    title: Payments
+    source: collection:payments
+    roles:
+    - owner
+    - finance
+    - user
+    columns:
+    - invoice_no
+    - amount
+    - method
+    - paid_at
+    export: true
+  - key: approvals
+    type: approvals
+    title: Approvals
+    roles:
+    - account_manager
+    - owner
+  - key: account
+    type: account
+    title: Plan
+    roles:
+    - user
+    - owner
+    - finance
+  billing:
+    modes:
+    - subscription
+    - per_transaction
+    currency: gbp
+    transactionFeePct: 1
+    plans:
+    - key: starter
+      price: 29
+      interval: month
+      label: Starter
+      includes:
+      - Up to 100 invoices
+    - key: growth
+      price: 79
+      interval: month
+      label: Growth
+      includes:
+      - Up to 500 invoices
+    - key: scale
+      price: 199
+      interval: month
+      label: Scale
+      includes:
+      - Unlimited invoices
+  extensions:
+  - key: accounting_oauth
+    description: Automatic sync of invoices, contacts and payments from Xero or QuickBooks needs OAuth sign-in, which is not
+      available yet. Meanwhile invoices are added by hand in the Add invoice form.
+  - key: payment_partner
+    description: Stripe card payments, Pay by Bank and Direct Debit mandates run through a licensed payment partner. Payment
+      links are stored on each invoice and paid events arrive on the payment_in webhook.
+  - key: ledger_writeback
+    description: Writing reconciled payments back to Xero or QuickBooks also needs OAuth; payments are reconciled inside Paywhistle
+      for now.

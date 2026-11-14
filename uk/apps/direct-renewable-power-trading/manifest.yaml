@@ -1,0 +1,1190 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: voltara
+  displayName: Voltara
+  tagline: Buy electricity directly from renewable generators.
+  description: Voltara is a licensed electricity supplier platform. Businesses register sites and meters, set preferences
+    and are matched with renewable generators. A trading manager approves every contract.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0b3d2e'
+      accent: '#f5a623'
+      background: '#f6faf7'
+      foreground: '#10231b'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Vol
+      color: primary
+    - text: tara
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: trader
+      label: Trading manager
+      assignedBy: invite
+    - key: generator
+      label: Generator
+      assignedBy: invite
+    - key: customer
+      label: Business customer
+      assignedBy: signup
+  limits:
+  - action: agent:matcher
+    per: user
+    max: 5
+    window: day
+    roles:
+    - customer
+  - action: chat
+    per: user
+    max: 60
+    window: day
+    roles:
+    - customer
+  agents:
+  - key: matcher
+    role: main
+    description: Matches a business's demand profile and preferences with generators, forecasts with Elexon BMRS prices, explains
+      each match and asks the trading manager to approve a contract.
+    awaits:
+    - contract_approval
+    profile:
+      inline:
+        display_name: Voltara matcher
+        crews:
+        - id: matcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the matching analyst of Voltara, a licensed UK electricity supplier. You match one business
+            customer''s demand with renewable generators.
+
+            Steps: 1) read the company profile and preferences (local generation, technology types, maximum price in GBP/MWh),
+            2) read their sites (MPAN, annual MWh) and bills; if a bill is a file, open it with read_upload to see actual
+            usage, 3) search the generators, 4) get recent market prices from the BMRS tool (Market Index Data, dataset MID;
+            query e.g. from=<ISO date>&to=<ISO date>&format=json) and use them only as a reference for the forecast, 5) rank
+            the best 3 matches and respect the preferences strictly; never propose a generator above the maximum price.
+
+            For every match explain in plain words why it fits: technology, distance or region, price versus the BMRS reference,
+            share of annual demand it can cover, risks. Never invent figures: if data is missing say so. This is not financial
+            advice.
+
+            Then, for the best match only, call request_contract_approval with customer email, generator name, generator email,
+            annual MWh, price per MWh, term in months and your explanation. Do not tell the customer a contract exists until
+            it is approved.
+
+            Report structure: a level-1 title ''# Matches for <company> — <date>'', then ## Demand profile, ## Market outlook,
+            ## Recommended matches (one ### per match with its explanation), ## Next steps. Include one chart block comparing
+            the matches'' prices to the BMRS reference:
+
+            ```chart
+
+            {"type":"bar","title":"Price vs market reference","labels":["A"],"series":[{"name":"GBP/MWh","values":[1]}],"unit":"GBP/MWh"}
+
+            ```
+
+            with real figures only.'
+    context:
+    - key: email
+      from: user.email
+    appTools:
+    - name: read_company
+      description: The customer's company profile and preferences
+      action: read
+      collection: companies
+      scope: user
+    - name: read_sites
+      description: The customer's sites, meter numbers and consumption
+      action: read
+      collection: sites
+      scope: user
+    - name: read_bills
+      description: The customer's uploaded bills (file ids)
+      action: read
+      collection: bills
+      scope: user
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
+    - name: search_generators
+      description: Search the generators' listings
+      action: search
+      collection: generators
+      scope: all
+    - name: bmrs_prices
+      description: Elexon BMRS market index prices (Insights API)
+      action: http
+      http:
+        method: GET
+        url: https://data.elexon.co.uk/bmrs/api/v1/datasets/MID
+        attribution: Contains BMRS data © Elexon Limited copyright and database right
+    goalTemplate: 'Customer: {user} ({email}).
+
+      Contract horizon: {horizon_label}.
+
+      {?notes}Extra notes: {notes}{/notes}
+
+      Today is {date}. Write in English.'
+    output: markdown
+    writesTo:
+      collection: matches
+      parse: whole
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 0.8
+  - key: contractor
+    role: helper
+    description: Records an approved contract.
+    profile:
+      inline:
+        display_name: Voltara contract clerk
+        crews:
+        - id: contractor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You record approved contracts. From the approval event given in the goal, call append_contract once
+            with: customer_email, generator_name, generator_email, annual_mwh, price_per_mwh, term_months, start_date (the
+            first day of next month), end_date (start_date plus the term), status ''active''. Use only values present in the
+            event; never invent any. Finish with ''# Contract recorded'' and a two-line summary.'
+    appTools:
+    - name: append_contract
+      description: Add a contract
+      action: append
+      collection: contracts
+      scope: all
+    goalTemplate: 'Approved proposal: {event}. Today is {date}.'
+    output: markdown
+  - key: biller
+    role: scheduled
+    description: 'Monthly: builds each customer''s invoice and each generator''s payout from settled half-hourly data.'
+    profile:
+      inline:
+        display_name: Voltara biller
+        crews:
+        - id: biller
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare Voltara''s monthly billing for the previous calendar month. Read the active contracts,
+            the half-hourly readings and generation, and the pricing record (margin_per_mwh, platform_fee_monthly). For each
+            customer: energy_mwh = sum of consumption_kwh / 1000; generator_cost = matched MWh x the contract''s price_per_mwh;
+            margin = energy_mwh x margin_per_mwh; add platform_fee_monthly; amount = sum, in GBP, VAT shown separately at
+            20%. Call append_invoice once per customer with: customer_email, period (YYYY-MM), energy_mwh, matched_mwh, energy_charge,
+            margin, platform_fee, vat, amount, status ''issued'', due_date (14 days out). For each generator call append_payout
+            with: generator_email, period, mwh_sold, price_per_mwh, amount, status ''pending''. Never invent readings: if
+            a customer has no readings for the month, skip them and list them. End with ''# Billing run <period>'' plus a
+            summary table and exceptions. Direct debit collection is handled outside this app.'
+    appTools:
+    - name: read_contracts
+      description: Contracts
+      action: read
+      collection: contracts
+      scope: all
+    - name: read_readings
+      description: Half-hourly consumption and matched generation
+      action: search
+      collection: readings
+      scope: all
+    - name: read_generation
+      description: Half-hourly generation of generators
+      action: search
+      collection: generation
+      scope: all
+    - name: read_pricing
+      description: Margin per MWh and platform fee
+      action: read
+      collection: pricing
+      scope: all
+    - name: append_invoice
+      description: Add an invoice
+      action: append
+      collection: invoices
+      scope: all
+    - name: append_payout
+      description: Add a generator payout
+      action: append
+      collection: payouts
+      scope: all
+    goalTemplate: Run the billing for the month before {date}.
+    output: markdown
+  - key: statement_writer
+    role: helper
+    description: Monthly statement of half-hourly matching between a customer's consumption and generation.
+    writesTo:
+      collection: statements
+    profile:
+      inline:
+        display_name: Voltara statement writer
+        crews:
+        - id: statement_writer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write a customer''s monthly matching statement. Read the customer''s half-hourly readings for
+            the previous month (consumption_kwh, matched_kwh, generator_name). Compute: total consumption, matched total,
+            match percentage, share per generator, the hours of the day with the lowest matching, and the unmatched volume.
+            Start with ''# Statement — <month year>''. Sections: ## Summary, ## Supply by generator, ## Half-hourly matching
+            (a daily chart block, bar or line, with real figures, plus a short note on best and worst periods), ## Notes.
+            Never invent data; if readings are missing, say which days. Under 400 words.'
+    appTools:
+    - name: read_readings
+      description: Half-hourly consumption and matched generation of this customer
+      action: search
+      collection: readings
+      scope: user
+    goalTemplate: 'Write the statement for {instance}. {?mpan}Meter: {mpan}.{/mpan} Today is {date}. English.'
+    output: markdown
+  - key: billing_assistant
+    role: helper
+    description: Answers billing questions from the customer's own invoices.
+    profile:
+      inline:
+        display_name: Voltara billing assistant
+        chat_mode: true
+        crews:
+        - id: billing_assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You answer a Voltara business customer's billing questions using only their own invoices and contracts,
+            read with the tools. Explain line items (energy charge, supplier margin per MWh, platform fee, VAT), compare months
+            and point to the invoice period. If the data does not answer the question, say so and suggest contacting support;
+            never invent amounts, never promise credits or refunds, never discuss other customers. Be concise.
+    appTools:
+    - name: my_invoices
+      description: The customer's invoices
+      action: search
+      collection: invoices
+      scope: user
+    - name: my_contracts
+      description: The customer's contracts
+      action: search
+      collection: contracts
+      scope: user
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      Customer ({user}) asks: {message}'
+    output: markdown
+  inputForm:
+    title: Find my generators
+    fields:
+    - name: horizon
+      type: select
+      required: true
+      label: Contract horizon
+      options:
+      - value: '12'
+        label: 12 months
+      - value: '24'
+        label: 24 months
+      - value: '36'
+        label: 36 months
+    - name: notes
+      type: textarea
+      maxLength: 500
+      label: Anything else the agent should know (optional)
+  templates:
+  - key: monthly_statement
+    title: Monthly statement
+    description: Half-hourly matching between your consumption and generation, every month.
+    agent: statement_writer
+    params:
+    - name: mpan
+      type: text
+      label: Meter number (MPAN), optional
+    goal: 'Write the statement for {instance}. Meter: {mpan}. Today is {date}.'
+    schedule:
+      cron: 0 7 2 * *
+      userCanChange: false
+    maxPerUser: 3
+    roles:
+    - customer
+    deliver:
+      to: owner
+      onlyIfNew: true
+  approvals:
+  - key: contract_approval
+    title: Approve contract proposal
+    description: A trading manager approves a proposed supply contract.
+    role: trader
+    fields:
+    - customer_email
+    - generator_name
+    - generator_email
+    - annual_mwh
+    - price_per_mwh
+    - term_months
+    - explanation
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: contract_approved
+    'on':
+      approval: contract_approval
+      decision: approved
+    start:
+      agent: contractor
+    goal: 'Approved proposal: {event}'
+    asUser: false
+  - key: meter_feed
+    'on':
+      webhook: true
+    write:
+      collection: readings
+      fields:
+        key: key
+        mpan: mpan
+        period_start: period_start
+        consumption_kwh: consumption_kwh
+        matched_kwh: matched_kwh
+        generator_name: generator
+        customer_email: customer_email
+      keyBy: key
+  - key: generation_feed
+    'on':
+      webhook: true
+    write:
+      collection: generation
+      fields:
+        key: key
+        period_start: period_start
+        generated_kwh: generated_kwh
+        generator_email: generator_email
+        generator_name: generator
+      keyBy: key
+  - key: renewal_reminder
+    'on':
+      date:
+        collection: contracts
+        field: end_date
+        offsetDays: -60
+        hour: 8
+    notify:
+      to:
+      - record.customer_email
+      - record.generator_email
+      - role:trader
+      subject: 'Contract renewal in 60 days: {record.generator_name}'
+      body: The supply contract between {record.customer_email} and {record.generator_name} ends on {record.end_date}. Please
+        review the renewal options in Voltara.
+      link: contracts
+  - key: invoice_issued
+    'on':
+      collection: invoices
+      op: insert
+    notify:
+      to: record.customer_email
+      subject: Your Voltara invoice for {record.period}
+      body: 'Your invoice for {record.period} is ready: GBP {record.amount}. The direct debit is collected on the due date,
+        {record.due_date}.'
+      link: invoices
+  schedules:
+  - agent: biller
+    cron: 0 6 2 * *
+    action: run
+    owner: app
+    goal: Run the monthly billing for the previous month.
+    deliver:
+      to: admins
+      subject: Voltara billing run {date}
+  notifications:
+    emailOnRunDone: true
+  data:
+    collections:
+    - name: companies
+      description: The business's profile and supply preferences
+      ownedBy: user
+      access:
+      - role: trader
+        can:
+        - read
+      fields:
+      - name: company_name
+        type: text
+        required: true
+        label: Company name
+      - name: company_number
+        type: text
+        label: Company number
+      - name: contact_phone
+        type: text
+        label: Phone
+      - name: prefer_local
+        type: boolean
+        label: Prefer local generation
+      - name: home_postcode
+        type: text
+        label: Postcode for local matching
+      - name: technologies
+        type: multiselect
+        label: Preferred technologies
+        options:
+        - solar
+        - onshore_wind
+        - offshore_wind
+        - hydro
+        - biomass
+      - name: max_price
+        type: number
+        label: Maximum price (GBP/MWh)
+    - name: sites
+      description: Sites, meter numbers and consumption
+      ownedBy: user
+      access:
+      - role: trader
+        can:
+        - read
+      fields:
+      - name: site_name
+        type: text
+        required: true
+        label: Site name
+      - name: address
+        type: text
+        required: true
+        label: Address
+      - name: mpan
+        type: text
+        required: true
+        label: Meter number (MPAN)
+      - name: annual_mwh
+        type: number
+        required: true
+        label: Annual consumption (MWh)
+      - name: profile
+        type: select
+        label: Usage profile
+        options:
+        - office_hours
+        - '24_7'
+        - evening_heavy
+        - seasonal
+    - name: bills
+      description: Uploaded bills
+      ownedBy: user
+      access:
+      - role: trader
+        can:
+        - read
+      fields:
+      - name: site_mpan
+        type: text
+        label: Meter number (MPAN)
+      - name: period
+        type: text
+        label: Billing period
+      - name: bill_file
+        type: file
+        required: true
+        label: Bill
+        accept:
+        - pdf
+        - jpg
+        - png
+        maxMb: 10
+    - name: matches
+      description: Match reports of the agent, with explanations
+      ownedBy: user
+      access:
+      - role: trader
+        can:
+        - read
+    - name: generators
+      description: 'Generators'' listings: output and price'
+      ownedBy: org
+      access:
+      - role: trader
+        can:
+        - read
+        - write
+      - role: generator
+        where:
+          contact_email: '{user.email}'
+        can:
+        - read
+        - write
+      fields:
+      - name: generator_name
+        type: text
+        required: true
+        label: Generator name
+      - name: contact_email
+        type: email
+        required: true
+        label: Contact email (your login email)
+      - name: technology
+        type: select
+        required: true
+        label: Technology
+        options:
+        - solar
+        - onshore_wind
+        - offshore_wind
+        - hydro
+        - biomass
+      - name: capacity_mw
+        type: number
+        required: true
+        label: Capacity (MW)
+      - name: annual_output_mwh
+        type: number
+        required: true
+        label: Annual output available (MWh)
+      - name: price_per_mwh
+        type: number
+        required: true
+        label: Price (GBP/MWh)
+      - name: location
+        type: location
+        label: Location
+      - name: region
+        type: text
+        label: Region / postcode
+      - name: status
+        type: select
+        label: Status
+        options:
+        - listed
+        - paused
+    - name: contracts
+      description: Approved supply contracts
+      ownedBy: org
+      access:
+      - role: trader
+        can:
+        - read
+        - write
+      - role: customer
+        where:
+          customer_email: '{user.email}'
+        can:
+        - read
+      - role: generator
+        where:
+          generator_email: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: customer_email
+        type: email
+        label: Customer
+      - name: generator_name
+        type: text
+        label: Generator
+      - name: generator_email
+        type: email
+        label: Generator email
+      - name: annual_mwh
+        type: number
+        label: Annual MWh
+      - name: price_per_mwh
+        type: number
+        label: Price (GBP/MWh)
+      - name: term_months
+        type: number
+        label: Term (months)
+      - name: start_date
+        type: date
+        label: Start
+      - name: end_date
+        type: date
+        label: End
+      - name: status
+        type: select
+        label: Status
+        options:
+        - active
+        - ended
+        - renewing
+    - name: readings
+      description: Half-hourly consumption and matched generation, from the settlement feed
+      ownedBy: org
+      access:
+      - role: trader
+        can:
+        - read
+      - role: customer
+        where:
+          customer_email: '{user.email}'
+        can:
+        - read
+      retentionDays: 1095
+      fields:
+      - name: key
+        type: text
+      - name: mpan
+        type: text
+        label: MPAN
+      - name: period_start
+        type: date
+        label: Period start
+      - name: consumption_kwh
+        type: number
+        label: Consumption (kWh)
+      - name: matched_kwh
+        type: number
+        label: Matched (kWh)
+      - name: generator_name
+        type: text
+        label: Generator
+      - name: customer_email
+        type: email
+    - name: generation
+      description: Half-hourly generation sold by generators
+      ownedBy: org
+      access:
+      - role: trader
+        can:
+        - read
+      - role: generator
+        where:
+          generator_email: '{user.email}'
+        can:
+        - read
+      retentionDays: 1095
+      fields:
+      - name: key
+        type: text
+      - name: period_start
+        type: date
+        label: Period start
+      - name: generated_kwh
+        type: number
+        label: Generated (kWh)
+      - name: generator_name
+        type: text
+        label: Generator
+      - name: generator_email
+        type: email
+    - name: invoices
+      description: Monthly customer invoices
+      ownedBy: org
+      access:
+      - role: trader
+        can:
+        - read
+      - role: customer
+        where:
+          customer_email: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: customer_email
+        type: email
+        label: Customer
+      - name: period
+        type: text
+        label: Period
+      - name: energy_mwh
+        type: number
+        label: Energy (MWh)
+      - name: matched_mwh
+        type: number
+        label: Matched (MWh)
+      - name: energy_charge
+        type: number
+        label: Energy charge
+      - name: margin
+        type: number
+        label: Margin
+      - name: platform_fee
+        type: number
+        label: Platform fee
+      - name: vat
+        type: number
+        label: VAT
+      - name: amount
+        type: number
+        label: Total (GBP)
+      - name: status
+        type: select
+        label: Status
+        options:
+        - issued
+        - paid
+        - failed
+      - name: due_date
+        type: date
+        label: Due
+    - name: payouts
+      description: Payments to generators
+      ownedBy: org
+      access:
+      - role: trader
+        can:
+        - read
+      - role: generator
+        where:
+          generator_email: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: generator_email
+        type: email
+        label: Generator
+      - name: period
+        type: text
+        label: Period
+      - name: mwh_sold
+        type: number
+        label: MWh sold
+      - name: price_per_mwh
+        type: number
+        label: Price (GBP/MWh)
+      - name: amount
+        type: number
+        label: Amount (GBP)
+      - name: status
+        type: select
+        label: Status
+        options:
+        - pending
+        - paid
+    - name: pricing
+      description: Pricing set by the admins
+      ownedBy: shared
+      fields:
+      - name: margin_per_mwh
+        type: number
+        label: Margin (GBP/MWh)
+      - name: platform_fee_monthly
+        type: number
+        label: Platform fee per month (GBP)
+      - name: effective_from
+        type: date
+        label: Effective from
+    - name: statements
+      description: Monthly statements
+      ownedBy: instance
+  views:
+  - key: home
+    type: page
+    title: Voltara
+    nav: false
+    sections:
+    - type: hero
+      title: Buy power straight from **renewable generators**.
+      text: Voltara is a licensed supplier. Tell us your sites and preferences; our agent matches you with generators and
+        explains every match, and a trading manager approves your contract.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      eyebrow: Direct renewable supply
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Add your sites
+        text: Meter numbers, consumption and bills.
+      - title: Get matched
+        text: The agent weighs your preferences and BMRS prices.
+      - title: Approved by a trader
+        text: A trading manager signs off every contract.
+      - title: Track and pay
+        text: Live consumption, half-hourly statements, monthly invoices.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: Margin per MWh
+        text: A transparent supplier margin on every MWh.
+      - title: Platform fee
+        text: A fixed monthly fee.
+    - type: note
+      content: Voltara supplies electricity under its Ofgem supply licence. Forecasts use public Elexon BMRS data and are
+        not financial advice.
+  - key: company
+    type: form
+    title: Company & preferences
+    collection: companies
+    edit: true
+    submit:
+      label: Save
+      message: Saved.
+      redirect: sites
+    roles:
+    - customer
+    - admin
+  - key: sites
+    type: form
+    title: Add a site
+    collection: sites
+    submit:
+      label: Add site
+      message: Site added.
+      redirect: my_sites
+    roles:
+    - customer
+    - admin
+  - key: my_sites
+    type: table
+    title: My sites
+    source: collection:sites
+    roles:
+    - customer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: site_name
+        label: Site
+      - key: mpan
+        label: MPAN
+      - key: annual_mwh
+        label: Annual MWh
+        format: number
+  - key: upload_bill
+    type: form
+    title: Upload a bill
+    collection: bills
+    submit:
+      label: Upload
+      message: Bill received.
+    roles:
+    - customer
+    - admin
+  - key: find_matches
+    type: new_run
+    title: Find generators
+    roles:
+    - customer
+    - admin
+  - key: my_matches
+    type: history
+    title: My matches
+    source: run
+    roles:
+    - customer
+    - admin
+  - key: match_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: consumption
+    type: table
+    title: Live consumption
+    source: collection:readings
+    roles:
+    - customer
+    - admin
+    data:
+      display: chart
+      chart: bar
+      groupBy:
+        field: period_start
+        bucket: day
+        aggs:
+        - key: consumption
+          agg: sum
+          field: consumption_kwh
+        - key: matched
+          agg: sum
+          field: matched_kwh
+      fields:
+      - key: period_start
+        label: Day
+        format: date
+      - key: consumption
+        label: Consumption kWh
+      - key: matched
+        label: Supplied by your generators kWh
+      sort:
+        field: period_start
+        dir: desc
+      limit: 60
+      empty: No readings yet.
+  - key: statements
+    type: instances
+    title: Monthly statements
+    template: monthly_statement
+    roles:
+    - customer
+    - admin
+  - key: contracts
+    type: table
+    title: Contracts
+    source: collection:contracts
+    roles:
+    - customer
+    - generator
+    - trader
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: generator_name
+        label: Generator
+      - key: customer_email
+        label: Customer
+      - key: annual_mwh
+        label: Annual MWh
+        format: number
+      - key: price_per_mwh
+        label: GBP/MWh
+        format: money
+      - key: start_date
+        label: Start
+        format: date
+      - key: end_date
+        label: End
+        format: date
+      - key: status
+        label: Status
+        format: badge
+  - key: invoices
+    type: table
+    title: Invoices
+    source: collection:invoices
+    roles:
+    - customer
+    - trader
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: period
+        label: Period
+      - key: energy_mwh
+        label: MWh
+        format: number
+      - key: energy_charge
+        label: Energy
+        format: money
+      - key: margin
+        label: Margin
+        format: money
+      - key: platform_fee
+        label: Platform fee
+        format: money
+      - key: vat
+        label: VAT
+        format: money
+      - key: amount
+        label: Total
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      - key: due_date
+        label: Due
+        format: date
+      sort:
+        field: period
+        dir: desc
+  - key: assistant
+    type: chat
+    title: Billing assistant
+    source: agent:billing_assistant
+    examples:
+    - Why did my invoice go up in the last month?
+    - What is the platform fee on my latest invoice?
+    - How much did I pay per MWh?
+    placeholder: Ask about your invoices
+    roles:
+    - customer
+    - admin
+  - key: list_output
+    type: form
+    title: List my generation
+    collection: generators
+    edit: true
+    submit:
+      label: Save listing
+      message: Listing saved.
+    roles:
+    - generator
+    - admin
+  - key: gen_output
+    type: table
+    title: My output
+    source: collection:generation
+    roles:
+    - generator
+    - admin
+    data:
+      display: chart
+      chart: line
+      groupBy:
+        field: period_start
+        bucket: day
+        aggs:
+        - key: generated
+          agg: sum
+          field: generated_kwh
+      fields:
+      - key: period_start
+        label: Day
+        format: date
+      - key: generated
+        label: Generated kWh
+      limit: 60
+  - key: gen_payouts
+    type: table
+    title: Sales and payments
+    source: collection:payouts
+    roles:
+    - generator
+    - trader
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: period
+        label: Period
+      - key: mwh_sold
+        label: MWh sold
+        format: number
+      - key: price_per_mwh
+        label: GBP/MWh
+        format: money
+      - key: amount
+        label: Amount
+        format: money
+      - key: status
+        label: Status
+        format: badge
+  - key: all_generators
+    type: table
+    title: Generators
+    source: collection:generators
+    roles:
+    - trader
+    - admin
+    data:
+      display: table
+      fields:
+      - key: generator_name
+        label: Generator
+      - key: technology
+        label: Technology
+        format: badge
+      - key: capacity_mw
+        label: MW
+        format: number
+      - key: annual_output_mwh
+        label: Annual MWh
+        format: number
+      - key: price_per_mwh
+        label: GBP/MWh
+        format: money
+      - key: status
+        label: Status
+        format: badge
+  - key: proposals
+    type: approvals
+    title: Contract approvals
+    approvals:
+    - contract_approval
+    roles:
+    - trader
+    - admin
+  extensions:
+  - key: direct_debit
+    description: Monthly Stripe direct debit (BACS mandate and collection of the invoices) is not available in the app's billing
+      yet. Invoices are generated as records; collection runs in Stripe outside the app.
+  - key: settlement_feed
+    description: Half-hourly data reaches the app through the webhooks meter_feed and generation_feed, posted by the licensed
+      settlement systems (BSC and Elexon). Matching volumes are computed there, not in the app.
+  egress:
+    hosts:
+    - data.elexon.co.uk
+    notes: 'Elexon BMRS Insights API, public data under the BSC open data licence; attribution: Contains BMRS data © Elexon
+      Limited.'
+  billing:
+    modes:
+    - free

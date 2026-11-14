@@ -1,0 +1,805 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: lexbrook
+  displayName: Lexbrook
+  tagline:
+    en: Contract review and legal Q&A for in-house legal teams, with a lawyer's sign-off on everything.
+  description:
+    en: Lexbrook checks every contract against your legal team's playbook, marks deviations red, amber or green and drafts
+      redlines. A lawyer approves or edits each review before the requester sees it. Colleagues can also ask legal questions
+      in a chat that cites the playbook, past approved contracts and UK legislation.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1d2b45'
+      accent: '#9b2c3a'
+      background: '#f7f6f3'
+      foreground: '#1a1d23'
+    fonts:
+      body: Inter
+      display: Newsreader
+    wordmark:
+    - text: Lex
+      color: primary
+    - text: brook
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Platform admin
+      assignedBy: admin_emails
+    - key: reviewer
+      label: Lawyer
+      assignedBy: invite
+    - key: requester
+      label: Requester
+      assignedBy: invite
+  limits:
+  - action: chat
+    per: user
+    max: 50
+    window: day
+  agents:
+  - key: extractor
+    role: helper
+    description: Reads the uploaded contract and splits it into numbered clauses.
+    profile:
+      inline:
+        display_name: Lexbrook extractor
+        crews:
+        - id: extractor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare contracts for legal review. Open every contract file id given in the goal with the read_upload
+            tool (it reads PDF, Word and scans, OCR included). Output a level-1 title "# Clause extract — <counterparty>",
+            then a numbered list of clauses. For each clause give: number, heading, topic (liability, indemnity, termination,
+            governing law, IP, confidentiality, payment, data protection, other) and the verbatim text. Never summarise away
+            wording, never invent clauses. If the file cannot be read, say so plainly.'
+    appTools:
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
+  - key: analyst
+    role: main
+    description: Compares each clause with the playbook, rates it red/amber/green, drafts redlines and saves a draft for lawyer
+      review.
+    profile:
+      inline:
+        display_name: Lexbrook analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a contracts analyst for an in-house legal team. You receive the clause extract of a contract
+            and the request details (type, counterparty, value, deadline and the event with the requester''s email). First
+            call read_playbook to load the company''s playbook: for each topic a preferred position, a fallback and a red
+            line. Compare each clause with the matching playbook entry: GREEN = within preferred or fallback, AMBER = outside
+            preferred but negotiable, RED = breaches a red line or no acceptable fallback applies. If the playbook has no
+            entry for a clause, mark it AMBER and say it is not covered. Produce a Markdown review that starts with "# Review
+            — <counterparty> (<contract type>)" and has: ## Overall risk (one word: red, amber or green, then two sentences),
+            ## Clause table (| # | Clause | Rating | Playbook position | Deviation |), ## Proposed redlines (for each amber/red
+            clause: the replacement wording and a one-line reason). Never invent playbook positions or law; this is a draft
+            for a lawyer, not advice to the requester. When done, call save_draft once with: request_ref (counterparty + today''s
+            date), requester_email (the email of the requester taken from the event), counterparty, contract_type, risk (red|amber|green),
+            clause_table, redlines, summary (max 80 words, plain language for the requester), received_on (today, YYYY-MM-DD),
+            status "draft". Nothing is sent to the requester: a lawyer approves or edits the draft first.'
+    appTools:
+    - name: read_playbook
+      description: Read the company playbook positions
+      action: read
+      collection: playbook
+      scope: all
+    - name: save_draft
+      description: Save the review draft for lawyer approval
+      action: append
+      collection: drafts
+      scope: all
+  - key: counsel
+    role: helper
+    description: Answers colleagues' legal questions citing the playbook, approved contracts and UK legislation.
+    profile:
+      inline:
+        display_name: Lexbrook counsel
+        chat_mode: true
+        crews:
+        - id: counsel
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You answer legal questions from colleagues of an in-house legal team. Before answering, search the
+            playbook (search_playbook), past approved contracts (search_approved) and, for questions of UK law, legislation.gov.uk
+            (legislation_search to find the Act, legislation_text with a path such as /ukpga/1977/50/section/2/data.xml to
+            read a section). Cite every source: playbook topic, approved contract (counterparty), or the Act and section with
+            its legislation.gov.uk link. Use only what the tools returned; if nothing supports an answer, say so and tell
+            the colleague to submit a request to the legal team. Answer briefly in plain English, lead with the answer, then
+            the sources. You are a first-line assistant, not a substitute for a lawyer: for anything with real exposure, recommend
+            review by the legal team. Only UK law.'
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New question from {user}: {message}
+
+      Today is {date}.'
+    appTools:
+    - name: search_playbook
+      description: Search the playbook positions
+      action: search
+      collection: playbook
+      scope: all
+    - name: search_approved
+      description: Search past approved contracts
+      action: search
+      collection: approved_contracts
+      scope: all
+    - name: legislation_search
+      description: Search UK legislation by title (Atom feed)
+      action: http
+      http:
+        method: GET
+        url: https://www.legislation.gov.uk/all/data.feed
+        attribution: legislation.gov.uk, Open Government Licence v3.0
+    - name: legislation_text
+      description: Fetch the text of a UK Act or section, path like /ukpga/1977/50/section/2/data.xml
+      action: http
+      http:
+        method: GET
+        url: https://www.legislation.gov.uk
+        allowPath: true
+        attribution: legislation.gov.uk, Open Government Licence v3.0
+  - key: digester
+    role: scheduled
+    description: Writes the weekly digest of open requests and turnaround times for the lawyers.
+    profile:
+      inline:
+        display_name: Lexbrook digest
+        crews:
+        - id: digester
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the weekly digest for a legal team. Call read_drafts and use only what it returns. Start
+            with "# Lexbrook weekly digest — <date>". Sections: ## Open requests (drafts with status draft: counterparty,
+            type, risk, days waiting since received_on), ## Released this week (status approved), ## Turnaround (average and
+            slowest days between received_on and approved_on, by contract type), ## Attention (red-risk or overdue items).
+            Plain text friendly, under 300 words, never invent figures.'
+    goalTemplate: Write the digest for the week ending {date}.
+    appTools:
+    - name: read_drafts
+      description: Read all review drafts
+      action: read
+      collection: drafts
+      scope: all
+    output: markdown
+  teams:
+  - key: contract_review
+    mode: sequence
+    title: Contract review
+    description: Extract the clauses, then compare with the playbook and draft the redlines.
+    steps:
+    - agent: extractor
+    - agent: analyst
+      after:
+      - extractor
+    maxMinutes: 20
+  triggers:
+  - key: review_request
+    description: A new request starts the contract review team
+    'on':
+      collection: requests
+      op: insert
+    start:
+      team: contract_review
+    goal: 'Review this contract request.
+
+      Contract type: {record.contract_type}
+
+      Counterparty: {record.counterparty}
+
+      Value: {record.value}
+
+      Signing deadline: {record.deadline}
+
+      Contract file ids: {record.contract_file}
+
+      Notes: {record.notes}
+
+      Event (includes the requester): {event}
+
+      Today is {date}.'
+    asUser: true
+  - key: new_draft_alert
+    'on':
+      collection: drafts
+      op: insert
+    notify:
+      to: role:reviewer
+      subject: 'New contract draft to review: {record.counterparty}'
+      body: A draft review for {record.counterparty} ({record.contract_type}), risk {record.risk}, is waiting for a lawyer
+        to approve or edit.
+      link: review_queue
+  - key: release_response
+    description: When a lawyer approves a draft, the requester gets it
+    'on':
+      collection: drafts
+      op: update
+      where:
+        status: approved
+    write:
+      collection: responses
+      fields:
+        requester_email: requester_email
+        counterparty: counterparty
+        contract_type: contract_type
+        summary: summary
+        redlines: redlines
+        clause_table: clause_table
+        risk: risk
+      keyBy: request_ref
+  - key: archive_approved
+    'on':
+      collection: drafts
+      op: update
+      where:
+        status: approved
+    write:
+      collection: approved_contracts
+      fields:
+        counterparty: counterparty
+        contract_type: contract_type
+        summary: summary
+        redlines: redlines
+      keyBy: request_ref
+  - key: response_ready
+    'on':
+      collection: responses
+      op: insert
+    notify:
+      to:
+      - record.requester_email
+      subject: Your contract review for {record.counterparty} is ready
+      body: The legal team has reviewed your request for {record.counterparty}. Sign in to see the summary and the proposed
+        changes.
+      link: my_responses
+  schedules:
+  - agent: digester
+    cron: 0 7 * * 1
+    action: run
+    owner: app
+    deliver:
+      to: role:reviewer
+      subject: Lexbrook weekly digest {date}
+      onlyIfNew: true
+  egress:
+    hosts:
+    - www.legislation.gov.uk
+    notes: UK legislation from legislation.gov.uk, reusable under the Open Government Licence v3.0.
+  data:
+    collections:
+    - name: playbook
+      ownedBy: shared
+      description: 'The legal team''s positions per clause topic: preferred, fallback, red line. Filled by admins on the data
+        page or from a CSV.'
+      fields:
+      - name: topic
+        type: text
+        required: true
+      - name: contract_type
+        type: text
+      - name: preferred
+        type: textarea
+        required: true
+      - name: fallback
+        type: textarea
+      - name: red_line
+        type: textarea
+    - name: approved_contracts
+      ownedBy: shared
+      description: Past approved contracts and their agreed positions, used as precedent.
+      fields:
+      - name: counterparty
+        type: text
+      - name: contract_type
+        type: text
+      - name: summary
+        type: textarea
+      - name: redlines
+        type: textarea
+    - name: requests
+      ownedBy: user
+      description: Contract review requests; requesters see their own, lawyers see all.
+      fields:
+      - name: contract_type
+        type: select
+        required: true
+        label: Contract type
+        options:
+        - NDA
+        - MSA
+        - SaaS agreement
+        - Services agreement
+        - Supply agreement
+        - Employment
+        - Lease
+        - Other
+      - name: counterparty
+        type: text
+        required: true
+        label: Counterparty
+      - name: value
+        type: number
+        label: Contract value (GBP)
+      - name: deadline
+        type: date
+        required: true
+        label: Signing deadline
+      - name: contract_file
+        type: file
+        required: true
+        label: Contract
+        accept:
+        - pdf
+        - docx
+        maxMb: 15
+      - name: notes
+        type: textarea
+        maxLength: 800
+        label: Notes for the lawyer
+      access:
+      - role: reviewer
+        can:
+        - read
+        - write
+      retentionDays: 1095
+    - name: drafts
+      ownedBy: org
+      description: AI review drafts awaiting a lawyer. Never visible to requesters.
+      fields:
+      - name: request_ref
+        type: text
+      - name: requester_email
+        type: email
+      - name: counterparty
+        type: text
+      - name: contract_type
+        type: text
+      - name: risk
+        type: select
+        options:
+        - red
+        - amber
+        - green
+      - name: clause_table
+        type: textarea
+      - name: redlines
+        type: textarea
+      - name: summary
+        type: textarea
+      - name: received_on
+        type: date
+      - name: approved_on
+        type: date
+      - name: days_to_sign
+        type: number
+        label: Days to sign
+      - name: status
+        type: select
+        options:
+        - draft
+        - approved
+        default: draft
+      access:
+      - role: reviewer
+        can:
+        - read
+        - write
+    - name: responses
+      ownedBy: user
+      description: Lawyer-approved reviews released to the requester.
+      fields:
+      - name: requester_email
+        type: email
+      - name: counterparty
+        type: text
+      - name: contract_type
+        type: text
+      - name: risk
+        type: text
+      - name: summary
+        type: textarea
+      - name: redlines
+        type: textarea
+      - name: clause_table
+        type: textarea
+      access:
+      - role: requester
+        where:
+          requester_email: '{user.email}'
+        can:
+        - read
+      - role: reviewer
+        can:
+        - read
+  views:
+  - key: home
+    type: page
+    title: Lexbrook
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: For in-house legal teams
+      title: Contract review that follows **your playbook**, signed off by your lawyers.
+      text: Colleagues submit a contract. Lexbrook checks every clause against your preferred, fallback and red-line positions,
+        marks it red, amber or green and drafts the redlines. A lawyer approves or edits before anything reaches the requester.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Request
+        text: A colleague uploads the contract with type, counterparty, value and deadline.
+        badge: '1'
+      - title: Review
+        text: An agent team extracts the clauses and compares each with the playbook.
+        badge: '2'
+      - title: Lawyer approval
+        text: A lawyer approves or edits the draft redlines. Nothing is released before.
+        badge: '3'
+      - title: Answer
+        text: The requester gets the approved summary and redlines by email and in the app.
+        badge: '4'
+    - type: cards
+      title: Also included
+      items:
+      - title: Legal Q&A chat
+        text: Colleagues ask questions and get answers citing the playbook, past approved contracts and UK legislation.
+      - title: Dashboard
+        text: Volumes, risk levels and time to sign for the whole team.
+      - title: Weekly digest
+        text: Open requests and turnaround times in the lawyers' inbox every Monday.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: Lawyers
+        text: Monthly subscription per lawyer seat.
+      - title: Requesters
+        text: Free for business colleagues, unlimited requests.
+    - type: note
+      content: Lexbrook supports legal teams and does not replace legal advice. Every review is checked by a lawyer before
+        release.
+  - key: new_request
+    type: form
+    title: New contract request
+    collection: requests
+    fields:
+    - contract_type
+    - counterparty
+    - value
+    - deadline
+    - contract_file
+    - notes
+    submit:
+      label: Send to legal
+      message: Request sent. You will be emailed when a lawyer has approved the review.
+      redirect: my_requests
+    roles:
+    - requester
+    - reviewer
+    - admin
+  - key: my_requests
+    type: table
+    title: Requests
+    source: collection:requests
+    export: true
+    data:
+      display: table
+      fields:
+      - key: counterparty
+        label: Counterparty
+      - key: contract_type
+        label: Type
+      - key: value
+        label: Value
+        format: money
+      - key: deadline
+        label: Deadline
+        format: date
+      sort:
+        field: deadline
+        dir: asc
+      limit: 100
+    roles:
+    - requester
+    - reviewer
+    - admin
+  - key: my_responses
+    type: cards
+    title: Approved reviews
+    source: collection:responses
+    data:
+      display: cards
+      fields:
+      - key: counterparty
+        label: Counterparty
+      - key: risk
+        label: Risk
+        format: badge
+      - key: summary
+        label: Summary
+      - key: redlines
+        label: Proposed redlines
+      - key: clause_table
+        label: Clause table
+    roles:
+    - requester
+    - reviewer
+    - admin
+  - key: review_queue
+    type: table
+    title: Review queue
+    source: collection:drafts
+    data:
+      display: table
+      fields:
+      - key: counterparty
+        label: Counterparty
+      - key: contract_type
+        label: Type
+      - key: risk
+        label: Risk
+        format: badge
+      - key: received_on
+        label: Received
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: received_on
+        dir: desc
+      limit: 100
+    roles:
+    - reviewer
+    - admin
+  - key: review_edit
+    type: form
+    title: Approve or edit a draft
+    collection: drafts
+    edit: true
+    fields:
+    - counterparty
+    - risk
+    - clause_table
+    - redlines
+    - summary
+    - approved_on
+    - days_to_sign
+    - status
+    submit:
+      label: Save
+      message: Saved. Approved drafts are released to the requester.
+      redirect: review_queue
+    roles:
+    - reviewer
+    - admin
+    nav: false
+  - key: playbook_view
+    type: table
+    title: Playbook
+    source: collection:playbook
+    export: true
+    data:
+      display: table
+      fields:
+      - key: topic
+        label: Topic
+      - key: preferred
+        label: Preferred
+      - key: fallback
+        label: Fallback
+      - key: red_line
+        label: Red line
+      limit: 200
+    roles:
+    - reviewer
+    - admin
+  - key: assistant
+    type: chat
+    title: Ask legal
+    source: agent:counsel
+    examples:
+    - Can we accept unlimited liability in an NDA?
+    - What is our fallback on governing law?
+    - What does the Unfair Contract Terms Act say about exclusion of negligence?
+    placeholder: Ask a legal question…
+    roles:
+    - requester
+    - reviewer
+    - admin
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - reviewer
+    - admin
+    sections:
+    - type: data
+      title: Volume by contract type
+      source: collection:drafts
+      display: chart
+      chart: bar
+      fields:
+      - key: contract_type
+        label: Type
+      - key: n
+        label: Requests
+      groupBy:
+        field: contract_type
+        aggs:
+        - key: n
+          agg: count
+    - type: data
+      title: Risk levels
+      source: collection:drafts
+      display: chart
+      chart: pie
+      fields:
+      - key: risk
+        label: Risk
+      - key: n
+        label: Requests
+      groupBy:
+        field: risk
+        aggs:
+        - key: n
+          agg: count
+    - type: data
+      title: Time to sign by month
+      source: collection:drafts
+      display: chart
+      chart: line
+      fields:
+      - key: received_on
+        label: Month
+      - key: avg_days
+        label: Avg days to sign
+      groupBy:
+        field: received_on
+        bucket: month
+        aggs:
+        - key: avg_days
+          agg: avg
+          field: days_to_sign
+    - type: data
+      title: Totals
+      source: collection:drafts
+      display: kpi
+      kpis:
+      - label: Reviews
+        agg: count
+      - label: Avg days to sign
+        agg: avg
+        field: days_to_sign
+        format: number
+  - key: account
+    type: account
+    title: Subscription
+    roles:
+    - reviewer
+    - admin
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: lawyer_seat
+      price: 99
+      interval: month
+      label: Lawyer seat
+      includes:
+      - Review queue and approvals
+      - Dashboard and weekly digest
+      - Legal Q&A chat
+      roles:
+      - reviewer
+  notifications:
+    emailOnRunDone: false
+  extensions:
+  - key: per_company_tenancy
+    description: 'One app serves one legal team: reviewers see every request in the app, so several companies in one app cannot
+      be separated by company. Run one app per company, or add a company field later. The platform admin role sees everything.'
+  - key: per_seat_billing
+    description: The subscription is one plan bought by each lawyer. A seat count managed by the general counsel for the whole
+      team is not expressible yet.
+  - key: oauth_microsoft_slack
+    description: Connecting a user's Microsoft 365 or Slack account by OAuth is not available yet.
+  - key: slack_outlook_word_assistants
+    description: Answers inside Slack, Outlook and Word (bot and add-ins) are not available yet. The chat view works in the
+      web and phone app.
+  - key: inbound_email_intake
+    description: Contracts forwarded to an inbound email address that become requests are not available yet. Requesters use
+      the request form.
+  - key: playbook_upload
+    description: Playbook positions are entered by admins on the built-in data page (by hand or from a CSV). A dedicated lawyer
+      upload form for a shared catalogue is not allowed.

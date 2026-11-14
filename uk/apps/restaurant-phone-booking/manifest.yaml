@@ -1,0 +1,737 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: tablewise
+  displayName: Tablewise
+  tagline:
+    en: A voice AI that answers your restaurant's phone 24/7 and books the tables.
+  description:
+    en: Tablewise answers calls with a voice agent, checks free slots, takes bookings, answers menu and allergen questions,
+      and sends large parties to your manager for approval.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#3b1f2b'
+      accent: '#d9822b'
+      background: '#fbf8f4'
+      foreground: '#241a1d'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Table
+      color: primary
+    - text: wise
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: Restaurant owner
+      assignedBy: signup
+    - key: manager
+      label: Manager
+      assignedBy: derived
+      from: collection:restaurants.manager_email
+  agents:
+  - key: voice
+    role: main
+    description: Answers the restaurant's phone, checks slots, books tables and answers menu questions.
+    memory: none
+    profile:
+      inline:
+        display_name: Tablewise voice host
+        chat_mode: true
+        crews:
+        - id: voice
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the friendly phone host of one restaurant, speaking on a live call. Keep every reply short
+            and natural for speech (one or two sentences, no lists, no markdown). You know the restaurant''s opening hours,
+            slot length, covers per slot, menu, allergens and FAQs from the context. Answer menu and allergen questions ONLY
+            from the uploaded menu and FAQs; if the information is not there, say you will pass the question to the team and
+            never guess about allergens.
+
+            To book: collect name, phone number, party size, date and time, email (optional, for the confirmation) and dietary
+            notes. Check availability with bookings_read: count the covers already booked in that slot (status booked or pending_approval)
+            against covers per slot and the opening hours; offer the nearest alternative if full. Then store the booking with
+            booking_add (fields: customer_name, customer_phone, customer_email, party_size, start as ISO date-time, date as
+            YYYY-MM-DD, dietary_notes, special_request, manager_email from the restaurant record, status booked). If the booking
+            system is connected, also call resos_create_booking. Read the confirmation back: name, party size, date, time.
+
+            If the party is larger than 8 people, or the caller has a special request (private room, event, decorations, unusual
+            needs), do NOT confirm: store the booking with status pending_approval, call request_large_party, and tell the
+            caller the manager will confirm shortly by email or text message to the number given. When you are told an approval
+            was decided, update the booking with booking_update: status booked if approved, cancelled if rejected.
+
+            Never invent availability, prices or dishes. If the caller wants a human, take a message and say the team will
+            call back.'
+          mcp_servers: []
+    context:
+    - key: restaurant
+      from: collection:restaurants
+    - key: menu
+      from: collection:menu_items
+    - key: faqs
+      from: collection:faqs
+    goalTemplate: 'Restaurant record: {restaurant}
+
+      Menu and allergens: {menu}
+
+      FAQs: {faqs}
+
+      Today is {date}.
+
+      Conversation so far: {history}
+
+      Caller says: {message}'
+    awaits:
+    - large_party
+    appTools:
+    - name: bookings_read
+      description: Read the restaurant's bookings to check free slots
+      action: read
+      collection: bookings
+      scope: user
+    - name: booking_add
+      description: Create a booking
+      action: append
+      collection: bookings
+      scope: user
+    - name: booking_update
+      description: Change a booking (status, details)
+      action: write
+      collection: bookings
+      scope: user
+    - name: resos_create_booking
+      description: Create the booking in the restaurant's own booking system (ResOS-type partner API)
+      action: http
+      http:
+        method: POST
+        url: https://api.resos.com/v1/bookings
+        attribution: Restaurant's own booking system, via its partner API key
+        credential:
+          provider: booking_system
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  - key: summariser
+    role: scheduled
+    description: Writes the weekly summary of calls and covers booked for one restaurant.
+    profile:
+      inline:
+        display_name: Tablewise weekly summary
+        crews:
+        - id: summariser
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write a short weekly email report for a restaurant owner. Read the calls and bookings of the
+            last 7 days with the tools. Start with "# Tablewise weekly summary — week of <date>". Sections: ## Calls (answered,
+            missed, average length), ## Bookings (made, covers booked, pending approvals, cancellations), ## What guests asked
+            (top menu/allergen questions from transcripts), ## Suggestions. Use real figures only; never invent numbers. Under
+            250 words, plain text friendly.'
+    appTools:
+    - name: calls_read
+      description: Read the restaurant's calls and transcripts
+      action: read
+      collection: calls
+      scope: user
+    - name: bookings_read
+      description: Read the restaurant's bookings to check free slots
+      action: read
+      collection: bookings
+      scope: user
+    goalTemplate: Write the weekly summary for the restaurant "{instance}". Today is {date}. Write in the language with ISO
+      code {lang}.
+    output: markdown
+  channels:
+  - key: line
+    type: phone
+    agent: voice
+    greeting:
+      en: Hello, thank you for calling. How can I help you today?
+    language: en
+  serviceHours:
+    timezone: Europe/London
+    leadMinutes: 10
+    slots:
+    - days:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      - 7
+      from: 00:00
+      to: '23:59'
+  data:
+    collections:
+    - name: restaurants
+      description: 'The restaurant profile: hours, layout, covers per slot, manager'
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Restaurant name
+      - name: phone_number
+        type: text
+        label: Restaurant phone number (set when the line is activated)
+      - name: manager_email
+        type: email
+        required: true
+        label: Manager email (approves large parties)
+      - name: opening_hours
+        type: textarea
+        required: true
+        label: Opening hours (e.g. Mon-Fri 12:00-22:30)
+      - name: table_layout
+        type: textarea
+        label: Table layout (e.g. 6 tables of 2, 4 tables of 4, 1 table of 8)
+      - name: covers_per_slot
+        type: number
+        required: true
+        label: Covers per slot
+      - name: slot_minutes
+        type: number
+        label: Slot length in minutes
+    - name: menu_items
+      description: Menu with allergens
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Dish
+      - name: category
+        type: text
+        label: Category
+      - name: description
+        type: textarea
+        label: Description
+      - name: price
+        type: number
+        label: Price
+      - name: allergens
+        type: text
+        label: Allergens
+      - name: menu_file
+        type: file
+        accept:
+        - pdf
+        - docx
+        - csv
+        - txt
+        label: Menu file (optional)
+    - name: faqs
+      description: Frequently asked questions
+      ownedBy: user
+      fields:
+      - name: question
+        type: text
+        required: true
+        label: Question
+      - name: answer
+        type: textarea
+        required: true
+        label: Answer
+    - name: bookings
+      description: Table bookings taken by the voice agent
+      ownedBy: user
+      retentionDays: 730
+      fields:
+      - name: customer_name
+        type: text
+        required: true
+        label: Name
+      - name: customer_phone
+        type: text
+        label: Phone
+      - name: customer_email
+        type: email
+        label: Email
+      - name: party_size
+        type: number
+        required: true
+        label: Party size
+      - name: start
+        type: date
+        required: true
+        label: Date and time
+      - name: date
+        type: date
+        label: Date
+      - name: dietary_notes
+        type: textarea
+        label: Dietary notes
+      - name: special_request
+        type: textarea
+        label: Special request
+      - name: manager_email
+        type: email
+        label: Manager email
+      - name: status
+        type: select
+        label: Status
+        options:
+        - value: booked
+          label: Booked
+        - value: pending_approval
+          label: Pending approval
+        - value: cancelled
+          label: Cancelled
+      access:
+      - role: manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: calls
+      description: 'Every call: caller, duration, outcome, transcript'
+      ownedBy: user
+      retentionDays: 180
+      fields:
+      - name: caller
+        type: text
+        label: Caller
+      - name: started_at
+        type: date
+        label: When
+      - name: duration
+        type: number
+        label: Duration (s)
+      - name: outcome
+        type: text
+        label: Outcome
+      - name: transcript
+        type: textarea
+        label: Transcript
+      - name: manager_email
+        type: email
+        label: Manager email
+      access:
+      - role: manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+    credentials:
+    - provider: booking_system
+      kind: api_key
+      scope: user
+      label: Booking system partner API key
+      help: In your ResOS or OpenTable-type account, open the integrations or partner API page and create a key.
+      required: false
+  inputForm:
+    title: Weekly summary
+    fields: []
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Tablewise
+    sections:
+    - type: hero
+      title: Never miss a **booking call** again.
+      text: A voice AI answers your restaurant's phone 24/7, checks free tables, takes the booking, answers menu and allergen
+        questions, and sends large parties to your manager.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      layout: stack
+      band: true
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Set up
+        text: Enter opening hours, tables and covers per slot; upload your menu, allergens and FAQs.
+      - title: Connect
+        text: Paste your booking-system partner API key and activate your restaurant's phone number.
+      - title: Relax
+        text: The agent answers, books, confirms by email and reminds guests on the day.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: Per site, monthly
+        text: A subscription per restaurant with a monthly call allowance; extra calls cost a small fee each.
+    - type: note
+      content: Large parties (over 8) and special requests always wait for your manager's approval.
+  - key: overview
+    type: page
+    title: Dashboard
+    roles:
+    - user
+    - admin
+    - manager
+    sections:
+    - type: data
+      title: Calls this period
+      source: collection:calls
+      display: kpi
+      kpis:
+      - label: Calls
+        agg: count
+      - label: Avg duration (s)
+        agg: avg
+        field: duration
+        format: number
+    - type: data
+      title: Bookings
+      source: collection:bookings
+      display: kpi
+      kpis:
+      - label: Bookings
+        agg: count
+      - label: Covers
+        agg: sum
+        field: party_size
+        format: number
+    - type: data
+      title: Calls and transcripts
+      source: collection:calls
+      display: table
+      fields:
+      - key: started_at
+        label: When
+        format: date
+      - key: caller
+        label: Caller
+      - key: outcome
+        label: Outcome
+        format: badge
+      - key: duration
+        label: Seconds
+      - key: transcript
+        label: Transcript
+      sort:
+        field: started_at
+        dir: desc
+      limit: 50
+      empty: No calls yet.
+  - key: bookings
+    type: table
+    title: Bookings
+    source: collection:bookings
+    roles:
+    - user
+    - admin
+    - manager
+    export: true
+    data:
+      display: table
+      fields:
+      - key: start
+        label: When
+        format: date
+      - key: customer_name
+        label: Guest
+      - key: party_size
+        label: Covers
+      - key: status
+        label: Status
+        format: badge
+      - key: dietary_notes
+        label: Dietary
+      sort:
+        field: start
+        dir: desc
+      actions:
+      - type: call
+        field: customer_phone
+  - key: missed
+    type: table
+    title: Missed calls
+    source: collection:calls
+    roles:
+    - user
+    - admin
+    - manager
+    data:
+      display: table
+      fields:
+      - key: started_at
+        label: When
+        format: date
+      - key: caller
+        label: Caller
+      filters:
+      - field: outcome
+        op: '='
+        value: missed
+      actions:
+      - type: call
+        field: caller
+  - key: restaurant
+    type: form
+    title: My restaurant
+    collection: restaurants
+    edit: true
+    roles:
+    - user
+    - admin
+    submit:
+      label: Save
+      message: Saved. The voice agent uses these details from the next call.
+      redirect: overview
+  - key: menu_form
+    type: form
+    title: Add a dish
+    collection: menu_items
+    roles:
+    - user
+    - admin
+    submit:
+      label: Add
+      message: Dish added.
+  - key: menu
+    type: table
+    title: Menu
+    source: collection:menu_items
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Dish
+      - key: price
+        label: Price
+        format: money
+      - key: allergens
+        label: Allergens
+  - key: faq_form
+    type: form
+    title: Add an FAQ
+    collection: faqs
+    roles:
+    - user
+    - admin
+    submit:
+      label: Add
+      message: FAQ added.
+  - key: approvals
+    type: approvals
+    title: Approvals
+    roles:
+    - manager
+    - admin
+  - key: weekly
+    type: instances
+    template: weekly_summary
+    title: Weekly summary
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title: Plan and integrations
+    roles:
+    - user
+  templates:
+  - key: weekly_summary
+    title: Weekly summary email
+    description: Calls and covers booked, by email every Monday.
+    agent: summariser
+    params:
+    - name: restaurant
+      type: text
+      required: true
+      label: Restaurant name
+    goal: Write the weekly summary for the restaurant "{instance}". Today is {date}. Write in the language with ISO code {lang}.
+    schedule:
+      cron: 0 7 * * 1
+      userCanChange: false
+    maxPerUser: 3
+    deliver:
+      to: owner
+      onlyIfNew: false
+  approvals:
+  - key: large_party
+    title: Large party or special request
+    role: manager
+    decidedBy: role
+    fields:
+    - customer_name
+    - party_size
+    - start
+    - special_request
+    timeoutMinutes: 1440
+    onTimeout: reject
+  triggers:
+  - key: call_ended
+    'on':
+      call: line
+      callEvent: ended
+    write:
+      collection: calls
+      fields:
+        caller: caller
+        duration: duration
+        outcome: outcome
+        transcript: transcript
+  - key: call_missed
+    'on':
+      call: line
+      callEvent: missed
+    write:
+      collection: calls
+      fields:
+        caller: caller
+        outcome: outcome
+  - key: call_fee
+    'on':
+      collection: calls
+      op: insert
+    charge:
+      credits: 1
+      reason: call
+  - key: booking_confirmation
+    'on':
+      collection: bookings
+      op: insert
+      where:
+        status: booked
+    notify:
+      to:
+      - record.customer_email
+      subject: Your table booking is confirmed
+      body: Hello {record.customer_name}, your table for {record.party_size} on {record.start} is confirmed. See you soon!
+  - key: booking_confirmed_after_approval
+    'on':
+      collection: bookings
+      op: update
+      where:
+        status: booked
+    notify:
+      to:
+      - record.customer_email
+      subject: Your table booking is confirmed
+      body: Hello {record.customer_name}, your table for {record.party_size} on {record.start} is confirmed. See you soon!
+  - key: booking_reminder
+    'on':
+      date:
+        collection: bookings
+        field: date
+        offsetDays: 0
+        hour: 8
+    notify:
+      to:
+      - record.customer_email
+      subject: 'Reminder: your table today'
+      body: Hello {record.customer_name}, a reminder of your table for {record.party_size} today at {record.start}.
+  - key: party_decided
+    'on':
+      approval: large_party
+      decision: any
+    start:
+      agent: voice
+    goal: 'A manager decided the approval for a large party or special request: {event}. Update the matching booking with
+      booking_update: status booked if approved, cancelled if rejected.'
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 0
+    metering:
+      creditEur: 0.3
+      markupPct: 0
+      drivers:
+      - llm_tokens
+      - compute
+    plans:
+    - key: site_starter
+      price: 99
+      interval: month
+      label: Per site — 150 calls
+      credits: 150
+      creditsReset: monthly
+      includes:
+      - Phone number and voice agent for one site
+      - 150 calls a month included
+    - key: site_plus
+      price: 199
+      interval: month
+      label: Per site — 500 calls
+      credits: 500
+      creditsReset: monthly
+      includes:
+      - Phone number and voice agent for one site
+      - 500 calls a month included
+    packs:
+    - key: extra_calls
+      credits: 50
+      price: 15
+      label: 50 extra calls
+  notifications:
+    emailOnRunDone: false
+  egress:
+    hosts:
+    - api.resos.com
+    notes: ResOS-type booking API, used with the restaurant's own partner API key. OpenTable-type partner APIs need their
+      own host added once the partner endpoint is agreed.
+  extensions:
+  - key: phone_number_per_restaurant
+    description: A phone number per restaurant is provisioned with Activate phone on the phone channel; routing each number
+      to its own restaurant record and live speech in and out depend on the telephony provider, and one channel is declared
+      here.
+  - key: sms_not_available
+    description: 'Confirmation and reminder by text message are not available yet: guests get email only (the agent takes
+      an email on the call).'
+  - key: opentable_connector
+    description: 'OpenTable-type partner APIs: only a ResOS-style http tool is declared; a second connector needs the partner''s
+      endpoint and licence terms.'

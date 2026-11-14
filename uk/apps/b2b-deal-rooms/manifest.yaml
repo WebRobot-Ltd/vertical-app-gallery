@@ -1,0 +1,1103 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: dealhaven
+  displayName: Dealhaven
+  tagline:
+    en: One shared room per deal. AI does the busywork.
+  description:
+    en: B2B sellers create a shared deal room for each buyer. An AI agent drafts the room from a template and your meeting
+      notes, writes follow-up emails for your approval, answers buyer questions from your documents and flags stalled deals.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12304a'
+      accent: '#e07a2f'
+      background: '#f7f8fa'
+      foreground: '#18212b'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Deal
+      color: primary
+    - text: haven
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Company admin
+      assignedBy: admin_emails
+    - key: user
+      label: Seller
+      assignedBy: signup
+    - key: manager
+      label: Sales manager
+      assignedBy: derived
+      from: collection:rooms.manager_email
+    - key: buyer
+      label: Buyer
+      assignedBy: derived
+      from: collection:rooms.buyer_email
+  limits:
+  - action: create:rooms
+    max: 3
+    window: total
+    roles:
+    - user
+    plans:
+      seat: -1
+  - action: agent:room_drafter
+    per: user
+    max: 30
+    window: day
+  - action: agent:qa
+    per: user
+    max: 60
+    window: day
+  agents:
+  - key: room_drafter
+    role: main
+    description: Drafts a deal room from a template and the seller's meeting notes.
+    when: mode == 'room'
+    profile:
+      inline:
+        display_name: Dealhaven room drafter
+        crews:
+        - id: room_drafter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare a B2B deal room for a seller. Steps: 1) Read the template welcome text and task list
+            given in the goal. 2) From the meeting notes, write a short personal welcome message for the buyer (under 120
+            words, no invented facts). 3) Call add_room once with title, buyer_company, buyer_name, buyer_email, manager_email,
+            seller_email, stage ''discovery'', status ''active'', welcome_message. 4) Call add_task for each action-plan item
+            (6-10 tasks): title, side (''seller'' or ''buyer''), owner_email (the seller''s or the buyer''s email), due_date
+            (YYYY-MM-DD, realistic from today), status ''open'', room (the id returned by add_room). Take tasks from the template
+            and from commitments in the notes. If the seller has a CRM connected you may call hubspot_deals to check the deal''s
+            stage and amount; if it is not connected, skip it. Never invent prices, dates the notes do not support or legal
+            terms. Finish with a report: a level-1 title ''# Room ready — <buyer company>'', then ## Welcome message, ## Action
+            plan (table: task, owner, due), ## Open questions for the seller.'
+    goalTemplate: 'Today is {date}. Seller: {seller_email}. Draft a deal room.
+
+      Buyer company: {buyer_company}
+
+      Buyer contact: {buyer_name} <{buyer_email}>
+
+      {?manager_email}Sales manager: {manager_email}{/manager_email}
+
+      Template welcome text: {tpl_welcome}
+
+      Template tasks: {tpl_tasks}
+
+      Meeting notes:
+
+      {notes}
+
+      Write the report in the language with ISO code {lang}.'
+    context:
+    - key: tpl_welcome
+      from: collection:room_templates.welcome_text
+    - key: tpl_tasks
+      from: collection:room_templates.task_list
+    - key: seller_email
+      from: user.email
+    appTools:
+    - name: add_room
+      description: Create the deal room record
+      action: append
+      collection: rooms
+      scope: user
+    - name: add_task
+      description: Add a task to the mutual action plan
+      action: append
+      collection: tasks
+      scope: user
+    - name: hubspot_deals
+      description: List the seller's deals in their CRM (HubSpot)
+      action: http
+      http:
+        method: GET
+        url: https://api.hubapi.com/crm/v3/objects/deals
+        attribution: HubSpot API
+        credential:
+          provider: hubspot
+    output: markdown
+    limits:
+      maxTurns: 14
+      maxBudgetUsd: 0.6
+  - key: followup
+    role: main
+    description: Writes the follow-up email after a meeting as a draft the seller must approve.
+    when: mode == 'followup'
+    profile:
+      inline:
+        display_name: Dealhaven follow-up writer
+        crews:
+        - id: followup
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write a concise, warm B2B follow-up email after a sales meeting, from the seller to the buyer.
+            Use only facts from the meeting notes: recap, agreed next steps with owners and dates, and a link-free closing
+            pointing to the shared deal room. Under 180 words. Never promise discounts, legal terms or delivery dates that
+            are not in the notes. Call save_draft exactly once with room, buyer_email, seller_email, subject, body, status
+            ''draft''. The email is NOT sent: the seller reviews it first. Then answer with ''# Draft saved — <subject>''
+            followed by the email text.'
+    goalTemplate: 'Today is {date}. Seller: {seller_email}. Deal room: {room_title} with {buyer_name} <{buyer_email}> at {buyer_company}.
+
+      Tone: {tone_label}.
+
+      Meeting notes:
+
+      {notes}
+
+      room id: {room}
+
+      Write in the language with ISO code {lang}.'
+    context:
+    - key: room_title
+      from: collection:rooms.title
+    - key: buyer_email
+      from: collection:rooms.buyer_email
+    - key: buyer_name
+      from: collection:rooms.buyer_name
+    - key: buyer_company
+      from: collection:rooms.buyer_company
+    - key: seller_email
+      from: user.email
+    appTools:
+    - name: save_draft
+      description: Save the follow-up email as a draft awaiting the seller's approval
+      action: append
+      collection: email_drafts
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.3
+  - key: qa
+    role: helper
+    description: Answers buyer questions from the company's uploaded documents.
+    profile:
+      inline:
+        display_name: Dealhaven buyer assistant
+        crews:
+        - id: qa
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You answer a buyer's questions about the seller's company, product, security and procurement. ALWAYS
+            call search_docs first and answer only from what it returns, naming the document title. If the documents do not
+            answer it, say so plainly and tell the buyer to post the question in the room's comments so the seller can reply.
+            Never invent prices, certifications, SLAs or legal commitments. Keep answers short.
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+      Buyer''s new question: {message}
+
+      Answer in the language with ISO code {lang}.'
+    appTools:
+    - name: search_docs
+      description: Search the company's knowledge documents
+      action: search
+      collection: knowledge_docs
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.2
+  - key: stall_checker
+    role: helper
+    description: Checks a deal with no recent activity and flags it as stalled with a suggested next step.
+    profile:
+      inline:
+        display_name: Dealhaven stall checker
+        crews:
+        - id: stall_checker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You review one deal room that has had no activity for a week. Call read_tasks and read_comments,
+            then decide whether the deal is stalled (overdue buyer tasks, unanswered comments, no recent progress). Call update_room
+            with the room id, stalled true or false, and stall_note: one or two sentences with the reason and one concrete
+            suggested next step. Never contact the buyer yourself. Answer with ''# Deal check — <title>'' and a short summary.'
+    appTools:
+    - name: read_tasks
+      description: Read the tasks of the seller's rooms
+      action: read
+      collection: tasks
+      scope: user
+    - name: read_comments
+      description: Read comments in the seller's rooms
+      action: read
+      collection: comments
+      scope: user
+    - name: update_room
+      description: Update a room (stalled flag and note)
+      action: write
+      collection: rooms
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.3
+  inputForm:
+    title: Let the agent work
+    fields:
+    - name: mode
+      type: select
+      required: true
+      label: What do you need?
+      default: room
+      options:
+      - value: room
+        label: Draft a new deal room
+      - value: followup
+        label: Write a follow-up email
+    - name: template
+      type: select
+      label: Room template
+      optionsFrom: collection:room_templates
+      visibleWhen: mode == 'room'
+    - name: buyer_company
+      type: text
+      label: Buyer company
+      visibleWhen: mode == 'room'
+    - name: buyer_name
+      type: text
+      label: Buyer contact name
+      visibleWhen: mode == 'room'
+    - name: buyer_email
+      type: email
+      label: Buyer contact email
+      visibleWhen: mode == 'room'
+    - name: manager_email
+      type: email
+      label: Your sales manager's email (optional)
+      visibleWhen: mode == 'room'
+    - name: room
+      type: select
+      label: Deal room
+      optionsFrom: collection:rooms
+      visibleWhen: mode == 'followup'
+    - name: tone
+      type: select
+      label: Tone
+      default: warm
+      visibleWhen: mode == 'followup'
+      options:
+      - value: warm
+        label: Warm
+      - value: formal
+        label: Formal
+      - value: brief
+        label: Brief
+    - name: notes
+      type: textarea
+      required: true
+      maxLength: 6000
+      label: Meeting notes
+      help: 'Paste your notes: who attended, what was agreed, next steps.'
+  data:
+    collections:
+    - name: rooms
+      ownedBy: user
+      description: One shared deal room per buyer
+      fields:
+      - name: title
+        type: text
+        required: true
+        label: Room title
+      - name: buyer_company
+        type: text
+        label: Buyer company
+      - name: buyer_name
+        type: text
+        label: Buyer contact
+      - name: buyer_email
+        type: email
+        label: Buyer email
+      - name: seller_email
+        type: email
+        label: Seller email
+      - name: manager_email
+        type: email
+        label: Manager email
+      - name: stage
+        type: select
+        label: Stage
+        options:
+        - discovery
+        - proposal
+        - security_review
+        - procurement
+        - negotiation
+        - won
+        - lost
+      - name: status
+        type: select
+        label: Status
+        options:
+        - active
+        - closed
+      - name: value
+        type: number
+        label: Deal value
+      - name: welcome_message
+        type: textarea
+        label: Welcome message
+      - name: proposal
+        type: file
+        accept:
+        - pdf
+        - docx
+        - xlsx
+        multiple: true
+        maxMb: 15
+        label: Proposal
+      - name: case_studies
+        type: file
+        accept:
+        - pdf
+        - docx
+        multiple: true
+        maxMb: 15
+        label: Case studies
+      - name: last_activity
+        type: date
+        label: Last activity
+      - name: stalled
+        type: boolean
+        label: Stalled
+      - name: stall_note
+        type: textarea
+        label: Stall note
+      access:
+      - role: manager
+        can:
+        - read
+      - role: buyer
+        where:
+          buyer_email: '{user.email}'
+        can:
+        - read
+    - name: tasks
+      ownedBy: user
+      parent: rooms
+      description: Mutual action plan tasks for both sides
+      fields:
+      - name: room
+        type: relation
+        relation: rooms
+        label: Room
+      - name: title
+        type: text
+        required: true
+        label: Task
+      - name: side
+        type: select
+        label: Side
+        options:
+        - seller
+        - buyer
+      - name: owner_email
+        type: email
+        label: Owner email
+      - name: due_date
+        type: date
+        label: Due
+      - name: status
+        type: select
+        label: Status
+        options:
+        - open
+        - done
+      access:
+      - role: manager
+        can:
+        - read
+      - role: buyer
+        where:
+          owner_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: comments
+      ownedBy: user
+      parent: rooms
+      description: Comment thread of each room
+      fields:
+      - name: room
+        type: relation
+        relation: rooms
+        required: true
+        label: Room
+      - name: body
+        type: textarea
+        required: true
+        label: Comment
+      access:
+      - role: manager
+        can:
+        - read
+    - name: buyer_forms
+      ownedBy: user
+      parent: rooms
+      description: Security questionnaire and procurement details filled by the buyer
+      fields:
+      - name: room
+        type: relation
+        relation: rooms
+        required: true
+        label: Room
+      - name: company_legal_name
+        type: text
+        label: Legal company name
+      - name: vat_id
+        type: text
+        label: VAT / tax ID
+      - name: billing_address
+        type: textarea
+        label: Billing address
+      - name: po_required
+        type: boolean
+        label: Purchase order required
+      - name: payment_terms
+        type: select
+        label: Payment terms
+        options:
+        - 30 days
+        - 45 days
+        - 60 days
+        - prepaid
+      - name: data_hosting
+        type: select
+        label: Required data hosting
+        options:
+        - EU
+        - US
+        - UK
+        - no preference
+      - name: sso_required
+        type: boolean
+        label: SSO required
+      - name: needs_iso27001
+        type: boolean
+        label: ISO 27001 certificate required
+      - name: security_notes
+        type: textarea
+        label: Other security requirements
+      - name: security_doc
+        type: file
+        accept:
+        - pdf
+        - docx
+        - xlsx
+        maxMb: 15
+        label: Your own security questionnaire (optional)
+      access:
+      - role: manager
+        can:
+        - read
+    - name: email_drafts
+      ownedBy: user
+      description: Follow-up emails waiting for the seller's approval
+      fields:
+      - name: room
+        type: relation
+        relation: rooms
+        label: Room
+      - name: buyer_email
+        type: email
+        label: To
+      - name: seller_email
+        type: email
+        label: Seller
+      - name: subject
+        type: text
+        label: Subject
+      - name: body
+        type: textarea
+        label: Email
+      - name: status
+        type: select
+        label: Status
+        options:
+        - draft
+        - approved
+    - name: room_templates
+      ownedBy: user
+      description: The seller's room templates
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Template name
+      - name: welcome_text
+        type: textarea
+        label: Welcome text
+      - name: task_list
+        type: textarea
+        label: Standard tasks (one per line, with side)
+    - name: knowledge_docs
+      ownedBy: shared
+      description: The company's documents the assistant answers from (product, security, pricing rules)
+      fields:
+      - name: title
+        type: text
+        required: true
+        label: Title
+      - name: category
+        type: select
+        label: Category
+        options:
+        - product
+        - security
+        - legal
+        - procurement
+        - pricing
+      - name: content
+        type: textarea
+        label: Text of the document
+    credentials:
+    - provider: hubspot
+      kind: api_key
+      scope: user
+      label: HubSpot CRM
+      help: 'HubSpot > Settings > Integrations > Private apps: create an app with read access to deals and contacts and paste
+        its token.'
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Dealhaven
+    sections:
+    - type: hero
+      title: One shared room per deal. **AI** does the busywork.
+      text: Give every buyer a private room with your proposal, action plan, forms and comments. Dealhaven drafts it from
+        your notes, writes your follow-ups for your approval and flags deals going cold.
+      actions:
+      - label: Create your first room
+        href: /login
+        style: primary
+      note: Free for three rooms.
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Paste your meeting notes
+        text: 'The agent drafts the room: welcome message and a mutual action plan for both sides.'
+      - title: Invite the buyer
+        text: 'They sign in by link and see only their room: documents, tasks, forms and questions.'
+      - title: Approve and send
+        text: Follow-up emails wait for your approval. Overdue buyer tasks get reminders and stalled deals are flagged.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: Free
+        text: Up to 3 rooms.
+        badge: €0
+      - title: Seat
+        text: Unlimited rooms per seller, billed monthly per seller via Stripe.
+        badge: €39
+    - type: note
+      content: Dealhaven is decision support; review every email before approving it.
+  - key: new
+    type: new_run
+    title: AI assistant
+    roles:
+    - user
+    - admin
+  - key: history
+    type: history
+    title: Agent runs
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: rooms
+    type: table
+    title: Rooms
+    source: collection:rooms
+    export: true
+    roles:
+    - user
+    - manager
+    - admin
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Room
+      - key: buyer_company
+        label: Buyer
+      - key: stage
+        label: Stage
+        format: badge
+      - key: value
+        label: Value
+        format: money
+      - key: last_activity
+        label: Last activity
+        format: date
+      - key: stalled
+        label: Stalled
+        format: badge
+      - key: stall_note
+        label: Note
+      sort:
+        field: last_activity
+        dir: desc
+      actions:
+      - type: share
+        label: Share
+        field: title
+  - key: room
+    type: page
+    title: My room
+    roles:
+    - buyer
+    - user
+    - manager
+    - admin
+    sections:
+    - type: data
+      title: Room
+      source: collection:rooms
+      display: cards
+      fields:
+      - key: title
+        label: Room
+      - key: welcome_message
+        label: Welcome
+      - key: stage
+        label: Stage
+        format: badge
+      - key: proposal
+        label: Proposal
+      - key: case_studies
+        label: Case studies
+    - type: data
+      title: Mutual action plan
+      source: collection:tasks
+      display: table
+      fields:
+      - key: title
+        label: Task
+      - key: side
+        label: Side
+        format: badge
+      - key: owner_email
+        label: Owner
+      - key: due_date
+        label: Due
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: due_date
+        dir: asc
+    - type: data
+      title: Comments
+      source: collection:comments
+      display: list
+      fields:
+      - key: body
+        label: Comment
+    - type: view
+      title: Add a comment
+      view: comment_form
+    - type: view
+      title: Ask the assistant
+      view: assistant
+    - type: text
+      title: Your forms
+      content: '[Security questionnaire](/v/security_form) · [Procurement details](/v/procurement_form)'
+  - key: comment_form
+    type: form
+    title: Comment
+    collection: comments
+    fields:
+    - room
+    - body
+    submit:
+      label: Post comment
+      message: Comment posted.
+      redirect: room
+    nav: false
+    roles:
+    - buyer
+    - user
+    - admin
+  - key: security_form
+    type: form
+    title: Security questionnaire
+    collection: buyer_forms
+    fields:
+    - room
+    - data_hosting
+    - sso_required
+    - needs_iso27001
+    - security_notes
+    - security_doc
+    submit:
+      label: Send
+      message: Thank you, your answers were saved.
+      redirect: room
+    nav: false
+    roles:
+    - buyer
+    - user
+    - admin
+  - key: procurement_form
+    type: form
+    title: Procurement details
+    collection: buyer_forms
+    fields:
+    - room
+    - company_legal_name
+    - vat_id
+    - billing_address
+    - po_required
+    - payment_terms
+    submit:
+      label: Send
+      message: Thank you, your details were saved.
+      redirect: room
+    nav: false
+    roles:
+    - buyer
+    - user
+    - admin
+  - key: assistant
+    type: chat
+    title: Ask a question
+    source: agent:qa
+    examples:
+    - Are you ISO 27001 certified?
+    - Where is our data hosted?
+    - What are the payment terms?
+    placeholder: Ask about the product, security or procurement
+    roles:
+    - buyer
+    - user
+    - admin
+  - key: drafts
+    type: table
+    title: Email drafts
+    source: collection:email_drafts
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: subject
+        label: Subject
+      - key: buyer_email
+        label: To
+      - key: status
+        label: Status
+        format: badge
+  - key: email_review
+    type: form
+    title: Review and approve email
+    collection: email_drafts
+    fields:
+    - subject
+    - body
+    - status
+    edit: true
+    submit:
+      label: Save
+      message: Saved. Set the status to approved to send it.
+      redirect: drafts
+    nav: false
+    roles:
+    - user
+    - admin
+  - key: template_form
+    type: form
+    title: New room template
+    collection: room_templates
+    submit:
+      label: Save template
+      message: Template saved.
+    roles:
+    - user
+    - admin
+  - key: pipeline
+    type: dashboard
+    title: Pipeline
+    children:
+    - stage_chart
+    - pipeline_table
+    roles:
+    - user
+    - manager
+    - admin
+  - key: stage_chart
+    type: chart
+    source: collection:rooms
+    nav: false
+    data:
+      display: chart
+      chart: bar
+      fields:
+      - key: stage
+        label: Stage
+      - key: count
+        label: Rooms
+      - key: total
+        label: Value
+        format: money
+      groupBy:
+        field: stage
+        aggs:
+        - key: total
+          agg: sum
+          field: value
+  - key: pipeline_table
+    type: table
+    source: collection:rooms
+    nav: false
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Room
+      - key: stage
+        label: Stage
+        format: badge
+      - key: value
+        label: Value
+        format: money
+      - key: last_activity
+        label: Last activity
+        format: date
+      - key: stalled
+        label: Stalled
+        format: badge
+      sort:
+        field: value
+        dir: desc
+  - key: account
+    type: account
+    title: Plan and CRM
+    roles:
+    - user
+    - admin
+  triggers:
+  - key: overdue_buyer_task
+    description: Reminds the buyer the day after a task due date
+    'on':
+      date:
+        collection: tasks
+        field: due_date
+        offsetDays: 1
+        hour: 8
+    notify:
+      to: record.owner_email
+      subject: 'Reminder: "{record.title}" is overdue'
+      body: 'Hello, this task in your shared deal room was due yesterday and is still open: {record.title}. Please complete
+        it or comment in the room if you need help.'
+      link: room
+  - key: draft_ready
+    'on':
+      collection: email_drafts
+      op: insert
+    notify:
+      to: owner
+      subject: 'Follow-up draft ready: {record.subject}'
+      body: Your follow-up email draft is ready. Review it and set the status to approved to send it.
+      link: drafts
+  - key: send_approved_email
+    description: Sends the email once the seller sets it to approved
+    'on':
+      collection: email_drafts
+      op: update
+      where:
+        status: approved
+    notify:
+      to:
+      - record.buyer_email
+      subject: '{record.subject}'
+      body: '{record.body}'
+  - key: invite_buyer
+    description: Invites the buyer by link when a room is created
+    'on':
+      collection: rooms
+      op: insert
+    notify:
+      to:
+      - record.buyer_email
+      subject: 'Your shared deal room: {record.title}'
+      body: A private deal room has been prepared for you with the proposal, action plan and forms. Sign in with this email
+        address to open it.
+      link: room
+  - key: stall_check
+    description: 'A week without activity: the agent reviews the deal'
+    'on':
+      date:
+        collection: rooms
+        field: last_activity
+        offsetDays: 7
+        hour: 8
+      where:
+        status: active
+    start:
+      agent: stall_checker
+    goal: Review the deal room "{record.title}" (buyer {record.buyer_company}). It has had no activity for 7 days. Today is
+      {date}.
+  - key: stalled_alert
+    'on':
+      collection: rooms
+      op: update
+      where:
+        stalled: true
+    notify:
+      to:
+      - owner
+      - role:manager
+      subject: 'Stalled deal: {record.title}'
+      body: This deal looks stalled. {record.stall_note}
+      link: rooms
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 100
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:room_drafter:
+        estimate: 10
+        metered: true
+      agent:followup:
+        estimate: 5
+        metered: true
+      agent:qa:
+        estimate: 2
+        metered: true
+      agent:stall_checker:
+        estimate: 3
+        metered: true
+    packs:
+    - key: credits_1000
+      credits: 1000
+      price: 10
+      label: 1000 credits
+    plans:
+    - key: seat
+      price: 39
+      interval: month
+      label: Seller seat
+      includes:
+      - Unlimited rooms
+      - Monthly AI credits
+      credits: 1500
+      creditsReset: monthly
+      roles:
+      - user
+  egress:
+    hosts:
+    - api.hubapi.com
+    notes: HubSpot API with the seller's own private-app key, read access to their deals and contacts.
+  extensions:
+  - key: crm_oauth_sync
+    description: 'Each seller connecting the CRM through OAuth and two-way sync of deals and contacts is not available yet.
+      Interim: the seller pastes a HubSpot private-app key on the account page and the agent can read deals. Salesforce, Pipedrive
+      and writing back to the CRM need OAuth.'
+  - key: email_tracking
+    description: Tracking opens and replies of the follow-up emails is not available. The platform sends plain-text emails
+      after the seller approves them.
+  - key: room_engagement_analytics
+    description: Tracking who opened which room item and for how long (page views, time on document) is not available yet.
+      The pipeline dashboard shows stage, value, last activity and stalled flags instead. last_activity is set by the agents
+      or edited by the seller.
+  - key: active_room_quota
+    description: The free plan limit counts every room a seller creates (window total), not only the active ones; closed rooms
+      still count.

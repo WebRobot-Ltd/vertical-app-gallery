@@ -1,0 +1,888 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: mortgo
+  displayName: Mortgo
+  tagline:
+    en: Pay off your mortgage faster with small overpayments and cashback.
+  description:
+    en: Mortgo analyses your spending to suggest an affordable monthly overpayment, adds retailer cashback to it, shows the
+      interest you save, and warns you before your fixed rate ends.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0b3d3a'
+      accent: '#e07a2f'
+      background: '#f6f8f7'
+      foreground: '#14201f'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Mort
+      color: primary
+    - text: go
+      color: accent
+    buttonShape: rounded
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Cashback
+      href: '#cashback'
+    cta:
+      label: Get started
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: Homeowner
+      assignedBy: signup
+    - key: broker
+      label: Partner broker
+      assignedBy: derived
+      from: collection:referrals.broker_email
+  agents:
+  - key: calculator
+    role: main
+    description: Explains what a monthly overpayment saves, using the computed figures and Bank of England rates for context.
+    profile:
+      inline:
+        display_name: Mortgo calculator
+        crews:
+        - id: calculator
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You explain mortgage overpayment results to UK homeowners in plain English. The figures (interest
+            saved, months saved, new term) are computed for you in the line starting "Computed:": never recalculate or invent
+            them. Start with a level-1 title "# Your overpayment: <amount> a month". Sections with ## headings: The result,
+            What it means, Bank of England context, Things to check (early repayment charges, the lender''s overpayment allowance,
+            keeping an emergency fund). For context call the tool boe_rates once: GET with query "Datefrom=01/Jan/2025&Dateto=now&SeriesCodes=IUDBEDR,IUMBV34,IUMBV37&CSVF=TN&UsingCodes=Y&VPD=Y&VFD=N"
+            (IUDBEDR = Bank Rate, IUMBV34 = 2-year fixed 75% LTV average quoted rate, IUMBV37 = 5-year fixed 75% LTV). Quote
+            the latest values with their dates and cite the Bank of England. If the call fails, say context is unavailable.
+            You are not a regulated adviser: this is information, not advice. Add one chart block comparing remaining term
+            with and without the overpayment: ```chart
+
+            {"type":"bar","title":"Months to repay","labels":["Without","With overpayment"],"series":[{"name":"Months","values":[0,0]}]}```
+            using the real figures. Under 350 words.'
+    goalTemplate: 'Balance: £{balance}. Rate: {rate}%. Current monthly payment: £{monthly_payment}. Extra monthly overpayment:
+      £{overpayment}.
+
+      Computed: {calc}
+
+      If the computed result says valid=no, explain that the payment does not cover the interest and ask the user to check
+      the inputs.
+
+      Write in the language with ISO code {lang}.'
+    context:
+    - key: calc
+      from: slot:payoff
+    appTools:
+    - name: boe_rates
+      description: 'Bank of England statistical database: Bank Rate and average quoted mortgage rates (CSV)'
+      action: http
+      http:
+        method: GET
+        url: https://www.bankofengland.co.uk/boeapps/iadb/fromshowcolumns.asp
+        attribution: Bank of England, Statistical Interactive Database
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.3
+  - key: advisor
+    role: helper
+    description: Analyses a month of spending and proposes an affordable overpayment.
+    writesTo:
+      collection: overpayment_plans
+      parse: json_last
+      keyBy: month
+    output: markdown+json
+    resultSchema:
+      type: object
+      properties:
+        month:
+          type: string
+        amount:
+          type: number
+        rationale:
+          type: string
+        status:
+          type: string
+    profile:
+      inline:
+        display_name: Mortgo spending advisor
+        crews:
+        - id: advisor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 5
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You suggest a safe monthly mortgage overpayment from a homeowner''s categorised bank spending summary
+            (supplied by the Open Banking partner). Be conservative: keep a buffer of at least one month of essential spending
+            plus 10% of income, never suggest more than the lender''s monthly equivalent of the overpayment allowance, and
+            never more than 15% of net surplus unless surplus is stable over several months. Start with "# Overpayment suggestion
+            — <month>". Sections: ## Your month, ## Suggested overpayment, ## Why this is affordable. Never invent figures.
+            You do not move money: the user confirms in the app and the authorised partner collects the payment. End with
+            a single fenced json block {"month":"YYYY-MM","amount":<number in GBP, 0 if nothing is safe>,"rationale":"<one
+            sentence>","status":"suggested"}.'
+    goalTemplate: 'New spending summary for month {record.month}. Mortgage: {mortgage_data}
+
+      Spending summaries so far: {spend_history}
+
+      Suggest this month''s overpayment in the language with ISO code {lang}.'
+    context:
+    - key: mortgage_data
+      from: collection:mortgages
+    - key: spend_history
+      from: collection:bank_summaries
+  - key: remortgage
+    role: helper
+    description: Before the fixed rate ends, compares indicative remortgage options and prepares the broker referral.
+    writesTo:
+      collection: remortgage_checks
+      parse: whole
+    output: markdown
+    memory: user
+    profile:
+      inline:
+        display_name: Mortgo remortgage checker
+        crews:
+        - id: remortgage
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare a remortgage briefing for a UK homeowner whose fixed rate ends soon. Start with "# Remortgage
+            check — <lender>". Sections: ## Where you are (balance, current rate, end date, days left), ## Market context
+            (call boe_rates once: GET with query "Datefrom=01/Jan/2025&Dateto=now&SeriesCodes=IUDBEDR,IUMBV34,IUMBV37&CSVF=TN&UsingCodes=Y&VPD=Y&VFD=N";
+            quote the latest Bank Rate and the average 2-year and 5-year fixed quoted rates with dates), ## What a switch
+            could mean (indicative monthly payment difference using the user''s own figures and those averages, clearly labelled
+            as averages, not offers), ## Next step. The next step is always to speak to the regulated mortgage broker partner
+            through the Request broker call view. You are not a regulated adviser: never recommend a specific product or lender,
+            never claim a rate is available to the user. Never invent figures. Under 350 words. At the end call remember once
+            with the key figures.'
+    goalTemplate: 'Prepare the remortgage check for this mortgage: {record.lender}, balance £{record.balance}, rate {record.rate}%,
+      fixed rate ends {record.fixed_end_date}, monthly payment £{record.monthly_payment}. Today is {date}. Write in the language
+      with ISO code {lang}.'
+    appTools:
+    - name: boe_rates
+      description: 'Bank of England statistical database: Bank Rate and average quoted mortgage rates (CSV)'
+      action: http
+      http:
+        method: GET
+        url: https://www.bankofengland.co.uk/boeapps/iadb/fromshowcolumns.asp
+        attribution: Bank of England, Statistical Interactive Database
+  egress:
+    hosts:
+    - www.bankofengland.co.uk
+    notes: Bank of England Statistical Interactive Database, published for reuse with attribution. Used only for Bank Rate
+      and average mortgage quoted rates as context.
+  slots:
+  - key: payoff
+    description: 'Summary string: months and interest with and without a monthly overpayment'
+    timeoutMs: 2000
+    example:
+      values:
+        balance: '200000'
+        rate: '4.5'
+        monthly_payment: '1100'
+        overpayment: '100'
+      lang: en
+    code: "def sim(bal, r, pay):\n    months = 0\n    interest = 0.0\n    while bal > 0.005 and months < 1200:\n        i\
+      \ = bal * r\n        if pay <= i:\n            return None\n        interest += i\n        bal = bal + i - pay\n   \
+      \     months += 1\n    return months, interest\n\ndef num(v):\n    try:\n        return float(v)\n    except Exception:\n\
+      \        return 0.0\n\ndef main(input):\n    v = input.get('values') or {}\n    bal = num(v.get('balance'))\n    r =\
+      \ num(v.get('rate')) / 100.0 / 12.0\n    pay = num(v.get('monthly_payment'))\n    extra = num(v.get('overpayment'))\n\
+      \    base = sim(bal, r, pay) if bal > 0 else None\n    new = sim(bal, r, pay + extra) if bal > 0 else None\n    if base\
+      \ is None or new is None:\n        return 'valid=no (the payment does not cover the monthly interest, or the inputs\
+      \ are invalid)'\n    return ('valid=yes; months without overpayment %d; months with overpayment %d; months saved %d;\
+      \ interest without overpayment £%d; interest with overpayment £%d; interest saved £%d' % (base[0], new[0], base[0] -\
+      \ new[0], round(base[1]), round(new[1]), round(base[1] - new[1])))\n"
+  inputForm:
+    title:
+      en: Overpayment calculator
+    fields:
+    - name: balance
+      type: number
+      required: true
+      label:
+        en: Mortgage balance (£)
+    - name: rate
+      type: number
+      required: true
+      label:
+        en: Interest rate (%)
+    - name: monthly_payment
+      type: number
+      required: true
+      label:
+        en: Current monthly payment (£)
+    - name: overpayment
+      type: number
+      required: true
+      label:
+        en: Monthly overpayment (£)
+      default: 100
+    examples:
+    - balance: 200000
+      rate: 4.5
+      monthly_payment: 1100
+      overpayment: 100
+  data:
+    collections:
+    - name: mortgages
+      description: Each homeowner's own mortgage
+      ownedBy: user
+      fields:
+      - name: lender
+        type: text
+        required: true
+        label: Lender
+      - name: balance
+        type: number
+        required: true
+        label: Outstanding balance (£)
+      - name: rate
+        type: number
+        required: true
+        label: Interest rate (%)
+      - name: term_years
+        type: number
+        required: true
+        label: Remaining term (years)
+      - name: monthly_payment
+        type: number
+        required: true
+        label: Monthly payment (£)
+      - name: fixed_end_date
+        type: date
+        label: Fixed rate ends
+      - name: overpayment_allowance
+        type: number
+        label: Annual overpayment allowance (% of balance)
+    - name: bank_summaries
+      description: Monthly categorised spending per user, delivered by the Open Banking partner
+      ownedBy: user
+      retentionDays: 730
+      fields:
+      - name: month
+        type: text
+        label: Month (YYYY-MM)
+      - name: income
+        type: number
+        label: Income (£)
+      - name: essentials
+        type: number
+        label: Essential spending (£)
+      - name: discretionary
+        type: number
+        label: Discretionary spending (£)
+      - name: user_email
+        type: email
+        label: User email
+    - name: overpayment_plans
+      description: The advisor's suggested overpayment per month
+      ownedBy: user
+      fields:
+      - name: month
+        type: text
+        label: Month
+      - name: amount
+        type: number
+        label: Suggested (£)
+      - name: rationale
+        type: text
+        label: Why
+      - name: status
+        type: text
+        label: Status
+    - name: overpayments
+      description: Overpayments collected and sent to the lender by the partner
+      ownedBy: user
+      fields:
+      - name: date
+        type: date
+        label: Date
+      - name: amount
+        type: number
+        label: Amount (£)
+      - name: status
+        type: select
+        label: Status
+        options:
+        - scheduled
+        - paid
+        - failed
+      - name: new_balance
+        type: number
+        label: Balance after (£)
+      - name: user_email
+        type: email
+        label: User email
+    - name: cashback
+      description: Cashback earned at partner retailers and paid into the mortgage
+      ownedBy: user
+      fields:
+      - name: date
+        type: date
+        label: Date
+      - name: retailer
+        type: text
+        label: Retailer
+      - name: amount
+        type: number
+        label: Cashback (£)
+      - name: status
+        type: select
+        label: Status
+        options:
+        - pending
+        - confirmed
+        - paid_to_mortgage
+      - name: user_email
+        type: email
+        label: User email
+    - name: offers
+      description: Retailer cashback offers, kept by the admins
+      ownedBy: shared
+      fields:
+      - name: retailer
+        type: text
+        required: true
+        label: Retailer
+      - name: cashback_pct
+        type: number
+        label: Cashback (%)
+      - name: description
+        type: textarea
+        label: Details
+      - name: url
+        type: url
+        label: Link
+      - name: active
+        type: boolean
+        label: Active
+    - name: brokers
+      description: Partner mortgage brokers, kept by the admins
+      ownedBy: shared
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Broker
+      - name: email
+        type: email
+        required: true
+        label: Email
+    - name: remortgage_checks
+      description: Remortgage briefings written by the agent
+      ownedBy: user
+    - name: referrals
+      description: Requests to speak to the partner broker
+      ownedBy: user
+      fields:
+      - name: broker_email
+        type: select
+        required: true
+        label: Broker
+        optionsFrom: collection:brokers
+      - name: consent
+        type: boolean
+        required: true
+        label: I agree to share my mortgage details with the broker
+      - name: notes
+        type: textarea
+        label: Anything the broker should know
+      - name: status
+        type: select
+        label: Status
+        options:
+        - requested
+        - contacted
+        - completed
+        - declined
+        default: requested
+      - name: user_email
+        type: email
+        label: Your email
+      access:
+      - role: broker
+        where:
+          broker_email: '{user.email}'
+        can:
+        - read
+        - write
+  views:
+  - key: home
+    type: page
+    title: Mortgo
+    nav: false
+    sections:
+    - type: hero
+      title: Pay off your mortgage **faster**, without feeling it.
+      text: Small overpayments sized to your real spending, plus cashback from retailers paid straight into your mortgage.
+      eyebrow: Free for homeowners
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      - label: Try the calculator
+        href: /login
+        style: ghost
+      note: Open Banking and payments are provided by our FCA-authorised partner.
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Add your mortgage
+        text: Lender, balance, rate, term, payment and when your fixed rate ends.
+        badge: '1'
+      - title: Connect your bank
+        text: Through Open Banking, our agent looks at your spending and suggests an affordable overpayment.
+        badge: '2'
+      - title: Overpay automatically
+        text: The monthly amount is collected and sent to your lender by our authorised partner. You get a confirmation each
+          time.
+        badge: '3'
+      - title: Watch it shrink
+        text: See interest saved and time cut from your term.
+        badge: '4'
+    - type: cards
+      id: cashback
+      title: Cashback into your mortgage
+      items:
+      - title: Shop with partner retailers
+        text: Cashback you earn is paid into your mortgage as an extra overpayment.
+        badge: 🛍️
+      - title: Remortgage reminders
+        text: We warn you before your fixed rate ends and introduce you to a regulated mortgage broker.
+        badge: ⏰
+    - type: note
+      content: Mortgo provides information, not regulated advice. Mortgage advice is given by our partner broker. Overpayments
+        may be limited by your lender's allowance and early repayment charges. Your home may be repossessed if you do not
+        keep up repayments on your mortgage.
+  - key: add_mortgage
+    type: form
+    title: My mortgage
+    collection: mortgages
+    submit:
+      label: Save mortgage
+      message: Mortgage saved.
+      redirect: my_mortgages
+    edit: true
+    roles:
+    - user
+    - admin
+  - key: my_mortgages
+    type: cards
+    title: Mortgage overview
+    source: collection:mortgages
+    roles:
+    - user
+    - admin
+    data:
+      display: cards
+      fields:
+      - key: lender
+        label: Lender
+      - key: balance
+        label: Balance
+        format: money
+      - key: rate
+        label: Rate (%)
+        format: number
+      - key: monthly_payment
+        label: Monthly payment
+        format: money
+      - key: fixed_end_date
+        label: Fixed rate ends
+        format: date
+      empty: Add your mortgage to get started.
+  - key: plan
+    type: table
+    title: Suggested overpayments
+    source: collection:overpayment_plans
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: month
+        label: Month
+      - key: amount
+        label: Suggested
+        format: money
+      - key: rationale
+        label: Why
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: month
+        dir: desc
+      empty: Suggestions appear after your bank is connected.
+  - key: overpayments
+    type: table
+    title: My overpayments
+    source: collection:overpayments
+    export: true
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: amount
+        label: Amount
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      - key: new_balance
+        label: Balance after
+        format: money
+      sort:
+        field: date
+        dir: desc
+      kpis:
+      - label: Total overpaid
+        agg: sum
+        field: amount
+        format: money
+      - label: Payments
+        agg: count
+  - key: offers_view
+    type: cards
+    title: Cashback offers
+    source: collection:offers
+    roles:
+    - user
+    - admin
+    data:
+      display: cards
+      fields:
+      - key: retailer
+        label: Retailer
+      - key: cashback_pct
+        label: Cashback (%)
+        format: number
+      - key: description
+        label: Details
+      - key: url
+        label: Shop
+        format: link
+      filters:
+      - field: active
+        op: '='
+        value: true
+  - key: my_cashback
+    type: table
+    title: My cashback
+    source: collection:cashback
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: retailer
+        label: Retailer
+      - key: amount
+        label: Cashback
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: date
+        dir: desc
+      kpis:
+      - label: Total cashback
+        agg: sum
+        field: amount
+        format: money
+  - key: calculator
+    type: new_run
+    title: Savings calculator
+    roles:
+    - user
+    - admin
+  - key: calculations
+    type: history
+    title: My calculations
+    source: run
+    roles:
+    - user
+    - admin
+  - key: calc_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: remortgage_view
+    type: list
+    title: Remortgage checks
+    source: collection:remortgage_checks
+    roles:
+    - user
+    - admin
+    data:
+      display: list
+      empty: Your briefing appears about 90 days before your fixed rate ends.
+  - key: broker_request
+    type: form
+    title: Request a broker call
+    collection: referrals
+    submit:
+      label: Send request
+      message: Your request has been sent to the broker.
+      redirect: my_mortgages
+    roles:
+    - user
+  - key: broker_inbox
+    type: table
+    title: Referrals
+    source: collection:referrals
+    roles:
+    - broker
+    - admin
+    data:
+      display: table
+      fields:
+      - key: user_email
+        label: Customer
+      - key: notes
+        label: Notes
+      - key: status
+        label: Status
+        format: badge
+  - key: usage
+    type: table
+    title: Aggregate usage
+    source: collection:cashback
+    roles:
+    - admin
+    data:
+      display: chart
+      chart: bar
+      fields:
+      - key: date
+        label: Month
+      - key: total
+        label: Cashback (£)
+      groupBy:
+        field: date
+        bucket: month
+        aggs:
+        - key: total
+          agg: sum
+          field: amount
+        minCount: 5
+        acrossUsers: true
+  - key: usage_overpayments
+    type: table
+    title: Overpayments by month
+    source: collection:overpayments
+    roles:
+    - admin
+    data:
+      display: chart
+      chart: bar
+      fields:
+      - key: date
+        label: Month
+      - key: total
+        label: Overpaid (£)
+      groupBy:
+        field: date
+        bucket: month
+        aggs:
+        - key: total
+          agg: sum
+          field: amount
+        minCount: 5
+        acrossUsers: true
+  triggers:
+  - key: bank_summary_in
+    description: Spending summary from the Open Banking partner
+    'on':
+      webhook: true
+    write:
+      collection: bank_summaries
+      keyBy: month
+  - key: overpayment_in
+    description: Overpayment result from the payments partner
+    'on':
+      webhook: true
+    write:
+      collection: overpayments
+  - key: cashback_in
+    description: Cashback tracked by the retailer network
+    'on':
+      webhook: true
+    write:
+      collection: cashback
+  - key: advise_on_summary
+    'on':
+      collection: bank_summaries
+      op: insert
+    start:
+      agent: advisor
+    goal: 'A new spending summary was saved for {record.month}: income £{record.income}, essentials £{record.essentials},
+      discretionary £{record.discretionary}. Suggest the overpayment.'
+  - key: overpayment_paid
+    'on':
+      collection: overpayments
+      op: any
+      where:
+        status: paid
+    notify:
+      to: owner
+      subject:
+        en: Overpayment of £{record.amount} sent to your lender
+      body:
+        en: Your overpayment of £{record.amount} was sent on {record.date}. Your balance is now £{record.new_balance}. Open
+          Mortgo to see your progress.
+      link: overpayments
+  - key: cashback_paid
+    'on':
+      collection: cashback
+      op: any
+      where:
+        status: paid_to_mortgage
+    notify:
+      to: owner
+      subject:
+        en: £{record.amount} cashback paid into your mortgage
+      body:
+        en: Your cashback from {record.retailer} (£{record.amount}) has been added to your mortgage.
+      link: my_cashback
+  - key: remortgage_check_90
+    'on':
+      date:
+        collection: mortgages
+        field: fixed_end_date
+        offsetDays: -90
+        hour: 8
+    start:
+      agent: remortgage
+    goal: The fixed rate of this mortgage ends in 90 days. Prepare the remortgage check for {record.lender}.
+  - key: fixed_end_60
+    'on':
+      date:
+        collection: mortgages
+        field: fixed_end_date
+        offsetDays: -60
+        hour: 8
+    notify:
+      to: owner
+      subject:
+        en: Your fixed rate with {record.lender} ends in 60 days
+      body:
+        en: Your fixed rate ends on {record.fixed_end_date}. Check your remortgage briefing and talk to our partner broker
+          before you move to the lender's standard variable rate.
+      link: remortgage_view
+  - key: fixed_end_14
+    'on':
+      date:
+        collection: mortgages
+        field: fixed_end_date
+        offsetDays: -14
+        hour: 8
+    notify:
+      to: owner
+      subject:
+        en: Two weeks left on your fixed rate
+      body:
+        en: Your fixed rate with {record.lender} ends on {record.fixed_end_date}. Request a call with our partner broker now.
+      link: broker_request
+  - key: referral_new
+    'on':
+      collection: referrals
+      op: insert
+    notify:
+      to:
+      - record.broker_email
+      subject:
+        en: New Mortgo referral
+      body:
+        en: A Mortgo customer has asked to speak to you about remortgaging. Open the referrals page for the details.
+      link: broker_inbox
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - free
+  mobile:
+    appId: com.mortgo.app
+    appName: Mortgo
+    capabilities:
+    - name: push
+    - name: biometrics
+      reason:
+        en: To keep your mortgage details private
+    lock: biometric
+  extensions:
+  - key: open_banking_partner
+    description: Bank connection (Open Banking consent), payment initiation and collection of overpayments, and the FCA permissions
+      are provided by the authorised partner. The partner must POST spending summaries, overpayment results and cashback events
+      to the three webhook triggers, with the user's email so each record is attached to the right account. The in-app bank
+      connection screen and the user confirming each suggested overpayment are hand-built against the partner's API.
+  - key: broker_fees
+    description: Retailer commissions and broker referral fees are settled outside the app with the partners; the app only
+      records referrals and cashback.

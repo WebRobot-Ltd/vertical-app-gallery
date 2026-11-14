@@ -1,0 +1,682 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: truefan
+  displayName: Truefan
+  tagline:
+    en: Presale codes for genuine fans, not bots and scalpers.
+  description:
+    en: Promoters and artists' teams create a presale. Fans register, an AI agent scores how genuine they are and explains
+      why, borderline cases go to a human reviewer, and verified fans get a unique presale code by email.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#1b1630'
+      accent: '#e11d74'
+      background: '#faf8ff'
+      foreground: '#1b1630'
+    fonts:
+      body: Inter
+      display: Sora
+    wordmark:
+    - text: 'True'
+      color: primary
+    - text: fan
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Fair resale
+      href: '#rules'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: promoter
+      label: Promoter / artist team
+      assignedBy: invite
+    - key: reviewer
+      label: Fan reviewer
+      assignedBy: invite
+    - key: user
+      label: Fan
+      assignedBy: signup
+  limits:
+  - action: login
+    per: ip
+    max: 20
+    window: hour
+  - action: create:registrations
+    per: user
+    max: 10
+    window: day
+    roles:
+    - user
+  agents:
+  - key: scorer
+    role: main
+    description: Scores each fan registration, explains the score, sends borderline cases to a human reviewer and issues the
+      presale code.
+    memory: none
+    awaits:
+    - review_borderline
+    profile:
+      inline:
+        display_name: Truefan fan scorer
+        crews:
+        - id: scorer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You verify genuine fans for ticket presales and keep out bots and scalpers. You receive one fan
+            registration. Steps: (1) call list_presales and find the presale the fan registered for; copy its promoter_email
+            and read its eligibility_rules and min_fan_months. (2) Score the fan 0-100 from ONLY the evidence you actually
+            have: fan duration claimed vs the presale''s minimum, consistency of the favourite artist with the presale''s
+            artist, plausibility and consistency of name, email, phone and UK postcode format, a streaming handle if given
+            (self-reported, not verified), and bot patterns (disposable or random-looking emails, gibberish names, mismatched
+            details). You have NO verified listening history, purchase history, device or network signals: never invent them,
+            say so in the explanation and do not treat their absence as a bad sign by itself. (3) Decide: score >= 70 verified;
+            40-69 or any doubt = review; below 40 AND clear bot or scalper evidence = rejected. Never reject on thin evidence
+            alone: send it to review instead. Never use ethnicity, nationality, gender, age or disability as signals. (4)
+            Write a short plain-English explanation (max 80 words) that the fan could read. (5) For verified: call make_code
+            with the presale name, then call save_result with status verified, fan_score, explanation, promoter_email and
+            presale_code. For review: call save_result with status review, then call request_review_borderline with the score
+            and the explanation and stop. For rejected: call save_result with status rejected. When resumed after a reviewer
+            decision, set the status to verified (and issue the code with make_code) if approved, or rejected if not. Codes
+            are personal, non-transferable and must never be resold; you give no legal advice. End with a one-paragraph markdown
+            summary starting with a level-1 title ''# Fan check''.'
+    appTools:
+    - name: list_presales
+      description: List the open presales (event, artist, promoter email, eligibility rules, minimum fan months)
+      action: read
+      collection: open_presales
+      scope: all
+    - name: make_code
+      description: Create the unique presale code for this fan and presale
+      action: call
+      slot: make_code
+    - name: save_result
+      description: Save the fan score, explanation, status, promoter email and code on the fan's registration
+      action: write
+      collection: registrations
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  slots:
+  - key: make_code
+    description: Deterministic unique presale code from the user id and the presale
+    timeoutMs: 2000
+    example:
+      args:
+        presale: Summer Tour 2027
+      userId: '42'
+    code: "import hashlib\n\ndef main(input):\n    args = input.get('args') or {}\n    raw = (str(input.get('userId')) + '|'\
+      \ + str(args.get('presale'))).encode()\n    return {'code': 'TF-' + hashlib.sha256(raw).hexdigest()[:10].upper()}\n"
+  approvals:
+  - key: review_borderline
+    title: Borderline fan check
+    description: A human decides on registrations the scorer could not clearly verify
+    role: reviewer
+    decidedBy: role
+    fields:
+    - fan_score
+    - explanation
+    timeoutMinutes: 4320
+    onTimeout: reject
+  triggers:
+  - key: score_registration
+    'on':
+      collection: registrations
+      op: insert
+      where:
+        status: pending
+    start:
+      agent: scorer
+    goal: 'New fan registration for presale {record.presale}. Name: {record.full_name}. Email: {record.email}. Phone: {record.phone}.
+      Postcode: {record.postcode}. Favourite artist: {record.favourite_artist}. Years as a fan: {record.fan_years}. Streaming
+      handle (self-reported): {record.streaming_handle}. Score it, save the result on this registration and follow your steps.'
+  - key: review_decided
+    'on':
+      approval: review_borderline
+      decision: any
+    start:
+      agent: scorer
+    goal: 'A reviewer decided on a borderline registration. Decision event: {event}. If approved, issue the code and set the
+      registration to verified; otherwise set it to rejected.'
+  - key: publish_presale
+    'on':
+      collection: presales
+      op: insert
+    write:
+      collection: open_presales
+      fields:
+        event_name: event_name
+        artist: artist
+        promoter_email: promoter_email
+        codes_count: codes_count
+        min_fan_months: min_fan_months
+        eligibility_rules: eligibility_rules
+      keyBy: event_name
+  - key: presale_fee
+    'on':
+      collection: presales
+      op: insert
+    charge:
+      credits: 100
+      reason: Presale fee
+  - key: code_issued
+    'on':
+      collection: registrations
+      op: update
+      where:
+        status: verified
+    notify:
+      to:
+      - record.email
+      subject: Your Truefan presale code for {record.presale}
+      body: 'Hi {record.full_name},
+
+
+        You are verified as a genuine fan. Your personal presale code for {record.presale} is: {record.presale_code}
+
+
+        Redeem it on the ticketing platform named in the presale details. The code is personal and non-transferable: do not
+        share or resell it, as resale of presale access can breach UK rules and the platform''s terms.
+
+
+        Truefan'
+      link: my_status
+  - key: registration_rejected
+    'on':
+      collection: registrations
+      op: update
+      where:
+        status: rejected
+    notify:
+      to:
+      - record.email
+      subject: Your Truefan registration for {record.presale}
+      body: 'Hi {record.full_name},
+
+
+        We could not verify your registration for {record.presale} this time. You can see the reason in the app and ask for
+        a re-check by contacting the promoter.
+
+
+        Truefan'
+      link: my_status
+  - key: redemption_feed
+    'on':
+      webhook: true
+    write:
+      collection: redemptions
+      fields:
+        presale: presale
+        promoter_email: promoter_email
+        code: code
+        platform: platform
+        redeemed_at: redeemed_at
+      keyBy: code
+  data:
+    collections:
+    - name: presales
+      description: Presales created by promoters
+      ownedBy: user
+      fields:
+      - name: event_name
+        type: text
+        required: true
+        label: Event / presale name
+      - name: artist
+        type: text
+        required: true
+        label: Artist
+      - name: promoter_email
+        type: email
+        required: true
+        label: Contact email of the promoter
+      - name: venues
+        type: textarea
+        required: true
+        label: Venues
+      - name: dates
+        type: textarea
+        required: true
+        label: Event dates
+      - name: presale_opens
+        type: date
+        label: Presale opens
+      - name: codes_count
+        type: number
+        required: true
+        label: Number of codes
+      - name: min_fan_months
+        type: number
+        label: Minimum months as a fan
+      - name: eligibility_rules
+        type: textarea
+        label: Eligibility rules
+      - name: seller
+        type: select
+        required: true
+        label: Ticketing platform
+        options:
+        - value: ticketmaster
+          label: Ticketmaster-type
+        - value: axs
+          label: AXS-type
+        - value: eventim
+          label: Eventim-type
+      - name: redemption_url
+        type: url
+        label: Where codes are redeemed
+      access:
+      - role: reviewer
+    - name: open_presales
+      description: Public list of open presales, filled from presales
+      ownedBy: app
+      fields:
+      - name: event_name
+        type: text
+      - name: artist
+        type: text
+      - name: promoter_email
+        type: email
+      - name: codes_count
+        type: number
+      - name: min_fan_months
+        type: number
+      - name: eligibility_rules
+        type: textarea
+    - name: registrations
+      description: Fan registrations with score and status
+      ownedBy: user
+      retentionDays: 365
+      fields:
+      - name: presale
+        type: select
+        required: true
+        label: Presale
+        optionsFrom: collection:open_presales
+      - name: full_name
+        type: text
+        required: true
+        label: Full name
+      - name: email
+        type: email
+        required: true
+        label: Email
+      - name: phone
+        type: text
+        required: true
+        label: Phone
+      - name: postcode
+        type: text
+        required: true
+        label: Postcode
+      - name: favourite_artist
+        type: text
+        required: true
+        label: Favourite artist
+      - name: fan_years
+        type: number
+        required: true
+        label: Years as a fan
+      - name: streaming_handle
+        type: text
+        label: Streaming profile link or name (optional)
+      - name: consent
+        type: boolean
+        required: true
+        label: I agree to be scored and to the terms (codes are personal and not for resale)
+      - name: promoter_email
+        type: email
+      - name: fan_score
+        type: number
+      - name: explanation
+        type: textarea
+      - name: status
+        type: select
+        default: pending
+        options:
+        - pending
+        - verified
+        - review
+        - rejected
+      - name: presale_code
+        type: text
+      access:
+      - role: promoter
+        where:
+          promoter_email: '{user.email}'
+        can:
+        - read
+      - role: reviewer
+        can:
+        - read
+    - name: redemptions
+      description: Codes redeemed on ticketing platforms (webhook or admin import)
+      ownedBy: org
+      fields:
+      - name: presale
+        type: text
+      - name: promoter_email
+        type: email
+      - name: code
+        type: text
+      - name: platform
+        type: text
+      - name: redeemed_at
+        type: date
+      access:
+      - role: promoter
+        where:
+          promoter_email: '{user.email}'
+        can:
+        - read
+  views:
+  - key: home
+    type: page
+    title: Truefan
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: Fan-first presales
+      title: Presale codes for **genuine fans**, not bots and scalpers.
+      text: Create a presale, let fans register, and get every registration scored with a clear explanation. Borderline cases
+        go to a person. Only verified fans receive a personal code.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Promoter creates a presale
+        text: Event, venues, dates, number of codes and eligibility rules.
+      - title: Fans register
+        text: A short form with name, email, phone, postcode, favourite artist and fan history.
+      - title: Scored and explained
+        text: An AI agent weighs the evidence and writes why. Unclear cases go to a human reviewer.
+      - title: Code by email
+        text: Verified fans get a unique personal code to redeem on the ticketing platform.
+    - type: cards
+      title: Who sees what
+      items:
+      - title: Promoters
+        text: Their own presales, registrations, scores and redemption rates.
+      - title: Fans
+        text: Only their own status and code.
+      - title: Admins
+        text: Everything, including the review queue.
+    - type: text
+      id: rules
+      title: Fair ticketing
+      content: 'Codes are personal and non-transferable. Truefan is built to support the UK rules on ticket resale (Competition
+        and Markets Authority guidance, Consumer Rights Act 2015): no resale of presale access, clear information on who sells
+        and at what price, and no hidden terms. Scores are decision support: a person reviews every borderline case.'
+    - type: note
+      content: Truefan is decision support, not legal advice. Fan data is kept for 12 months.
+  - key: register
+    type: form
+    title: Register as a fan
+    collection: registrations
+    fields:
+    - presale
+    - full_name
+    - email
+    - phone
+    - postcode
+    - favourite_artist
+    - fan_years
+    - streaming_handle
+    - consent
+    submit:
+      label: Register
+      message: Thanks! We are checking your registration. You will get an email if you are verified.
+      redirect: my_status
+    roles:
+    - user
+  - key: my_status
+    type: table
+    title: My status
+    source: collection:registrations
+    roles:
+    - user
+    data:
+      display: table
+      fields:
+      - key: presale
+        label: Presale
+      - key: status
+        label: Status
+        format: badge
+      - key: presale_code
+        label: My code
+      - key: explanation
+        label: Why
+      empty: You have not registered for a presale yet.
+  - key: new_presale
+    type: form
+    title: New presale
+    collection: presales
+    submit:
+      label: Create presale
+      message: Presale created and open for registrations.
+      redirect: my_presales
+    roles:
+    - promoter
+    - admin
+  - key: my_presales
+    type: table
+    title: My presales
+    source: collection:presales
+    roles:
+    - promoter
+    - admin
+    data:
+      display: table
+      fields:
+      - key: event_name
+        label: Presale
+      - key: artist
+        label: Artist
+      - key: codes_count
+        label: Codes
+        format: number
+      - key: seller
+        label: Platform
+      - key: presale_opens
+        label: Opens
+        format: date
+      empty: No presale yet.
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - promoter
+    - admin
+    sections:
+    - type: data
+      title: Registrations
+      source: collection:registrations
+      display: kpi
+      kpis:
+      - label: Registrations
+        agg: count
+      - label: Average fan score
+        agg: avg
+        field: fan_score
+        format: number
+    - type: data
+      title: Registrations by status
+      source: collection:registrations
+      display: chart
+      chart: bar
+      groupBy:
+        field: status
+        aggs:
+        - key: avg_score
+          agg: avg
+          field: fan_score
+      fields:
+      - key: status
+        label: Status
+      - key: count
+        label: Registrations
+    - type: data
+      title: Redemptions by presale
+      source: collection:redemptions
+      display: chart
+      chart: bar
+      groupBy:
+        field: presale
+        aggs: []
+      fields:
+      - key: presale
+        label: Presale
+      - key: count
+        label: Codes redeemed
+      empty: No redemptions reported yet.
+    - type: view
+      title: Registrations and scores
+      view: registrations
+  - key: registrations
+    type: table
+    title: Registrations
+    source: collection:registrations
+    export: true
+    nav: false
+    roles:
+    - promoter
+    - admin
+    - reviewer
+    data:
+      display: table
+      fields:
+      - key: presale
+        label: Presale
+      - key: full_name
+        label: Fan
+      - key: postcode
+        label: Postcode
+      - key: fan_score
+        label: Score
+        format: number
+      - key: status
+        label: Status
+        format: badge
+      - key: explanation
+        label: Explanation
+      sort:
+        field: fan_score
+        dir: desc
+      limit: 200
+      empty: No registrations yet.
+  - key: review_queue
+    type: table
+    title: Review queue
+    source: collection:registrations
+    roles:
+    - reviewer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: presale
+        label: Presale
+      - key: full_name
+        label: Fan
+      - key: fan_score
+        label: Score
+        format: number
+      - key: explanation
+        label: Explanation
+      filters:
+      - field: status
+        op: '='
+        value: review
+      empty: Nothing to review.
+  - key: decisions
+    type: approvals
+    title: Decide
+    approvals:
+    - review_borderline
+    roles:
+    - reviewer
+    - admin
+  - key: account
+    type: account
+    title: Credits
+    roles:
+    - promoter
+  billing:
+    modes:
+    - credits
+    currency: eur
+    signupCredits: 0
+    packs:
+    - key: starter
+      credits: 500
+      price: 250
+      label: 'Starter: 500 credits'
+    - key: pro
+      credits: 2500
+      price: 1100
+      label: 'Pro: 2500 credits'
+  notifications:
+    emailOnRunDone: false
+  extensions:
+  - key: streaming_oauth
+    description: Connecting a Spotify-type streaming account with OAuth to read listening history is not available yet. Fans
+      can give a self-reported profile name, which the scorer treats as unverified.
+  - key: device_network_signals
+    description: Device and network anti-bot signals (IP reputation, device fingerprint) and past purchase history are not
+      available to agents yet. The scorer uses form consistency only and says so in each explanation.
+  - key: ticketing_partnerships
+    description: Redeeming codes on Ticketmaster-, AXS- and Eventim-type platforms needs commercial partnerships and their
+      code-import APIs. For now codes are exported and redemptions arrive by webhook or admin CSV import (redemptions collection).
+  - key: per_verified_fan_fee
+    description: The per-verified-fan fee cannot yet be charged to the promoter, because the scoring run belongs to the fan.
+      Only the per-presale fee (100 credits) is charged automatically; verified-fan fees are invoiced from the dashboard counts.
+  - key: code_cap
+    description: A hard cap on codes issued per presale (codes_count) is not enforced by the runtime; promoters see the counts
+      on the dashboard.
+  - key: uk_compliance_review
+    description: The CMA and Consumer Rights Act wording on the home page and email must be checked by a lawyer before launch;
+      GDPR notice for automated scoring is also needed.

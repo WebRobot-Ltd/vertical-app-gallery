@@ -1,0 +1,711 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: tremora
+  displayName: Tremora
+  tagline:
+    en: Weekly phone-based speech, movement and cognition measures, with trends for your clinician.
+    cy: Mesurau wythnosol lleferydd, symudiad a gwybyddiaeth ar y ffôn, gyda thueddiadau i'ch clinigwr.
+  description:
+    en: 'Patients living with Parkinson''s or dementia, or a carer on their behalf, complete short weekly tasks on the phone.
+      Clinicians at the patient''s clinic follow trends over time and set alert thresholds. Tremora does not diagnose: every
+      clinical decision stays with the clinician.'
+  langs:
+  - en
+  - cy
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#1f3a5f'
+      accent: '#2a8c82'
+      background: '#f7f9fb'
+      foreground: '#17212b'
+    fonts:
+      body: Inter
+      display: Source Serif 4
+    wordmark:
+    - text: Trem
+      color: primary
+    - text: ora
+      color: accent
+  header:
+    links:
+    - label:
+        en: How it works
+        cy: Sut mae'n gweithio
+      href: '#how'
+    - label:
+        en: For clinics
+        cy: I glinigau
+      href: '#clinics'
+    cta:
+      label:
+        en: Sign in
+        cy: Mewngofnodi
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: patient
+      label:
+        en: Patient or carer
+        cy: Claf neu ofalwr
+      assignedBy: signup
+    - key: clinician
+      label:
+        en: Clinician
+        cy: Clinigwr
+      assignedBy: derived
+      from: collection:patients.clinician_email
+    - key: carer
+      label:
+        en: Carer
+        cy: Gofalwr
+      assignedBy: derived
+      from: collection:patients.carer_email
+    - key: sponsor
+      label:
+        en: Research sponsor
+        cy: Noddwr ymchwil
+      assignedBy: invite
+  agents:
+  - key: trend_checker
+    role: helper
+    description: When a new measure arrives, compares it with the patient's recent baseline and records an alert for the clinician
+      if the change exceeds the threshold the clinician set. Never interprets clinically.
+    profile:
+      inline:
+        display_name: Tremora trend checker
+        crews:
+        - id: trend_checker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a data-monitoring assistant for a clinic. You do NOT diagnose, interpret clinically or advise
+            treatment; all clinical decisions belong to the clinician. A new measure has arrived. 1) Call read_patient to
+            get the patient''s alert_threshold_pct (the clinician''s threshold, in percent). If none is set, stop and say
+            so. 2) Call read_measures and take the previous up to 4 values of the SAME measure (excluding the new one) as
+            the baseline mean. If fewer than 2 previous values exist, stop: not enough data. 3) Compute the percentage change
+            of the new value from the baseline. If the absolute change is greater than the threshold, call write_alert once
+            with fields patient_email, clinician_email, measure, value, baseline, change_pct, date and a one-sentence neutral
+            note such as ''Tapping rate is 22% below the average of the last 4 weeks (threshold 15%)''. Use only real figures
+            from the tools; never invent numbers. If the threshold is not exceeded, write nothing. Finish with a level-1 title
+            ''# Trend check — <measure>'' and two lines saying what you compared and whether an alert was recorded. Remind
+            that this is a monitoring signal, not a diagnosis.'
+    appTools:
+    - name: read_measures
+      description: Read the patient's measures
+      action: read
+      collection: measures
+      scope: user
+    - name: read_patient
+      description: Read the patient's record, including the clinician's alert threshold
+      action: read
+      collection: patients
+      scope: user
+    - name: write_alert
+      description: Record an alert for the clinician
+      action: append
+      collection: alerts
+      scope: user
+    output: markdown
+  triggers:
+  - key: new_measure
+    description: A validated measure arrives from the clinical processing service
+    'on':
+      webhook: true
+    write:
+      collection: measures
+      fields:
+        patient_email: patient_email
+        clinician_email: clinician_email
+        carer_email: carer_email
+        task: task
+        measure: measure
+        value: value
+        date: date
+        algorithm_version: algorithm_version
+      keyBy: measure_id
+  - key: check_trend
+    description: Compare each new measure with the clinician's threshold
+    'on':
+      collection: measures
+      op: insert
+    start:
+      agent: trend_checker
+    goal: 'New measure for patient {record.patient_email}: {record.measure} = {record.value} on {record.date} (task {record.task}).
+      Check it against the clinician''s alert threshold as instructed.'
+    asUser: true
+  - key: alert_to_clinician
+    'on':
+      collection: alerts
+      op: insert
+    notify:
+      to:
+      - record.clinician_email
+      subject:
+        en: 'Tremora alert: {record.measure} changed beyond your threshold'
+      body:
+        en: 'A measure for one of your patients changed beyond the threshold you set: {record.note}
+
+
+          This is a monitoring signal, not a diagnosis. Please review the patient''s trend in Tremora.'
+      link: clinician_dash
+  - key: weekly_reminder
+    description: Weekly reminder to do the tasks
+    'on':
+      cron: 0 8 * * 1
+    notify:
+      to:
+      - role:patient
+      - role:carer
+      subject:
+        en: Time for your weekly Tremora tasks
+        cy: Amser ar gyfer eich tasgau Tremora wythnosol
+      body:
+        en: Your weekly Tremora tasks are ready. They take about 10 minutes.
+        cy: Mae eich tasgau Tremora wythnosol yn barod. Maen nhw'n cymryd tua 10 munud.
+      link: checkin
+  data:
+    collections:
+    - name: clinics
+      ownedBy: shared
+      description: Participating clinics and trials, kept by the admins
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: kind
+        type: select
+        options:
+        - clinic
+        - trial
+    - name: patients
+      ownedBy: user
+      description: One record per patient, created by the patient or their carer at sign-up
+      fields:
+      - name: full_name
+        type: text
+        required: true
+        label:
+          en: Patient's name
+          cy: Enw'r claf
+      - name: clinic
+        type: select
+        required: true
+        optionsFrom: collection:clinics
+        label:
+          en: Your clinic
+          cy: Eich clinig
+      - name: clinician_email
+        type: email
+        required: true
+        label:
+          en: Your clinician's email
+          cy: E-bost eich clinigwr
+      - name: carer_email
+        type: email
+        label:
+          en: Carer's email (optional)
+          cy: E-bost y gofalwr (dewisol)
+      - name: condition
+        type: select
+        options:
+        - value: parkinsons
+          label: Parkinson's
+        - value: dementia
+          label: Dementia
+        - value: both
+          label: Both
+      - name: alert_threshold_pct
+        type: number
+        roles:
+        - clinician
+        - admin
+        label:
+          en: Alert threshold (% change)
+          cy: Trothwy rhybudd (% newid)
+      - name: consent
+        type: boolean
+        required: true
+        label:
+          en: I agree to my data being shared with my clinic
+          cy: Rwy'n cytuno i'm data gael ei rannu â'm clinig
+      access:
+      - role: clinician
+        where:
+          clinician_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: carer
+        where:
+          carer_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: checkins
+      ownedBy: user
+      description: Weekly check-in notes by the patient or carer
+      retentionDays: 2555
+      fields:
+      - name: patient_email
+        type: email
+      - name: clinician_email
+        type: email
+      - name: carer_email
+        type: email
+      - name: date
+        type: date
+        required: true
+      - name: completed_by
+        type: select
+        options:
+        - patient
+        - carer
+      - name: notes
+        type: textarea
+        maxLength: 800
+      access:
+      - role: clinician
+        where:
+          clinician_email: '{user.email}'
+      - role: carer
+        where:
+          carer_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: measures
+      ownedBy: user
+      description: Validated measures from speech, tapping, gait and cognitive tasks, written by the clinical processing service
+      retentionDays: 2555
+      fields:
+      - name: measure_id
+        type: text
+      - name: patient_email
+        type: email
+      - name: clinician_email
+        type: email
+      - name: carer_email
+        type: email
+      - name: task
+        type: select
+        options:
+        - reading
+        - tapping
+        - walking
+        - memory
+        - attention
+      - name: measure
+        type: text
+      - name: value
+        type: number
+      - name: date
+        type: date
+      - name: algorithm_version
+        type: text
+      access:
+      - role: clinician
+        where:
+          clinician_email: '{user.email}'
+      - role: carer
+        where:
+          carer_email: '{user.email}'
+    - name: alerts
+      ownedBy: user
+      description: Threshold alerts for clinicians
+      retentionDays: 730
+      fields:
+      - name: patient_email
+        type: email
+      - name: clinician_email
+        type: email
+      - name: measure
+        type: text
+      - name: value
+        type: number
+      - name: baseline
+        type: number
+      - name: change_pct
+        type: number
+      - name: date
+        type: date
+      - name: note
+        type: textarea
+      access:
+      - role: clinician
+        where:
+          clinician_email: '{user.email}'
+        can:
+        - read
+        - write
+  views:
+  - key: home
+    type: page
+    title: Tremora
+    nav: false
+    sections:
+    - type: hero
+      eyebrow:
+        en: Parkinson's and dementia
+        cy: Parkinson's a dementia
+      title:
+        en: Short weekly **phone tasks**, clear trends for your clinic.
+        cy: Tasgau **ffôn** wythnosol byr, tueddiadau clir i'ch clinig.
+      text:
+        en: Read a passage aloud, tap, walk and play memory games. Your clinician sees how your measures change over time.
+          Tremora never gives a diagnosis.
+        cy: Darllenwch ddarn yn uchel, tapiwch, cerddwch a chwaraewch gemau cof. Mae eich clinigwr yn gweld sut mae eich mesurau'n
+          newid dros amser. Nid yw Tremora byth yn rhoi diagnosis.
+      actions:
+      - label:
+          en: Sign in
+          cy: Mewngofnodi
+        href: /login
+        style: primary
+    - type: steps
+      id: how
+      title:
+        en: How it works
+        cy: Sut mae'n gweithio
+      items:
+      - title:
+          en: Join through your clinic
+          cy: Ymunwch trwy eich clinig
+        text:
+          en: You or your carer sign up and link your clinic and clinician.
+          cy: Rydych chi neu eich gofalwr yn cofrestru ac yn cysylltu eich clinig a'ch clinigwr.
+      - title:
+          en: Do the weekly tasks
+          cy: Gwnewch y tasgau wythnosol
+        text:
+          en: A reminder arrives each week on your phone.
+          cy: Daw nodyn atgoffa bob wythnos ar eich ffôn.
+      - title:
+          en: Your clinician follows trends
+          cy: Mae eich clinigwr yn dilyn tueddiadau
+        text:
+          en: They get an alert only if a measure changes beyond the threshold they set.
+          cy: Maen nhw'n cael rhybudd dim ond os yw mesur yn newid y tu hwnt i'r trothwy a osodwyd ganddynt.
+    - type: cards
+      id: clinics
+      title:
+        en: For clinics, trials and sponsors
+        cy: I glinigau, treialon a noddwyr
+      items:
+      - title:
+          en: Clinicians
+          cy: Clinigwyr
+        text:
+          en: Trends for your own patients, with your own alert thresholds.
+      - title:
+          en: Research sponsors
+          cy: Noddwyr ymchwil
+        text:
+          en: Anonymised aggregate data only, never individual records.
+    - type: note
+      content:
+        en: Tremora supports monitoring and does not diagnose. All clinical decisions remain with the clinician.
+  - key: register
+    type: form
+    collection: patients
+    title:
+      en: Join your clinic
+      cy: Ymunwch â'ch clinig
+    submit:
+      label:
+        en: Save
+        cy: Cadw
+      message:
+        en: Thank you. You are linked to your clinic.
+        cy: Diolch. Rydych chi wedi'ch cysylltu â'ch clinig.
+      redirect: checkin
+    edit: true
+    roles:
+    - patient
+    - admin
+  - key: checkin
+    type: form
+    collection: checkins
+    title:
+      en: Weekly check-in
+      cy: Cofrestriad wythnosol
+    fields:
+    - date
+    - completed_by
+    - notes
+    submit:
+      label:
+        en: Submit
+        cy: Cyflwyno
+      message:
+        en: Check-in saved.
+        cy: Cofrestriad wedi'i gadw.
+    roles:
+    - patient
+    - carer
+    - admin
+  - key: my_results
+    type: table
+    title:
+      en: My results
+      cy: Fy nghanlyniadau
+    source: collection:measures
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: task
+        label: Task
+        format: badge
+      - key: measure
+        label: Measure
+      - key: value
+        label: Value
+        format: number
+      sort:
+        field: date
+        dir: desc
+      limit: 100
+    roles:
+    - patient
+    - carer
+    - admin
+  - key: clinician_dash
+    type: page
+    title:
+      en: My patients
+      cy: Fy nghleifion
+    roles:
+    - clinician
+    - admin
+    sections:
+    - type: data
+      title:
+        en: Active alerts
+        cy: Rhybuddion
+      source: collection:alerts
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: patient_email
+        label: Patient
+      - key: measure
+        label: Measure
+      - key: change_pct
+        label: Change %
+        format: number
+      - key: note
+        label: Note
+      sort:
+        field: date
+        dir: desc
+      limit: 30
+      empty:
+        en: No alerts.
+    - type: data
+      title:
+        en: Weekly average of all measures
+        cy: Cyfartaledd wythnosol
+      source: collection:measures
+      display: chart
+      chart: line
+      groupBy:
+        field: date
+        bucket: week
+        aggs:
+        - key: avg_value
+          agg: avg
+          field: value
+      fields:
+      - key: date
+      - key: avg_value
+    - type: data
+      title:
+        en: Patients
+        cy: Cleifion
+      source: collection:patients
+      display: table
+      fields:
+      - key: full_name
+        label: Patient
+      - key: condition
+        label: Condition
+        format: badge
+      - key: alert_threshold_pct
+        label: Threshold %
+        format: number
+      - key: carer_email
+        label: Carer
+      limit: 100
+      empty:
+        en: No patients linked to you yet.
+    - type: view
+      title:
+        en: Latest measures
+        cy: Mesurau diweddaraf
+      view: clinician_measures
+  - key: clinician_measures
+    type: table
+    title: Measures
+    source: collection:measures
+    nav: false
+    export: true
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: patient_email
+        label: Patient
+      - key: task
+        label: Task
+        format: badge
+      - key: measure
+        label: Measure
+      - key: value
+        label: Value
+        format: number
+      sort:
+        field: date
+        dir: desc
+      limit: 200
+    roles:
+    - clinician
+    - admin
+  - key: set_threshold
+    type: form
+    collection: patients
+    title:
+      en: Alert threshold
+      cy: Trothwy rhybudd
+    fields:
+    - alert_threshold_pct
+    edit: true
+    submit:
+      label: Save
+      message:
+        en: Threshold saved.
+      redirect: clinician_dash
+    nav: false
+    roles:
+    - clinician
+    - admin
+  - key: sponsor_dash
+    type: page
+    title:
+      en: Anonymised aggregates
+      cy: Cyfansymiau dienw
+    roles:
+    - sponsor
+    - admin
+    sections:
+    - type: text
+      content:
+        en: Only anonymised aggregates across at least 5 participants are shown. No individual record is ever visible.
+    - type: data
+      title:
+        en: Monthly mean across participants
+        cy: Cymedr misol
+      source: collection:measures
+      display: chart
+      chart: line
+      groupBy:
+        field: date
+        bucket: month
+        aggs:
+        - key: mean_value
+          agg: avg
+          field: value
+        minCount: 5
+        acrossUsers: true
+      fields:
+      - key: date
+      - key: mean_value
+  - key: account
+    type: account
+    title:
+      en: Subscription
+      cy: Tanysgrifiad
+    roles:
+    - admin
+    - clinician
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: clinic
+      price: 99
+      interval: month
+      label:
+        en: Clinic — per active patient pricing agreed with Tremora
+      roles:
+      - clinician
+      - admin
+    - key: trial
+      price: 299
+      interval: month
+      label:
+        en: Trial / sponsor study
+      roles:
+      - admin
+  notifications:
+    emailOnRunDone: false
+  mobile:
+    appId: com.tremora.app
+    appName: Tremora
+    lock: biometric
+    capabilities:
+    - name: push
+    - name: biometrics
+      reason:
+        en: To open the app with Face ID or fingerprint and keep health data private
+        cy: I agor yr ap gyda Face ID neu olion bys a chadw data iechyd yn breifat
+  extensions:
+  - key: sensor_tasks
+    description: Audio recording (reading aloud), motion-sensor capture (finger tapping, pocket walking test) and the memory
+      and attention games are not available as built-in phone capabilities yet. They need a dedicated capture module in the
+      phone shell, outside this manifest.
+  - key: signal_processing_samd
+    description: 'The audio and motion signal-processing algorithms are your validated software as a medical device (MHRA
+      registration, UKCA marking, clinical datasets under licence). They stay outside the app: the service posts the computed
+      measures to the webhook /api/hooks/new_measure, one record per measure with patient_email, clinician_email, carer_email,
+      task, measure, value, date and a measure_id, and the app only stores and displays them. The webhook must attribute each
+      record to the patient''s user account; confirm this at integration.'
+  - key: per_patient_billing
+    description: Per patient per month pricing is not metered automatically. Plans here are placeholder flat tiers; per-active-patient
+      invoicing needs a custom billing extension.
+  - key: carer_on_behalf
+    description: Carers see and add to a linked patient through the carer_email on the patient record. Acting fully on the
+      patient's account on their behalf, and DPA/clinical governance (DCB0129 and DTAC) must be agreed in the regulatory file.
+  - key: welsh_review
+    description: Welsh text is provided for main screens as a first draft and should be reviewed by a qualified Welsh translator,
+      then extended to all remaining strings.

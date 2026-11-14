@@ -1,0 +1,936 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: callgleam
+  displayName: Callgleam
+  tagline: Every sales and service call, turned into insight.
+  description: Callgleam turns call transcripts into summaries, next steps, objections, competitor mentions, sentiment and
+    scorecard-based coaching, with recording consent stored and dashboards for managers.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f2a44'
+      accent: '#00a88f'
+      background: '#f7f9fb'
+      foreground: '#111827'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Call
+      color: primary
+    - text: gleam
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: For teams
+      href: '#roles'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: manager
+      label: Manager
+      assignedBy: invite
+    - key: rep
+      label: Rep
+      assignedBy: signup
+  agents:
+  - key: analyst
+    role: main
+    description: Analyses a logged call transcript and fills the call notes for the rep to confirm.
+    profile:
+      inline:
+        display_name: Callgleam call analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You analyse one sales or service call transcript. First call read_call and find the call named in
+            the event (match its id). Read its transcript (speaker-labelled if available). Then call update_call on that call
+            id with: summary (3-5 sentences), next_steps (bullet list), objections (bullet list), competitors (names mentioned,
+            comma separated, empty if none), sentiment (positive|neutral|negative), talk_ratio (the rep''s share of speaking
+            time in percent, estimated from the speaker turns; leave empty if there are no speaker labels), outcome (won|lost|follow_up|resolved|no_decision),
+            products (comma separated), follow_up_date (YYYY-MM-DD, only if a date was agreed or clearly implied, relative
+            to the call date), won (1 if outcome is won, else 0), analysis_status "analyzed". Do NOT set notes_confirmed:
+            the rep confirms it. Then call add_insight once for each objection (kind objection), each competitor (kind competitor)
+            and each main topic discussed (kind topic, 1-4 words, lowercase), copying call_id, call_date, rep_email and manager_email
+            from the call. Never invent facts that are not in the transcript. Finish with a one-paragraph note under a level-1
+            title "# Call analysed — <customer>".'
+    appTools:
+    - name: read_call
+      description: Read the user's calls
+      action: read
+      collection: calls
+      scope: user
+    - name: update_call
+      description: Update fields of a call record by id
+      action: write
+      collection: calls
+      scope: user
+    - name: add_insight
+      description: Add an insight row (objection, competitor or topic) for a call
+      action: append
+      collection: call_insights
+      scope: user
+    output: markdown
+  - key: scorer
+    role: helper
+    description: Scores a call against its manager's scorecard, with quotes.
+    profile:
+      inline:
+        display_name: Callgleam call scorer
+        crews:
+        - id: scorer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You score one call against a manager''s scorecard. Call read_call to find the call in the event,
+            then read_scorecards and keep only the criteria whose manager_email equals the call''s manager_email (if there
+            are none, use three defaults: opening, discovery, next steps, 0-10 each, equal weight). For each criterion give
+            a score from 0 to 10 and quote the exact words from the transcript that justify it (or say that no evidence was
+            found). Then call add_score once with call_id, call_title, call_date, rep_email, manager_email copied from the
+            call, scores_detail (Markdown: one block per criterion with score, quotes, one-line reason), total (weighted average
+            0-100) and reviewed false. Be strict, fair and never invent quotes. If the call has no transcript, do nothing
+            and say so. Start your final answer with "# Call scored — <title>".'
+    appTools:
+    - name: read_call
+      description: Read the user's calls
+      action: read
+      collection: calls
+      scope: user
+    - name: read_scorecards
+      description: Read the managers' scorecard criteria
+      action: read
+      collection: scorecards
+      scope: all
+    - name: add_score
+      description: Save the scorecard result of a call
+      action: append
+      collection: call_scores
+      scope: user
+    output: markdown
+  - key: importer
+    role: helper
+    description: Imports a recording transcript or text from another tool, creates the call and analyses it.
+    profile:
+      inline:
+        display_name: Callgleam importer
+        crews:
+        - id: importer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You import a call transcript the rep uploaded or pasted from another tool. The text is in the goal;
+            if it is empty and a file id is given, call read_upload with the id. Create the call with add_call using the details
+            given (title, customer_name, customer_email, call_date, rep_email, manager_email, consent_status, transcript =
+            the full text, source "upload", analysis_status "analyzed") and also fill summary, next_steps, objections, competitors,
+            sentiment (positive|neutral|negative), talk_ratio (rep share of speaking time in percent, only if speakers are
+            labelled), outcome (won|lost|follow_up|resolved|no_decision), products, follow_up_date (YYYY-MM-DD only if clear),
+            won (1 or 0). Leave notes_confirmed false. Then call add_insight for each objection (kind objection), competitor
+            (kind competitor) and main topic (kind topic, 1-4 words lowercase) with call_date, rep_email and manager_email.
+            Never invent facts. Final answer: a level-1 title "# Call imported — <customer>", then the summary and next steps.'
+    appTools:
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
+    - name: add_call
+      description: Create a call record
+      action: append
+      collection: calls
+      scope: user
+    - name: add_insight
+      description: Add an insight row (objection, competitor or topic) for a call
+      action: append
+      collection: call_insights
+      scope: user
+    context:
+    - key: rep_email
+      from: user.email
+    goalTemplate: 'Import this call.
+
+      Title: {title}
+
+      Customer: {customer_name} {?customer_email}({customer_email}){/customer_email}
+
+      Call date: {call_date}
+
+      Rep email: {rep_email}
+
+      Manager email: {manager_email}
+
+      Recording consent: {consent_status_label}
+
+      {?transcript_file}Uploaded file ids: {transcript_file}{/transcript_file}
+
+      {?transcript_file_text}Transcript from file:
+
+      {transcript_file_text}{/transcript_file_text}
+
+      {?pasted}Pasted text:
+
+      {pasted}{/pasted}
+
+      Write in the language with ISO code {lang}.'
+    output: markdown
+  inputForm:
+    title: Import a transcript
+    fields:
+    - name: title
+      type: text
+      required: true
+      label: Call title
+    - name: customer_name
+      type: text
+      required: true
+      label: Customer
+    - name: customer_email
+      type: email
+      label: Customer email
+    - name: call_date
+      type: date
+      required: true
+      label: Call date
+    - name: manager_email
+      type: email
+      required: true
+      label: Your manager's email
+    - name: consent_status
+      type: select
+      required: true
+      label: Recording consent
+      options:
+      - value: given_verbal
+        label: Given verbally
+      - value: given_written
+        label: Given in writing
+      - value: not_given
+        label: Not given / unknown
+    - name: transcript_file
+      type: file
+      accept:
+      - pdf
+      - docx
+      - txt
+      - md
+      - csv
+      - json
+      maxMb: 10
+      label: Transcript file
+      help: Text transcripts exported from other tools.
+    - name: pasted
+      type: textarea
+      maxLength: 20000
+      label: Or paste the transcript
+  data:
+    collections:
+    - name: calls
+      ownedBy: user
+      description: Calls with transcript, AI notes and consent
+      retentionDays: 730
+      fields:
+      - name: title
+        type: text
+        required: true
+        label: Call title
+      - name: customer_name
+        type: text
+        required: true
+        label: Customer
+      - name: customer_email
+        type: email
+        label: Customer email
+      - name: call_date
+        type: date
+        required: true
+        label: Call date
+      - name: direction
+        type: select
+        label: Direction
+        options:
+        - inbound
+        - outbound
+      - name: duration_min
+        type: number
+        label: Duration (minutes)
+      - name: rep_email
+        type: email
+        required: true
+        label: Rep email
+        help: Your own email.
+      - name: manager_email
+        type: email
+        required: true
+        label: Manager email
+      - name: consent_status
+        type: select
+        required: true
+        label: Recording consent
+        options:
+        - value: given_verbal
+          label: Given verbally
+        - value: given_written
+          label: Given in writing
+        - value: not_given
+          label: Not given / unknown
+      - name: consent_recorded_at
+        type: date
+        label: Consent captured on
+      - name: source
+        type: select
+        label: Source
+        options:
+        - logged
+        - upload
+        default: logged
+      - name: transcript
+        type: textarea
+        label: Transcript
+      - name: analysis_status
+        type: select
+        label: Analysis
+        options:
+        - pending
+        - analyzed
+        default: pending
+      - name: summary
+        type: textarea
+        label: Summary
+      - name: next_steps
+        type: textarea
+        label: Next steps
+      - name: objections
+        type: textarea
+        label: Objections
+      - name: competitors
+        type: text
+        label: Competitors
+      - name: sentiment
+        type: select
+        label: Sentiment
+        options:
+        - positive
+        - neutral
+        - negative
+      - name: talk_ratio
+        type: number
+        label: Rep talk share (%)
+      - name: outcome
+        type: select
+        label: Outcome
+        options:
+        - won
+        - lost
+        - follow_up
+        - resolved
+        - no_decision
+      - name: products
+        type: text
+        label: Products discussed
+      - name: follow_up_date
+        type: date
+        label: Follow-up date
+      - name: won
+        type: number
+        label: Won (1/0)
+      - name: notes_confirmed
+        type: boolean
+        label: Notes confirmed by rep
+      access:
+      - role: manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: call_insights
+      ownedBy: user
+      description: Objections, competitor mentions and topics extracted from calls
+      retentionDays: 730
+      fields:
+      - name: kind
+        type: select
+        options:
+        - objection
+        - competitor
+        - topic
+      - name: label
+        type: text
+      - name: call_id
+        type: text
+      - name: call_date
+        type: date
+      - name: rep_email
+        type: email
+      - name: manager_email
+        type: email
+      access:
+      - role: manager
+        where:
+          manager_email: '{user.email}'
+    - name: scorecards
+      ownedBy: shared
+      description: Scorecard criteria set by managers
+      fields:
+      - name: manager_email
+        type: email
+        required: true
+        label: Manager email
+      - name: criterion
+        type: text
+        required: true
+        label: Criterion
+        help: e.g. Opening, Discovery, Next steps
+      - name: description
+        type: textarea
+        label: What good looks like
+      - name: weight
+        type: number
+        label: Weight
+      access:
+      - role: manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: call_scores
+      ownedBy: user
+      description: Scorecard results per call and manager coaching
+      retentionDays: 730
+      fields:
+      - name: call_id
+        type: text
+      - name: call_title
+        type: text
+        label: Call
+      - name: call_date
+        type: date
+        label: Date
+      - name: rep_email
+        type: email
+        label: Rep
+      - name: manager_email
+        type: email
+      - name: scores_detail
+        type: textarea
+        label: Scores and quotes
+      - name: total
+        type: number
+        label: Total (0-100)
+      - name: coaching_comment
+        type: textarea
+        label: Coaching comment
+      - name: reviewed
+        type: boolean
+        label: Reviewed
+      access:
+      - role: manager
+        where:
+          manager_email: '{user.email}'
+        can:
+        - read
+        - write
+  views:
+  - key: home
+    type: page
+    title: Callgleam
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: Voice insights for sales and service teams
+      title: Every call, **understood**. Every rep, coached.
+      text: Callgleam turns call transcripts into summaries, next steps, objections, competitor mentions and sentiment, scores
+        them against your scorecard and keeps proof of customer consent.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Log or import a call
+        text: Log a call with its transcript and consent, or upload transcripts from other tools.
+      - title: AI writes the notes
+        text: Summary, next steps, objections, competitors, sentiment, talk-to-listen ratio and the call notes form, filled
+          for you.
+      - title: Confirm and coach
+        text: The rep confirms the notes; the manager reviews the scorecard result with quotes and adds coaching.
+    - type: cards
+      id: roles
+      title: For every role
+      items:
+      - title: Reps
+        text: See your own calls, confirm notes and get a daily email with follow-ups due.
+      - title: Managers
+        text: Your team's calls, scorecards, coaching and dashboards.
+      - title: Admins
+        text: Everything, plus the data and users of the company.
+    - type: note
+      content: Recording and transcription must follow the laws on call recording in your country. Callgleam stores the consent
+        you capture; it does not give legal advice.
+  - key: log_call
+    type: form
+    title: Log a call
+    collection: calls
+    fields:
+    - title
+    - customer_name
+    - customer_email
+    - call_date
+    - direction
+    - duration_min
+    - rep_email
+    - manager_email
+    - consent_status
+    - consent_recorded_at
+    - transcript
+    submit:
+      label: Save and analyse
+      message: Saved. The AI notes will appear on the call shortly.
+      redirect: calls
+    roles:
+    - rep
+    - manager
+    - admin
+  - key: upload
+    type: new_run
+    title: Import a transcript
+    roles:
+    - rep
+    - manager
+    - admin
+  - key: imports
+    type: history
+    title: My imports
+    source: run
+    roles:
+    - rep
+    - manager
+    - admin
+  - key: import_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: calls
+    type: table
+    title: Calls
+    source: collection:calls
+    export: true
+    roles:
+    - rep
+    - manager
+    - admin
+    data:
+      display: table
+      fields:
+      - key: call_date
+        label: Date
+        format: date
+      - key: title
+        label: Call
+      - key: customer_name
+        label: Customer
+      - key: rep_email
+        label: Rep
+      - key: outcome
+        label: Outcome
+        format: badge
+      - key: sentiment
+        label: Sentiment
+        format: badge
+      - key: talk_ratio
+        label: Rep talk %
+        format: number
+      - key: follow_up_date
+        label: Follow-up
+        format: date
+      - key: notes_confirmed
+        label: Confirmed
+      - key: summary
+        label: Summary
+      sort:
+        field: call_date
+        dir: desc
+      limit: 100
+      actions:
+      - type: call
+        label: Call
+        field: customer_phone
+      - type: calendar
+        label: Add follow-up
+        title: title
+        start: follow_up_date
+  - key: call_notes
+    type: form
+    title: Confirm call notes
+    collection: calls
+    fields:
+    - summary
+    - next_steps
+    - outcome
+    - products
+    - follow_up_date
+    - notes_confirmed
+    edit: true
+    submit:
+      label: Confirm notes
+      message: Notes confirmed.
+      redirect: calls
+    roles:
+    - rep
+    - manager
+    - admin
+    nav: false
+  - key: scorecard_form
+    type: form
+    title: Add scorecard criterion
+    collection: scorecards
+    submit:
+      label: Save criterion
+      message: Criterion saved.
+      redirect: scorecard
+    roles:
+    - manager
+    - admin
+  - key: scorecard
+    type: table
+    title: Scorecard
+    source: collection:scorecards
+    roles:
+    - manager
+    - admin
+    data:
+      display: table
+      fields:
+      - key: manager_email
+        label: Manager
+      - key: criterion
+        label: Criterion
+      - key: description
+        label: What good looks like
+      - key: weight
+        label: Weight
+        format: number
+  - key: scores
+    type: table
+    title: Call scores
+    source: collection:call_scores
+    roles:
+    - rep
+    - manager
+    - admin
+    data:
+      display: table
+      fields:
+      - key: call_date
+        label: Date
+        format: date
+      - key: call_title
+        label: Call
+      - key: rep_email
+        label: Rep
+      - key: total
+        label: Total
+        format: number
+      - key: scores_detail
+        label: Scores and quotes
+      - key: coaching_comment
+        label: Coaching
+      - key: reviewed
+        label: Reviewed
+      sort:
+        field: call_date
+        dir: desc
+      limit: 100
+  - key: coaching
+    type: form
+    title: Coaching comment
+    collection: call_scores
+    fields:
+    - coaching_comment
+    - reviewed
+    edit: true
+    submit:
+      label: Save coaching
+      message: Coaching saved.
+      redirect: scores
+    roles:
+    - manager
+    - admin
+    nav: false
+  - key: dashboards
+    type: page
+    title: Dashboards
+    roles:
+    - manager
+    - admin
+    sections:
+    - type: data
+      title: Call volume by week
+      source: collection:calls
+      display: chart
+      chart: line
+      fields:
+      - key: call_date
+        label: Week
+      - key: count
+        label: Calls
+      - key: minutes
+        label: Minutes
+      groupBy:
+        field: call_date
+        bucket: week
+        aggs:
+        - key: minutes
+          agg: sum
+          field: duration_min
+    - type: data
+      title: Conversion by rep
+      source: collection:calls
+      display: bar
+      fields:
+      - key: rep_email
+        label: Rep
+      - key: conversion
+        label: Conversion
+        format: percent
+      - key: count
+        label: Calls
+      groupBy:
+        field: rep_email
+        aggs:
+        - key: conversion
+          agg: avg
+          field: won
+    - type: data
+      title: Recurring objections
+      source: collection:call_insights
+      display: bar
+      fields:
+      - key: label
+        label: Objection
+      - key: count
+        label: Times raised
+      filters:
+      - field: kind
+        op: '='
+        value: objection
+      groupBy:
+        field: label
+        aggs: []
+    - type: data
+      title: Competitor mentions
+      source: collection:call_insights
+      display: bar
+      fields:
+      - key: label
+        label: Competitor
+      - key: count
+        label: Mentions
+      filters:
+      - field: kind
+        op: '='
+        value: competitor
+      groupBy:
+        field: label
+        aggs: []
+    - type: data
+      title: Topics this period
+      source: collection:call_insights
+      display: bar
+      fields:
+      - key: label
+        label: Topic
+      - key: count
+        label: Calls
+      filters:
+      - field: kind
+        op: '='
+        value: topic
+      groupBy:
+        field: label
+        aggs: []
+    - type: data
+      title: Topic mentions week by week
+      source: collection:call_insights
+      display: chart
+      chart: line
+      fields:
+      - key: call_date
+        label: Week
+      - key: count
+        label: Topic mentions
+      filters:
+      - field: kind
+        op: '='
+        value: topic
+      groupBy:
+        field: call_date
+        bucket: week
+        aggs: []
+  - key: account
+    type: account
+    title: Plan and minutes
+    roles:
+    - rep
+    - manager
+    - admin
+  triggers:
+  - key: analyze_call
+    description: Analyse a newly logged call
+    'on':
+      collection: calls
+      op: insert
+      where:
+        analysis_status: pending
+    start:
+      agent: analyst
+    goal: 'Analyse the new call: {event}. Today is {date}. Write in the language with ISO code {lang}.'
+  - key: score_call
+    description: Score a newly logged call against the manager's scorecard
+    'on':
+      collection: calls
+      op: insert
+      where:
+        analysis_status: pending
+    start:
+      agent: scorer
+    goal: 'Score the new call: {event}. Manager: {record.manager_email}. Today is {date}.'
+  - key: followup_due
+    description: Daily email with the follow-ups due
+    'on':
+      date:
+        collection: calls
+        field: follow_up_date
+        offsetDays: 0
+        hour: 7
+    notify:
+      to:
+      - owner
+      subject: 'Follow-up due today: {record.customer_name}'
+      body: 'Your follow-up with {record.customer_name} ({record.title}) is due today.
+
+
+        Next steps:
+
+        {record.next_steps}'
+      link: calls
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 30
+    metering:
+      creditEur: 0.03
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+      - storage
+    costs:
+      agent:analyst:
+        estimate: 10
+        metered: true
+      agent:scorer:
+        estimate: 5
+        metered: true
+      agent:importer:
+        estimate: 12
+        metered: true
+    packs:
+    - key: minutes_500
+      credits: 500
+      price: 15
+      label: 500 extra minutes
+    plans:
+    - key: team
+      price: 39
+      interval: month
+      label: Callgleam seat
+      credits: 600
+      creditsReset: monthly
+      includes:
+      - 600 call minutes per month
+      - Scorecards and coaching
+      - Dashboards
+  extensions:
+  - key: telephony_softphone
+    description: 'NOT AVAILABLE YET: calling from the browser or from the rep''s own phone number (softphone, number provisioning,
+      inbound routing). Today calls are logged by hand with their transcript.'
+  - key: call_recording
+    description: 'NOT AVAILABLE YET: recording the call audio and storing it. Consent is captured and stored on each call,
+      but no audio is recorded.'
+  - key: transcription_diarization
+    description: 'NOT AVAILABLE YET: speech-to-text with speaker separation, and upload of audio recordings (the upload accepts
+      text transcripts only). Use a transcription tool and import its speaker-labelled text.'
+  - key: per_seat_billing
+    description: 'Per-user subscription: the plan is priced per account; per-seat quantity pricing and pooled minutes across
+      a team are not expressible yet. Minutes are modelled as credits (1 credit = 1 minute), extra billed per use.'
+  - key: row_links
+    description: A link from a call row to its 'Confirm call notes' or coaching edit form (/v/call_notes?id=...) is not available
+      in tables yet.

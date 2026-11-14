@@ -1,0 +1,491 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: tapcard
+  displayName: Tapcard
+  tagline:
+    en: Ask anything for everyday life. Get tappable cards, not a wall of text.
+  description:
+    en: 'Ask how to cook, travel or fix something and an AI agent researches the web and answers with a set of cards: steps,
+      checklists, timers, shopping lists and comparison tables. Save sets, share them and ask follow-ups that update them.'
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f2a44'
+      accent: '#ff6b3d'
+      background: '#fbf8f4'
+      foreground: '#1b1f2a'
+    fonts:
+      body: Inter
+      display: Poppins
+    wordmark:
+    - text: Tap
+      color: primary
+    - text: card
+      color: accent
+    buttonShape: rounded
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Plans
+      href: '#plans'
+    cta:
+      label: Start free
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      assignedBy: signup
+  limits:
+  - action: agent:cards
+    per: user
+    max: 5
+    window: day
+    roles:
+    - user
+    plans:
+      premium: 60
+  - action: agent:refiner
+    per: user
+    max: 10
+    window: day
+    roles:
+    - user
+    plans:
+      premium: 100
+  agents:
+  - key: cards
+    role: main
+    when: mode == 'new'
+    description: Researches the question on the web and answers as a set of cards.
+    profile:
+      inline:
+        display_name: Tapcard card maker
+        crews:
+        - id: cards
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are Tapcard, an assistant for everyday tasks (cooking, travel, DIY). Research the question on
+            reliable web pages through the WebRobot MCP, then answer NOT as prose but as a set of cards. Start with a level-1
+            title "# <short title>". Then output cards, each as a level-2 heading prefixed with its type in brackets: [Steps],
+            [Checklist], [Timer], [Map], [Shopping list], [Compare], [Tip]. Steps: numbered, one action each, with an image
+            line `![alt](https://...)` only if you found a real, reusable image URL. Checklist: ''- [ ]'' items. Timer: one
+            line per timer as ''Label | minutes''. Map: places as ''Name | address | why''. Shopping list: ''- [ ]'' items
+            with quantities. Compare: a Markdown table. Keep each card short and tappable. End with a ```json block (and nothing
+            after it) of the form {"title":"...","topic":"cooking|travel|diy|other","summary":"outline of all cards, under
+            300 words","remind_on":"YYYY-MM-DD or empty"}. remind_on is the date of a trip or planned job if the user gave
+            one. Never invent prices, opening times or safety facts; cite source names in a final [Sources] card. For electrical,
+            gas or structural DIY, add a safety tip and say when to call a professional. Write in English.'
+    goalTemplate: 'Question: {question}
+
+      Category: {kind_label}
+
+      Today is {date}. Answer in the language with ISO code {lang}.'
+    output: markdown+json
+    resultSchema:
+      type: object
+      properties:
+        title:
+          type: string
+        topic:
+          type: string
+        summary:
+          type: string
+        remind_on:
+          type: string
+    writesTo:
+      collection: card_sets
+      parse: json_last
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 0.8
+  - key: refiner
+    role: main
+    when: mode == 'followup'
+    description: Updates a saved card set following a follow-up question.
+    profile:
+      inline:
+        display_name: Tapcard follow-up
+        crews:
+        - id: refiner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are Tapcard. You get the outline of an existing card set and a follow-up request. Research on
+            the web through the WebRobot MCP only if needed, then output the complete UPDATED card set using the same format:
+            a level-1 title, then cards as level-2 headings prefixed [Steps], [Checklist], [Timer], [Map], [Shopping list],
+            [Compare], [Tip], [Sources]. Timers as ''Label | minutes''. Keep what still holds, change what the request affects.
+            End with a ```json block {"title":"...","topic":"cooking|travel|diy|other","summary":"outline under 300 words","remind_on":"YYYY-MM-DD
+            or empty"}. Never invent figures. English.'
+    goalTemplate: 'Existing card set outline:
+
+      {previous}
+
+
+      Follow-up request: {question}
+
+      Today is {date}. Language ISO code {lang}.'
+    context:
+    - key: previous
+      from: collection:card_sets.summary
+    output: markdown+json
+    resultSchema:
+      type: object
+      properties:
+        title:
+          type: string
+        topic:
+          type: string
+        summary:
+          type: string
+        remind_on:
+          type: string
+    writesTo:
+      collection: card_sets
+      parse: json_last
+    limits:
+      maxTurns: 20
+      maxBudgetUsd: 0.6
+  inputForm:
+    title: Ask Tapcard
+    fields:
+    - name: mode
+      type: select
+      required: true
+      default: new
+      label: What do you want to do?
+      options:
+      - value: new
+        label: New question
+      - value: followup
+        label: Follow up on a saved set
+    - name: set
+      type: select
+      label: Saved set
+      optionsFrom: collection:card_sets
+      visibleWhen: mode == 'followup'
+    - name: kind
+      type: select
+      required: true
+      label: Topic
+      default: other
+      options:
+      - value: cooking
+        label: Cooking
+      - value: travel
+        label: Travel
+      - value: diy
+        label: DIY and repairs
+      - value: other
+        label: Something else
+    - name: question
+      type: textarea
+      required: true
+      maxLength: 600
+      label: Your question
+      help: e.g. Plan a two-day trip to York, or fix a dripping tap
+    examples:
+    - mode: new
+      kind: travel
+      question: Plan a two-day trip to York
+    - mode: new
+      kind: diy
+      question: Fix a dripping tap
+    - mode: new
+      kind: cooking
+      question: Sunday roast for six, ready by 2pm
+  data:
+    collections:
+    - name: card_sets
+      ownedBy: user
+      description: Saved card sets (one per finished run), private to their owner unless shared
+      sharing:
+      - viewer
+      retentionDays: 730
+      fields:
+      - name: title
+        type: text
+      - name: topic
+        type: text
+      - name: summary
+        type: textarea
+      - name: remind_on
+        type: date
+        label: Remind me on
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Tapcard
+    sections:
+    - type: hero
+      eyebrow: Cooking · Travel · DIY
+      title: Ask once. Get **tappable cards**, not a wall of text.
+      text: Tapcard researches the web and builds steps, checklists, timers, maps, shopping lists and comparison tables you
+        can tick off, expand and reorder.
+      actions:
+      - label: Start free
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Ask
+        text: 'Type what you need to do: a trip, a recipe, a repair.'
+        badge: 💬
+      - title: Get cards
+        text: An agent researches and returns a set of cards for each part of the job.
+        badge: 🃏
+      - title: Save and follow up
+        text: Keep sets in your library, share a link, and ask follow-ups that update them.
+        badge: 📌
+    - type: cards
+      id: plans
+      title: Plans
+      items:
+      - title: Free
+        text: A few questions every day.
+      - title: Premium
+        text: Many more questions and follow-ups, plus illustrations when available.
+    - type: note
+      content: Tapcard gives general guidance, not professional advice. For gas, electrical or structural work, call a qualified
+        professional.
+  - key: ask
+    type: new_run
+    title: Ask
+    roles:
+    - user
+    - admin
+  - key: history
+    type: history
+    title: My questions
+    source: run
+    roles:
+    - user
+    - admin
+  - key: cardset
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: library
+    type: cards
+    title: My library
+    source: collection:card_sets
+    roles:
+    - user
+    - admin
+    export: false
+    data:
+      display: cards
+      fields:
+      - key: title
+        label: Title
+      - key: topic
+        label: Topic
+        format: badge
+      - key: remind_on
+        label: Remind on
+        format: date
+      sort:
+        field: remind_on
+        dir: desc
+      empty: No saved card sets yet. Ask a question first.
+      actions:
+      - type: share
+        label: Share
+        field: summary
+      - type: calendar
+        label: Add to calendar
+        title: title
+        start: remind_on
+  - key: plan_form
+    type: form
+    title: Edit saved set
+    collection: card_sets
+    fields:
+    - title
+    - remind_on
+    edit: true
+    submit:
+      label: Save
+      message: Saved.
+      redirect: library
+    nav: false
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title: Plan and credits
+    roles:
+    - user
+  - key: topics
+    type: table
+    title: Common topics
+    source: collection:card_sets
+    roles:
+    - admin
+    data:
+      display: bar
+      chart: bar
+      fields:
+      - key: topic
+        label: Topic
+      - key: n
+        label: Sets
+      groupBy:
+        field: topic
+        aggs:
+        - key: n
+          agg: count
+  - key: admin
+    type: tabs
+    title: Admin
+    children:
+    - admin_overview
+    - admin_users
+    - topics
+    roles:
+    - admin
+  - key: admin_overview
+    type: admin
+    title: Usage
+    roles:
+    - admin
+    nav: false
+  - key: admin_users
+    type: admin
+    title: Users
+    roles:
+    - admin
+    nav: false
+  triggers:
+  - key: set_reminder
+    description: Reminds the owner on the day of a saved plan
+    'on':
+      date:
+        collection: card_sets
+        field: remind_on
+        offsetDays: 0
+        hour: 8
+    notify:
+      to: owner
+      subject: 'Today: {record.title}'
+      body: Your saved Tapcard plan "{record.title}" is for today. Open your library to tick things off.
+      link: library
+  notifications:
+    emailOnRunDone: true
+  mobile:
+    appId: com.tapcard.app
+    appName: Tapcard
+    capabilities:
+    - name: push
+  egress:
+    hosts:
+    - example.invalid
+    notes: Placeholder not used; agents reach the web through the WebRobot MCP.
+  billing:
+    modes:
+    - credits
+    - subscription
+    currency: eur
+    signupCredits: 40
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:cards:
+        estimate: 10
+        metered: true
+      agent:refiner:
+        estimate: 6
+        metered: true
+    packs:
+    - key: top_up
+      credits: 300
+      price: 4
+      label: 300 credits
+    plans:
+    - key: premium
+      price: 6.99
+      interval: month
+      label: Premium
+      credits: 400
+      creditsReset: monthly
+      includes:
+      - More questions and follow-ups per day
+      - Illustrations when available
+      roles:
+      - user
+  extensions:
+  - key: card_renderer
+    description: Interactive card rendering engine (tap to expand, tick off, reorder, live timers, maps). The runtime shows
+      the agent's cards as formatted Markdown and chart blocks; the full interactive renderer is not available yet.
+  - key: image_generation
+    description: Generated illustrations for cards (premium) are not available yet; the agent only uses real image URLs it
+      finds.
+  - key: timer_push
+    description: Push notifications that fire when a card timer ends are not available; push works for saved-plan reminders
+      on a date.
+  - key: voice_input
+    description: Voice questions need a chat view for microphone capability; the question form relies on the phone keyboard
+      dictation.
+  - key: share_by_link
+    description: 'Public share links for a card set are not available; sets are shared with invited viewers (sharing: viewer)
+      and via the share button.'

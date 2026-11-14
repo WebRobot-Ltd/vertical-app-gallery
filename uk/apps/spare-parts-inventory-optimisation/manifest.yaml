@@ -1,0 +1,1484 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: partwise
+  displayName: Partwise
+  tagline:
+    en: The AI operating system for spare-parts supply chains.
+    de: Das KI-Betriebssystem für Ersatzteil-Lieferketten.
+  description:
+    en: Import inventory, sales, purchase orders and lead times. Partwise forecasts demand per part, including slow and intermittent
+      movers, and recommends reorders, transfers, scrapping and price changes. Planners review them in a queue, managers approve
+      large purchase orders, and nothing reaches your ERP without approval.
+    de: Importieren Sie Bestand, Verkäufe, Bestellungen und Lieferzeiten. Partwise prognostiziert den Bedarf je Teil, auch
+      bei Langsamdrehern und sporadischem Bedarf, und empfiehlt Nachbestellungen, Umlagerungen, Verschrottung und Preisänderungen.
+      Disponenten prüfen sie in einer Warteschlange, Manager genehmigen große Bestellungen, und nichts gelangt ohne Freigabe
+      ins ERP.
+  langs:
+  - en
+  - de
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12263a'
+      accent: '#e07a1f'
+      background: '#f6f7f9'
+      foreground: '#16202b'
+    fonts:
+      body: Inter
+      display: Space Grotesk
+    wordmark:
+    - text: Part
+      color: primary
+    - text: wise
+      color: accent
+    width: wide
+  header:
+    links:
+    - label:
+        en: How it works
+        de: So funktioniert's
+      href: '#how'
+    - label:
+        en: ERP
+        de: ERP
+      href: '#erp'
+    - label:
+        en: Pricing
+        de: Preise
+      href: '#pricing'
+    cta:
+      label:
+        en: Sign in
+        de: Anmelden
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label:
+        en: Admin
+        de: Admin
+      assignedBy: admin_emails
+    - key: user
+      label:
+        en: Company owner
+        de: Unternehmensinhaber
+      assignedBy: signup
+    - key: planner
+      label:
+        en: Planner
+        de: Disponent
+      assignedBy: invite
+    - key: manager
+      label:
+        en: Manager
+        de: Manager
+      assignedBy: invite
+    - key: viewer
+      label:
+        en: Viewer
+        de: Betrachter
+      assignedBy: invite
+  limits:
+  - action: agent:forecaster
+    per: user
+    max: 10
+    window: day
+  - action: create:parts
+    max: 5000
+    window: total
+    plans:
+      growth: 25000
+      scale: -1
+  agents:
+  - key: importer
+    role: setup
+    description: Reads uploaded CSV/Excel files and stores parts, sales history, purchase orders and suppliers.
+    when: mode == 'import'
+    profile:
+      inline:
+        display_name: Partwise importer
+        crews:
+        - id: importer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You import spare-parts data for one site. You receive the text of up to four files (inventory, sales
+            history, purchase orders, supplier lead times) as CSV/Excel text, or file ids for scans (open them with read_upload).
+            Map the columns to the collections, tolerating English or German headers and different column orders. Store rows
+            with the tools: append_parts (part_number, description, site, location, stock, cost, price, lead_time_days, supplier,
+            installed_base), append_sales (part_number, site, date YYYY-MM-DD, qty), append_pos (po_number, part_number, site,
+            qty, supplier, order_date, expected_date, status), append_suppliers (name, lead_time_days, min_order_value). On
+            every record set site, members (array: the company emails given to you plus the uploader''s email) and site_members
+            (array: the emails given for this site plus the uploader''s email). Numbers must be numbers; dates ISO. Never
+            invent rows or values: skip and report rows that cannot be read. Do not write anything to an ERP. Start with a
+            level-1 title "# Import — <site>", then a short table of rows read / stored / skipped per file and a list of data-quality
+            issues (missing costs, zero lead times, duplicates).'
+    goalTemplate: 'Import for site: {site}
+
+      Company emails with access to all sites: {company_members}
+
+      Emails with access to this site: {site_members}
+
+      Uploader email: {email}
+
+      {?inventory_file}Inventory files: {inventory_file}
+
+      {?inventory_file_text}INVENTORY:
+
+      {inventory_file_text}{/inventory_file_text}{/inventory_file}
+
+      {?sales_file}Sales history files: {sales_file}
+
+      {?sales_file_text}SALES:
+
+      {sales_file_text}{/sales_file_text}{/sales_file}
+
+      {?po_file}Purchase order files: {po_file}
+
+      {?po_file_text}PURCHASE ORDERS:
+
+      {po_file_text}{/po_file_text}{/po_file}
+
+      {?supplier_file}Supplier files: {supplier_file}
+
+      {?supplier_file_text}SUPPLIERS:
+
+      {supplier_file_text}{/supplier_file_text}{/supplier_file}
+
+      Write the report in the language with ISO code {lang}.'
+    context:
+    - key: email
+      from: user.email
+    output: markdown
+    appTools:
+    - name: append_parts
+      description: Store a part record
+      action: append
+      collection: parts
+      scope: user
+    - name: append_sales
+      description: Store a sales history record
+      action: append
+      collection: sales_history
+      scope: user
+    - name: append_pos
+      description: Store a purchase order record
+      action: append
+      collection: purchase_orders
+      scope: user
+    - name: append_suppliers
+      description: Store a supplier record
+      action: append
+      collection: suppliers
+      scope: user
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+  - key: forecaster
+    role: main
+    description: Forecasts demand per part (smooth, intermittent, lumpy) and recommends reorders, transfers, scrapping and
+      price changes with impact and reasons.
+    when: mode == 'forecast'
+    profile:
+      inline:
+        display_name: Partwise forecaster
+        crews:
+        - id: forecaster
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 90
+          max_budget_usd: 3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a spare-parts demand planner. Work on the site given in the goal. 1) Read parts, sales,
+            purchase orders and suppliers with the read tools. 2) Take the 40 parts with the highest stock value or demand
+            value (plus any with no sales in 52 weeks). For each, build the weekly demand series for the last 104 weeks (zeros
+            included) and call forecast_demand with {weekly, lead_time_weeks, service_level, stock}. It returns the demand
+            pattern (smooth, erratic, intermittent, lumpy, dead), a Croston/SBA forecast per week, safety stock, reorder point
+            and a suggested order quantity. Never compute forecasts by hand. Save each with save_forecast (part_number, site,
+            pattern, weekly_forecast, horizon_weeks, reorder_point, safety_stock, run_date). 3) Create recommendations with
+            add_recommendation. Fields: type (reorder | transfer | scrap | price), part_number, site, to_site (transfers),
+            qty, value (GBP, qty x cost for reorders), new_price (price changes), impact_gbp (expected annual saving or avoided
+            cost, estimated only from the data), reason (2 sentences citing the figures), confidence (high|medium|low), status
+            "pending", members and site_members copied from the part record. Reorder when stock plus open orders is below
+            the reorder point. Transfer when another site holds surplus above its own 12-month need. Scrap when a part has
+            no demand for 24 months and the installed base is zero or retired. Price change only with a clear margin or demand
+            reason. Check read_recommendations first and do not duplicate pending ones. 4) Save one KPI snapshot with save_kpis
+            (date, service_level, stock_value, dead_stock_value, forecast_accuracy, savings, all ratios as fractions 0-1,
+            values in GBP) using only what the data supports; leave a field out if it cannot be measured. Never invent figures,
+            never claim to write to an ERP: all recommendations await human approval. Start with "# Forecast and recommendations
+            — <site> — <date>", then Summary, Recommendations by type (table), Parts by demand pattern, Data gaps. Add a chart
+            block for the top 10 reorder values:
+
+            ```chart
+
+            {"type":"bar","title":"...","labels":["A"],"series":[{"name":"...","values":[1]}],"unit":"GBP"}
+
+            ```'
+    goalTemplate: 'Site: {site}
+
+      Forecast horizon: {horizon_weeks} weeks
+
+      Target service level: {service_level}
+
+      Today is {date}.
+
+      Write the report in the language with ISO code {lang}.'
+    output: markdown
+    appTools:
+    - name: read_parts
+      description: Read the parts
+      action: read
+      collection: parts
+      scope: user
+    - name: read_sales
+      description: Read the sales history
+      action: read
+      collection: sales_history
+      scope: user
+    - name: read_pos
+      description: Read the purchase orders
+      action: read
+      collection: purchase_orders
+      scope: user
+    - name: read_suppliers
+      description: Read the suppliers and lead times
+      action: read
+      collection: suppliers
+      scope: user
+    - name: read_recommendations
+      description: Read existing recommendations
+      action: read
+      collection: recommendations
+      scope: user
+    - name: forecast_demand
+      description: Run the intermittent-demand forecast for one part
+      action: call
+      slot: intermittent_forecast
+    - name: save_forecast
+      description: Save the forecast of a part
+      action: write
+      collection: forecasts
+      scope: user
+    - name: add_recommendation
+      description: Add a recommendation to the planners' queue
+      action: append
+      collection: recommendations
+      scope: user
+    - name: save_kpis
+      description: Save a KPI snapshot
+      action: append
+      collection: kpi_snapshots
+      scope: user
+    limits:
+      maxTurns: 90
+      maxBudgetUsd: 3
+  - key: erp_writer
+    role: helper
+    description: Writes an approved recommendation back to the user's ERP (SAP or Oracle) after manager approval when the
+      purchase order is large.
+    awaits:
+    - po_manager
+    profile:
+      inline:
+        display_name: Partwise ERP writer
+        crews:
+        - id: erp_writer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write ONE planner-approved recommendation back to the ERP. For type reorder: if value is above
+            10000 GBP, first call request_po_manager with part_number, qty, supplier, value and the reason, and wait; proceed
+            only if approved. Then create the purchase order with sap_create_po (SAP S/4HANA OData A_PurchaseOrder, JSON body
+            with Supplier, PurchasingOrganization, PurchaseOrderItem lines: Material, OrderQuantity, Plant) or oracle_create_po
+            (Oracle Fusion purchaseOrders, JSON body with SupplierName, ProcurementBU, lines), whichever the company connected;
+            if neither is connected, say so, set status ready_to_apply and stop. On success set status written_back with update_recommendation
+            and the ERP document reference in erp_ref. For transfer, scrap and price types do not call the ERP: set status
+            ready_to_apply. If the manager rejects, set status rejected_by_manager. Never write anything that was not approved,
+            never change quantities. Answer with a short "# ERP write-back — <part>" result.'
+    goalTemplate: 'Write back this approved recommendation (id {record.id}): type {record.type}, part {record.part_number},
+      site {record.site}, quantity {record.qty}, supplier {record.supplier}, value GBP {record.value}, reason: {record.reason}.
+      Write the answer in the language with ISO code {lang}.'
+    output: markdown
+    appTools:
+    - name: update_recommendation
+      description: Update the status of a recommendation
+      action: write
+      collection: recommendations
+      scope: user
+    - name: sap_create_po
+      description: Create a purchase order in the user's SAP system
+      action: http
+      http:
+        method: POST
+        url: https://{host}/sap/opu/odata/sap/API_PURCHASEORDER_PROCESS_SRV/A_PurchaseOrder
+        allowPath: false
+        credential:
+          provider: sap
+        attribution: User's own SAP system
+    - name: oracle_create_po
+      description: Create a purchase order in the user's Oracle Fusion system
+      action: http
+      http:
+        method: POST
+        url: https://{host}/fscmRestApi/resources/11.13.18.05/purchaseOrders
+        allowPath: false
+        credential:
+          provider: oracle
+        attribution: User's own Oracle system
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  - key: digest
+    role: scheduled
+    description: Weekly summary of recommendations waiting for review.
+    profile:
+      inline:
+        display_name: Partwise weekly digest
+        crews:
+        - id: digest
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You summarise the recommendations waiting for review (status pending, or awaiting a manager) with
+            digest_recs, for the site named in the goal (all sites you can read if blank). Start with "# Partwise — recommendations
+            waiting — <date>". Give counts by type, total expected impact in GBP, the 5 largest items (part, action, impact,
+            reason in one line), and items older than 7 days. Under 250 words, plain, no invented figures. If nothing is waiting
+            say so in one line.
+    goalTemplate: 'Site: {site}. Today is {date}. Write in the language with ISO code {lang}.'
+    writesTo:
+      collection: digests
+    output: markdown
+    appTools:
+    - name: digest_recs
+      description: Read the recommendations of the user
+      action: read
+      collection: recommendations
+      scope: user
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.3
+  slots:
+  - key: intermittent_forecast
+    description: Croston/SBA demand forecast, demand pattern class, safety stock, reorder point and suggested order quantity
+      for one part.
+    timeoutMs: 3000
+    example:
+      args:
+        weekly:
+        - 0
+        - 0
+        - 2
+        - 0
+        - 0
+        - 0
+        - 1
+        - 0
+        - 0
+        - 3
+        - 0
+        - 0
+        lead_time_weeks: 6
+        service_level: 0.95
+        stock: 2
+    code: "import math\nZ={0.9:1.28,0.95:1.645,0.98:2.05,0.99:2.33}\ndef main(inp):\n    a=inp.get('args') or {}\n    d=[float(x)\
+      \ for x in a.get('weekly',[])]\n    L=float(a.get('lead_time_weeks',4)); sl=float(a.get('service_level',0.95)); stock=float(a.get('stock',0))\n\
+      \    z=Z[min(Z,key=lambda k:abs(k-sl))]\n    nz=[x for x in d if x>0]\n    if not nz:\n        return {'pattern':'dead','forecast_per_week':0,'safety_stock':0,'reorder_point':0,'suggested_order_qty':0}\n\
+      \    n=len(d); adi=n/len(nz); m=sum(nz)/len(nz)\n    cv2=sum((x-m)**2 for x in nz)/len(nz)/(m*m)\n    if adi<1.32: pat='smooth'\
+      \ if cv2<0.49 else 'erratic'\n    else: pat='intermittent' if cv2<0.49 else 'lumpy'\n    al=0.1; zz=nz[0]; p=adi; q=1\n\
+      \    for x in d:\n        if x>0:\n            zz+=al*(x-zz); p+=al*(q-p); q=1\n        else:\n            q+=1\n  \
+      \  f=(1-al/2)*zz/p\n    mu=sum(d)/n\n    sd=math.sqrt(sum((x-mu)**2 for x in d)/n)\n    ss=z*sd*math.sqrt(L)\n    rop=f*L+ss\n\
+      \    up=f*(L+4)+ss\n    return {'pattern':pat,'adi':round(adi,2),'cv2':round(cv2,2),'forecast_per_week':round(f,3),'safety_stock':round(ss,2),'reorder_point':round(rop,2),'suggested_order_qty':max(0,math.ceil(up-stock)),'weeks_of_cover':round(stock/f,1)\
+      \ if f>0 else None}\n"
+  inputForm:
+    title:
+      en: New run
+      de: Neuer Lauf
+    fields:
+    - name: mode
+      type: select
+      required: true
+      default: forecast
+      label:
+        en: What do you want to do?
+        de: Was möchten Sie tun?
+      options:
+      - value: forecast
+        label:
+          en: Forecast and recommend
+          de: Prognose und Empfehlungen
+      - value: import
+        label:
+          en: Import data (CSV / Excel)
+          de: Daten importieren (CSV / Excel)
+    - name: site
+      type: text
+      required: true
+      label:
+        en: Site / warehouse
+        de: Standort / Lager
+    - name: horizon_weeks
+      type: number
+      default: 26
+      visibleWhen: mode == 'forecast'
+      label:
+        en: Forecast horizon (weeks)
+        de: Prognosehorizont (Wochen)
+    - name: service_level
+      type: select
+      default: '0.95'
+      visibleWhen: mode == 'forecast'
+      label:
+        en: Target service level
+        de: Ziel-Servicegrad
+      options:
+      - value: '0.9'
+        label: 90%
+      - value: '0.95'
+        label: 95%
+      - value: '0.98'
+        label: 98%
+      - value: '0.99'
+        label: 99%
+    - name: company_members
+      type: text
+      visibleWhen: mode == 'import'
+      label:
+        en: Emails who see all sites (managers), comma-separated
+        de: E-Mails mit Zugriff auf alle Standorte (Manager), kommagetrennt
+    - name: site_members
+      type: text
+      visibleWhen: mode == 'import'
+      label:
+        en: Emails who see this site (planners, viewers)
+        de: E-Mails mit Zugriff auf diesen Standort (Disponenten, Betrachter)
+    - name: inventory_file
+      type: file
+      accept:
+      - csv
+      - xlsx
+      - pdf
+      maxMb: 15
+      visibleWhen: mode == 'import'
+      label:
+        en: Inventory (part, description, location, stock, cost, price, lead time, supplier, installed base)
+        de: Bestand (Teil, Beschreibung, Lagerort, Bestand, Kosten, Preis, Lieferzeit, Lieferant, Installed Base)
+    - name: sales_file
+      type: file
+      accept:
+      - csv
+      - xlsx
+      maxMb: 15
+      visibleWhen: mode == 'import'
+      label:
+        en: Sales history
+        de: Verkaufshistorie
+    - name: po_file
+      type: file
+      accept:
+      - csv
+      - xlsx
+      maxMb: 15
+      visibleWhen: mode == 'import'
+      label:
+        en: Purchase orders
+        de: Bestellungen
+    - name: supplier_file
+      type: file
+      accept:
+      - csv
+      - xlsx
+      maxMb: 15
+      visibleWhen: mode == 'import'
+      label:
+        en: Supplier lead times
+        de: Lieferantenlieferzeiten
+  data:
+    collections:
+    - name: parts
+      ownedBy: user
+      description: Parts master and stock per site
+      fields:
+      - name: part_number
+        type: text
+        required: true
+      - name: description
+        type: text
+      - name: site
+        type: text
+      - name: location
+        type: text
+      - name: stock
+        type: number
+      - name: cost
+        type: number
+      - name: price
+        type: number
+      - name: lead_time_days
+        type: number
+      - name: supplier
+        type: text
+      - name: installed_base
+        type: number
+      - name: members
+        type: array
+      - name: site_members
+        type: array
+      access:
+      - role: manager
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: planner
+        where:
+          site_members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: viewer
+        where:
+          site_members: '{user.email}'
+        can:
+        - read
+      searchable: true
+    - name: sales_history
+      ownedBy: user
+      fields:
+      - name: part_number
+        type: text
+        required: true
+      - name: site
+        type: text
+      - name: date
+        type: date
+      - name: qty
+        type: number
+      - name: members
+        type: array
+      - name: site_members
+        type: array
+      access:
+      - role: manager
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: planner
+        where:
+          site_members: '{user.email}'
+        can:
+        - read
+      - role: viewer
+        where:
+          site_members: '{user.email}'
+        can:
+        - read
+      retentionDays: 1825
+    - name: purchase_orders
+      ownedBy: user
+      fields:
+      - name: po_number
+        type: text
+      - name: part_number
+        type: text
+      - name: site
+        type: text
+      - name: qty
+        type: number
+      - name: supplier
+        type: text
+      - name: order_date
+        type: date
+      - name: expected_date
+        type: date
+      - name: status
+        type: text
+      - name: members
+        type: array
+      - name: site_members
+        type: array
+      access:
+      - role: manager
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: planner
+        where:
+          site_members: '{user.email}'
+        can:
+        - read
+      - role: viewer
+        where:
+          site_members: '{user.email}'
+        can:
+        - read
+    - name: suppliers
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: lead_time_days
+        type: number
+      - name: min_order_value
+        type: number
+      - name: members
+        type: array
+      - name: site_members
+        type: array
+      access:
+      - role: manager
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: planner
+        where:
+          site_members: '{user.email}'
+        can:
+        - read
+      - role: viewer
+        where:
+          site_members: '{user.email}'
+        can:
+        - read
+    - name: forecasts
+      ownedBy: user
+      fields:
+      - name: part_number
+        type: text
+      - name: site
+        type: text
+      - name: pattern
+        type: text
+      - name: weekly_forecast
+        type: number
+      - name: horizon_weeks
+        type: number
+      - name: reorder_point
+        type: number
+      - name: safety_stock
+        type: number
+      - name: run_date
+        type: date
+      - name: members
+        type: array
+      - name: site_members
+        type: array
+      access:
+      - role: manager
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: planner
+        where:
+          site_members: '{user.email}'
+        can:
+        - read
+      - role: viewer
+        where:
+          site_members: '{user.email}'
+        can:
+        - read
+    - name: recommendations
+      ownedBy: user
+      description: The planners' review queue
+      fields:
+      - name: type
+        type: select
+        options:
+        - value: reorder
+          label:
+            en: Reorder
+            de: Nachbestellung
+        - value: transfer
+          label:
+            en: Transfer
+            de: Umlagerung
+        - value: scrap
+          label:
+            en: Scrap
+            de: Verschrottung
+        - value: price
+          label:
+            en: Price change
+            de: Preisänderung
+      - name: part_number
+        type: text
+      - name: site
+        type: text
+      - name: to_site
+        type: text
+      - name: supplier
+        type: text
+      - name: qty
+        type: number
+      - name: value
+        type: number
+      - name: new_price
+        type: number
+      - name: impact_gbp
+        type: number
+      - name: reason
+        type: textarea
+      - name: confidence
+        type: text
+      - name: status
+        type: select
+        options:
+        - value: pending
+          label:
+            en: Pending
+            de: Offen
+        - value: approved
+          label:
+            en: Approved
+            de: Genehmigt
+        - value: rejected
+          label:
+            en: Rejected
+            de: Abgelehnt
+        - value: ready_to_apply
+          label:
+            en: Ready to apply
+            de: Bereit zur Umsetzung
+        - value: written_back
+          label:
+            en: Written to ERP
+            de: Ins ERP geschrieben
+        - value: rejected_by_manager
+          label:
+            en: Rejected by manager
+            de: Vom Manager abgelehnt
+      - name: planner_note
+        type: textarea
+      - name: erp_ref
+        type: text
+      - name: members
+        type: array
+      - name: site_members
+        type: array
+      access:
+      - role: manager
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: planner
+        where:
+          site_members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: viewer
+        where:
+          site_members: '{user.email}'
+        can:
+        - read
+    - name: kpi_snapshots
+      ownedBy: user
+      fields:
+      - name: date
+        type: date
+      - name: service_level
+        type: number
+      - name: stock_value
+        type: number
+      - name: dead_stock_value
+        type: number
+      - name: forecast_accuracy
+        type: number
+      - name: savings
+        type: number
+      - name: members
+        type: array
+      - name: site_members
+        type: array
+      access:
+      - role: manager
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: planner
+        where:
+          site_members: '{user.email}'
+        can:
+        - read
+      - role: viewer
+        where:
+          site_members: '{user.email}'
+        can:
+        - read
+    - name: digests
+      ownedBy: instance
+      description: Weekly summaries of recommendations waiting
+    credentials:
+    - provider: sap
+      kind: api_key
+      scope: user
+      label:
+        en: SAP S/4HANA (API token)
+        de: SAP S/4HANA (API-Token)
+      help:
+        en: An API token or technical-user token for your SAP OData API, from your SAP Basis/API administrator.
+        de: Ein API-Token oder Token eines technischen Benutzers für Ihre SAP-OData-API, vom SAP-Basis-/API-Administrator.
+      hostLabel:
+        en: your-tenant.s4hana.ondemand.com / xxx.hana.ondemand.com
+        de: ihr-tenant.hana.ondemand.com
+    - provider: oracle
+      kind: api_key
+      scope: user
+      label:
+        en: Oracle Fusion (API token)
+        de: Oracle Fusion (API-Token)
+      help:
+        en: An access token for your Oracle Fusion REST API, from your Oracle administrator.
+        de: Ein Zugriffstoken für Ihre Oracle-Fusion-REST-API, vom Oracle-Administrator.
+      hostLabel:
+        en: your-tenant.fa.us2.oraclecloud.com
+        de: ihr-tenant.fa.eu1.oraclecloud.com
+  egress:
+    hosts:
+    - '*.hana.ondemand.com'
+    - '*.oraclecloud.com'
+    notes: Only the customer's own SAP and Oracle Fusion tenants, called with the customer's own API token, to create purchase
+      orders after human approval.
+  approvals:
+  - key: po_manager
+    title:
+      en: Purchase order above threshold
+      de: Bestellung über dem Schwellenwert
+    description: A manager must approve purchase orders above 10,000 GBP before they are written to the ERP.
+    role: manager
+    fields:
+    - part_number
+    - qty
+    - supplier
+    - value
+    timeoutMinutes: 4320
+    onTimeout: reject
+  triggers:
+  - key: rec_approved
+    description: 'A planner approved a recommendation: prepare the ERP write-back (large purchase orders wait for a manager).'
+    'on':
+      collection: recommendations
+      op: update
+      where:
+        status: approved
+    start:
+      agent: erp_writer
+    goal: 'Write back this approved recommendation (id {record.id}): type {record.type}, part {record.part_number}, site {record.site},
+      quantity {record.qty}, supplier {record.supplier}, value GBP {record.value}, reason: {record.reason}.'
+  - key: po_rejected
+    'on':
+      approval: po_manager
+      decision: rejected
+    notify:
+      to:
+      - owner
+      subject:
+        en: Purchase order rejected by manager
+        de: Bestellung vom Manager abgelehnt
+      body:
+        en: A manager rejected a purchase order above the threshold. It was not written to the ERP.
+        de: Ein Manager hat eine Bestellung über dem Schwellenwert abgelehnt. Sie wurde nicht ins ERP geschrieben.
+      link: queue
+  templates:
+  - key: weekly_digest
+    title:
+      en: Weekly summary
+      de: Wöchentliche Zusammenfassung
+    description:
+      en: Every Monday an email with the recommendations waiting for review.
+      de: Jeden Montag eine E-Mail mit den Empfehlungen, die auf Prüfung warten.
+    agent: digest
+    params:
+    - name: site
+      type: text
+      label:
+        en: Site (blank = all you can see)
+        de: Standort (leer = alle sichtbaren)
+    goal: 'Site: {site}. Today is {date}. Write in the language with ISO code {lang}.'
+    schedule:
+      cron: 0 7 * * 1
+      userCanChange: true
+    maxPerUser: 5
+    deliver:
+      to: owner
+      onlyIfNew: true
+  notifications:
+    emailOnRunDone: true
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Partwise
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow:
+        en: Spare-parts supply chain AI
+        de: KI für Ersatzteil-Lieferketten
+      title:
+        en: Right part, right place, **less dead stock**.
+        de: Richtiges Teil, richtiger Ort, **weniger Ladenhüter**.
+      text:
+        en: Partwise forecasts demand for every part, including slow and intermittent movers, and tells your planners what
+          to reorder, move, scrap or reprice, with the impact and the reasons. Nothing reaches your ERP without approval.
+        de: Partwise prognostiziert den Bedarf jedes Teils, auch bei Langsamdrehern und sporadischem Bedarf, und sagt Ihren
+          Disponenten, was nachzubestellen, umzulagern, zu verschrotten oder neu zu bepreisen ist, mit Wirkung und Begründung.
+          Nichts gelangt ohne Freigabe ins ERP.
+      actions:
+      - label:
+          en: Sign in
+          de: Anmelden
+        href: /login
+        style: primary
+      - label:
+          en: How it works
+          de: So funktioniert's
+        href: '#how'
+        style: ghost
+      aside:
+        en: <div style="padding:8px"><b>Queue this week</b><br>Reorder 12 × bearing kit — impact £4,200<br>Transfer 6 × valve
+          from Leeds to Hamburg<br>Scrap 40 parts — free £18,000</div>
+        de: <div style="padding:8px"><b>Warteschlange diese Woche</b><br>12 × Lagersatz nachbestellen — Wirkung £4.200<br>6
+          × Ventil von Leeds nach Hamburg umlagern<br>40 Teile verschrotten — £18.000 freisetzen</div>
+    - type: steps
+      id: how
+      title:
+        en: How it works
+        de: So funktioniert's
+      items:
+      - title:
+          en: Import
+          de: Importieren
+        text:
+          en: Upload inventory, sales history, purchase orders and supplier lead times as CSV or Excel.
+          de: Laden Sie Bestand, Verkaufshistorie, Bestellungen und Lieferzeiten als CSV oder Excel hoch.
+        badge: 📥
+      - title:
+          en: Forecast
+          de: Prognose
+        text:
+          en: Each part is classified (smooth, intermittent, lumpy) and forecast with a method that fits its pattern.
+          de: Jedes Teil wird klassifiziert (stetig, sporadisch, klumpig) und mit passender Methode prognostiziert.
+        badge: 📈
+      - title:
+          en: Review
+          de: Prüfen
+        text:
+          en: Planners approve, edit or reject recommendations; managers approve large purchase orders.
+          de: Disponenten genehmigen, ändern oder lehnen Empfehlungen ab; Manager genehmigen große Bestellungen.
+        badge: ✅
+      - title:
+          en: Write back
+          de: Zurückschreiben
+        text:
+          en: Approved purchase orders go to your ERP, only then.
+          de: Genehmigte Bestellungen gehen ins ERP, erst dann.
+        badge: 🔗
+    - type: cards
+      id: erp
+      title:
+        en: ERP connectors
+        de: ERP-Anbindung
+      items:
+      - title: SAP S/4HANA
+        text:
+          en: Connect your tenant with an API token; approved purchase orders are created through the OData API.
+          de: Verbinden Sie Ihren Tenant mit einem API-Token; genehmigte Bestellungen werden über die OData-API angelegt.
+        badge: 🔌
+      - title: Oracle Fusion
+        text:
+          en: Same flow through the Fusion REST API.
+          de: Gleicher Ablauf über die Fusion-REST-API.
+        badge: 🔌
+      - title:
+          en: Sites and roles
+          de: Standorte und Rollen
+        text:
+          en: Planners and viewers see their own site unless permitted; managers see all sites.
+          de: Disponenten und Betrachter sehen ihren Standort, sofern nicht erweitert; Manager sehen alle Standorte.
+        badge: 🏭
+    - type: cards
+      id: pricing
+      title:
+        en: Pricing
+        de: Preise
+      intro:
+        en: Priced by number of parts, billed monthly.
+        de: Preis nach Anzahl der Teile, monatliche Abrechnung.
+      items:
+      - title:
+          en: Starter — from £3,000/month
+          de: Starter — ab £3.000/Monat
+        text:
+          en: Up to 5,000 parts.
+          de: Bis zu 5.000 Teile.
+      - title:
+          en: Growth — £6,500/month
+          de: Growth — £6.500/Monat
+        text:
+          en: Up to 25,000 parts.
+          de: Bis zu 25.000 Teile.
+      - title:
+          en: Scale — £12,000/month
+          de: Scale — £12.000/Monat
+        text:
+          en: Unlimited parts.
+          de: Unbegrenzte Teile.
+    - type: note
+      content:
+        en: Partwise is decision support. Recommendations are estimates from your data and are written to your ERP only after
+          human approval.
+        de: Partwise ist Entscheidungsunterstützung. Empfehlungen sind Schätzungen aus Ihren Daten und werden erst nach menschlicher
+          Freigabe ins ERP geschrieben.
+  - key: new_run
+    type: new_run
+    title:
+      en: Import / Forecast
+      de: Import / Prognose
+    roles:
+    - admin
+    - user
+    - planner
+    - manager
+  - key: history
+    type: history
+    title:
+      en: Runs
+      de: Läufe
+    source: run
+    roles:
+    - admin
+    - user
+    - planner
+    - manager
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: queue
+    type: table
+    title:
+      en: Review queue
+      de: Prüf-Warteschlange
+    source: collection:recommendations
+    export: true
+    roles:
+    - admin
+    - user
+    - planner
+    - manager
+    - viewer
+    data:
+      display: table
+      fields:
+      - key: type
+        label:
+          en: Type
+          de: Art
+        format: badge
+      - key: part_number
+        label:
+          en: Part
+          de: Teil
+      - key: site
+        label:
+          en: Site
+          de: Standort
+      - key: to_site
+        label:
+          en: To site
+          de: Nach
+      - key: qty
+        label:
+          en: Qty
+          de: Menge
+        format: number
+      - key: value
+        label:
+          en: Value
+          de: Wert
+        format: money
+      - key: impact_gbp
+        label:
+          en: Impact
+          de: Wirkung
+        format: money
+      - key: reason
+        label:
+          en: Reason
+          de: Begründung
+      - key: status
+        label:
+          en: Status
+          de: Status
+        format: badge
+      sort:
+        field: impact_gbp
+        dir: desc
+      limit: 200
+      empty:
+        en: No recommendations yet. Run a forecast.
+        de: Noch keine Empfehlungen. Starten Sie eine Prognose.
+  - key: review
+    type: form
+    title:
+      en: Review a recommendation
+      de: Empfehlung prüfen
+    collection: recommendations
+    fields:
+    - qty
+    - new_price
+    - planner_note
+    - status
+    edit: true
+    submit:
+      label:
+        en: Save decision
+        de: Entscheidung speichern
+      message:
+        en: Saved. Approved items go to the ERP step.
+        de: Gespeichert. Genehmigte Einträge gehen in den ERP-Schritt.
+      redirect: queue
+    roles:
+    - admin
+    - user
+    - planner
+    - manager
+    nav: false
+  - key: approvals
+    type: approvals
+    title:
+      en: Manager approvals
+      de: Manager-Freigaben
+    approvals:
+    - po_manager
+    roles:
+    - admin
+    - manager
+  - key: dashboard
+    type: page
+    title:
+      en: Dashboard
+      de: Dashboard
+    roles:
+    - admin
+    - user
+    - planner
+    - manager
+    - viewer
+    sections:
+    - type: data
+      title:
+        en: Key figures
+        de: Kennzahlen
+      source: collection:kpi_snapshots
+      display: kpi
+      sort:
+        field: date
+        dir: asc
+      kpis:
+      - label:
+          en: Service level
+          de: Servicegrad
+        agg: last
+        field: service_level
+        format: percent
+      - label:
+          en: Stock value
+          de: Lagerwert
+        agg: last
+        field: stock_value
+        format: money
+      - label:
+          en: Dead stock
+          de: Ladenhüter
+        agg: last
+        field: dead_stock_value
+        format: money
+      - label:
+          en: Forecast accuracy
+          de: Prognosegenauigkeit
+        agg: last
+        field: forecast_accuracy
+        format: percent
+      - label:
+          en: Savings achieved
+          de: Erzielte Einsparungen
+        agg: sum
+        field: savings
+        format: money
+      empty:
+        en: Run a forecast to see figures.
+        de: Starten Sie eine Prognose für Kennzahlen.
+    - type: data
+      title:
+        en: Service level and forecast accuracy
+        de: Servicegrad und Prognosegenauigkeit
+      source: collection:kpi_snapshots
+      display: chart
+      chart: line
+      fields:
+      - key: date
+        format: date
+      - key: service_level
+        label:
+          en: Service level
+          de: Servicegrad
+      - key: forecast_accuracy
+        label:
+          en: Forecast accuracy
+          de: Prognosegenauigkeit
+      sort:
+        field: date
+        dir: asc
+      limit: 60
+    - type: data
+      title:
+        en: Stock value and dead stock
+        de: Lagerwert und Ladenhüter
+      source: collection:kpi_snapshots
+      display: chart
+      chart: bar
+      fields:
+      - key: date
+        format: date
+      - key: stock_value
+        label:
+          en: Stock value
+          de: Lagerwert
+      - key: dead_stock_value
+        label:
+          en: Dead stock
+          de: Ladenhüter
+      sort:
+        field: date
+        dir: asc
+      limit: 60
+    - type: data
+      title:
+        en: Expected impact by type
+        de: Erwartete Wirkung nach Art
+      source: collection:recommendations
+      display: bar
+      groupBy:
+        field: type
+        aggs:
+        - key: impact
+          agg: sum
+          field: impact_gbp
+      fields:
+      - key: type
+      - key: impact
+  - key: parts
+    type: table
+    title:
+      en: Parts
+      de: Teile
+    source: collection:parts
+    export: true
+    roles:
+    - admin
+    - user
+    - planner
+    - manager
+    - viewer
+    data:
+      display: table
+      fields:
+      - key: part_number
+        label:
+          en: Part
+          de: Teil
+      - key: description
+        label:
+          en: Description
+          de: Beschreibung
+      - key: site
+        label:
+          en: Site
+          de: Standort
+      - key: location
+        label:
+          en: Location
+          de: Lagerort
+      - key: stock
+        label:
+          en: Stock
+          de: Bestand
+        format: number
+      - key: cost
+        label:
+          en: Cost
+          de: Kosten
+        format: money
+      - key: price
+        label:
+          en: Price
+          de: Preis
+        format: money
+      - key: lead_time_days
+        label:
+          en: Lead time (d)
+          de: Lieferzeit (T)
+        format: number
+      - key: supplier
+        label:
+          en: Supplier
+          de: Lieferant
+      limit: 200
+  - key: digests
+    type: table
+    title:
+      en: Weekly summaries
+      de: Wochenzusammenfassungen
+    source: collection:digests
+    roles:
+    - admin
+    - user
+    - planner
+    - manager
+    data:
+      display: list
+      limit: 20
+  - key: watches
+    type: instances
+    template: weekly_digest
+    title:
+      en: Weekly email
+      de: Wöchentliche E-Mail
+    roles:
+    - admin
+    - user
+    - planner
+    - manager
+  - key: account
+    type: account
+    title:
+      en: Plan and ERP connections
+      de: Tarif und ERP-Verbindungen
+    roles:
+    - admin
+    - user
+    - manager
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: starter
+      price: 3000
+      interval: month
+      label:
+        en: Starter — up to 5,000 parts
+        de: Starter — bis 5.000 Teile
+      includes:
+      - Up to 5,000 parts
+      - Forecasts and recommendations
+      - SAP and Oracle write-back
+      roles:
+      - user
+      - admin
+    - key: growth
+      price: 6500
+      interval: month
+      label:
+        en: Growth — up to 25,000 parts
+        de: Growth — bis 25.000 Teile
+      includes:
+      - Up to 25,000 parts
+      roles:
+      - user
+      - admin
+    - key: scale
+      price: 12000
+      interval: month
+      label:
+        en: Scale — unlimited parts
+        de: Scale — unbegrenzte Teile
+      includes:
+      - Unlimited parts
+      roles:
+      - user
+      - admin
+  extensions:
+  - key: deep_forecasting
+    description: Deep-learning forecasting models are not available yet; forecasts use Croston/SBA intermittent-demand methods
+      with safety stock in a sandboxed slot.
+  - key: erp_oauth_and_direct_connectors
+    description: ERP connection is limited to API tokens over HTTPS (SAP OData, Oracle Fusion REST). OAuth sign-in, RFC/IDoc,
+      database-level and scheduled bulk ERP sync are not available yet; data comes in by CSV/Excel upload.
+  - key: threshold_setting
+    description: The manager approval threshold (10,000 GBP) is fixed in the ERP writer's instructions; a per-company setting
+      is not available yet.
+  - key: queue_row_links
+    description: Rows in the review queue do not yet open the edit form directly; planners open /v/review?id=<record> from
+      the record.

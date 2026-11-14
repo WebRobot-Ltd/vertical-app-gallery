@@ -1,0 +1,1546 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: cashcadence
+  displayName: Cashcadence
+  tagline:
+    en: 'Agentic accounts receivable: chase smarter, match payments, get paid sooner.'
+  description:
+    en: Cashcadence imports your open invoices, builds a chasing schedule per customer, drafts polite-then-firmer reminders,
+      matches bank payments to invoices, logs disputes and promises to pay, calculates UK statutory late payment interest
+      and shows DSO, ageing and cash forecast.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0f2e3d'
+      accent: '#1f8a70'
+      background: '#f6f8f7'
+      foreground: '#14212b'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Cash
+      color: primary
+    - text: cadence
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how-it-works'
+    - label: Roles
+      href: '#roles'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: credit_controller
+      label: Credit controller
+      assignedBy: signup
+    - key: finance_manager
+      label: Finance manager
+      assignedBy: invite
+    - key: account_owner
+      label: Sales account owner
+      assignedBy: derived
+      from: collection:customers.account_owner_email
+  limits:
+  - action: create:invoices
+    max: 50
+    window: total
+    plans:
+      starter: 250
+      growth: 2000
+      scale: -1
+  - action: run
+    per: user
+    max: 40
+    window: day
+    roles:
+    - credit_controller
+  agents:
+  - key: importer
+    role: main
+    when: task == 'import'
+    description: Imports open invoices from a CSV into the receivables ledger.
+    profile:
+      inline:
+        display_name: Cashcadence invoice importer
+        crews:
+        - id: importer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 80
+          max_budget_usd: 2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You import open invoices for a finance team. The CSV columns are customer, invoice number, amount,
+            due date, contact email (headers may vary slightly in wording or order). For each row: skip it if an invoice with
+            the same customer and invoice number already exists (use find_invoices); otherwise look up the customer with find_customers;
+            if the customer does not exist create it with add_customer (name, contact_email). Then create the invoice with
+            add_invoice: customer, invoice_number, amount (number), outstanding = amount, paid_amount 0, due_date as YYYY-MM-DD,
+            contact_email, status "open", expected_date = due_date, and copy account_owner_email and team from the customer
+            record when it has them. Never invent values; list rows that are invalid (missing amount, unreadable date) instead
+            of importing them. Finish with a report starting with a level-1 title "# Invoice import — <date>", then ## Imported
+            (count and total value), ## Skipped duplicates, ## Rows needing attention (a table), ## Customers without an account
+            owner (the controller must assign them in Customers).'
+    appTools:
+    - name: find_invoices
+      description: Search the user's invoices
+      action: search
+      collection: invoices
+      scope: user
+    - name: find_customers
+      description: Search the user's customers
+      action: search
+      collection: customers
+      scope: user
+    - name: add_customer
+      description: Create a customer
+      action: append
+      collection: customers
+      scope: user
+    - name: add_invoice
+      description: Create an open invoice
+      action: append
+      collection: invoices
+      scope: user
+    goalTemplate: 'Import the open invoices from the uploaded CSV.
+
+      File: {invoices_csv}
+
+      {?invoices_csv_text}CSV content:
+
+      {invoices_csv_text}{/invoices_csv_text}
+
+      Today is {date}. Write the report in English.'
+    output: markdown
+    limits:
+      maxTurns: 80
+      maxBudgetUsd: 2
+  - key: chaser
+    role: main
+    when: task == 'chase'
+    description: Builds the chasing schedule per customer from payment history and risk, drafts the reminders and asks the
+      credit controller to approve tone and first message.
+    awaits:
+    - chase_plan
+    profile:
+      inline:
+        display_name: Cashcadence collections planner
+        crews:
+        - id: chaser
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a UK credit controller''s collections planner. Work per customer. Read the customers, open
+            invoices (status open or part_paid; never disputed ones), payments and any existing chase steps with the tools.
+            For each customer decide a risk level (low, medium, high) from payment history (average days to pay, past lateness,
+            size of balance, ageing) and save it with update_customer along with avg_days_to_pay when you can compute it.
+            Also set each invoice''s expected_date (due date plus the customer''s typical delay) with update_invoice.
+
+
+            Propose a cadence: low risk = friendly reminder 3 days before due, polite on due date +3, firmer at +14, formal
+            at +30; medium risk is tighter; high risk starts earlier and escalates to the account owner sooner. Tone ladder:
+            1 friendly, 2 polite, 3 firm, 4 formal final notice. Firm and formal messages may mention that the company reserves
+            the right to claim statutory interest and compensation under the Late Payment of Commercial Debts (Interest) Act
+            1998; never threaten legal action or make claims you cannot support. Write each message in plain text, British
+            English, with the customer''s name, invoice number(s), amount and due date, a clear ask (pay by a date or tell
+            us the payment date or the problem) and sign off "Accounts Receivable team".
+
+
+            Save each step with add_chase_step: customer, invoice_number, step (1..n), tone, send_date (YYYY-MM-DD, not in
+            the past, working days only), subject, body, contact_email, status "proposed", and copy account_owner_email and
+            team from the customer. Then call request_chase_plan ONCE per customer with the proposed tone, the exact first
+            message and a one-line summary of the schedule; do not wait for the answer for other customers.
+
+
+            When your goal says a plan was approved, find that customer''s proposed steps with read_chase_steps and set their
+            status to "approved" with update_chase_step; the platform then sends each message on its send date automatically.
+            If a goal says a plan was rejected, set the steps to "stopped". Finish with a report starting with a level-1 title
+            "# Chasing plan — <date>", then ## Customers planned (table: customer, risk, open amount, first send date, tone),
+            ## Waiting for your approval, ## Skipped (disputed or no contact email). Never invent amounts or dates.'
+    appTools:
+    - name: read_customers
+      description: Read the user's customers
+      action: read
+      collection: customers
+      scope: user
+    - name: update_customer
+      description: Update a customer (risk, avg_days_to_pay, tone)
+      action: write
+      collection: customers
+      scope: user
+    - name: read_open_invoices
+      description: Read the user's invoices
+      action: read
+      collection: invoices
+      scope: user
+    - name: update_invoice
+      description: Update an invoice (expected_date, aging_bucket)
+      action: write
+      collection: invoices
+      scope: user
+    - name: read_payment_history
+      description: Read the user's imported payments
+      action: read
+      collection: payments
+      scope: user
+    - name: read_chase_steps
+      description: Read the user's chase steps
+      action: read
+      collection: chase_schedule
+      scope: user
+    - name: add_chase_step
+      description: Create a chase step
+      action: append
+      collection: chase_schedule
+      scope: user
+    - name: update_chase_step
+      description: Change the status of a chase step
+      action: write
+      collection: chase_schedule
+      scope: user
+    goalTemplate: 'Build or refresh the chasing schedule.
+
+      {?customer}Customer: {customer}.{/customer}{!customer}Scope: every customer with overdue or soon-due invoices.{/customer}
+
+      Today is {date}. Write the report in English.'
+    output: markdown
+    limits:
+      maxTurns: 60
+      maxBudgetUsd: 2
+  - key: matcher
+    role: main
+    when: task == 'payments'
+    description: Matches bank CSV payments to open invoices, handling partial and grouped payments, and asks a human about
+      uncertain matches.
+    awaits:
+    - match_review
+    profile:
+      inline:
+        display_name: Cashcadence cash application
+        crews:
+        - id: matcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 80
+          max_budget_usd: 2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You do cash application for a UK finance team. Parse the bank CSV (date, amount, payer name, reference;
+            credits only). Skip lines already imported (check read_payments by date, amount and reference). Record each line
+            with add_payment (payment_date, amount, payer, reference, status, matched_invoices, team). Match against open
+            invoices (read_invoices): strong signals are the invoice number in the reference, an exact amount, and a payer
+            name close to the customer name. Handle: exact match; partial payment (reduce outstanding, status part_paid);
+            grouped payment covering several invoices of one customer (allocate oldest first unless the reference says otherwise;
+            the sum must equal the amount); overpayment (leave the excess unallocated and flag it). For a confident match
+            write one allocation per invoice with add_allocation and update the invoice with update_invoice_balance: paid_amount,
+            outstanding, status (paid when outstanding is 0), then set the payment status matched or partial. When a match
+            is uncertain (several candidates, name mismatch, amount fits no combination, reference unclear) do NOT apply it:
+            set the payment status review and call request_match_review once per payment with the payment details, your best
+            proposed invoices and the reason. When your goal says a match was approved by the controller, apply the allocations
+            and invoice updates for that payment and set it matched; if rejected, set the payment unmatched. Never force a
+            match and never invent data. Finish with a report starting with a level-1 title "# Cash application — <date>",
+            then ## Matched (table), ## Partial and grouped payments, ## Waiting for your decision, ## Unmatched, with totals.'
+    appTools:
+    - name: read_payments
+      description: Read the user's payments
+      action: read
+      collection: payments
+      scope: user
+    - name: add_payment
+      description: Record a bank payment line
+      action: append
+      collection: payments
+      scope: user
+    - name: update_payment
+      description: Update a payment status
+      action: write
+      collection: payments
+      scope: user
+    - name: read_invoices
+      description: Read the user's invoices
+      action: read
+      collection: invoices
+      scope: user
+    - name: update_invoice_balance
+      description: Update an invoice's paid amount, outstanding and status
+      action: write
+      collection: invoices
+      scope: user
+    - name: add_allocation
+      description: Record how a payment was allocated to an invoice
+      action: append
+      collection: allocations
+      scope: user
+    goalTemplate: 'Apply the payments in the uploaded bank CSV to open invoices.
+
+      File: {bank_csv}
+
+      {?bank_csv_text}CSV content:
+
+      {bank_csv_text}{/bank_csv_text}
+
+      Today is {date}. Write the report in English.'
+    output: markdown
+    limits:
+      maxTurns: 80
+      maxBudgetUsd: 2
+  - key: interest
+    role: main
+    when: task == 'interest'
+    description: Explains the statutory late payment interest and fixed compensation for one invoice.
+    profile:
+      inline:
+        display_name: Cashcadence late payment interest
+        crews:
+        - id: interest
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write a short statement of statutory late payment interest under the UK Late Payment of Commercial
+            Debts (Interest) Act 1998 (business-to-business debts). The figures are already computed: use them exactly and
+            never recalculate or alter them. Start with a level-1 title "# Late payment interest — <invoice reference or amount>".
+            Sections: ## Calculation (a table: invoice amount, due date, calculation date, days late, base rate, statutory
+            rate = base rate + 8%, interest, daily interest, fixed compensation, total claim), ## Wording you can send (a
+            short polite paragraph for the customer, plain text), ## Points to check (the Bank of England base rate to use
+            is the one in force on 30 June or 31 December before the debt became overdue; the contract may set its own substantial
+            remedy; compensation is per invoice; the claim does not apply to consumers; interest is simple, not compound).
+            This is a calculation aid, not legal advice: say so in one line.'
+    context:
+    - key: days_late
+      from: slot:interest_calc
+    - key: annual_rate
+      from: slot:interest_calc
+    - key: interest_amount
+      from: slot:interest_calc
+    - key: daily_interest
+      from: slot:interest_calc
+    - key: fixed_fee
+      from: slot:interest_calc
+    - key: total_claim
+      from: slot:interest_calc
+    - key: calc_note
+      from: slot:interest_calc
+    goalTemplate: 'Invoice reference: {?invoice_ref}{invoice_ref}{/invoice_ref}{!invoice_ref}not given{/invoice_ref}
+
+      Amount: £{amount}. Due date: {due_date}. Calculated as of: {as_of_date}. Bank of England base rate used: {base_rate}%.
+
+      Computed figures (use exactly): days late {days_late}; statutory annual rate {annual_rate}%; interest £{interest_amount};
+      daily interest £{daily_interest}; fixed compensation £{fixed_fee}; total claim £{total_claim}. Note: {calc_note}
+
+      Write in English.'
+    output: markdown
+    limits:
+      maxTurns: 4
+      maxBudgetUsd: 0.3
+  - key: analyst
+    role: main
+    when: task == 'dashboard'
+    description: Refreshes ageing buckets and computes DSO, overdue, promises and the 30-day cash forecast.
+    profile:
+      inline:
+        display_name: Cashcadence receivables analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a receivables analyst. Read the user''s invoices, payments, promises and customers. 1) For
+            every unpaid invoice set aging_bucket with update_invoice_aging: "current" (not yet due), "1-30", "31-60", "61-90"
+            or "90+" days past due, as of today. 2) Compute: total_outstanding (sum of outstanding on unpaid invoices), overdue
+            (the part past due), dso = total_outstanding divided by credit sales of the last 90 days times 90 (credit sales
+            = invoice amounts with an issue or due date derived in that window; if the data does not allow it, estimate from
+            invoices on file and say so in notes), promised_total (open promises to pay in the next 30 days), forecast_30d
+            (expected cash in the next 30 days from expected_date, open promises and customer payment behaviour; be conservative).
+            Use real figures only. 3) Write a short report starting with a level-1 title "# Receivables dashboard — <date>"
+            with ## Headlines, ## Ageing (table and a chart block), ## Biggest risks (top customers by overdue amount), ##
+            Forecast (assumptions). Finish with one fenced json block as the very last thing: {"date":"YYYY-MM-DD","dso":0,"total_outstanding":0,"overdue":0,"promised_total":0,"forecast_30d":0,"notes":"","team":[the
+            distinct team emails found on the customers]}. For the chart use a fenced block ```chart {"type":"bar","title":"Ageing","labels":[...],"series":[{"name":"Outstanding","values":[...]}],"unit":"£"}```.'
+    appTools:
+    - name: analyst_read_invoices
+      description: Read the user's invoices
+      action: read
+      collection: invoices
+      scope: user
+    - name: update_invoice_aging
+      description: Set aging_bucket on an invoice
+      action: write
+      collection: invoices
+      scope: user
+    - name: analyst_read_payments
+      description: Read the user's payments
+      action: read
+      collection: payments
+      scope: user
+    - name: analyst_read_promises
+      description: Read the user's promises to pay
+      action: read
+      collection: promises
+      scope: user
+    - name: analyst_read_customers
+      description: Read the user's customers
+      action: read
+      collection: customers
+      scope: user
+    goalTemplate: Refresh the receivables dashboard figures as of {date}. Write in English.
+    output: markdown+json
+    resultSchema:
+      type: object
+      properties:
+        date:
+          type: string
+        dso:
+          type: number
+        total_outstanding:
+          type: number
+        overdue:
+          type: number
+        promised_total:
+          type: number
+        forecast_30d:
+          type: number
+        notes:
+          type: string
+        team:
+          type: array
+          items:
+            type: string
+    writesTo:
+      collection: metrics
+      parse: json_last
+      keyBy: date
+    limits:
+      maxTurns: 60
+      maxBudgetUsd: 2
+  slots:
+  - key: interest_calc
+    description: UK statutory late payment interest (8% over base rate, simple, 365 days) and fixed compensation by debt size
+    timeoutMs: 2000
+    example:
+      values:
+        amount: 5000
+        due_date: '2026-08-01'
+        as_of_date: '2026-11-12'
+        base_rate: 4
+      lang: en
+    code: "from datetime import date\n\ndef main(input):\n    v = input.get('values') or {}\n    try:\n        amount = float(v.get('amount')\
+      \ or 0)\n        rate = float(v.get('base_rate') or 0)\n        due = date.fromisoformat(str(v.get('due_date'))[:10])\n\
+      \        asof = date.fromisoformat(str(v.get('as_of_date'))[:10])\n    except Exception:\n        return {'days_late':\
+      \ 0, 'annual_rate': '0.00', 'interest_amount': '0.00', 'daily_interest': '0.00', 'fixed_fee': '0.00', 'total_claim':\
+      \ '0.00', 'calc_note': 'Input not valid: check amount, dates and base rate.'}\n    days = max((asof - due).days, 0)\n\
+      \    annual = rate + 8.0\n    interest = amount * annual / 100.0 * days / 365.0\n    daily = amount * annual / 100.0\
+      \ / 365.0\n    if days == 0:\n        fee = 0.0\n    elif amount < 1000:\n        fee = 40.0\n    elif amount < 10000:\n\
+      \        fee = 70.0\n    else:\n        fee = 100.0\n    total = interest + fee\n    note = 'Not yet overdue: no interest\
+      \ or compensation is due.' if days == 0 else 'Simple interest from the day after the due date.'\n    return {'days_late':\
+      \ days, 'annual_rate': '%.2f' % annual, 'interest_amount': '%.2f' % interest, 'daily_interest': '%.2f' % daily, 'fixed_fee':\
+      \ '%.2f' % fee, 'total_claim': '%.2f' % total, 'calc_note': note}\n"
+  inputForm:
+    title: Run an agent
+    fields:
+    - name: task
+      type: select
+      required: true
+      label: What do you want to do?
+      default: import
+      options:
+      - value: import
+        label: Import open invoices (CSV)
+      - value: chase
+        label: Build or refresh chasing schedules
+      - value: payments
+        label: Apply bank payments (CSV)
+      - value: interest
+        label: Calculate statutory late payment interest
+      - value: dashboard
+        label: Refresh dashboard figures
+    - name: invoices_csv
+      type: file
+      label: Open invoices CSV
+      help: 'Columns: customer, invoice number, amount, due date, contact email'
+      accept:
+      - csv
+      - xlsx
+      maxMb: 10
+      visibleWhen: task == 'import'
+    - name: customer
+      type: text
+      label: Customer (optional)
+      help: Leave empty to plan every customer
+      visibleWhen: task == 'chase'
+    - name: bank_csv
+      type: file
+      label: Bank statement CSV
+      help: Credits with date, amount, payer and reference
+      accept:
+      - csv
+      - xlsx
+      maxMb: 10
+      visibleWhen: task == 'payments'
+    - name: invoice_ref
+      type: text
+      label: Invoice reference (optional)
+      visibleWhen: task == 'interest'
+    - name: amount
+      type: number
+      label: Invoice amount (£)
+      visibleWhen: task == 'interest'
+    - name: due_date
+      type: date
+      label: Due date
+      visibleWhen: task == 'interest'
+    - name: as_of_date
+      type: date
+      label: Calculate up to
+      visibleWhen: task == 'interest'
+    - name: base_rate
+      type: number
+      label: Bank of England base rate (%)
+      help: The rate in force on 30 June or 31 December before the debt became overdue
+      visibleWhen: task == 'interest'
+  data:
+    collections:
+    - name: customers
+      description: Customers being chased
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Customer
+      - name: contact_email
+        type: email
+        label: Accounts payable contact email
+      - name: account_owner_email
+        type: email
+        label: Sales account owner email
+      - name: team
+        type: array
+        label: Finance managers who see it (emails)
+      - name: risk
+        type: select
+        label: Risk
+        options:
+        - low
+        - medium
+        - high
+      - name: avg_days_to_pay
+        type: number
+        label: Average days to pay
+      - name: tone
+        type: select
+        label: Approved tone
+        options:
+        - friendly
+        - polite
+        - firm
+        - formal
+      access:
+      - role: finance_manager
+        where:
+          team: '{user.email}'
+        can:
+        - read
+      - role: account_owner
+        where:
+          account_owner_email: '{user.email}'
+        can:
+        - read
+    - name: invoices
+      description: Open and paid invoices
+      ownedBy: user
+      fields:
+      - name: customer
+        type: text
+        required: true
+        label: Customer
+      - name: invoice_number
+        type: text
+        required: true
+        label: Invoice
+      - name: amount
+        type: number
+        required: true
+        label: Amount
+      - name: paid_amount
+        type: number
+        label: Paid
+      - name: outstanding
+        type: number
+        label: Outstanding
+      - name: due_date
+        type: date
+        required: true
+        label: Due date
+      - name: expected_date
+        type: date
+        label: Expected payment
+      - name: contact_email
+        type: email
+        label: Contact email
+      - name: account_owner_email
+        type: email
+        label: Account owner
+      - name: team
+        type: array
+        label: Team
+      - name: status
+        type: select
+        label: Status
+        options:
+        - open
+        - part_paid
+        - paid
+        - disputed
+      - name: aging_bucket
+        type: text
+        label: Ageing
+      access:
+      - role: finance_manager
+        where:
+          team: '{user.email}'
+        can:
+        - read
+      - role: account_owner
+        where:
+          account_owner_email: '{user.email}'
+        can:
+        - read
+    - name: chase_schedule
+      description: Reminders per customer and invoice; approved steps are sent automatically on their date
+      ownedBy: user
+      fields:
+      - name: customer
+        type: text
+        label: Customer
+      - name: invoice_number
+        type: text
+        label: Invoice
+      - name: step
+        type: number
+        label: Step
+      - name: tone
+        type: select
+        label: Tone
+        options:
+        - friendly
+        - polite
+        - firm
+        - formal
+      - name: send_date
+        type: date
+        label: Send on
+      - name: subject
+        type: text
+        label: Subject
+      - name: body
+        type: textarea
+        label: Message
+      - name: contact_email
+        type: email
+        label: To
+      - name: account_owner_email
+        type: email
+        label: Account owner
+      - name: team
+        type: array
+        label: Team
+      - name: status
+        type: select
+        label: Status
+        options:
+        - proposed
+        - approved
+        - sent
+        - stopped
+      access:
+      - role: finance_manager
+        where:
+          team: '{user.email}'
+        can:
+        - read
+      - role: account_owner
+        where:
+          account_owner_email: '{user.email}'
+        can:
+        - read
+    - name: payments
+      description: Bank payment lines imported from CSV
+      ownedBy: user
+      retentionDays: 730
+      fields:
+      - name: payment_date
+        type: date
+        label: Date
+      - name: amount
+        type: number
+        label: Amount
+      - name: payer
+        type: text
+        label: Payer
+      - name: reference
+        type: text
+        label: Reference
+      - name: status
+        type: select
+        label: Status
+        options:
+        - unmatched
+        - matched
+        - partial
+        - review
+      - name: matched_invoices
+        type: text
+        label: Matched invoices
+      - name: team
+        type: array
+        label: Team
+      access:
+      - role: finance_manager
+        where:
+          team: '{user.email}'
+        can:
+        - read
+    - name: allocations
+      description: How each payment was split across invoices
+      ownedBy: user
+      fields:
+      - name: payment_reference
+        type: text
+        label: Payment
+      - name: invoice_number
+        type: text
+        label: Invoice
+      - name: customer
+        type: text
+        label: Customer
+      - name: amount
+        type: number
+        label: Allocated
+      - name: confidence
+        type: select
+        label: Confidence
+        options:
+        - high
+        - medium
+        - low
+      - name: team
+        type: array
+        label: Team
+      access:
+      - role: finance_manager
+        where:
+          team: '{user.email}'
+        can:
+        - read
+    - name: disputes
+      description: Invoice disputes, routed to the account owner
+      ownedBy: user
+      fields:
+      - name: customer
+        type: text
+        required: true
+        label: Customer
+      - name: invoice_number
+        type: text
+        required: true
+        label: Invoice
+      - name: reason
+        type: select
+        required: true
+        label: Reason
+        options:
+        - value: wrong_amount
+          label: Wrong amount
+        - value: goods_not_received
+          label: Goods or service not received
+        - value: quality
+          label: Quality issue
+        - value: pricing
+          label: Pricing or discount
+        - value: duplicate
+          label: Duplicate invoice
+        - value: other
+          label: Other
+      - name: details
+        type: textarea
+        label: Details
+      - name: amount_disputed
+        type: number
+        label: Amount disputed
+      - name: account_owner_email
+        type: email
+        required: true
+        label: Account owner email
+      - name: team
+        type: array
+        label: Finance managers who see it (emails)
+      - name: status
+        type: select
+        label: Status
+        default: open
+        options:
+        - open
+        - resolved
+      access:
+      - role: account_owner
+        where:
+          account_owner_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: finance_manager
+        where:
+          team: '{user.email}'
+        can:
+        - read
+    - name: promises
+      description: Promises to pay logged from customer replies
+      ownedBy: user
+      fields:
+      - name: customer
+        type: text
+        required: true
+        label: Customer
+      - name: invoice_number
+        type: text
+        label: Invoice
+      - name: promised_date
+        type: date
+        required: true
+        label: Promised date
+      - name: amount
+        type: number
+        label: Amount promised
+      - name: note
+        type: textarea
+        label: Note
+      - name: account_owner_email
+        type: email
+        label: Account owner email
+      - name: team
+        type: array
+        label: Finance managers who see it (emails)
+      - name: status
+        type: select
+        label: Status
+        default: open
+        options:
+        - open
+        - kept
+        - broken
+      access:
+      - role: account_owner
+        where:
+          account_owner_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: finance_manager
+        where:
+          team: '{user.email}'
+        can:
+        - read
+    - name: metrics
+      description: Dashboard figures written by the analyst agent
+      ownedBy: user
+      fields:
+      - name: date
+        type: date
+        label: Date
+      - name: dso
+        type: number
+        label: DSO (days)
+      - name: total_outstanding
+        type: number
+        label: Outstanding
+      - name: overdue
+        type: number
+        label: Overdue
+      - name: promised_total
+        type: number
+        label: Promised (30 days)
+      - name: forecast_30d
+        type: number
+        label: Cash forecast (30 days)
+      - name: notes
+        type: text
+        label: Notes
+      - name: team
+        type: array
+        label: Team
+      access:
+      - role: finance_manager
+        where:
+          team: '{user.email}'
+        can:
+        - read
+  approvals:
+  - key: chase_plan
+    title: Approve tone and first message
+    description: The credit controller approves the tone and first reminder for a customer; the rest of the schedule then
+      runs automatically.
+    decidedBy: requester
+    fields:
+    - customer
+    - tone
+    - first_message
+    - summary
+  - key: match_review
+    title: Confirm an uncertain payment match
+    description: The agent is not sure how a bank payment maps to invoices.
+    decidedBy: requester
+    fields:
+    - payment
+    - proposed_invoices
+    - reason
+  triggers:
+  - key: dispute_routed
+    'on':
+      collection: disputes
+      op: insert
+    notify:
+      to:
+      - record.account_owner_email
+      subject: 'Dispute logged: {record.customer} invoice {record.invoice_number}'
+      body: 'A dispute was logged for {record.customer}, invoice {record.invoice_number}.
+
+        Reason: {record.reason}
+
+        Amount disputed: {record.amount_disputed}
+
+        {record.details}
+
+
+        Please contact the customer and update the dispute in Cashcadence.'
+      link: disputes
+  - key: chase_send
+    description: Sends each approved reminder on its date
+    'on':
+      date:
+        collection: chase_schedule
+        field: send_date
+        offsetDays: 0
+        hour: 8
+      where:
+        status: approved
+    notify:
+      to:
+      - record.contact_email
+      subject: '{record.subject}'
+      body: '{record.body}'
+  - key: promise_check
+    description: Reminds the account owner the day after a promised date
+    'on':
+      date:
+        collection: promises
+        field: promised_date
+        offsetDays: 1
+        hour: 8
+      where:
+        status: open
+    notify:
+      to:
+      - record.account_owner_email
+      subject: 'Promise to pay due yesterday: {record.customer}'
+      body: '{record.customer} promised to pay {record.amount} on {record.promised_date} (invoice {record.invoice_number}).
+        Please check whether the payment arrived and follow up.'
+      link: promises
+  - key: chase_plan_approved
+    'on':
+      approval: chase_plan
+      decision: approved
+    start:
+      agent: chaser
+    goal: 'The credit controller approved a chasing plan. Details: {event}. Set the proposed chase steps of that customer
+      to approved, then stop.'
+  - key: chase_plan_rejected
+    'on':
+      approval: chase_plan
+      decision: rejected
+    start:
+      agent: chaser
+    goal: 'The credit controller rejected a chasing plan. Details: {event}. Set the proposed chase steps of that customer
+      to stopped, then stop.'
+  - key: match_approved
+    'on':
+      approval: match_review
+      decision: approved
+    start:
+      agent: matcher
+    goal: 'The credit controller approved a payment match. Details: {event}. Apply the allocations and invoice updates for
+      that payment and set it matched, then stop.'
+  - key: match_rejected
+    'on':
+      approval: match_review
+      decision: rejected
+    start:
+      agent: matcher
+    goal: 'The credit controller rejected a proposed payment match. Details: {event}. Set that payment to unmatched, then
+      stop.'
+  views:
+  - key: home
+    type: page
+    title: Cashcadence
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: Accounts receivable, run by agents
+      title: Get paid **sooner**, without the awkward emails.
+      text: Cashcadence builds a chasing schedule for every customer, drafts polite-then-firmer reminders, matches bank payments
+        to invoices and shows DSO, ageing and your cash forecast. You stay in control of tone and uncertain matches.
+      actions:
+      - label: Start free
+        href: /login
+        style: primary
+      - label: See how it works
+        href: '#how-it-works'
+        style: ghost
+    - type: steps
+      id: how-it-works
+      title: How it works
+      items:
+      - title: Import
+        text: 'Upload open invoices as CSV: customer, invoice number, amount, due date, contact email.'
+        badge: '1'
+      - title: Approve
+        text: The agent proposes a schedule per customer from payment history and risk. You approve the tone and the first
+          message once; the rest runs automatically.
+        badge: '2'
+      - title: Apply cash
+        text: 'Upload bank CSVs: payments are matched to invoices, including partial and grouped payments. Doubtful matches
+          come to you.'
+        badge: '3'
+      - title: Track
+        text: DSO, ageing, promises to pay and a 30-day cash forecast, plus UK statutory interest on request.
+        badge: '4'
+    - type: cards
+      id: roles
+      title: Made for the whole finance team
+      items:
+      - title: Credit controller
+        text: Imports, approves chasers, resolves match questions, logs disputes and promises.
+      - title: Finance manager
+        text: Reads the dashboard and every customer's status across the team.
+      - title: Sales account owner
+        text: Sees only their own customers, receives disputes and promise reminders.
+    - type: cards
+      id: pricing
+      title: Pricing by invoices managed
+      items:
+      - title: Starter
+        text: Up to 250 invoices managed. £149 per month.
+      - title: Growth
+        text: Up to 2,000 invoices managed. £399 per month.
+      - title: Scale
+        text: Unlimited invoices. £999 per month.
+    - type: note
+      content: Cashcadence supports collections work; interest calculations are an aid, not legal advice. ERP connections
+        via OAuth, an inbound mailbox for customer replies and Open Banking feeds are planned with licensed partners; for
+        now invoices and bank lines are imported by CSV and promises are logged by hand.
+  - key: work
+    type: new_run
+    title: Run an agent
+    roles:
+    - credit_controller
+    - admin
+  - key: runs
+    type: history
+    title: Agent runs
+    source: run
+    roles:
+    - credit_controller
+    - admin
+  - key: run_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: approvals
+    type: approvals
+    title: To approve
+    approvals:
+    - chase_plan
+    - match_review
+    roles:
+    - credit_controller
+    - admin
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - credit_controller
+    - finance_manager
+    - admin
+    sections:
+    - type: data
+      id: kpis
+      title: Receivables at a glance
+      source: collection:metrics
+      display: kpi
+      sort:
+        field: date
+        dir: asc
+      kpis:
+      - label: DSO (days)
+        agg: last
+        field: dso
+        format: number
+      - label: Outstanding
+        agg: last
+        field: total_outstanding
+        format: money
+      - label: Overdue
+        agg: last
+        field: overdue
+        format: money
+      - label: Promised, next 30 days
+        agg: last
+        field: promised_total
+        format: money
+      - label: Cash forecast, 30 days
+        agg: last
+        field: forecast_30d
+        format: money
+      empty: Run "Refresh dashboard figures" to compute the first figures.
+    - type: data
+      id: ageing
+      title: Ageing of unpaid invoices
+      source: collection:invoices
+      display: chart
+      chart: bar
+      filters:
+      - field: status
+        op: '!='
+        value: paid
+      groupBy:
+        field: aging_bucket
+        aggs:
+        - key: outstanding
+          agg: sum
+          field: outstanding
+      fields:
+      - key: aging_bucket
+        label: Ageing
+      - key: outstanding
+        label: Outstanding
+        format: money
+      empty: No invoices yet.
+    - type: data
+      id: promises-chart
+      title: Promises to pay
+      source: collection:promises
+      display: chart
+      chart: bar
+      filters:
+      - field: status
+        op: '='
+        value: open
+      groupBy:
+        field: promised_date
+        bucket: week
+        aggs:
+        - key: promised
+          agg: sum
+          field: amount
+      fields:
+      - key: promised_date
+        label: Week
+      - key: promised
+        label: Promised
+        format: money
+      empty: No open promises.
+    - type: data
+      id: forecast
+      title: Cash forecast by expected payment week
+      source: collection:invoices
+      display: chart
+      chart: line
+      filters:
+      - field: status
+        op: '!='
+        value: paid
+      groupBy:
+        field: expected_date
+        bucket: week
+        aggs:
+        - key: expected
+          agg: sum
+          field: outstanding
+      fields:
+      - key: expected_date
+        label: Week
+      - key: expected
+        label: Expected cash
+        format: money
+      empty: No invoices yet.
+  - key: customers
+    type: table
+    title: Customers
+    source: collection:customers
+    export: true
+    roles:
+    - credit_controller
+    - finance_manager
+    - account_owner
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Customer
+      - key: account_owner_email
+        label: Account owner
+      - key: risk
+        label: Risk
+        format: badge
+      - key: avg_days_to_pay
+        label: Avg days to pay
+        format: number
+      - key: tone
+        label: Tone
+        format: badge
+      - key: contact_email
+        label: Contact
+      sort:
+        field: name
+        dir: asc
+  - key: customer_form
+    type: form
+    title: Edit customer
+    collection: customers
+    edit: true
+    fields:
+    - name
+    - contact_email
+    - account_owner_email
+    - team
+    submit:
+      label: Save customer
+      message: Customer saved.
+      redirect: customers
+    roles:
+    - credit_controller
+    - admin
+  - key: invoices
+    type: table
+    title: Invoices
+    source: collection:invoices
+    export: true
+    roles:
+    - credit_controller
+    - finance_manager
+    - account_owner
+    - admin
+    data:
+      display: table
+      fields:
+      - key: customer
+        label: Customer
+      - key: invoice_number
+        label: Invoice
+      - key: amount
+        label: Amount
+        format: money
+      - key: outstanding
+        label: Outstanding
+        format: money
+      - key: due_date
+        label: Due
+        format: date
+      - key: expected_date
+        label: Expected
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      - key: aging_bucket
+        label: Ageing
+        format: badge
+      sort:
+        field: due_date
+        dir: asc
+  - key: chasers
+    type: table
+    title: Chasing schedule
+    source: collection:chase_schedule
+    export: true
+    roles:
+    - credit_controller
+    - finance_manager
+    - account_owner
+    - admin
+    data:
+      display: table
+      fields:
+      - key: customer
+        label: Customer
+      - key: invoice_number
+        label: Invoice
+      - key: step
+        label: Step
+        format: number
+      - key: tone
+        label: Tone
+        format: badge
+      - key: send_date
+        label: Send on
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      - key: subject
+        label: Subject
+      sort:
+        field: send_date
+        dir: asc
+  - key: payments
+    type: table
+    title: Payments
+    source: collection:payments
+    export: true
+    roles:
+    - credit_controller
+    - finance_manager
+    - admin
+    data:
+      display: table
+      fields:
+      - key: payment_date
+        label: Date
+        format: date
+      - key: payer
+        label: Payer
+      - key: reference
+        label: Reference
+      - key: amount
+        label: Amount
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      - key: matched_invoices
+        label: Matched invoices
+      sort:
+        field: payment_date
+        dir: desc
+  - key: dispute_form
+    type: form
+    title: Log a dispute
+    collection: disputes
+    fields:
+    - customer
+    - invoice_number
+    - reason
+    - details
+    - amount_disputed
+    - account_owner_email
+    - team
+    submit:
+      label: Log dispute
+      message: Dispute logged and sent to the account owner.
+      redirect: disputes
+    roles:
+    - credit_controller
+    - admin
+  - key: disputes
+    type: table
+    title: Disputes
+    source: collection:disputes
+    roles:
+    - credit_controller
+    - finance_manager
+    - account_owner
+    - admin
+    data:
+      display: table
+      fields:
+      - key: customer
+        label: Customer
+      - key: invoice_number
+        label: Invoice
+      - key: reason
+        label: Reason
+        format: badge
+      - key: amount_disputed
+        label: Disputed
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      - key: details
+        label: Details
+  - key: promise_form
+    type: form
+    title: Log a promise to pay
+    collection: promises
+    fields:
+    - customer
+    - invoice_number
+    - promised_date
+    - amount
+    - note
+    - account_owner_email
+    - team
+    submit:
+      label: Save promise
+      message: Promise to pay saved.
+      redirect: promises
+    roles:
+    - credit_controller
+    - admin
+  - key: promises
+    type: table
+    title: Promises to pay
+    source: collection:promises
+    roles:
+    - credit_controller
+    - finance_manager
+    - account_owner
+    - admin
+    data:
+      display: table
+      fields:
+      - key: customer
+        label: Customer
+      - key: invoice_number
+        label: Invoice
+      - key: promised_date
+        label: Promised
+        format: date
+      - key: amount
+        label: Amount
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      - key: note
+        label: Note
+      sort:
+        field: promised_date
+        dir: asc
+  - key: account
+    type: account
+    title: Plan
+    roles:
+    - credit_controller
+    - admin
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: starter
+      price: 149
+      interval: month
+      label: Starter
+      includes:
+      - Up to 250 invoices managed
+      - All agents and dashboards
+      roles:
+      - credit_controller
+    - key: growth
+      price: 399
+      interval: month
+      label: Growth
+      includes:
+      - Up to 2,000 invoices managed
+      - All agents and dashboards
+      roles:
+      - credit_controller
+    - key: scale
+      price: 999
+      interval: month
+      label: Scale
+      includes:
+      - Unlimited invoices managed
+      - All agents and dashboards
+      roles:
+      - credit_controller
+  notifications:
+    emailOnRunDone: true
+  extensions:
+  - key: erp_oauth
+    description: 'Not available yet: connecting ERP and accounting systems (Xero, QuickBooks, Sage, NetSuite) through OAuth
+      to sync customers, invoices and payment status. Today invoices are imported by CSV; this needs OAuth sign-in to other
+      services.'
+  - key: inbound_mailbox
+    description: 'Not available yet: reading customers'' email replies to chasers from an inbound mailbox, to log promises
+      to pay and disputes automatically. Today promises and disputes are logged by form.'
+  - key: open_banking
+    description: 'Not available yet: bank feeds through Open Banking for payment matching; it needs a licensed partner (AISP).
+      Today bank statements are imported as CSV.'

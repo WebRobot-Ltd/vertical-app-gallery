@@ -1,0 +1,1394 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: probeline
+  displayName: Probeline
+  tagline:
+    en: Case management for internal and regulatory investigations.
+  description:
+    en: Open cases, collect evidence, get an AI-built timeline and cited interim memos, with approval by the case owner and
+      access per case and per document.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#16233b'
+      accent: '#8a1c2b'
+      background: '#f6f5f2'
+      foreground: '#1c2230'
+    fonts:
+      body: Inter
+      display: Source Serif 4
+    wordmark:
+    - text: Probe
+      color: primary
+    - text: line
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Roles
+      href: '#roles'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Firm administrator
+      assignedBy: admin_emails
+    - key: case_owner
+      label: Case owner
+      assignedBy: admin
+    - key: investigator
+      label: Investigator
+      assignedBy: derived
+      from: collection:cases.investigator_email
+    - key: reviewer
+      label: Reviewer
+      assignedBy: derived
+      from: collection:cases.reviewer_email
+    - key: counsel
+      label: External counsel
+      assignedBy: derived
+      from:
+      - collection:documents.counsel_email
+      - collection:memos.counsel_email
+    - key: user
+      label: User
+      assignedBy: signup
+  limits:
+  - action: create:cases
+    max: 3
+    window: total
+    plans:
+      starter: 25
+      growth: 100
+      enterprise: -1
+  agents:
+  - key: analyst
+    role: helper
+    description: 'Runs when a document is added: routes it to the case team, extracts events, links evidence to allegations,
+      replaces names with roles.'
+    profile:
+      inline:
+        display_name: Probeline evidence analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You are an evidence analyst for a confidential investigation. Work in this order. 1) Call find_cases
+            to read the case named in the goal (copy case title, case_owner_email, investigator_email, reviewer_email). 2)
+            Call route_document ONCE for the new document (use its id from the event) setting case_title, case_owner_email,
+            investigator_email, reviewer_email and routing="done". Never update that document again. 3) Open every uploaded
+            file with read_upload (use the file ids; it also reads scans). 4) For each dated event call add_timeline_event
+            with event_date (YYYY-MM-DD), a neutral one-sentence event, actors written as ROLES only (e.g. "Trader A", "Head
+            of Desk", "Counterparty 1"), source_doc (document id) and source_ref (page, sheet, line or email header), plus
+            the case_id, case_title, case_owner_email, investigator_email, reviewer_email. 5) For each allegation the document
+            supports or contradicts call add_link with allegation, relevance (supports|contradicts|context), a short quote
+            or pointer and the same routing emails. 6) For each person or entity call add_party with the role_label you used
+            and the real name (the parties register is restricted to the case team); never put real names in timeline events,
+            links or summaries. Never invent facts, dates or quotes; if a date is unclear say so. Finish with a reply starting
+            "# Document processed — <short title>" followed by 3-5 bullet points in role-based language.
+          mcp_servers: []
+    appTools:
+    - name: find_cases
+      description: Read the cases the user can access
+      action: search
+      collection: cases
+      scope: user
+    - name: route_document
+      description: Update the document record with its case routing
+      action: write
+      collection: documents
+      scope: user
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
+    - name: add_timeline_event
+      description: Add an event to the case timeline
+      action: append
+      collection: timeline_events
+      scope: user
+    - name: add_link
+      description: Link a document to an allegation
+      action: append
+      collection: allegation_links
+      scope: user
+    - name: add_party
+      description: Register a person or entity and the role label used for it
+      action: append
+      collection: parties
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 1.0
+  - key: drafter
+    role: main
+    when: task == 'memo'
+    description: Drafts an interim findings memo citing each source and asks the case owner to approve it.
+    awaits:
+    - memo_approval
+    profile:
+      inline:
+        display_name: Probeline memo drafter
+        crews:
+        - id: drafter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You draft interim findings memos for internal and regulatory investigations. Read the case (find_cases),
+            documents (find_documents), the timeline (find_timeline) and allegation links (find_links) of the ONE case in
+            the goal; open files with read_upload when needed. Write the memo starting with a level-1 title "# Interim findings
+            memo — <case title>". Sections (##): Scope and status, Allegations, Chronology, Findings by allegation (each finding
+            states the evidence for and against and a confidence level), Gaps and next steps. Every factual statement ends
+            with a source citation in brackets: [Doc <id>, <page/sheet/line>]. Refer to people and entities ONLY by role (Trader
+            A, Compliance Officer 1); never use real names. Never invent facts or conclude legal liability; findings are provisional.
+            Then call save_memo with case_id, case_title, title, body (the full memo), status="pending_approval", case_owner_email,
+            investigator_email, reviewer_email, counsel_email. Then call request_memo_approval so the case owner reviews it.
+            If the goal says the memo was approved, call set_memo_status to set status="shared" on that memo record and reply
+            with a one-line confirmation. The memo is not shared before approval.'
+          mcp_servers: []
+    context:
+    - key: case_title
+      from: collection:cases.title
+    - key: allegation_type
+      from: collection:cases.allegation_type
+    - key: regulator
+      from: collection:cases.regulator
+    - key: case_owner_email
+      from: collection:cases.case_owner_email
+    - key: investigator_email
+      from: collection:cases.investigator_email
+    - key: reviewer_email
+      from: collection:cases.reviewer_email
+    - key: counsel_email
+      from: collection:cases.counsel_email
+    goalTemplate: 'Draft the interim findings memo for case {case_title} (case id {case}). Allegation type: {allegation_type}.
+      Regulator: {regulator}. Routing: case_owner_email={case_owner_email}, investigator_email={investigator_email}, reviewer_email={reviewer_email},
+      counsel_email={counsel_email}.
+
+      {?focus}Focus requested: {focus}{/focus}
+
+      Today is {date}. Write in English.'
+    appTools:
+    - name: find_cases
+      description: Read the cases the user can access
+      action: search
+      collection: cases
+      scope: user
+    - name: find_documents
+      description: Search the documents of the cases the user can access
+      action: search
+      collection: documents
+      scope: user
+    - name: find_timeline
+      description: Read the case timeline events
+      action: search
+      collection: timeline_events
+      scope: user
+    - name: find_links
+      description: Read the document-to-allegation links
+      action: search
+      collection: allegation_links
+      scope: user
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
+    - name: save_memo
+      description: Save a memo record
+      action: append
+      collection: memos
+      scope: user
+    - name: set_memo_status
+      description: Update the status of a memo record
+      action: write
+      collection: memos
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 1.5
+  - key: qa
+    role: main
+    when: task == 'question'
+    description: Answers questions over the evidence of one case and checks findings against public FCA and SFO guidance.
+    profile:
+      inline:
+        display_name: Probeline case Q&A
+        crews:
+        - id: qa
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You answer questions about ONE investigation case, the one in the goal. Use only that case''s evidence:
+            always filter find_documents, find_timeline and find_links by the case id, and refuse to use or mention any other
+            case. Open files with read_upload when the extracted records are not enough. Cite every statement as [Doc <id>,
+            <location>]. Refer to people and entities by role only. When asked to check findings or practice against regulation,
+            fetch the relevant public guidance with fca_guidance (FCA, e.g. handbook SYSC, Enforcement Guide EG, Final Notices
+            pages), fca_handbook or sfo_guidance (SFO, e.g. corporate guidance on self-reporting and cooperation) and quote
+            the source URL. Start your answer with "# <short question title>", then Answer, Evidence, Guidance check (only
+            if relevant), Open points. If the evidence does not answer the question say so; never invent facts or guidance.
+            This is decision support, not legal advice.'
+          mcp_servers: []
+    context:
+    - key: case_title
+      from: collection:cases.title
+    - key: allegation_type
+      from: collection:cases.allegation_type
+    - key: regulator
+      from: collection:cases.regulator
+    goalTemplate: 'Case: {case_title} (case id {case}). Allegation type: {allegation_type}. Regulator: {regulator}.
+
+      Question: {question}
+
+      Answer in English. Today is {date}.'
+    appTools:
+    - name: find_documents
+      description: Search the documents of the cases the user can access
+      action: search
+      collection: documents
+      scope: user
+    - name: find_timeline
+      description: Read the case timeline events
+      action: search
+      collection: timeline_events
+      scope: user
+    - name: find_links
+      description: Read the document-to-allegation links
+      action: search
+      collection: allegation_links
+      scope: user
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
+    - name: fca_guidance
+      description: Fetch a public FCA web page (fca.org.uk)
+      action: http
+      http:
+        method: GET
+        url: https://www.fca.org.uk
+        allowPath: true
+        attribution: Financial Conduct Authority, public guidance
+    - name: fca_handbook
+      description: Fetch a page of the public FCA Handbook
+      action: http
+      http:
+        method: GET
+        url: https://www.handbook.fca.org.uk
+        allowPath: true
+        attribution: FCA Handbook, public
+    - name: sfo_guidance
+      description: Fetch a public SFO web page (sfo.gov.uk)
+      action: http
+      http:
+        method: GET
+        url: https://www.sfo.gov.uk
+        allowPath: true
+        attribution: Serious Fraud Office, public guidance (Open Government Licence)
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 1.0
+  - key: digest
+    role: scheduled
+    description: Weekly summary of a case owner's cases.
+    profile:
+      inline:
+        display_name: Probeline weekly digest
+        crews:
+        - id: digest
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write a weekly summary for a case owner. Read their cases (find_cases), new documents (find_documents)
+            and memos (find_memos). Start with "# Probeline weekly summary — <date>". Sections (##): Open cases by stage,
+            Deadlines and reviews in the next 14 days, New evidence this week, Memos awaiting approval, Cases needing attention.
+            Refer to people by role only; use only data you read; never invent figures. Under 350 words.'
+          mcp_servers: []
+    goalTemplate: Write this week's summary for the case owner. Today is {date}. Write in English.
+    appTools:
+    - name: find_cases
+      description: Read the cases the user can access
+      action: search
+      collection: cases
+      scope: user
+    - name: find_documents
+      description: Search the documents of the cases the user can access
+      action: search
+      collection: documents
+      scope: user
+    - name: find_memos
+      description: Read the memos the user can access
+      action: search
+      collection: memos
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.5
+  inputForm:
+    title: Ask or draft
+    fields:
+    - name: task
+      type: select
+      required: true
+      label: What do you need?
+      options:
+      - value: question
+        label: Ask a question about a case
+      - value: memo
+        label: Draft an interim findings memo
+    - name: case
+      type: select
+      required: true
+      label: Case
+      optionsFrom: collection:cases
+    - name: question
+      type: textarea
+      maxLength: 1000
+      label: Question
+      visibleWhen: task == 'question'
+      help: Answers use this case's evidence only.
+    - name: focus
+      type: textarea
+      maxLength: 600
+      label: Focus of the memo (optional)
+      visibleWhen: task == 'memo'
+  data:
+    collections:
+    - name: cases
+      ownedBy: user
+      description: Investigation cases
+      retentionDays: 3650
+      fields:
+      - name: title
+        type: text
+        required: true
+        label: Case title
+      - name: allegation_type
+        type: select
+        required: true
+        label: Allegation type
+        options:
+        - Market abuse
+        - Insider dealing
+        - Bribery and corruption
+        - Fraud
+        - Money laundering
+        - Conflicts of interest
+        - Sanctions breach
+        - Misconduct / HR
+        - Whistleblowing
+        - Other
+      - name: business_area
+        type: text
+        required: true
+        label: Business area
+      - name: regulator
+        type: select
+        label: Regulator involved
+        options:
+        - FCA
+        - PRA
+        - SFO
+        - ICO
+        - NCA
+        - Other
+        - None
+      - name: date_reported
+        type: date
+        required: true
+        label: Date reported
+      - name: priority
+        type: select
+        required: true
+        label: Priority
+        options:
+        - low
+        - medium
+        - high
+        - critical
+      - name: confidentiality
+        type: select
+        required: true
+        label: Confidentiality
+        options:
+        - restricted
+        - confidential
+        - strictly confidential
+      - name: stage
+        type: select
+        label: Stage
+        default: intake
+        options:
+        - intake
+        - evidence gathering
+        - analysis
+        - review
+        - reporting
+        - closed
+      - name: risk
+        type: select
+        label: Risk
+        default: medium
+        options:
+        - low
+        - medium
+        - high
+        - critical
+      - name: deadline
+        type: date
+        label: Next deadline
+      - name: review_due
+        type: date
+        label: Review due
+      - name: case_owner_email
+        type: email
+        required: true
+        label: Case owner email
+        help: Your own email.
+      - name: investigator_email
+        type: email
+        required: true
+        label: Assigned investigator email
+      - name: reviewer_email
+        type: email
+        label: Reviewer email
+      - name: counsel_email
+        type: email
+        label: External counsel email (for approved memos)
+      access:
+      - role: investigator
+        where:
+          investigator_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: reviewer
+        where:
+          reviewer_email: '{user.email}'
+        can:
+        - read
+    - name: documents
+      ownedBy: user
+      description: Evidence documents
+      retentionDays: 3650
+      fields:
+      - name: case_id
+        type: select
+        required: true
+        label: Case
+        optionsFrom: collection:cases
+      - name: folder
+        type: text
+        required: true
+        label: Folder
+      - name: doc_type
+        type: select
+        label: Type
+        options:
+        - email export
+        - PDF
+        - spreadsheet
+        - interview notes
+        - other
+      - name: file
+        type: file
+        required: true
+        label: File
+        accept:
+        - pdf
+        - docx
+        - xlsx
+        - csv
+        - txt
+        - jpg
+        - png
+        maxMb: 15
+        multiple: true
+      - name: notes
+        type: textarea
+        label: Notes
+      - name: case_title
+        type: text
+      - name: case_owner_email
+        type: email
+      - name: investigator_email
+        type: email
+      - name: reviewer_email
+        type: email
+      - name: counsel_email
+        type: email
+        label: Shared with external counsel
+      - name: routing
+        type: text
+        default: pending
+      access:
+      - role: case_owner
+        where:
+          case_owner_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: investigator
+        where:
+          investigator_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: reviewer
+        where:
+          reviewer_email: '{user.email}'
+        can:
+        - read
+      - role: counsel
+        where:
+          counsel_email: '{user.email}'
+        can:
+        - read
+    - name: timeline_events
+      ownedBy: user
+      description: Chronology built from evidence (roles, not names)
+      fields:
+      - name: case_id
+        type: text
+      - name: case_title
+        type: text
+      - name: event_date
+        type: date
+        label: Date
+      - name: event
+        type: textarea
+        label: Event
+      - name: actors
+        type: text
+        label: Roles involved
+      - name: source_doc
+        type: text
+        label: Source document
+      - name: source_ref
+        type: text
+        label: Location in source
+      - name: case_owner_email
+        type: email
+      - name: investigator_email
+        type: email
+      - name: reviewer_email
+        type: email
+      access:
+      - role: case_owner
+        where:
+          case_owner_email: '{user.email}'
+        can:
+        - read
+      - role: investigator
+        where:
+          investigator_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: reviewer
+        where:
+          reviewer_email: '{user.email}'
+        can:
+        - read
+    - name: allegation_links
+      ownedBy: user
+      description: Documents linked to allegations
+      fields:
+      - name: case_id
+        type: text
+      - name: case_title
+        type: text
+      - name: allegation
+        type: text
+        label: Allegation
+      - name: document
+        type: text
+        label: Document
+      - name: relevance
+        type: select
+        label: Relevance
+        options:
+        - supports
+        - contradicts
+        - context
+      - name: excerpt
+        type: textarea
+        label: Pointer or quote
+      - name: case_owner_email
+        type: email
+      - name: investigator_email
+        type: email
+      - name: reviewer_email
+        type: email
+      access:
+      - role: case_owner
+        where:
+          case_owner_email: '{user.email}'
+        can:
+        - read
+      - role: investigator
+        where:
+          investigator_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: reviewer
+        where:
+          reviewer_email: '{user.email}'
+        can:
+        - read
+    - name: parties
+      ownedBy: user
+      description: Restricted register mapping role labels to real names
+      fields:
+      - name: case_id
+        type: text
+      - name: role_label
+        type: text
+        label: Role label
+      - name: party_type
+        type: select
+        label: Type
+        options:
+        - person
+        - entity
+      - name: real_name
+        type: text
+        label: Real name
+      - name: case_owner_email
+        type: email
+      - name: investigator_email
+        type: email
+      access:
+      - role: case_owner
+        where:
+          case_owner_email: '{user.email}'
+        can:
+        - read
+      - role: investigator
+        where:
+          investigator_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: memos
+      ownedBy: user
+      description: Interim findings memos
+      fields:
+      - name: case_id
+        type: text
+      - name: case_title
+        type: text
+      - name: title
+        type: text
+        label: Title
+      - name: body
+        type: textarea
+        label: Memo
+      - name: status
+        type: select
+        label: Status
+        options:
+        - pending_approval
+        - shared
+        - rejected
+      - name: case_owner_email
+        type: email
+      - name: investigator_email
+        type: email
+      - name: reviewer_email
+        type: email
+      - name: counsel_email
+        type: email
+      access:
+      - role: case_owner
+        where:
+          case_owner_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: investigator
+        where:
+          investigator_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: reviewer
+        where:
+          reviewer_email: '{user.email}'
+        can:
+        - read
+      - role: counsel
+        where:
+          counsel_email: '{user.email}'
+          status: shared
+        can:
+        - read
+    - name: audit_log
+      ownedBy: org
+      description: Back-office audit trail of changes to cases, documents and memos
+      retentionDays: 3650
+      fields:
+      - name: entity
+        type: text
+      - name: op
+        type: text
+      - name: case_id
+        type: text
+      - name: title
+        type: text
+      - name: actor
+        type: text
+      - name: at
+        type: text
+  views:
+  - key: home
+    type: page
+    title: Probeline
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: Investigations, under control
+      title: Run internal and regulatory investigations with a **clear, cited trail**.
+      text: Open a case, collect evidence, and let AI agents build the timeline, link documents to allegations and draft interim
+        memos that cite every source. Nothing is shared before the case owner approves it.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Open the case
+        text: A short form records allegation, business area, regulator, priority and confidentiality.
+      - title: Add evidence
+        text: Investigators upload emails, PDFs, spreadsheets and notes. Agents extract text, timeline events and allegation
+          links.
+      - title: Draft and approve
+        text: The memo cites each source and names people only by role. The case owner approves before it is shared.
+      - title: Ask and check
+        text: Ask questions over one case's evidence and check findings against public FCA and SFO guidance.
+    - type: cards
+      id: roles
+      title: Access per case and per document
+      items:
+      - title: Case owner
+        text: Opens cases, assigns people, approves memos, shares documents.
+      - title: Investigator
+        text: Sees only the cases assigned to them.
+      - title: Reviewer
+        text: Read access to the cases they review.
+      - title: External counsel
+        text: Sees only the documents and approved memos shared with them.
+    - type: note
+      content: Probeline is decision support, not legal advice. Findings are provisional until approved.
+  - key: new_case
+    type: form
+    title: Open a case
+    collection: cases
+    fields:
+    - title
+    - allegation_type
+    - business_area
+    - regulator
+    - date_reported
+    - priority
+    - confidentiality
+    - risk
+    - deadline
+    - review_due
+    - case_owner_email
+    - investigator_email
+    - reviewer_email
+    - counsel_email
+    submit:
+      label: Open case
+      message: Case opened.
+      redirect: cases
+    roles:
+    - case_owner
+    - admin
+  - key: case_edit
+    type: form
+    title: Update case
+    collection: cases
+    fields:
+    - stage
+    - risk
+    - priority
+    - deadline
+    - review_due
+    - investigator_email
+    - reviewer_email
+    - counsel_email
+    edit: true
+    submit:
+      label: Save
+      message: Case updated.
+      redirect: cases
+    nav: false
+    roles:
+    - case_owner
+    - admin
+  - key: cases
+    type: table
+    title: Cases
+    source: collection:cases
+    export: true
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Case
+      - key: allegation_type
+        label: Allegation
+      - key: regulator
+        label: Regulator
+      - key: stage
+        format: badge
+        label: Stage
+      - key: risk
+        format: badge
+        label: Risk
+      - key: priority
+        format: badge
+        label: Priority
+      - key: date_reported
+        format: date
+        label: Reported
+      - key: deadline
+        format: date
+        label: Deadline
+      sort:
+        field: date_reported
+        dir: desc
+    roles:
+    - case_owner
+    - investigator
+    - reviewer
+    - admin
+  - key: add_document
+    type: form
+    title: Add evidence
+    collection: documents
+    fields:
+    - case_id
+    - folder
+    - doc_type
+    - file
+    - notes
+    submit:
+      label: Upload
+      message: Evidence uploaded. It is being processed.
+      redirect: documents
+    roles:
+    - investigator
+    - case_owner
+    - admin
+  - key: documents
+    type: table
+    title: Evidence
+    source: collection:documents
+    export: true
+    data:
+      display: table
+      fields:
+      - key: case_title
+        label: Case
+      - key: folder
+        label: Folder
+      - key: doc_type
+        label: Type
+      - key: file
+        label: File
+      - key: counsel_email
+        label: Shared with
+      sort:
+        field: case_title
+        dir: asc
+    roles:
+    - case_owner
+    - investigator
+    - reviewer
+    - counsel
+    - admin
+  - key: share_document
+    type: form
+    title: Share a document with counsel
+    collection: documents
+    fields:
+    - folder
+    - counsel_email
+    edit: true
+    submit:
+      label: Save sharing
+      message: Sharing updated.
+    nav: false
+    roles:
+    - case_owner
+    - admin
+  - key: timeline
+    type: table
+    title: Timeline
+    source: collection:timeline_events
+    data:
+      display: table
+      fields:
+      - key: event_date
+        format: date
+        label: Date
+      - key: case_title
+        label: Case
+      - key: event
+        label: Event
+      - key: actors
+        label: Roles
+      - key: source_doc
+        label: Source
+      - key: source_ref
+        label: Location
+      sort:
+        field: event_date
+        dir: asc
+    roles:
+    - case_owner
+    - investigator
+    - reviewer
+    - admin
+  - key: links
+    type: table
+    title: Evidence by allegation
+    source: collection:allegation_links
+    data:
+      display: table
+      fields:
+      - key: case_title
+        label: Case
+      - key: allegation
+        label: Allegation
+      - key: relevance
+        format: badge
+        label: Relevance
+      - key: document
+        label: Document
+      - key: excerpt
+        label: Pointer
+    roles:
+    - case_owner
+    - investigator
+    - reviewer
+    - admin
+  - key: parties
+    type: table
+    title: Parties register
+    source: collection:parties
+    data:
+      display: table
+      fields:
+      - key: role_label
+        label: Role label
+      - key: party_type
+        label: Type
+      - key: real_name
+        label: Real name
+    roles:
+    - case_owner
+    - investigator
+    - admin
+  - key: ask
+    type: new_run
+    title: Ask or draft
+    roles:
+    - investigator
+    - case_owner
+    - reviewer
+    - admin
+  - key: runs
+    type: history
+    title: My runs
+    source: run
+    roles:
+    - investigator
+    - case_owner
+    - reviewer
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: memos
+    type: cards
+    title: Memos
+    source: collection:memos
+    data:
+      display: cards
+      fields:
+      - key: title
+        label: Memo
+      - key: status
+        format: badge
+        label: Status
+      - key: case_title
+        label: Case
+      - key: body
+        label: Text
+    export: true
+    roles:
+    - case_owner
+    - investigator
+    - reviewer
+    - counsel
+    - admin
+  - key: approvals
+    type: approvals
+    title: Memo approvals
+    approvals:
+    - memo_approval
+    roles:
+    - case_owner
+    - admin
+  - key: weekly
+    type: instances
+    template: weekly_summary
+    title: Weekly summary
+    roles:
+    - case_owner
+    - admin
+  - key: dashboard
+    type: dashboard
+    title: Dashboard
+    children:
+    - stage_chart
+    - risk_chart
+    - age_table
+    roles:
+    - case_owner
+    - reviewer
+    - admin
+  - key: stage_chart
+    type: chart
+    title: Open cases by stage
+    source: collection:cases
+    nav: false
+    data:
+      display: chart
+      chart: bar
+      fields:
+      - key: stage
+        label: Stage
+      - key: n
+        label: Cases
+      groupBy:
+        field: stage
+        aggs:
+        - key: n
+          agg: count
+  - key: risk_chart
+    type: chart
+    title: Cases by risk
+    source: collection:cases
+    nav: false
+    data:
+      display: chart
+      chart: pie
+      fields:
+      - key: risk
+        label: Risk
+      - key: n
+        label: Cases
+      groupBy:
+        field: risk
+        aggs:
+        - key: n
+          agg: count
+  - key: age_table
+    type: table
+    title: Case age
+    source: collection:cases
+    nav: false
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Case
+      - key: stage
+        format: badge
+        label: Stage
+      - key: risk
+        format: badge
+        label: Risk
+      - key: date_reported
+        format: date
+        label: Reported
+      sort:
+        field: date_reported
+        dir: asc
+  - key: audit
+    type: table
+    title: Audit trail
+    source: collection:audit_log
+    export: true
+    data:
+      display: table
+      fields:
+      - key: at
+        label: When
+      - key: actor
+        label: Who
+      - key: entity
+        label: What
+      - key: op
+        label: Action
+      - key: title
+        label: Record
+    roles:
+    - admin
+  - key: account
+    type: account
+    title: Subscription
+    roles:
+    - admin
+    - case_owner
+  approvals:
+  - key: memo_approval
+    title: Approve interim findings memo
+    description: The case owner approves each memo before it is shared.
+    role: case_owner
+    decidedBy: role
+    fields:
+    - title
+    - case_title
+    timeoutMinutes: 10080
+    onTimeout: reject
+  templates:
+  - key: weekly_summary
+    title: Weekly summary
+    description: A weekly email summary of your cases.
+    agent: digest
+    params: []
+    schedule:
+      cron: 0 7 * * 1
+      userCanChange: true
+    maxPerUser: 1
+    roles:
+    - case_owner
+    - admin
+    goal: Write this week's summary of my cases. Today is {date}. Write in English.
+    deliver:
+      to: owner
+      subject: Probeline weekly summary
+      onlyIfNew: true
+  triggers:
+  - key: document_analysis
+    description: Process every new document
+    'on':
+      collection: documents
+      op: insert
+      where:
+        routing: pending
+    start:
+      agent: analyst
+    goal: 'A new document was added. Event: {event}. Case id: {record.case_id}. Folder: {record.folder}. Type: {record.doc_type}.
+      Files: {record.file}. Notes: {record.notes}. Process it as instructed.'
+  - key: document_added_notice
+    description: Tell the case team a document was added
+    'on':
+      collection: documents
+      op: update
+      where:
+        routing: done
+    notify:
+      to:
+      - record.case_owner_email
+      - record.investigator_email
+      - record.reviewer_email
+      subject: Document added to {record.case_title}
+      body: A document was added to the case "{record.case_title}" (folder {record.folder}). Open Probeline to review it.
+      link: documents
+  - key: deadline_reminder
+    'on':
+      date:
+        collection: cases
+        field: deadline
+        offsetDays: -3
+        hour: 8
+    notify:
+      to:
+      - record.case_owner_email
+      - record.investigator_email
+      subject: 'Deadline in 3 days: {record.title}'
+      body: The next deadline of the case "{record.title}" is on {record.deadline}.
+      link: cases
+  - key: review_reminder
+    'on':
+      date:
+        collection: cases
+        field: review_due
+        offsetDays: 0
+        hour: 8
+    notify:
+      to:
+      - record.reviewer_email
+      - record.case_owner_email
+      subject: 'Review due today: {record.title}'
+      body: A review is due today for the case "{record.title}".
+      link: cases
+  - key: memo_approved_share
+    'on':
+      approval: memo_approval
+      decision: approved
+    start:
+      agent: drafter
+    goal: 'The memo was approved by the case owner. Event: {event}. Find that memo record and call set_memo_status to set
+      status=shared. Do not draft anything new.'
+  - key: memo_approved_notice
+    'on':
+      approval: memo_approval
+      decision: approved
+    notify:
+      to:
+      - owner
+      - admins
+      subject: Memo approved
+      body: An interim findings memo was approved and is now shared with the case team.
+      link: memos
+  - key: memo_rejected_notice
+    'on':
+      approval: memo_approval
+      decision: rejected
+    notify:
+      to:
+      - owner
+      - admins
+      subject: Memo not approved
+      body: An interim findings memo was rejected by the case owner and stays unshared.
+      link: memos
+  - key: audit_documents
+    'on':
+      collection: documents
+      op: any
+    write:
+      collection: audit_log
+  - key: audit_cases
+    'on':
+      collection: cases
+      op: any
+    write:
+      collection: audit_log
+  - key: audit_memos
+    'on':
+      collection: memos
+      op: any
+    write:
+      collection: audit_log
+  egress:
+    hosts:
+    - www.fca.org.uk
+    - www.handbook.fca.org.uk
+    - www.sfo.gov.uk
+    notes: Public FCA and SFO guidance pages, read-only GET, used to check findings against published guidance. Check each
+      site's reuse terms; sfo.gov.uk content is under the Open Government Licence.
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: starter
+      price: 6000
+      interval: year
+      label: Starter — up to 25 active cases
+      includes:
+      - 25 active cases
+      - All roles and agents
+    - key: growth
+      price: 18000
+      interval: year
+      label: Growth — up to 100 active cases
+      includes:
+      - 100 active cases
+      - All roles and agents
+    - key: enterprise
+      price: 48000
+      interval: year
+      label: Enterprise — unlimited active cases
+      includes:
+      - Unlimited active cases
+      - All roles and agents
+  extensions:
+  - key: view_audit
+    description: The audit trail records inserts and updates of cases, documents and memos through triggers. Logging who merely
+      viewed a record, and the acting user's identity on each entry, is not available yet.
+  - key: folder_sharing
+    description: Counsel access is granted per document (counsel email on the document). Sharing a whole folder in one step
+      is not available yet.

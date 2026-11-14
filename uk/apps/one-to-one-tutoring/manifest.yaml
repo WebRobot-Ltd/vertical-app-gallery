@@ -1,0 +1,724 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: tutorvue
+  displayName: Tutorvue
+  tagline:
+    en: Vetted one-to-one tutors, booked in minutes.
+  description:
+    en: A one-to-one tutoring marketplace. Tutors are ID and DBS checked and approved by an admin. Parents and students search
+      the catalogue, get three AI recommendations, book a free slot and pay per session.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#1f3a5f'
+      accent: '#e07a2f'
+      background: '#f8f9fb'
+      foreground: '#18212b'
+    fonts:
+      body: Inter
+      display: Poppins
+    wordmark:
+    - text: Tutor
+      color: primary
+    - text: vue
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Safeguarding
+      href: '#safeguarding'
+    cta:
+      label: Find a tutor
+      href: /v/assistant
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+      - catalogue
+      - safeguarding_report
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: tutor
+      label: Tutor
+      assignedBy: derived
+      from: collection:tutors.email
+    - key: user
+      label: Parent or student
+      assignedBy: signup
+  limits:
+  - action: chat
+    per: user
+    max: 40
+    window: day
+    roles:
+    - user
+  agents:
+  - key: recommender
+    role: main
+    description: Recommends three tutors that fit the family's goals, from the approved catalogue.
+    profile:
+      inline:
+        display_name: Tutorvue matching assistant
+        chat_mode: true
+        crews:
+        - id: recommender
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the Tutorvue matching assistant for parents and students in England. Ask at most two short
+            questions if the subject, level (e.g. KS3, GCSE, A-level), exam board, budget per hour or goal is missing. Then
+            call search_tutors and recommend exactly three tutors from the results, each with: name, subjects and levels,
+            hourly rate, rating, and one sentence on why they fit. Close by telling the user to open the Book a session page.
+            Only recommend tutors returned by the tool; never invent qualifications, ratings or prices. Do not collect personal
+            data of children beyond what is needed. If a safeguarding concern is mentioned, tell the user to use the Report
+            a concern page. Answer in English.'
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New message from {user}: {message}'
+    appTools:
+    - name: search_tutors
+      description: Search the approved tutor catalogue by subject, level, exam board, price and rating
+      action: search
+      collection: tutors
+      scope: all
+    output: markdown
+  - key: screener
+    role: setup
+    description: Checks a tutor application for completeness and prepares the admin's approval request.
+    profile:
+      inline:
+        display_name: Tutorvue application screener
+        crews:
+        - id: screener
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You screen tutor applications for an admin. Start with a level-1 title "# Application review - <tutor
+            name>". Sections: ## Summary, ## Completeness (missing or inconsistent items), ## Checks status (ID check and
+            DBS check are done by the third-party service and confirmed by the admin; never claim they passed), ## Recommendation.
+            Then call request_tutor_approval once with a short summary. Never decide for the admin and never invent facts.'
+    goalTemplate: 'Review this tutor application: name {record.full_name}, email {record.email}, subjects {record.subjects},
+      levels {record.levels}, exam boards {record.exam_boards}, university {record.university}, degree {record.degree}, experience
+      {record.experience}, hourly rate {record.hourly_rate}, availability {record.availability}, intro {record.intro}.'
+    awaits:
+    - tutor_approval
+    output: markdown
+  - key: publisher
+    role: helper
+    description: After the admin approves, publishes the tutor into the catalogue.
+    profile:
+      inline:
+        display_name: Tutorvue catalogue publisher
+        crews:
+        - id: publisher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You publish an approved tutor into the catalogue. Call write_tutor once with the profile fields
+            taken only from the event: name, email, subjects, levels, exam_boards, university, degree, experience, hourly_rate,
+            intro, availability, status "approved". Never change values and never invent a rating. Start with "# Published
+            - <name>".'
+    goalTemplate: 'The admin approved this tutor application. Publish it. Event: {event}'
+    appTools:
+    - name: write_tutor
+      description: Add an approved tutor to the catalogue
+      action: write
+      collection: tutors
+      scope: all
+    output: markdown
+  approvals:
+  - key: tutor_approval
+    title: Approve tutor
+    description: Confirm the ID check and the enhanced DBS check came back clear before approving.
+    role: admin
+    decidedBy: role
+    fields:
+    - full_name
+    - email
+    - subjects
+    - hourly_rate
+  data:
+    collections:
+    - name: tutors
+      ownedBy: shared
+      description: Approved tutor catalogue (filled by the publisher agent and the admins)
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: email
+        type: email
+        required: true
+      - name: subjects
+        type: text
+      - name: levels
+        type: text
+      - name: exam_boards
+        type: text
+      - name: university
+        type: text
+      - name: degree
+        type: text
+      - name: experience
+        type: textarea
+      - name: hourly_rate
+        type: number
+      - name: rating
+        type: number
+      - name: reviews_count
+        type: number
+      - name: intro
+        type: textarea
+      - name: availability
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - approved
+        - suspended
+    - name: tutor_applications
+      ownedBy: user
+      description: Tutor applications, visible to the applicant and the admins
+      fields:
+      - name: full_name
+        type: text
+        required: true
+      - name: email
+        type: email
+        required: true
+      - name: subjects
+        type: text
+        required: true
+        help: e.g. Maths, Physics
+      - name: levels
+        type: text
+        required: true
+        help: e.g. KS3, GCSE, A-level
+      - name: exam_boards
+        type: text
+        help: e.g. AQA, Edexcel, OCR
+      - name: university
+        type: text
+        required: true
+      - name: degree
+        type: text
+        required: true
+      - name: experience
+        type: textarea
+        required: true
+      - name: hourly_rate
+        type: number
+        required: true
+        label: Hourly rate (GBP)
+      - name: availability
+        type: textarea
+        required: true
+        label: Weekly availability
+      - name: intro
+        type: textarea
+        maxLength: 600
+        required: true
+      - name: id_document
+        type: file
+        accept:
+        - pdf
+        - jpg
+        - png
+        maxMb: 10
+        capture: true
+        label: Photo ID
+      - name: consent
+        type: boolean
+        required: true
+        label: I consent to ID and enhanced DBS checks
+      retentionDays: 730
+    - name: bookings
+      ownedBy: user
+      description: Sessions booked by parents or students
+      fields:
+      - name: subject
+        type: text
+      - name: notes
+        type: textarea
+      - name: tutor_email
+        type: email
+        required: true
+        help: The tutor's email as shown in the catalogue
+      access:
+      - role: tutor
+        where:
+          tutor_email: '{user.email}'
+        can:
+        - read
+    - name: session_reports
+      ownedBy: user
+      description: Post-session report written by the tutor
+      fields:
+      - name: session_date
+        type: date
+        required: true
+      - name: parent_email
+        type: email
+        required: true
+      - name: tutor_email
+        type: email
+        required: true
+      - name: summary
+        type: textarea
+        required: true
+        maxLength: 1000
+      - name: homework
+        type: textarea
+      - name: next_steps
+        type: textarea
+      - name: safeguarding_concern
+        type: boolean
+        label: I have a safeguarding concern (also report it separately)
+      access:
+      - role: user
+        where:
+          parent_email: '{user.email}'
+        can:
+        - read
+      retentionDays: 1095
+    - name: reviews
+      ownedBy: user
+      description: Parent reviews of tutors
+      fields:
+      - name: tutor_email
+        type: select
+        optionsFrom: collection:tutors
+        required: true
+      - name: session_date
+        type: date
+      - name: rating
+        type: select
+        required: true
+        options:
+        - '1'
+        - '2'
+        - '3'
+        - '4'
+        - '5'
+      - name: comment
+        type: textarea
+        maxLength: 800
+      access:
+      - role: tutor
+        where:
+          tutor_email: '{user.email}'
+        can:
+        - read
+    - name: disputes
+      ownedBy: user
+      description: Session disputes and refund requests, handled by admins
+      fields:
+      - name: session_date
+        type: date
+        required: true
+      - name: tutor_email
+        type: email
+      - name: kind
+        type: select
+        required: true
+        options:
+        - refund
+        - no_show
+        - quality
+        - other
+      - name: details
+        type: textarea
+        required: true
+      retentionDays: 1095
+    - name: safeguarding_concerns
+      ownedBy: org
+      description: Safeguarding concerns for the Designated Safeguarding Lead (admins only)
+      fields:
+      - name: about
+        type: text
+        required: true
+        label: Who or what the concern is about
+      - name: details
+        type: textarea
+        required: true
+      - name: contact
+        type: email
+        label: Your email (optional)
+      retentionDays: 2555
+  views:
+  - key: home
+    type: page
+    nav: false
+    sections:
+    - type: hero
+      title: Find a **vetted tutor** and book in minutes
+      text: One-to-one tutoring for GCSE, A-level and more. Every tutor is ID and DBS checked and approved by our team.
+      actions:
+      - label: Find my tutor
+        href: /v/assistant
+        style: primary
+      - label: Browse tutors
+        href: /v/catalogue
+        style: ghost
+      - label: Become a tutor
+        href: /v/apply
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Tell us your goals
+        text: Our assistant recommends three tutors that fit your subject, level and budget.
+        badge: 💬
+      - title: Book a free slot
+        text: Pick a time from the tutor's availability and pay per session by card.
+        badge: 📅
+      - title: Learn and review
+        text: After each session you get a short report from the tutor and can leave a review.
+        badge: ⭐
+    - type: cards
+      id: safeguarding
+      title: Safeguarding
+      intro: We follow the expectations of Keeping Children Safe in Education (KCSIE).
+      items:
+      - title: Checked tutors
+        text: Identity and enhanced DBS checks before approval, with an admin sign-off on every tutor.
+      - title: Report a concern
+        text: Anyone can raise a concern at any time. It goes straight to our Designated Safeguarding Lead.
+    - type: note
+      content: Tutorvue connects families with independent tutors. Sessions are one-to-one. Under-18s should have a parent
+        or guardian aware of every booking.
+  - key: catalogue
+    type: cards
+    title: Tutors
+    source: collection:tutors
+    nav: true
+    export: false
+    data:
+      display: cards
+      fields:
+      - key: name
+        label: Tutor
+      - key: subjects
+        label: Subjects
+      - key: levels
+        label: Levels
+      - key: exam_boards
+        label: Exam boards
+      - key: hourly_rate
+        label: Hourly rate
+        format: money
+      - key: rating
+        label: Rating
+        format: number
+      - key: intro
+        label: About
+      filters:
+      - field: status
+        op: '='
+        value: approved
+      sort:
+        field: rating
+        dir: desc
+      limit: 60
+      empty: No tutors yet.
+  - key: assistant
+    type: chat
+    title: Find my tutor
+    source: agent:recommender
+    examples:
+    - My son is doing GCSE Maths with AQA and needs help with algebra, budget up to 40 pounds an hour
+    - A-level Chemistry tutor for an Oxford application
+    placeholder: Tell us the subject, level and goals
+    roles:
+    - user
+    - admin
+  - key: book
+    type: booking
+    title: Book a session
+    collection: bookings
+    resources: collection:tutors
+    fields:
+    - subject
+    - notes
+    - tutor_email
+    slots:
+      days:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      - 7
+      from: 08:00
+      to: '21:00'
+      minutes: 60
+      tz: Europe/London
+      aheadDays: 21
+      minNoticeHours: 4
+      capacity: 1
+    roles:
+    - user
+    - admin
+  - key: my_bookings
+    type: table
+    title: My bookings
+    source: collection:bookings
+    roles:
+    - user
+    - tutor
+    - admin
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: start
+        label: Start
+      - key: resource
+        label: Tutor
+      - key: subject
+        label: Subject
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: start
+        dir: desc
+      actions:
+      - type: calendar
+        label: Add to calendar
+        title: subject
+        start: start
+        end: end
+  - key: apply
+    type: form
+    title: Become a tutor
+    collection: tutor_applications
+    submit:
+      label: Send application
+      message: Thanks. We will start your ID and DBS checks and contact you by email.
+      redirect: home
+    roles:
+    - user
+    - admin
+  - key: write_report
+    type: form
+    title: Write session report
+    collection: session_reports
+    submit:
+      label: Send report
+      message: Report sent to the parent.
+    roles:
+    - tutor
+    - admin
+  - key: my_reports
+    type: list
+    title: Session reports
+    source: collection:session_reports
+    roles:
+    - user
+    - tutor
+    - admin
+    data:
+      display: list
+      fields:
+      - key: session_date
+        label: Date
+        format: date
+      - key: tutor_email
+        label: Tutor
+      - key: summary
+        label: Summary
+      - key: homework
+        label: Homework
+      - key: next_steps
+        label: Next steps
+      sort:
+        field: session_date
+        dir: desc
+  - key: review
+    type: form
+    title: Review a tutor
+    collection: reviews
+    submit:
+      label: Post review
+      message: Thank you for your review.
+    roles:
+    - user
+  - key: dispute
+    type: form
+    title: Report a problem or ask for a refund
+    collection: disputes
+    submit:
+      label: Send
+      message: We have received your request and will reply by email.
+    roles:
+    - user
+  - key: safeguarding_report
+    type: form
+    title: Report a safeguarding concern
+    collection: safeguarding_concerns
+    submit:
+      label: Send to the safeguarding lead
+      message: Thank you. Our Designated Safeguarding Lead will review this promptly. If a child is in immediate danger, call
+        999.
+    nav: true
+  - key: approvals
+    type: approvals
+    title: Tutor approvals
+    approvals:
+    - tutor_approval
+    roles:
+    - admin
+  triggers:
+  - key: screen_application
+    'on':
+      collection: tutor_applications
+      op: insert
+    start:
+      agent: screener
+    goal: 'Review this tutor application: name {record.full_name}, email {record.email}, subjects {record.subjects}, levels
+      {record.levels}, exam boards {record.exam_boards}, university {record.university}, degree {record.degree}, experience
+      {record.experience}, hourly rate {record.hourly_rate}, availability {record.availability}, intro {record.intro}.'
+    asUser: true
+  - key: publish_tutor
+    'on':
+      approval: tutor_approval
+      decision: approved
+    start:
+      agent: publisher
+    goal: 'The admin approved this tutor. Publish the profile to the catalogue. Event: {event}'
+    asUser: false
+  - key: booking_confirmed
+    'on':
+      collection: bookings
+      op: insert
+    notify:
+      to:
+      - owner
+      - record.tutor_email
+      subject: 'Session booked: {record.subject}'
+      body: Your session on {record.date} is confirmed. Open the app for the details and the session room.
+      link: my_bookings
+  - key: reminder_day_before
+    'on':
+      date:
+        collection: bookings
+        field: start
+        offsetDays: -1
+        hour: 8
+    notify:
+      to:
+      - owner
+      - record.tutor_email
+      subject: 'Reminder: tutoring session tomorrow'
+      body: This is a reminder that your session is tomorrow ({record.date}).
+      link: my_bookings
+  - key: report_ready
+    'on':
+      collection: session_reports
+      op: insert
+    notify:
+      to:
+      - record.parent_email
+      subject: Your session report is ready
+      body: The tutor has written a short report for the session on {record.session_date}. You can also leave a review.
+      link: my_reports
+  - key: concern_alert
+    'on':
+      collection: safeguarding_concerns
+      op: insert
+    notify:
+      to: admins
+      subject: 'URGENT: new safeguarding concern'
+      body: A safeguarding concern has been submitted. Review it in the admin data page now.
+      link: /admin/data
+  - key: dispute_alert
+    'on':
+      collection: disputes
+      op: insert
+    notify:
+      to: admins
+      subject: New dispute or refund request
+      body: A new dispute ({record.kind}) was submitted for the session on {record.session_date}.
+      link: /admin/data
+  billing:
+    modes:
+    - per_transaction
+    currency: gbp
+    transactionFeePct: 15
+    sellers: collection:tutors
+  notifications:
+    emailOnRunDone: false
+  extensions:
+  - key: video_whiteboard
+    description: 'Video calls with a shared whiteboard inside the app are not available yet. Interim: the booking confirmation
+      carries the tutor''s own meeting link; needs a custom integration.'
+  - key: id_dbs_checks
+    description: ID and enhanced DBS checks by a third-party provider are not connectable yet. The admin runs them with the
+      provider and records the result when deciding the tutor_approval; the application collects consent and photo ID.
+  - key: hour_before_reminder
+    description: 'The one-hour-before email reminder is not available: date reminders fire once a day. The day-before reminder
+      is set up.'
+  - key: weekly_payouts_refunds
+    description: Weekly tutor payouts and admin refunds through Stripe Connect need manual setup in Stripe. Per-session payment,
+      the 15% commission and the seller list are declared in billing.
+  - key: rating_aggregate
+    description: 'Average rating on the catalogue: ratings are stored from reviews, but the tutors.rating figure is updated
+      by the admins for now.'
+  - key: booking_tutor_link
+    description: A booking is tied to its tutor by the tutor's email typed from the catalogue, so tutors see their own bookings.
+      Filling it automatically from the chosen resource needs a custom step.

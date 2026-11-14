@@ -1,0 +1,928 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: gathery
+  displayName: Gathery
+  tagline: Events and ticketing, without the big-platform fees.
+  description: Organisers create events, sell tickets and scan people in at the door. An AI assistant writes event pages and
+    promo emails and answers attendee questions.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#2b1b5e'
+      accent: '#ff5a5f'
+      background: '#fbfaff'
+      foreground: '#1c1830'
+    fonts:
+      body: Inter
+      display: Poppins
+    wordmark:
+    - text: Gather
+      color: primary
+    - text: y
+      color: accent
+  header:
+    links:
+    - label: Events
+      href: /v/browse
+    - label: How it works
+      href: '#how'
+    cta:
+      label: Sell tickets
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+      - browse
+      - map
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      label: Attendee
+      assignedBy: signup
+    - key: organiser
+      label: Organiser
+      assignedBy: derived
+      from: collection:organisers.email
+    - key: staff
+      label: Door staff
+      assignedBy: derived
+      from: collection:staff_members.email
+  agents:
+  - key: writer
+    role: main
+    description: Writes event pages and promotional emails for organisers.
+    profile:
+      inline:
+        display_name: Gathery copywriter
+        crews:
+        - id: writer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write event pages and promotional emails for event organisers. Start with a level-1 title "#
+            <Event name> — <event page or promo email>". For an event page: headline, a 2-sentence hook, ## What to expect,
+            ## Who it is for, ## Practical details (date, venue, tickets), ## Call to action. For a promo email: a subject
+            line, a short body (under 150 words) and a call to action. Use only the facts you are given; never invent line-ups,
+            prices, dates or venues. Write in English.'
+    goalTemplate: 'Write a {kind_label} for the event "{title}".
+
+      Tone: {tone_label}.
+
+      Details: {details}
+
+      Today is {date}.'
+    output: markdown
+  - key: assistant
+    role: helper
+    description: Answers attendee questions from the event details and hands over to the organiser when unsure.
+    profile:
+      inline:
+        display_name: Gathery attendee assistant
+        crews:
+        - id: assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You help people with questions about events listed on Gathery. Look events up with the tool find_events
+            and answer ONLY from what the records say (dates, venue, online link, ticket types, prices, description). If the
+            answer is not in the event details, or the person asks for something only the organiser can decide (refunds, special
+            access, changes), do not guess: call the tool ask_organiser with the event slug, the organiser email from the
+            event record and the question, then tell the person the organiser has been notified and will reply by email. Be
+            brief and friendly. Never invent facts.'
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+      New message from {user}: {message}'
+    appTools:
+    - name: find_events
+      description: Search the published events
+      action: search
+      collection: public_events
+      scope: all
+    - name: ask_organiser
+      description: Hand a question over to the event organiser
+      action: append
+      collection: questions
+      scope: user
+  - key: refund_desk
+    role: helper
+    description: Prepares a refund request and asks the organiser to approve it.
+    awaits:
+    - refund
+    profile:
+      inline:
+        display_name: Gathery refund desk
+        crews:
+        - id: refund_desk
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You handle a refund request from an attendee. Check the ticket with the tool my_tickets, then call
+            request_refund once with a two-line summary for the organiser: ticket code, event, quantity, amount if known,
+            and the attendee''s reason. Never promise a refund; the organiser decides. Answer with one short sentence confirming
+            the request was sent.'
+    goalTemplate: 'Refund request for ticket {record.ticket_code} (event {record.event_slug}). Reason: {record.reason}'
+    appTools:
+    - name: my_tickets
+      description: The attendee's own tickets
+      action: search
+      collection: tickets
+      scope: user
+  inputForm:
+    title: Write with AI
+    fields:
+    - name: kind
+      type: select
+      required: true
+      label: What to write
+      options:
+      - value: event page
+        label: Event page
+      - value: promotional email
+        label: Promotional email
+    - name: title
+      type: text
+      required: true
+      label: Event title
+    - name: tone
+      type: select
+      required: true
+      label: Tone
+      options:
+      - value: friendly
+        label: Friendly
+      - value: professional
+        label: Professional
+      - value: playful
+        label: Playful
+    - name: details
+      type: textarea
+      required: true
+      maxLength: 1500
+      label: Details (date, venue, tickets, what happens)
+  data:
+    collections:
+    - name: organisers
+      ownedBy: user
+      description: Organiser profiles (payout account is set up with the payment provider)
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Organisation name
+      - name: email
+        type: email
+        required: true
+        label: Contact email
+      - name: website
+        type: url
+        label: Website
+    - name: events
+      ownedBy: user
+      description: Events of each organiser
+      fields:
+      - name: slug
+        type: text
+        required: true
+        label: Short URL name
+      - name: title
+        type: text
+        required: true
+      - name: description
+        type: textarea
+        required: true
+      - name: mode
+        type: select
+        required: true
+        options:
+        - in person
+        - online
+      - name: venue
+        type: text
+        label: Venue address
+      - name: lat
+        type: number
+        label: Latitude
+      - name: lon
+        type: number
+        label: Longitude
+      - name: online_url
+        type: url
+        label: Online link
+      - name: starts
+        type: date
+        required: true
+        label: Start date
+      - name: ends
+        type: date
+        label: End date
+      - name: ticket_types
+        type: array
+        required: true
+        label: Ticket types
+        fields:
+        - name: name
+          type: text
+          required: true
+        - name: price
+          type: number
+          required: true
+          label: Price (EUR, 0 = free)
+        - name: quantity
+          type: number
+          required: true
+      - name: questions
+        type: textarea
+        label: Custom questions for attendees (one per line)
+      - name: organiser_email
+        type: email
+        required: true
+        label: Your email
+      - name: status
+        type: select
+        required: true
+        options:
+        - draft
+        - published
+    - name: public_events
+      ownedBy: app
+      description: Published events everyone can browse (copied from events when published)
+      fields:
+      - name: slug
+        type: text
+      - name: title
+        type: text
+      - name: description
+        type: textarea
+      - name: venue
+        type: text
+      - name: lat
+        type: number
+      - name: lon
+        type: number
+      - name: online_url
+        type: url
+      - name: starts
+        type: date
+      - name: ticket_types
+        type: json
+      - name: questions
+        type: textarea
+      - name: organiser_email
+        type: email
+    - name: discount_codes
+      ownedBy: user
+      description: Discount codes of an organiser
+      fields:
+      - name: code
+        type: text
+        required: true
+      - name: event_slug
+        type: text
+        required: true
+      - name: percent
+        type: number
+        required: true
+        label: Discount %
+      - name: max_uses
+        type: number
+    - name: staff_members
+      ownedBy: user
+      description: Door staff added by an organiser
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: email
+        type: email
+        required: true
+      - name: organiser_email
+        type: email
+        required: true
+        label: Your email
+    - name: tickets
+      ownedBy: user
+      description: Tickets bought by attendees
+      fields:
+      - name: event_slug
+        type: select
+        required: true
+        optionsFrom: collection:public_events
+        label: Event
+      - name: ticket_type
+        type: text
+        required: true
+      - name: quantity
+        type: number
+        required: true
+      - name: email
+        type: email
+        required: true
+      - name: discount_code
+        type: text
+      - name: answers
+        type: textarea
+        label: Answers to the organiser's questions
+      - name: event_title
+        type: text
+      - name: event_date
+        type: date
+      - name: organiser_email
+        type: email
+      - name: code
+        type: barcode
+      - name: amount
+        type: number
+      - name: status
+        type: select
+        options:
+        - paid
+        - refunded
+        - free
+      access:
+      - role: organiser
+        where:
+          organiser_email: '{user.email}'
+        can:
+        - read
+    - name: checkins
+      ownedBy: user
+      description: Tickets scanned at the door
+      fields:
+      - name: event_slug
+        type: select
+        required: true
+        optionsFrom: collection:public_events
+        label: Event
+      - name: ticket_code
+        type: barcode
+        required: true
+        label: Ticket
+      - name: gate
+        type: text
+        required: true
+        label: Gate
+      - name: organiser_email
+        type: email
+        required: true
+        label: Organiser email (on your staff pass)
+      - name: staff_email
+        type: email
+        required: true
+        label: Your email
+      access:
+      - role: organiser
+        where:
+          organiser_email: '{user.email}'
+        can:
+        - read
+    - name: questions
+      ownedBy: user
+      description: Questions handed over to organisers
+      fields:
+      - name: event_slug
+        type: text
+      - name: organiser_email
+        type: email
+      - name: question
+        type: textarea
+      access:
+      - role: organiser
+        where:
+          organiser_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: refunds
+      ownedBy: user
+      description: Refund requests from attendees
+      fields:
+      - name: ticket_code
+        type: text
+        required: true
+        label: Ticket code
+      - name: event_slug
+        type: text
+        required: true
+        label: Event short name
+      - name: reason
+        type: textarea
+        required: true
+      - name: organiser_email
+        type: email
+        label: Organiser email
+      access:
+      - role: organiser
+        where:
+          organiser_email: '{user.email}'
+        can:
+        - read
+  approvals:
+  - key: refund
+    title: Refund request
+    role: organiser
+    fields:
+    - ticket_code
+    - event_slug
+    - reason
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: publish_event
+    'on':
+      collection: events
+      op: any
+      where:
+        status: published
+    write:
+      collection: public_events
+      fields:
+        slug: slug
+        title: title
+        description: description
+        venue: venue
+        lat: lat
+        lon: lon
+        online_url: online_url
+        starts: starts
+        ticket_types: ticket_types
+        questions: questions
+        organiser_email: organiser_email
+      keyBy: slug
+  - key: ticket_confirmation
+    'on':
+      collection: tickets
+      op: insert
+    notify:
+      to: owner
+      subject: Your ticket for {record.event_title}
+      body: Thanks for your order. Your ticket code is {record.code}. Show it at the door.
+      link: my_tickets
+  - key: reminder_week
+    'on':
+      date:
+        collection: tickets
+        field: event_date
+        offsetDays: -7
+        hour: 8
+    notify:
+      to: record.email
+      subject: One week to {record.event_title}
+      body: Your event is in a week. Your ticket code is {record.code}.
+      link: my_tickets
+  - key: reminder_day
+    'on':
+      date:
+        collection: tickets
+        field: event_date
+        offsetDays: -1
+        hour: 8
+    notify:
+      to: record.email
+      subject: 'Tomorrow: {record.event_title}'
+      body: See you tomorrow. Your ticket code is {record.code}.
+      link: my_tickets
+  - key: question_notify
+    'on':
+      collection: questions
+      op: insert
+    notify:
+      to: record.organiser_email
+      subject: An attendee has a question
+      body: 'Event {record.event_slug}: {record.question}'
+      link: inbox
+  - key: refund_requested
+    'on':
+      collection: refunds
+      op: insert
+    start:
+      agent: refund_desk
+    goal: 'Refund request for ticket {record.ticket_code} (event {record.event_slug}). Reason: {record.reason}'
+  - key: refund_approved
+    'on':
+      approval: refund
+      decision: approved
+    notify:
+      to: owner
+      subject: Your refund was approved
+      body: The organiser approved your refund request. It will be returned to your card.
+  - key: refund_rejected
+    'on':
+      approval: refund
+      decision: rejected
+    notify:
+      to: owner
+      subject: Your refund request was declined
+      body: The organiser declined your refund request. Contact them for details.
+  views:
+  - key: home
+    type: page
+    nav: false
+    sections:
+    - type: hero
+      eyebrow: Events and ticketing
+      title: Run your event. **Keep more** of every ticket.
+      text: Create an event in minutes, sell tickets by card, scan people in at the door and get paid after the show. Free
+        events are always free.
+      actions:
+      - label: Find events
+        href: /v/browse
+        style: primary
+      - label: Sell tickets
+        href: /login
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Create
+        text: 'Fill in one form: venue or online link, dates, ticket types, discount codes and questions.'
+        badge: 📝
+      - title: Sell
+        text: Attendees buy by card and get their ticket and reminders by email.
+        badge: 🎟️
+      - title: Scan
+        text: Your staff check people in with the phone scanner, on several gates at once.
+        badge: 📱
+      - title: Get paid
+        text: Revenue goes to you minus a small fee per ticket, paid out after the event.
+        badge: 💶
+    - type: data
+      id: upcoming
+      title: Upcoming events
+      source: collection:public_events
+      display: cards
+      fields:
+      - key: title
+      - key: starts
+        format: date
+      - key: venue
+      sort:
+        field: starts
+        dir: asc
+      limit: 6
+      empty: No events yet.
+    - type: note
+      content: Gathery · fee per ticket sold, free events are free.
+  - key: browse
+    type: cards
+    title: Events
+    source: collection:public_events
+    data:
+      display: cards
+      fields:
+      - key: title
+      - key: starts
+        label: Date
+        format: date
+      - key: venue
+      - key: online_url
+        label: Online
+        format: link
+      sort:
+        field: starts
+        dir: asc
+      actions:
+      - type: directions
+        field: venue
+      - type: calendar
+        title: title
+        start: starts
+        location: venue
+      - type: share
+        field: title
+  - key: map
+    type: map
+    title: Map
+    source: collection:public_events
+    map:
+      lat: lat
+      lon: lon
+      title: title
+      popup:
+      - starts
+      - venue
+  - key: assistant_chat
+    type: chat
+    title: Ask about an event
+    source: agent:assistant
+    roles:
+    - user
+    - organiser
+    - admin
+    examples:
+    - Is there parking near the venue?
+    - What ticket types are available?
+    placeholder: Ask about an event…
+  - key: buy
+    type: form
+    title: Buy tickets
+    collection: tickets
+    fields:
+    - event_slug
+    - ticket_type
+    - quantity
+    - email
+    - discount_code
+    - answers
+    submit:
+      label: Get tickets
+      message: Your tickets are confirmed. Check your email.
+      redirect: my_tickets
+    roles:
+    - user
+    - organiser
+    - admin
+  - key: my_tickets
+    type: cards
+    title: My tickets
+    source: collection:tickets
+    data:
+      display: cards
+      fields:
+      - key: event_title
+        label: Event
+      - key: event_date
+        label: Date
+        format: date
+      - key: ticket_type
+      - key: quantity
+        format: number
+      - key: code
+      - key: status
+        format: badge
+    roles:
+    - user
+    - organiser
+    - admin
+  - key: refund_request
+    type: form
+    title: Request a refund
+    collection: refunds
+    submit:
+      label: Send request
+      message: The organiser will review your request.
+    roles:
+    - user
+    - organiser
+    - admin
+  - key: organiser_profile
+    type: form
+    title: Organiser profile
+    collection: organisers
+    edit: true
+    submit:
+      label: Save
+      message: Profile saved. You can now create events.
+    roles:
+    - user
+    - organiser
+    - admin
+  - key: new_event
+    type: form
+    title: New event
+    collection: events
+    edit: true
+    submit:
+      label: Save event
+      message: Event saved. Set status to published to list it.
+      redirect: my_events
+    roles:
+    - organiser
+    - admin
+  - key: new_code
+    type: form
+    title: New discount code
+    collection: discount_codes
+    submit:
+      label: Save code
+      message: Code saved.
+    roles:
+    - organiser
+    - admin
+  - key: new_staff
+    type: form
+    title: Add door staff
+    collection: staff_members
+    submit:
+      label: Add
+      message: Staff member added.
+    roles:
+    - organiser
+    - admin
+  - key: my_events
+    type: table
+    title: My events
+    source: collection:events
+    export: true
+    data:
+      display: table
+      fields:
+      - key: title
+      - key: starts
+        format: date
+      - key: status
+        format: badge
+      - key: slug
+    roles:
+    - organiser
+    - admin
+  - key: sales
+    type: table
+    title: Sales
+    source: collection:tickets
+    export: true
+    data:
+      display: chart
+      chart: bar
+      groupBy:
+        field: event_title
+        aggs:
+        - key: tickets
+          agg: sum
+          field: quantity
+        - key: revenue
+          agg: sum
+          field: amount
+      fields:
+      - key: event_title
+        label: Event
+      - key: tickets
+        format: number
+      - key: revenue
+        format: money
+      kpis:
+      - label: Orders
+        agg: count
+      - label: Revenue
+        agg: sum
+        field: amount
+        format: money
+    roles:
+    - organiser
+    - admin
+  - key: attendees
+    type: table
+    title: Attendees
+    source: collection:tickets
+    export: true
+    data:
+      display: table
+      fields:
+      - key: event_title
+        label: Event
+      - key: email
+      - key: ticket_type
+      - key: quantity
+        format: number
+      - key: answers
+      - key: status
+        format: badge
+    roles:
+    - organiser
+    - admin
+  - key: checkin_log
+    type: table
+    title: Check-ins
+    source: collection:checkins
+    export: true
+    data:
+      display: table
+      fields:
+      - key: event_slug
+        label: Event
+      - key: ticket_code
+        label: Ticket
+      - key: gate
+      - key: staff_email
+        label: Scanned by
+    roles:
+    - organiser
+    - staff
+    - admin
+  - key: scan
+    type: form
+    title: Scan tickets
+    collection: checkins
+    submit:
+      label: Check in
+      message: Checked in.
+    roles:
+    - staff
+    - organiser
+    - admin
+  - key: inbox
+    type: table
+    title: Attendee questions
+    source: collection:questions
+    data:
+      display: table
+      fields:
+      - key: event_slug
+        label: Event
+      - key: question
+    roles:
+    - organiser
+    - admin
+  - key: approvals_list
+    type: approvals
+    title: Refunds to approve
+    approvals:
+    - refund
+    roles:
+    - organiser
+    - admin
+  - key: write
+    type: new_run
+    title: Write with AI
+    roles:
+    - organiser
+    - admin
+  - key: drafts
+    type: history
+    title: My drafts
+    source: run
+    roles:
+    - organiser
+    - admin
+  - key: draft
+    type: report
+    source: run
+    printable: true
+    nav: false
+  billing:
+    modes:
+    - per_transaction
+    currency: eur
+    transactionFeePct: 5
+    sellers: collection:organisers
+  mobile:
+    appId: com.gathery.app
+    appName: Gathery
+    capabilities:
+    - name: barcode
+      reason: To scan attendee tickets at the door
+    - name: push
+  extensions:
+  - key: card_checkout
+    description: Card checkout at ticket purchase (price, discount code, stock per ticket type, then marking the ticket paid
+      with its code, amount, event title, date and organiser email) is not expressed by this manifest; the buy form is an
+      interim step.
+  - key: qr_ticket_email
+    description: The ticket email is plain text with the ticket code. A QR image and a calendar invite attachment in the email
+      are not available yet; the calendar button on the events list and the barcode code cover this in the app.
+  - key: payout_timing
+    description: Per-organiser payouts through Connect are declared via sellers, but holding the money until after the event
+      is not configurable here.
+  - key: door_validation
+    description: Rejecting duplicate or foreign tickets across several gates in real time needs a custom check on the scan
+      form; the check-in log shows all scans per gate.
+  - key: free_events
+    description: Free events (price 0) should skip the fee and checkout; this needs custom handling.

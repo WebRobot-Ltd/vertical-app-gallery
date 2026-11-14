@@ -1,0 +1,1699 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: agentry
+  displayName: Agentry
+  tagline: The operating system for a group of letting agencies.
+  description: Agentry runs every acquired branch on one platform. AI agents handle enquiries, viewings, referencing, tenancy
+    agreements, deposits, compliance reminders, arrears and maintenance. Staff approve what matters. Landlords and tenants
+    get their own portals, and the group sees all branches side by side.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#14213d'
+      accent: '#0e7c66'
+      background: '#f6f5f1'
+      foreground: '#1c2430'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Agent
+      color: primary
+    - text: ry
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: What it runs
+      href: '#what-it-runs'
+    - label: Roles
+      href: '#roles'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Group admin
+      assignedBy: admin_emails
+    - key: branch_manager
+      label: Branch manager
+      assignedBy: invite
+    - key: negotiator
+      label: Negotiator
+      assignedBy: invite
+    - key: property_manager
+      label: Property manager
+      assignedBy: invite
+    - key: landlord
+      label: Landlord
+      assignedBy: derived
+      from: collection:landlords.email
+    - key: tenant
+      label: Tenant
+      assignedBy: derived
+      from: collection:tenancies.tenant_email
+  agents:
+  - key: enquiry_agent
+    role: helper
+    description: Answers portal enquiries that arrive on the email feed and books viewings.
+    profile:
+      inline:
+        display_name: Agentry enquiry desk
+        crews:
+        - id: enquiry_desk
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the enquiry desk of a UK letting agency group. Each message is an enquiry forwarded from
+            a property portal email feed. Steps: 1) identify the property with read_properties and check it is still available;
+            2) log the enquiry with log_enquiry (applicant name, email, phone, property_ref, branch, message, status new);
+            3) if the applicant gives a time that suits, record a viewing with book_viewing (status proposed, never confirmed
+            without a negotiator). Then write a short, friendly reply to the applicant. Start with a level-1 title "# Reply
+            to <applicant>". Offer 2-3 viewing slots only if the message lacks a time. Never invent rent, availability, fees
+            or property details; if the property is not found, say a negotiator will come back to them. Do not give legal
+            advice. Mention that referencing is needed before a tenancy can be agreed, and that tenant fees are limited by
+            the Tenant Fees Act 2019.'
+    goalTemplate: 'An enquiry arrived on {date}:
+
+      {message}'
+    appTools:
+    - name: read_properties
+      description: Look up properties and their availability
+      action: search
+      collection: properties
+      scope: all
+    - name: log_enquiry
+      description: Record the enquiry
+      action: append
+      collection: enquiries
+      scope: all
+    - name: book_viewing
+      description: Record a proposed viewing
+      action: append
+      collection: viewings
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.3
+  - key: reference_agent
+    role: helper
+    description: Reviews referencing results from the licensed referencing partner and recommends next steps.
+    profile:
+      inline:
+        display_name: Agentry referencing reviewer
+        crews:
+        - id: reference_reviewer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.25
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You review a tenant referencing result returned by the group''s licensed referencing partner. Read
+            the check with read_reference_checks and the tenancy with read_tenancies. Start with "# Referencing review — <tenancy
+            ref>". Sections: ## Result (as reported by the partner, quoted), ## Affordability (rent vs reported income, using
+            only the partner''s figures), ## Open items (missing references, guarantor needed, Right to Rent evidence still
+            to be checked), ## Recommendation (proceed / proceed with guarantor / decline for staff review). You recommend;
+            staff decide. Never invent figures. Never state a decline reason that the partner did not give. After writing,
+            call update_reference with review_note set to a two-sentence summary. Do not give legal advice.'
+    goalTemplate: Review the referencing result for tenancy {tenancy}.
+    appTools:
+    - name: read_reference_checks
+      description: Read referencing checks
+      action: read
+      collection: reference_checks
+      scope: all
+    - name: read_tenancies
+      description: Read tenancy records
+      action: read
+      collection: tenancies
+      scope: all
+    - name: update_reference
+      description: Save a review note on a referencing check
+      action: write
+      collection: reference_checks
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.25
+  - key: tenancy_agent
+    role: main
+    description: Prepares the tenancy agreement pack and asks a manager to approve it.
+    profile:
+      inline:
+        display_name: Agentry tenancy agreements
+        crews:
+        - id: tenancy_drafter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare the tenancy agreement pack for an assured shorthold tenancy in England for a letting
+            agency. Read the tenancy with read_tenancies, the property with read_property_records and the referencing outcome
+            with read_reference_checks. Start with "# Tenancy agreement pack — <property address>". Sections: ## Key terms
+            (parties, property, start date, term, rent, payment day, deposit amount, holding deposit if any), ## Checks before
+            signing (referencing outcome, Right to Rent, gas safety, EICR, EPC, How to Rent guide, deposit protection within
+            30 days), ## Special clauses proposed (only those the records support), ## Missing information. Use only facts
+            from the records: never invent terms, and flag anything missing instead of guessing. Cap the deposit at the legal
+            limit (five weeks'' rent, six where annual rent is over 50,000 pounds) and say if the record exceeds it. You prepare,
+            you never sign or send: when the draft is ready call request_agreement_signoff so a manager reviews it. Do not
+            present this as legal advice; the group''s solicitor template governs.'
+    goalTemplate: 'Prepare the tenancy agreement pack for tenancy {tenancy}.
+
+      {?notes}Staff notes: {notes}{/notes}
+
+      Today is {date}. Write in English.'
+    appTools:
+    - name: read_tenancies
+      description: Read tenancy records
+      action: read
+      collection: tenancies
+      scope: all
+    - name: read_property_records
+      description: Read property records
+      action: read
+      collection: properties
+      scope: all
+    - name: read_reference_checks
+      description: Read referencing checks
+      action: read
+      collection: reference_checks
+      scope: all
+    awaits:
+    - agreement_signoff
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.5
+  - key: deposit_agent
+    role: helper
+    description: Prepares the deposit registration for the protection scheme once an agreement is approved.
+    profile:
+      inline:
+        display_name: Agentry deposit registrar
+        crews:
+        - id: deposit_registrar
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.25
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare the registration of a tenancy deposit with the government-authorised protection scheme
+            the group uses. Read the tenancy with read_tenancies. Start with "# Deposit registration — <tenancy ref>". Sections:
+            ## Details to register (tenant, landlord, property, deposit amount, tenancy start), ## Deadline (the deposit must
+            be protected and prescribed information served within 30 days of receipt), ## Missing information. Then call record_deposit
+            once with tenancy_ref, branch, amount, due_by (receipt date plus 30 days if the record gives it) and status ready_to_submit.
+            The registration itself is sent to the scheme by the group''s partner integration; the scheme''s confirmation
+            comes back as a record. Never invent amounts or dates.'
+    goalTemplate: '{event}'
+    appTools:
+    - name: read_tenancies
+      description: Read tenancy records
+      action: read
+      collection: tenancies
+      scope: all
+    - name: record_deposit
+      description: Record a deposit ready to register
+      action: append
+      collection: deposits
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.25
+  - key: arrears_agent
+    role: helper
+    description: Drafts arrears letters and asks a manager to approve them before anything is sent.
+    profile:
+      inline:
+        display_name: Agentry arrears
+        crews:
+        - id: arrears_drafter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.25
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You handle rent arrears for a UK letting agency. Read the ledger line with read_rent_ledger and
+            the tenancy with read_tenancies. Start with "# Arrears letter — <tenancy ref>". Sections: ## Position (rent due,
+            paid, balance, weeks overdue, from the ledger only), ## Letter (a polite, firm, plain-English first or second
+            reminder to the tenant, matched to how overdue the balance is, inviting them to get in touch to agree a payment
+            plan), ## Next step for staff (escalation options such as a call, a payment plan or landlord notification; mention
+            that Section 8 notices and legal action are decisions for a manager and solicitor). Never threaten eviction, never
+            invent amounts or dates, and use only the ledger figures. Call request_arrears_letter when the draft is ready;
+            nothing is sent before a manager approves it.'
+    goalTemplate: '{event}'
+    appTools:
+    - name: read_rent_ledger
+      description: Read rent ledger lines
+      action: read
+      collection: rent_ledger
+      scope: all
+    - name: read_tenancies
+      description: Read tenancy records
+      action: read
+      collection: tenancies
+      scope: all
+    awaits:
+    - arrears_letter
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.25
+  - key: maintenance_agent
+    role: helper
+    description: Triages repair requests, requests contractor quotes and asks for spend approval.
+    profile:
+      inline:
+        display_name: Agentry maintenance
+        crews:
+        - id: maintenance_coordinator
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You coordinate maintenance for a UK letting agency group. Phase 1 (a new repair request): read it
+            with read_maintenance, triage urgency (emergency: no heating in winter, gas smell, flooding, no security, no power;
+            urgent; routine), pick up to three contractors of the right trade and area from read_contractors, and create one
+            quote request per contractor with append_quote (status requested, contractor name and email, maintenance_ref,
+            scope, branch). Set the request status to quoting with update_maintenance. Gas smells: tell the tenant in the
+            report to call the National Gas Emergency Service on 0800 111 999 first. Phase 2 (a quote has been received):
+            read all quotes for the request with read_quotes, compare them and call request_contractor_spend with a recommendation.
+            Start every report with "# Maintenance — <property address> — <issue>". Sections: ## Triage, ## Quotes, ## Recommendation.
+            Use only the amounts in the records, never invent prices, and never commit spend yourself: a manager approves
+            it.'
+    goalTemplate: '{event}'
+    appTools:
+    - name: read_maintenance
+      description: Read repair requests
+      action: read
+      collection: maintenance_requests
+      scope: all
+    - name: update_maintenance
+      description: Update a repair request
+      action: write
+      collection: maintenance_requests
+      scope: all
+    - name: read_contractors
+      description: Search the contractor catalogue
+      action: search
+      collection: contractors
+      scope: all
+    - name: append_quote
+      description: Create a contractor quote request
+      action: append
+      collection: quotes
+      scope: all
+    - name: read_quotes
+      description: Read contractor quotes
+      action: read
+      collection: quotes
+      scope: all
+    awaits:
+    - contractor_spend
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.4
+  inputForm:
+    title: Prepare a tenancy agreement
+    fields:
+    - name: tenancy
+      type: select
+      required: true
+      label: Tenancy
+      optionsFrom: collection:tenancies
+    - name: notes
+      type: textarea
+      maxLength: 500
+      label: Notes for the drafter (optional)
+  approvals:
+  - key: agreement_signoff
+    title: Approve tenancy agreement
+    description: A manager reviews the drafted agreement pack before it goes to the parties.
+    role: branch_manager
+    timeoutMinutes: 4320
+  - key: contractor_spend
+    title: Approve contractor spend
+    description: A manager approves the quote the agent recommends before the contractor is instructed.
+    role: branch_manager
+    timeoutMinutes: 2880
+  - key: arrears_letter
+    title: Approve arrears letter
+    description: A manager reviews the arrears letter before it is sent to the tenant.
+    role: branch_manager
+    timeoutMinutes: 2880
+  triggers:
+  - key: referencing_result
+    description: The referencing partner posts a result
+    'on':
+      webhook: true
+    write:
+      collection: reference_checks
+      fields:
+        tenancy_ref: tenancy_ref
+        branch: branch
+        tenant_email: tenant_email
+        status: status
+        outcome: outcome
+        affordability_pct: affordability_pct
+        summary: summary
+      keyBy: tenancy_ref
+  - key: referencing_review
+    description: Review a returned referencing check
+    'on':
+      collection: reference_checks
+      op: any
+      where:
+        status: returned
+    start:
+      agent: reference_agent
+    goal: Review the referencing result for tenancy {record.tenancy_ref}.
+    asUser: false
+  - key: referencing_chase
+    description: Chase the tenant for outstanding references
+    'on':
+      date:
+        collection: reference_checks
+        field: chase_on
+        offsetDays: 0
+        hour: 8
+    notify:
+      to:
+      - record.tenant_email
+      - role:property_manager
+      subject: 'Your tenancy application: references still needed'
+      body: We are still waiting for information to finish referencing for tenancy {record.tenancy_ref}. Please complete the
+        outstanding steps with our referencing partner or reply to this email so we can move your application forward.
+  - key: agreement_ready
+    description: 'Referencing passed: draft the agreement'
+    'on':
+      collection: tenancies
+      op: update
+      where:
+        status: referenced
+    start:
+      agent: tenancy_agent
+    goal: Prepare the tenancy agreement pack for tenancy {record.reference} ({record.property_ref}). Today is {date}. Write
+      in English.
+    asUser: false
+  - key: agreement_approved
+    description: An approved agreement triggers deposit registration
+    'on':
+      approval: agreement_signoff
+      decision: approved
+    start:
+      agent: deposit_agent
+    goal: 'The tenancy agreement was approved. Prepare the deposit registration. Event: {event}'
+    asUser: false
+  - key: deposit_result
+    description: The deposit scheme confirms registration
+    'on':
+      webhook: true
+    write:
+      collection: deposits
+      fields:
+        tenancy_ref: tenancy_ref
+        branch: branch
+        amount: amount
+        scheme_ref: scheme_ref
+        status: status
+        protected_on: protected_on
+      keyBy: tenancy_ref
+  - key: rent_feed
+    description: The client money partner posts rent ledger lines
+    'on':
+      webhook: true
+    write:
+      collection: rent_ledger
+      fields:
+        ledger_id: id
+        tenancy_ref: tenancy_ref
+        branch: branch
+        landlord_email: landlord_email
+        tenant_email: tenant_email
+        period: period
+        due: due
+        paid: paid
+        balance: balance
+        status: status
+      keyBy: ledger_id
+  - key: statement_feed
+    description: The client money partner posts landlord statements
+    'on':
+      webhook: true
+    write:
+      collection: statements
+      fields:
+        statement_id: id
+        branch: branch
+        landlord_email: landlord_email
+        period: period
+        rent_collected: rent_collected
+        fees: fees
+        repairs: repairs
+        net_paid: net_paid
+      keyBy: statement_id
+  - key: arrears_start
+    description: Draft an arrears letter when a rent line is in arrears
+    'on':
+      collection: rent_ledger
+      op: any
+      where:
+        status: arrears
+    start:
+      agent: arrears_agent
+    goal: Rent ledger line {record.ledger_id} for tenancy {record.tenancy_ref} is in arrears. Draft the arrears letter. Today
+      is {date}.
+    asUser: false
+  - key: maintenance_new
+    description: A tenant reported a repair
+    'on':
+      collection: maintenance_requests
+      op: insert
+      where:
+        status: new
+    start:
+      agent: maintenance_agent
+    goal: 'Phase 1: triage the new repair request for property {record.property_ref}: {record.description}. Category {record.category},
+      reported urgency {record.urgency}. Request quotes.'
+    asUser: false
+  - key: quote_requested
+    description: Send the quote request to the contractor
+    'on':
+      collection: quotes
+      op: insert
+      where:
+        status: requested
+    notify:
+      to:
+      - record.contractor_email
+      subject: 'Quote request: {record.scope}'
+      body: 'Hello {record.contractor_name}, we would like a quote for the following job: {record.scope}. Please reply with
+        your price, earliest start date and any access needs, quoting reference {record.maintenance_ref}.'
+  - key: quote_received
+    description: 'A quote has been entered: compare and ask for approval'
+    'on':
+      collection: quotes
+      op: update
+      where:
+        status: received
+    start:
+      agent: maintenance_agent
+    goal: 'Phase 2: a quote has been received for repair request {record.maintenance_ref}. Compare all quotes and request
+      spend approval.'
+    asUser: false
+  - key: spend_approved
+    description: Tell the property managers that spend was approved
+    'on':
+      approval: contractor_spend
+      decision: approved
+    notify:
+      to:
+      - role:property_manager
+      subject: Contractor spend approved
+      body: A manager approved contractor spend. Please instruct the contractor and update the repair request.
+      link: maintenance
+  - key: compliance_30
+    description: Compliance certificate expires in 30 days
+    'on':
+      date:
+        collection: compliance_items
+        field: expiry_date
+        offsetDays: 30
+        hour: 8
+    notify:
+      to:
+      - record.landlord_email
+      - role:property_manager
+      subject: '{record.type} for {record.property_ref} expires in 30 days'
+      body: The {record.type} record for {record.property_ref} expires on {record.expiry_date}. Please arrange renewal so
+        the property stays compliant.
+  - key: compliance_7
+    description: Compliance certificate expires in 7 days
+    'on':
+      date:
+        collection: compliance_items
+        field: expiry_date
+        offsetDays: 7
+        hour: 8
+    notify:
+      to:
+      - record.landlord_email
+      - role:property_manager
+      - role:branch_manager
+      subject: 'URGENT: {record.type} for {record.property_ref} expires in 7 days'
+      body: The {record.type} record for {record.property_ref} expires on {record.expiry_date}. Renewal is now urgent.
+  data:
+    collections:
+    - name: branches
+      description: Acquired agencies in the group
+      ownedBy: org
+      fields:
+      - name: code
+        type: text
+        required: true
+      - name: name
+        type: text
+        required: true
+      - name: address
+        type: text
+      - name: manager_email
+        type: email
+      - name: licence_status
+        type: select
+        options:
+        - active
+        - trial
+        - suspended
+      access:
+      - role: branch_manager
+      - role: property_manager
+      - role: negotiator
+    - name: landlords
+      description: Landlords, migrated from the old agency software by CSV
+      ownedBy: org
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: email
+        type: email
+        required: true
+      - name: phone
+        type: text
+      - name: branch
+        type: text
+      - name: address
+        type: text
+      access:
+      - role: branch_manager
+        can:
+        - read
+        - write
+      - role: property_manager
+        can:
+        - read
+        - write
+      - role: negotiator
+      - role: landlord
+        where:
+          email: '{user.email}'
+    - name: properties
+      description: Properties on the books, migrated by CSV
+      ownedBy: org
+      fields:
+      - name: ref
+        type: text
+        required: true
+      - name: address
+        type: text
+        required: true
+      - name: branch
+        type: text
+      - name: landlord_email
+        type: email
+      - name: manager_email
+        type: email
+      - name: bedrooms
+        type: number
+      - name: rent_pcm
+        type: number
+      - name: status
+        type: select
+        options:
+        - available
+        - let
+        - managed
+        - withdrawn
+      access:
+      - role: branch_manager
+        can:
+        - read
+        - write
+      - role: property_manager
+        can:
+        - read
+        - write
+      - role: negotiator
+      - role: landlord
+        where:
+          landlord_email: '{user.email}'
+    - name: tenancies
+      description: Tenancy records, migrated by CSV and kept up to date by staff
+      ownedBy: org
+      fields:
+      - name: reference
+        type: text
+        required: true
+      - name: property_ref
+        type: text
+        required: true
+      - name: branch
+        type: text
+      - name: landlord_email
+        type: email
+      - name: manager_email
+        type: email
+      - name: tenant_name
+        type: text
+      - name: tenant_email
+        type: email
+      - name: tenant_phone
+        type: text
+      - name: rent_pcm
+        type: number
+      - name: deposit
+        type: number
+      - name: start_date
+        type: date
+      - name: end_date
+        type: date
+      - name: status
+        type: select
+        options:
+        - applying
+        - referencing
+        - referenced
+        - agreement
+        - active
+        - ended
+      access:
+      - role: branch_manager
+        can:
+        - read
+        - write
+      - role: property_manager
+        can:
+        - read
+        - write
+      - role: negotiator
+        can:
+        - read
+        - write
+      - role: landlord
+        where:
+          landlord_email: '{user.email}'
+      - role: tenant
+        where:
+          tenant_email: '{user.email}'
+    - name: enquiries
+      description: Portal enquiries logged by the enquiry agent
+      ownedBy: org
+      retentionDays: 365
+      fields:
+      - name: applicant_name
+        type: text
+      - name: applicant_email
+        type: email
+      - name: applicant_phone
+        type: text
+      - name: property_ref
+        type: text
+      - name: branch
+        type: text
+      - name: negotiator_email
+        type: email
+      - name: message
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - new
+        - replied
+        - viewing_booked
+        - lost
+        - applying
+      access:
+      - role: branch_manager
+        can:
+        - read
+        - write
+      - role: property_manager
+      - role: negotiator
+        can:
+        - read
+        - write
+    - name: viewings
+      description: Viewings proposed by the agent and confirmed by negotiators
+      ownedBy: org
+      retentionDays: 365
+      fields:
+      - name: property_ref
+        type: text
+      - name: branch
+        type: text
+      - name: applicant_name
+        type: text
+      - name: applicant_email
+        type: email
+      - name: negotiator_email
+        type: email
+      - name: viewing_date
+        type: date
+      - name: status
+        type: select
+        options:
+        - proposed
+        - confirmed
+        - completed
+        - cancelled
+      access:
+      - role: branch_manager
+        can:
+        - read
+        - write
+      - role: property_manager
+      - role: negotiator
+        can:
+        - read
+        - write
+    - name: reference_checks
+      description: Referencing results from the licensed referencing partner
+      ownedBy: org
+      fields:
+      - name: tenancy_ref
+        type: text
+        required: true
+      - name: branch
+        type: text
+      - name: tenant_email
+        type: email
+      - name: status
+        type: select
+        options:
+        - pending
+        - returned
+        - approved
+        - declined
+      - name: outcome
+        type: text
+      - name: affordability_pct
+        type: number
+      - name: summary
+        type: textarea
+      - name: chase_on
+        type: date
+      - name: review_note
+        type: textarea
+      access:
+      - role: branch_manager
+        can:
+        - read
+        - write
+      - role: property_manager
+        can:
+        - read
+        - write
+      - role: negotiator
+    - name: deposits
+      description: Deposit registrations with the protection scheme
+      ownedBy: org
+      fields:
+      - name: tenancy_ref
+        type: text
+        required: true
+      - name: branch
+        type: text
+      - name: amount
+        type: number
+      - name: due_by
+        type: date
+      - name: scheme_ref
+        type: text
+      - name: protected_on
+        type: date
+      - name: status
+        type: select
+        options:
+        - ready_to_submit
+        - submitted
+        - protected
+        - failed
+      access:
+      - role: branch_manager
+        can:
+        - read
+        - write
+      - role: property_manager
+        can:
+        - read
+        - write
+    - name: rent_ledger
+      description: Rent due and paid, fed by the client money partner
+      ownedBy: org
+      fields:
+      - name: ledger_id
+        type: text
+        required: true
+      - name: tenancy_ref
+        type: text
+      - name: branch
+        type: text
+      - name: landlord_email
+        type: email
+      - name: tenant_email
+        type: email
+      - name: period
+        type: text
+      - name: due
+        type: number
+      - name: paid
+        type: number
+      - name: balance
+        type: number
+      - name: status
+        type: select
+        options:
+        - paid
+        - part_paid
+        - arrears
+        - settled
+      access:
+      - role: branch_manager
+      - role: property_manager
+      - role: landlord
+        where:
+          landlord_email: '{user.email}'
+      - role: tenant
+        where:
+          tenant_email: '{user.email}'
+    - name: statements
+      description: Landlord statements from the client money partner
+      ownedBy: org
+      fields:
+      - name: statement_id
+        type: text
+        required: true
+      - name: branch
+        type: text
+      - name: landlord_email
+        type: email
+      - name: period
+        type: text
+      - name: rent_collected
+        type: number
+      - name: fees
+        type: number
+      - name: repairs
+        type: number
+      - name: net_paid
+        type: number
+      access:
+      - role: branch_manager
+      - role: property_manager
+      - role: landlord
+        where:
+          landlord_email: '{user.email}'
+    - name: documents
+      description: Documents shared with landlords
+      ownedBy: org
+      fields:
+      - name: title
+        type: text
+        required: true
+      - name: kind
+        type: select
+        options:
+        - tenancy_agreement
+        - certificate
+        - statement
+        - inspection
+        - other
+      - name: branch
+        type: text
+      - name: property_ref
+        type: text
+      - name: landlord_email
+        type: email
+        required: true
+      - name: file
+        type: file
+        accept:
+        - pdf
+        - docx
+        - jpg
+        - png
+        maxMb: 15
+      access:
+      - role: branch_manager
+        can:
+        - read
+        - write
+      - role: property_manager
+        can:
+        - read
+        - write
+      - role: landlord
+        where:
+          landlord_email: '{user.email}'
+    - name: compliance_items
+      description: Gas safety, EICR, EPC and Right to Rent records with expiry dates
+      ownedBy: org
+      fields:
+      - name: property_ref
+        type: text
+        required: true
+      - name: branch
+        type: text
+      - name: type
+        type: select
+        required: true
+        options:
+        - gas_safety
+        - eicr
+        - epc
+        - right_to_rent
+      - name: expiry_date
+        type: date
+        required: true
+      - name: status
+        type: select
+        options:
+        - valid
+        - due_soon
+        - expired
+      - name: landlord_email
+        type: email
+      - name: evidence
+        type: file
+        accept:
+        - pdf
+        - jpg
+        - png
+        maxMb: 10
+      access:
+      - role: branch_manager
+        can:
+        - read
+        - write
+      - role: property_manager
+        can:
+        - read
+        - write
+      - role: negotiator
+      - role: landlord
+        where:
+          landlord_email: '{user.email}'
+    - name: maintenance_requests
+      description: Repairs reported by tenants
+      ownedBy: org
+      fields:
+      - name: tenant_email
+        type: email
+        required: true
+        help: Your account email
+      - name: property_ref
+        type: text
+        required: true
+        label: Property
+      - name: branch
+        type: text
+      - name: landlord_email
+        type: email
+      - name: category
+        type: select
+        required: true
+        options:
+        - plumbing
+        - heating
+        - electrical
+        - appliance
+        - structure
+        - pest
+        - other
+      - name: urgency
+        type: select
+        options:
+        - routine
+        - urgent
+        - emergency
+      - name: description
+        type: textarea
+        required: true
+        maxLength: 1500
+      - name: photo
+        type: file
+        accept:
+        - jpg
+        - png
+        - webp
+        maxMb: 10
+        capture: true
+        label: Photo
+      - name: status
+        type: select
+        default: new
+        options:
+        - new
+        - quoting
+        - awaiting_approval
+        - approved
+        - done
+      access:
+      - role: branch_manager
+        can:
+        - read
+        - write
+      - role: property_manager
+        can:
+        - read
+        - write
+      - role: landlord
+        where:
+          landlord_email: '{user.email}'
+      - role: tenant
+        where:
+          tenant_email: '{user.email}'
+    - name: contractors
+      description: Approved contractor catalogue
+      ownedBy: shared
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: email
+        type: email
+      - name: phone
+        type: text
+      - name: trade
+        type: select
+        options:
+        - plumbing
+        - heating
+        - electrical
+        - appliance
+        - structure
+        - pest
+        - general
+      - name: area
+        type: text
+    - name: quotes
+      description: Contractor quote requests and replies
+      ownedBy: org
+      fields:
+      - name: maintenance_ref
+        type: text
+      - name: branch
+        type: text
+      - name: contractor_name
+        type: text
+      - name: contractor_email
+        type: email
+      - name: scope
+        type: textarea
+      - name: amount
+        type: number
+      - name: earliest_start
+        type: date
+      - name: status
+        type: select
+        options:
+        - requested
+        - received
+        - approved
+        - rejected
+      access:
+      - role: branch_manager
+        can:
+        - read
+        - write
+      - role: property_manager
+        can:
+        - read
+        - write
+  views:
+  - key: home
+    type: page
+    title: Agentry
+    nav: false
+    sections:
+    - type: hero
+      title: The **operating system** for your letting agencies.
+      text: 'One platform for every acquired branch: AI agents handle the routine work, staff approve what matters, landlords
+        and tenants get their own portals, and the group sees every branch side by side.'
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      band: true
+    - type: cards
+      id: what-it-runs
+      title: What the agents handle
+      items:
+      - title: Enquiries and viewings
+        text: Portal enquiries from the email feed are answered and viewings proposed.
+      - title: Referencing and agreements
+        text: Referencing results reviewed, tenancy agreements drafted, a manager signs off.
+      - title: Deposits and compliance
+        text: Deposit registrations prepared; gas safety, EICR, EPC and Right to Rent reminders sent.
+      - title: Arrears
+        text: Arrears letters drafted from the ledger and approved before sending.
+      - title: Maintenance
+        text: Repairs triaged, contractor quotes compared, spend approved by a manager.
+      - title: Group dashboards
+        text: Lets, arrears, compliance and staff productivity compared across branches.
+    - type: steps
+      id: roles
+      title: Who uses it
+      items:
+      - title: Group admin
+        text: Adds branches, imports data from the old software, sees every branch.
+      - title: Branch manager, negotiator, property manager
+        text: Run the day-to-day and approve agreements, spend and arrears letters.
+      - title: Landlords and tenants
+        text: Landlords read statements and documents; tenants report repairs from the phone app.
+    - type: note
+      content: Agentry supports decisions; it does not give legal or financial advice. Rent handling, referencing and deposit
+        protection are done by the group's regulated partners.
+  - key: group_dashboard
+    type: page
+    title: Group dashboard
+    roles:
+    - admin
+    - branch_manager
+    sections:
+    - type: data
+      title: Active lets by branch
+      source: collection:tenancies
+      display: chart
+      chart: bar
+      filters:
+      - field: status
+        op: '='
+        value: active
+      groupBy:
+        field: branch
+        aggs:
+        - key: rent
+          agg: sum
+          field: rent_pcm
+      fields:
+      - key: branch
+        label: Branch
+      - key: count
+        label: Active lets
+    - type: data
+      title: Arrears by branch
+      source: collection:rent_ledger
+      display: chart
+      chart: bar
+      filters:
+      - field: status
+        op: '='
+        value: arrears
+      groupBy:
+        field: branch
+        aggs:
+        - key: total
+          agg: sum
+          field: balance
+      fields:
+      - key: branch
+        label: Branch
+      - key: total
+        label: Arrears (GBP)
+        format: money
+    - type: data
+      title: Expired compliance records by branch
+      source: collection:compliance_items
+      display: chart
+      chart: bar
+      filters:
+      - field: status
+        op: '='
+        value: expired
+      groupBy:
+        field: branch
+        aggs: []
+      fields:
+      - key: branch
+        label: Branch
+      - key: count
+        label: Expired
+    - type: data
+      title: Completed viewings per negotiator
+      source: collection:viewings
+      display: chart
+      chart: bar
+      filters:
+      - field: status
+        op: '='
+        value: completed
+      groupBy:
+        field: negotiator_email
+        aggs: []
+      fields:
+      - key: negotiator_email
+        label: Negotiator
+      - key: count
+        label: Viewings
+    - type: data
+      title: Open repairs by branch
+      source: collection:maintenance_requests
+      display: chart
+      chart: bar
+      filters:
+      - field: status
+        op: '!='
+        value: done
+      groupBy:
+        field: branch
+        aggs: []
+      fields:
+      - key: branch
+        label: Branch
+      - key: count
+        label: Open repairs
+  - key: branches
+    type: table
+    title: Branches
+    source: collection:branches
+    columns:
+    - code
+    - name
+    - address
+    - manager_email
+    - licence_status
+    roles:
+    - admin
+    - branch_manager
+    - property_manager
+    - negotiator
+  - key: migration
+    type: page
+    title: Import data
+    roles:
+    - admin
+    sections:
+    - type: text
+      title: Migrate from the old agency software
+      content: Export landlords, properties and tenancies from the old software as CSV. Open [Data](/admin/data) and import
+        them into the landlords, properties and tenancies collections, one file each. Add each acquired agency to branches
+        first so the branch codes match, then check the rows on the Tenancies page.
+  - key: enquiries
+    type: table
+    title: Enquiries
+    source: collection:enquiries
+    columns:
+    - applicant_name
+    - applicant_email
+    - property_ref
+    - branch
+    - status
+    - message
+    roles:
+    - admin
+    - branch_manager
+    - negotiator
+    - property_manager
+    export: true
+    data:
+      actions:
+      - type: call
+        field: applicant_phone
+        label: Call
+  - key: viewings
+    type: table
+    title: Viewings
+    source: collection:viewings
+    columns:
+    - property_ref
+    - applicant_name
+    - viewing_date
+    - negotiator_email
+    - status
+    roles:
+    - admin
+    - branch_manager
+    - negotiator
+    - property_manager
+    data:
+      actions:
+      - type: calendar
+        title: property_ref
+        start: viewing_date
+        label: Add to calendar
+  - key: properties
+    type: table
+    title: Properties
+    source: collection:properties
+    columns:
+    - ref
+    - address
+    - branch
+    - bedrooms
+    - rent_pcm
+    - status
+    roles:
+    - admin
+    - branch_manager
+    - negotiator
+    - property_manager
+    - landlord
+    export: true
+    data:
+      actions:
+      - type: directions
+        field: address
+        label: Directions
+  - key: tenancies
+    type: table
+    title: Tenancies
+    source: collection:tenancies
+    columns:
+    - reference
+    - property_ref
+    - branch
+    - tenant_name
+    - rent_pcm
+    - start_date
+    - end_date
+    - status
+    roles:
+    - admin
+    - branch_manager
+    - negotiator
+    - property_manager
+    - landlord
+    - tenant
+    export: true
+    data:
+      actions:
+      - type: call
+        field: tenant_phone
+        label: Call tenant
+  - key: reference_checks
+    type: table
+    title: Referencing
+    source: collection:reference_checks
+    columns:
+    - tenancy_ref
+    - branch
+    - status
+    - outcome
+    - affordability_pct
+    - review_note
+    roles:
+    - admin
+    - branch_manager
+    - property_manager
+    - negotiator
+  - key: deposits
+    type: table
+    title: Deposits
+    source: collection:deposits
+    columns:
+    - tenancy_ref
+    - branch
+    - amount
+    - due_by
+    - scheme_ref
+    - status
+    roles:
+    - admin
+    - branch_manager
+    - property_manager
+  - key: new_agreement
+    type: new_run
+    title: Prepare agreement
+    roles:
+    - admin
+    - branch_manager
+    - property_manager
+    - negotiator
+  - key: agreements
+    type: history
+    title: Agent reports
+    source: run
+    roles:
+    - admin
+    - branch_manager
+    - property_manager
+    - negotiator
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: approvals
+    type: approvals
+    title: Approvals
+    roles:
+    - admin
+    - branch_manager
+  - key: compliance
+    type: table
+    title: Compliance
+    source: collection:compliance_items
+    columns:
+    - property_ref
+    - branch
+    - type
+    - expiry_date
+    - status
+    roles:
+    - admin
+    - branch_manager
+    - property_manager
+    - negotiator
+    - landlord
+    export: true
+  - key: compliance_add
+    type: form
+    title: Add compliance record
+    collection: compliance_items
+    fields:
+    - property_ref
+    - branch
+    - type
+    - expiry_date
+    - status
+    - landlord_email
+    - evidence
+    submit:
+      label: Save
+      message: Compliance record saved. Reminders go out 30 and 7 days before expiry.
+      redirect: compliance
+    roles:
+    - admin
+    - branch_manager
+    - property_manager
+  - key: rent
+    type: table
+    title: Rent
+    source: collection:rent_ledger
+    columns:
+    - tenancy_ref
+    - branch
+    - period
+    - due
+    - paid
+    - balance
+    - status
+    roles:
+    - admin
+    - branch_manager
+    - property_manager
+    - landlord
+    - tenant
+    export: true
+  - key: maintenance
+    type: table
+    title: Repairs
+    source: collection:maintenance_requests
+    columns:
+    - property_ref
+    - branch
+    - category
+    - urgency
+    - description
+    - status
+    roles:
+    - admin
+    - branch_manager
+    - property_manager
+    - landlord
+    - tenant
+  - key: quotes
+    type: table
+    title: Contractor quotes
+    source: collection:quotes
+    columns:
+    - maintenance_ref
+    - contractor_name
+    - scope
+    - amount
+    - earliest_start
+    - status
+    roles:
+    - admin
+    - branch_manager
+    - property_manager
+  - key: report_repair
+    type: form
+    title: Report a repair
+    collection: maintenance_requests
+    fields:
+    - tenant_email
+    - property_ref
+    - category
+    - urgency
+    - description
+    - photo
+    submit:
+      label: Send repair report
+      message: Thanks, your repair has been reported. We will be in touch.
+      redirect: maintenance
+    roles:
+    - tenant
+  - key: statements
+    type: table
+    title: Statements
+    source: collection:statements
+    columns:
+    - period
+    - branch
+    - rent_collected
+    - fees
+    - repairs
+    - net_paid
+    roles:
+    - admin
+    - branch_manager
+    - property_manager
+    - landlord
+    export: true
+  - key: documents
+    type: table
+    title: Documents
+    source: collection:documents
+    columns:
+    - title
+    - kind
+    - property_ref
+    - file
+    roles:
+    - admin
+    - branch_manager
+    - property_manager
+    - landlord
+  - key: document_add
+    type: form
+    title: Share a document
+    collection: documents
+    submit:
+      label: Share
+      message: Document shared with the landlord.
+      redirect: documents
+    roles:
+    - admin
+    - branch_manager
+    - property_manager
+  notifications:
+    emailOnRunDone: true
+  channels:
+  - key: portal_feed
+    type: email
+    agent: enquiry_agent
+    greeting: Thanks for your enquiry.
+  billing:
+    modes:
+    - free
+  mobile:
+    appId: com.agentry.os
+    appName: Agentry
+    capabilities:
+    - name: camera
+      reason: To photograph a repair
+    - name: push
+  extensions:
+  - key: branch_licence
+    description: 'Pricing is internal use across the group with a per-branch licence. The runtime has no per-branch licence
+      billing yet: invoice licences outside the app and track them in branches.licence_status.'
+  - key: partner_integrations
+    description: 'Referencing, deposit protection and client money partners: the partners post results, ledger lines and statements
+      to the webhook triggers (referencing_result, deposit_result, rent_feed, statement_feed). Calling the partners'' APIs
+      (sending the referencing request, the deposit registration and payouts) needs their contracts and is not available yet.'
+  - key: tenant_identity_prefill
+    description: The repair form asks for the tenant's account email; prefilling it from the signed-in user is not available
+      yet.
+  - key: compliance_status_refresh
+    description: compliance_items.status is set by staff or the CSV import; reminders are sent from expiry_date automatically.

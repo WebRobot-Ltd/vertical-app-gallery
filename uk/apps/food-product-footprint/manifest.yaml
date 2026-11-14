@@ -1,0 +1,920 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: footprinta
+  displayName: Footprinta
+  tagline: The environmental footprint of every food product, from farm to shelf.
+  description: Footprinta models the supply chain of each food product for retailers and their suppliers. It calculates carbon,
+    water, land use and biodiversity impact from DEFRA and AHDB statistics, shows hotspots and reduction scenarios, and recalculates
+    every quarter.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#17402f'
+      accent: '#4c9a2a'
+      background: '#f7f8f3'
+      foreground: '#18241d'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Footprint
+      color: primary
+    - text: a
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: For suppliers
+      href: '#suppliers'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Retailer administrator
+      assignedBy: admin_emails
+    - key: category_manager
+      label: Category manager
+      assignedBy: invite
+    - key: sustainability
+      label: Sustainability team
+      assignedBy: invite
+    - key: supplier
+      label: Supplier
+      assignedBy: invite
+  limits:
+  - action: agent:modeller
+    per: user
+    max: 20
+    window: day
+  agents:
+  - key: modeller
+    role: main
+    description: Builds the supply-chain model of a product and calculates carbon, water, land use and biodiversity impact.
+    profile:
+      inline:
+        display_name: Footprinta supply-chain modeller
+        crews:
+        - id: modeller
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a food life-cycle analyst. For each product you are asked about: 1) read the product record
+            (read_products), its uploaded spreadsheets and specifications (read_upload with the file ids; spreadsheets also
+            arrive as text), and any evidence the retailer''s sustainability team has approved (read_evidence, only records
+            with status approved). 2) Model the supply chain: ingredients with shares, sourcing country, farm stage, processing,
+            packaging, transport. 3) Look up emission factors with read_factors. Use ONLY factors whose licence is ''open''
+            (DEFRA, AHDB, other public statistics) unless records with licence ''commercial'' exist in the factor table, which
+            means the retailer holds a licence. Never invent a factor: when one is missing, use the closest category, say
+            so, and lower the confidence. 4) Calculate per kg of product: carbon (kg CO2e), water (litres), land use (m2 per
+            year) and a biodiversity score (0-100, higher = more pressure). Identify the main hotspot stage. Grade the product
+            A-E against its category. 5) Save the result with write_footprint (one record per product: product_id, product_name,
+            category, supplier_email, carbon_kgco2e, water_l, land_m2, biodiversity_score, hotspot, grade, confidence, method,
+            quarter, calculated_on). Report format: start with a level-1 title ''# Footprint: <product>'', then ## Supply
+            chain model, ## Results (a table), ## Hotspots, ## Assumptions and data gaps, ## Sources. Add a ```chart block
+            (bar) with the share of carbon per stage. Real figures only; state uncertainty plainly.'
+          mcp_servers: []
+    goalTemplate: 'Supplier: {email}
+
+      Model the product {product_label} (record id {product}).
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    context:
+    - key: email
+      from: user.email
+    appTools:
+    - name: read_products
+      description: Read the supplier's product records
+      action: read
+      collection: products
+      scope: user
+    - name: read_evidence
+      description: Read improvement evidence submitted by the supplier
+      action: read
+      collection: evidence
+      scope: user
+    - name: read_factors
+      description: Search the emission-factor table (DEFRA, AHDB, licensed databases if any)
+      action: search
+      collection: emission_factors
+      scope: all
+    - name: write_footprint
+      description: Save a calculated footprint record
+      action: append
+      collection: footprints
+      scope: user
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
+    output: markdown
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 1
+      timeoutSeconds: 900
+  - key: advisor
+    role: helper
+    description: Assistant that suggests reformulations and sourcing changes, and reduction scenarios.
+    profile:
+      inline:
+        display_name: Footprinta advisor
+        crews:
+        - id: advisor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You advise on lowering the environmental footprint of food products. Read the products (read_products),
+            their footprints (read_footprints) and the emission factors (read_factors) you are allowed to see. Suggest concrete
+            reformulations or sourcing changes for the supplier to CONSIDER, never as orders, and estimate the effect on carbon,
+            water, land use and biodiversity using the factor table only; say when an estimate is rough. When you give a recommendation
+            worth keeping, save it with write_reco (product_name, hotspot, suggestion, carbon_saving_pct, scenario). For category
+            managers, compare products across the range and rank hotspots. Never invent figures or claim certainty about taste,
+            safety, regulation or cost. Keep answers short.
+          mcp_servers: []
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New message from {user}: {message}
+
+      Answer in the language with ISO code {lang}.'
+    appTools:
+    - name: read_products
+      description: Read the supplier's product records
+      action: read
+      collection: products
+      scope: user
+    - name: read_footprints
+      description: Read calculated footprints
+      action: read
+      collection: footprints
+      scope: user
+    - name: read_factors
+      description: Search the emission-factor table (DEFRA, AHDB, licensed databases if any)
+      action: search
+      collection: emission_factors
+      scope: all
+    - name: write_reco
+      description: Save a reduction recommendation
+      action: append
+      collection: recommendations
+      scope: user
+    output: markdown
+  - key: triage
+    role: helper
+    description: Summarises submitted improvement evidence and asks the sustainability team to approve it.
+    awaits:
+    - evidence_review
+    profile:
+      inline:
+        display_name: Footprinta evidence triage
+        crews:
+        - id: triage
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: A supplier submitted evidence of an improvement (a new farm practice, a changed source, lower-impact
+            packaging). Read the evidence record (read_evidence) and any attached file (read_upload), the product (read_products).
+            Summarise in 5 lines what is claimed, which footprint figures it should change and how credible the proof looks
+            (missing documents, dates, certificates). Then call request_evidence_review once with that summary. Do not approve
+            anything yourself and do not recalculate.
+          mcp_servers: []
+    goalTemplate: Review the evidence {record.title} for product {record.product}.
+    appTools:
+    - name: read_evidence
+      description: Read improvement evidence submitted by the supplier
+      action: read
+      collection: evidence
+      scope: user
+    - name: read_products
+      description: Read the supplier's product records
+      action: read
+      collection: products
+      scope: user
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
+    output: markdown
+  inputForm:
+    title: Calculate a footprint
+    fields:
+    - name: product
+      type: select
+      required: true
+      label: Product
+      optionsFrom: collection:products
+  data:
+    collections:
+    - name: products
+      description: Product specifications entered by each supplier
+      ownedBy: user
+      access:
+      - role: category_manager
+      - role: sustainability
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Product name
+      - name: sku
+        type: text
+        required: true
+        label: Retailer SKU / barcode
+      - name: category
+        type: select
+        required: true
+        label: Category
+        options:
+        - dairy
+        - meat
+        - fish
+        - produce
+        - bakery
+        - ambient
+        - drinks
+        - frozen
+      - name: ingredients
+        type: textarea
+        required: true
+        label: Ingredient list with percentages
+      - name: sourcing_countries
+        type: textarea
+        label: Sourcing countries per ingredient
+      - name: farm_data
+        type: textarea
+        label: Farm data (yields, feed, fertiliser, energy)
+      - name: processing_data
+        type: textarea
+        label: Processing data (energy, water, waste, packaging, transport)
+      - name: data_files
+        type: file
+        label: Specifications and spreadsheets
+        accept:
+        - pdf
+        - xlsx
+        - csv
+        - docx
+        maxMb: 15
+        multiple: true
+    - name: footprints
+      description: Calculated footprints per product and quarter
+      ownedBy: user
+      access:
+      - role: category_manager
+      - role: sustainability
+      fields:
+      - name: product_id
+        type: text
+      - name: product_name
+        type: text
+        label: Product
+      - name: category
+        type: text
+        label: Category
+      - name: supplier_email
+        type: email
+        label: Supplier
+      - name: carbon_kgco2e
+        type: number
+        label: Carbon (kg CO2e/kg)
+      - name: water_l
+        type: number
+        label: Water (l/kg)
+      - name: land_m2
+        type: number
+        label: Land use (m2/kg)
+      - name: biodiversity_score
+        type: number
+        label: Biodiversity pressure (0-100)
+      - name: hotspot
+        type: text
+        label: Main hotspot
+      - name: grade
+        type: text
+        label: Grade
+      - name: confidence
+        type: text
+        label: Confidence
+      - name: method
+        type: textarea
+        label: Method and sources
+      - name: quarter
+        type: text
+        label: Quarter
+      - name: calculated_on
+        type: date
+        label: Calculated on
+    - name: evidence
+      description: Improvement evidence submitted by suppliers
+      ownedBy: user
+      access:
+      - role: sustainability
+        can:
+        - read
+        - write
+      - role: category_manager
+      fields:
+      - name: product
+        type: select
+        required: true
+        label: Product
+        optionsFrom: collection:products
+      - name: title
+        type: text
+        required: true
+        label: What has improved
+      - name: description
+        type: textarea
+        required: true
+        label: Details and expected effect
+      - name: proof
+        type: file
+        label: Proof (certificates, invoices, data)
+        accept:
+        - pdf
+        - xlsx
+        - csv
+        - jpg
+        - png
+        maxMb: 15
+        multiple: true
+    - name: recommendations
+      description: Reformulation and sourcing suggestions from the assistant
+      ownedBy: user
+      access:
+      - role: category_manager
+      - role: sustainability
+      fields:
+      - name: product_name
+        type: text
+        label: Product
+      - name: hotspot
+        type: text
+        label: Hotspot
+      - name: suggestion
+        type: textarea
+        label: Suggestion
+      - name: carbon_saving_pct
+        type: number
+        label: Carbon saving (%)
+      - name: scenario
+        type: text
+        label: Scenario
+    - name: emission_factors
+      description: Emission factors from DEFRA, AHDB and, only if licensed, commercial LCA databases. Filled by admins on
+        the data page or from a CSV.
+      ownedBy: shared
+      fields:
+      - name: item
+        type: text
+        required: true
+        label: Item or process
+      - name: category
+        type: text
+        label: Category
+      - name: country
+        type: text
+        label: Country
+      - name: carbon_per_kg
+        type: number
+        label: kg CO2e per kg
+      - name: water_l_per_kg
+        type: number
+        label: Water l per kg
+      - name: land_m2_per_kg
+        type: number
+        label: Land m2 per kg
+      - name: biodiversity_per_kg
+        type: number
+        label: Biodiversity per kg
+      - name: source
+        type: text
+        label: Source
+      - name: licence
+        type: select
+        label: Licence
+        options:
+        - open
+        - commercial
+      - name: year
+        type: number
+        label: Year
+    - name: sales
+      description: Weekly sales per SKU pushed by the retailer's sales system
+      ownedBy: org
+      access:
+      - role: category_manager
+      fields:
+      - name: sku
+        type: text
+        label: SKU
+      - name: week
+        type: date
+        label: Week
+      - name: units
+        type: number
+        label: Units sold
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Footprinta
+    sections:
+    - type: hero
+      title: The footprint of every food product, **modelled from farm to shelf**.
+      text: Retailers invite their suppliers. Suppliers upload their product data. An AI agent models each supply chain and
+        calculates carbon, water, land use and biodiversity impact.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Suppliers add products
+        text: 'Forms and spreadsheets: ingredients, sourcing countries, farm and processing data.'
+        badge: 📝
+      - title: The agent models the chain
+        text: Factors from DEFRA and AHDB statistics; commercial databases only where the retailer holds a licence.
+        badge: 🧮
+      - title: Category managers see hotspots
+        text: Range dashboards, hotspots and reduction scenarios.
+        badge: 📊
+      - title: Evidence, approval, recalculation
+        text: Improvements are approved by the sustainability team, then the footprint is recalculated. Every quarter, automatically.
+        badge: ✅
+    - type: cards
+      id: suppliers
+      title: For suppliers
+      items:
+      - title: Free
+        text: Suppliers never pay. You see only your own products and data.
+      - title: A scorecard per product
+        text: Your results, your hotspots and suggestions to consider.
+    - type: note
+      content: Footprints are estimates built from public statistics and the data you provide; they support decisions and
+        are not certified assurance.
+  - key: products
+    type: table
+    title: Products
+    source: collection:products
+    export: true
+    roles:
+    - supplier
+    - category_manager
+    - sustainability
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Product
+      - key: sku
+        label: SKU
+      - key: category
+        label: Category
+        format: badge
+      - key: sourcing_countries
+        label: Sourcing
+  - key: product_form
+    type: form
+    title: Add or edit a product
+    collection: products
+    edit: true
+    submit:
+      label: Save product
+      message: Saved. The footprint is being calculated and you will be emailed.
+      redirect: products
+    roles:
+    - supplier
+    - admin
+  - key: scorecard
+    type: cards
+    title: Scorecards
+    source: collection:footprints
+    roles:
+    - supplier
+    - category_manager
+    - sustainability
+    - admin
+    data:
+      display: cards
+      fields:
+      - key: product_name
+        label: Product
+      - key: grade
+        label: Grade
+        format: badge
+      - key: carbon_kgco2e
+        label: Carbon kg CO2e/kg
+        format: number
+      - key: water_l
+        label: Water l/kg
+        format: number
+      - key: land_m2
+        label: Land m2/kg
+        format: number
+      - key: biodiversity_score
+        label: Biodiversity pressure
+        format: number
+      - key: hotspot
+        label: Main hotspot
+      - key: quarter
+        label: Quarter
+      sort:
+        field: calculated_on
+        dir: desc
+      limit: 100
+  - key: evidence_form
+    type: form
+    title: Submit improvement evidence
+    collection: evidence
+    submit:
+      label: Submit for review
+      message: Sent to the retailer's sustainability team. The footprint is recalculated once it is approved.
+      redirect: evidence_list
+    roles:
+    - supplier
+  - key: evidence_list
+    type: table
+    title: Evidence
+    source: collection:evidence
+    roles:
+    - supplier
+    - sustainability
+    - category_manager
+    - admin
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Improvement
+      - key: product
+        label: Product
+      - key: description
+        label: Details
+  - key: review
+    type: approvals
+    title: Evidence to approve
+    approvals:
+    - evidence_review
+    roles:
+    - sustainability
+    - admin
+  - key: range
+    type: page
+    title: Range dashboard
+    roles:
+    - category_manager
+    - sustainability
+    - admin
+    sections:
+    - type: data
+      title: Range at a glance
+      source: collection:footprints
+      display: kpi
+      kpis:
+      - label: Products modelled
+        agg: count
+      - label: Average carbon (kg CO2e/kg)
+        agg: avg
+        field: carbon_kgco2e
+        format: number
+      - label: Average water (l/kg)
+        agg: avg
+        field: water_l
+        format: number
+      - label: Average biodiversity pressure
+        agg: avg
+        field: biodiversity_score
+        format: number
+    - type: data
+      title: Carbon by category
+      source: collection:footprints
+      display: chart
+      chart: bar
+      groupBy:
+        field: category
+        aggs:
+        - key: carbon
+          agg: avg
+          field: carbon_kgco2e
+        - key: water
+          agg: avg
+          field: water_l
+      fields:
+      - key: category
+        label: Category
+      - key: carbon
+        label: Avg carbon
+    - type: data
+      id: hotspots
+      title: 'Hotspots: highest-carbon products'
+      source: collection:footprints
+      display: table
+      fields:
+      - key: product_name
+        label: Product
+      - key: category
+        label: Category
+      - key: carbon_kgco2e
+        label: Carbon
+        format: number
+      - key: hotspot
+        label: Main hotspot
+      - key: grade
+        label: Grade
+        format: badge
+      sort:
+        field: carbon_kgco2e
+        dir: desc
+      limit: 20
+    - type: data
+      title: Reduction scenarios and suggestions
+      source: collection:recommendations
+      display: table
+      fields:
+      - key: product_name
+        label: Product
+      - key: hotspot
+        label: Hotspot
+      - key: suggestion
+        label: Suggestion
+      - key: carbon_saving_pct
+        label: Carbon saving %
+        format: number
+      - key: scenario
+        label: Scenario
+      limit: 50
+  - key: sales_view
+    type: table
+    title: Sales
+    source: collection:sales
+    roles:
+    - category_manager
+    - admin
+    data:
+      display: table
+      fields:
+      - key: sku
+        label: SKU
+      - key: week
+        label: Week
+        format: date
+      - key: units
+        label: Units
+        format: number
+      sort:
+        field: week
+        dir: desc
+      limit: 100
+  - key: export
+    type: table
+    title: Footprints export
+    source: collection:footprints
+    export: true
+    roles:
+    - category_manager
+    - sustainability
+    - admin
+    data:
+      display: table
+      fields:
+      - key: product_name
+        label: Product
+      - key: supplier_email
+        label: Supplier
+      - key: category
+        label: Category
+      - key: carbon_kgco2e
+        label: Carbon
+        format: number
+      - key: water_l
+        label: Water
+        format: number
+      - key: land_m2
+        label: Land
+        format: number
+      - key: biodiversity_score
+        label: Biodiversity
+        format: number
+      - key: grade
+        label: Grade
+      - key: quarter
+        label: Quarter
+      - key: calculated_on
+        label: Calculated
+        format: date
+      limit: 200
+  - key: assistant
+    type: chat
+    title: Assistant
+    source: agent:advisor
+    examples:
+    - Which ingredient drives the carbon of my product?
+    - Suggest a lower-impact sourcing option
+    - Rank the hotspots of the dairy range
+    placeholder: Ask for a reformulation or sourcing idea
+    roles:
+    - supplier
+    - category_manager
+    - sustainability
+    - admin
+  - key: new_run
+    type: new_run
+    title: Calculate now
+    roles:
+    - supplier
+    - admin
+  - key: history
+    type: history
+    title: Calculation runs
+    source: run
+    roles:
+    - supplier
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: quarterly
+    type: instances
+    template: quarterly_recalc
+    title: Quarterly recalculation
+    roles:
+    - supplier
+  - key: account
+    type: account
+    title: Licence
+    roles:
+    - admin
+  templates:
+  - key: quarterly_recalc
+    title: Quarterly recalculation
+    description: Recalculates all your products every quarter.
+    agent: modeller
+    params:
+    - name: note
+      type: text
+      label: Label
+    goal: 'Quarterly recalculation "{instance}" for supplier {user}. Read all this supplier''s products with read_products
+      and recalculate each one, saving a new footprint record per product (quarter ending {date}). Use approved evidence only.
+      Finish with a summary table of changes since the last quarter. Language: {lang}.'
+    schedule:
+      cron: 0 5 1 1,4,7,10 *
+      userCanChange: false
+    maxPerUser: 1
+  approvals:
+  - key: evidence_review
+    title: Improvement evidence
+    description: The sustainability team approves evidence before the footprint is recalculated.
+    role: sustainability
+    fields:
+    - product
+    - title
+    - description
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: product_changed
+    'on':
+      collection: products
+      op: any
+    start:
+      agent: modeller
+    goal: 'Model the product {record.name} (SKU {record.sku}, category {record.category}). Ingredients: {record.ingredients}.
+      Sourcing: {record.sourcing_countries}. Farm data: {record.farm_data}. Processing: {record.processing_data}. Uploaded
+      files: {record.data_files}. Save the footprint.'
+  - key: evidence_submitted
+    'on':
+      collection: evidence
+      op: insert
+    start:
+      agent: triage
+    goal: 'Review the evidence {record.title} for product {record.product}: {record.description}. Files: {record.proof}.'
+  - key: evidence_notify
+    'on':
+      collection: evidence
+      op: insert
+    notify:
+      to: role:sustainability
+      subject: 'New improvement evidence: {record.title}'
+      body: A supplier submitted evidence that needs your review.
+      link: review
+  - key: evidence_approved
+    'on':
+      approval: evidence_review
+      decision: approved
+    start:
+      agent: modeller
+    goal: 'Evidence was approved by the sustainability team: {event}. Recalculate the footprint of the product concerned,
+      taking the approved evidence into account, and save the new footprint.'
+  - key: evidence_decided
+    'on':
+      approval: evidence_review
+      decision: any
+    notify:
+      to: owner
+      subject: Your improvement evidence was reviewed
+      body: The sustainability team has decided on your evidence. If approved, your footprint is being recalculated.
+      link: scorecard
+  - key: footprint_updated
+    'on':
+      collection: footprints
+      op: insert
+    notify:
+      to: owner
+      subject: 'Footprint updated: {record.product_name}'
+      body: 'A new footprint was calculated for {record.product_name}: grade {record.grade}, {record.carbon_kgco2e} kg CO2e/kg.
+        Main hotspot: {record.hotspot}.'
+      link: scorecard
+  - key: sales_feed
+    'on':
+      webhook: true
+    write:
+      collection: sales
+      fields:
+        sku: sku
+        week: week
+        units: units
+      keyBy: sku
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: retailer_licence
+      price: 12000
+      interval: year
+      label: Retailer annual licence
+      includes:
+      - Unlimited supplier invitations (suppliers are free)
+      - Range dashboards, hotspots and scenarios
+      - Quarterly recalculation and CSV export
+  extensions:
+  - key: retailer_system_integration
+    description: Direct connectors to the retailer's product master and sales systems are not available yet. Sales data can
+      be pushed to the sales webhook (POST /api/hooks/sales_feed); product master data is loaded by suppliers or by admins
+      on the data page from CSV.
+  - key: licensed_lca_databases
+    description: 'Commercial life-cycle databases are used only if the retailer holds a licence: an admin then loads the licensed
+      factors into the emission_factors table with licence ''commercial''. Otherwise only DEFRA and AHDB open data is used.'
+  - key: single_retailer_tenancy
+    description: 'One app instance serves one retailer: category managers and the sustainability team see all suppliers''
+      records, suppliers see only their own. Set the real annual licence price in billing.plans.'

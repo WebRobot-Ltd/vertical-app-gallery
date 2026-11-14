@@ -1,0 +1,685 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: fanlane
+  displayName: Fanlane
+  tagline:
+    en: Creators earn from the fans who pay for their work.
+  description:
+    en: A subscription platform for creators and paying fans, with AI writing tools, automated and human moderation, an earnings
+      dashboard and weekly payouts.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f1147'
+      accent: '#e0357a'
+      background: '#faf8ff'
+      foreground: '#1a1626'
+    fonts:
+      body: Inter
+      display: Poppins
+    wordmark:
+    - text: Fan
+      color: primary
+    - text: lane
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Safety
+      href: '#safety'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: moderator
+      label: Moderator
+      assignedBy: invite
+    - key: user
+      label: Creator or fan
+      assignedBy: signup
+  limits:
+  - action: run
+    per: user
+    max: 30
+    window: day
+    roles:
+    - user
+  agents:
+  - key: caption_writer
+    role: main
+    description: Writes captions in the creator's voice.
+    when: task == 'caption'
+    context:
+    - key: voice
+      from: collection:creators.voice_notes
+    profile:
+      inline:
+        display_name: Fanlane caption writer
+        crews:
+        - id: caption_writer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write captions for a creator''s posts, in the creator''s own voice. Start with a level-1 title
+            "# Captions: <topic>". Give 5 caption options with ## headings (short, medium, playful, teaser for paid posts,
+            call to action) and 5 hashtags. Never write sexually explicit text, never involve minors, never invent facts about
+            the creator. Under 300 words.'
+    goalTemplate: 'Task: captions.
+
+      Topic or post description: {details}
+
+      Voice notes of the creator: {?voice}{voice}{/voice}{!voice}none yet{/voice}
+
+      Write in the language with ISO code {lang}.'
+    output: markdown
+  - key: timing_advisor
+    role: main
+    description: Suggests posting times.
+    when: task == 'times'
+    profile:
+      inline:
+        display_name: Fanlane timing advisor
+        crews:
+        - id: timing_advisor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You suggest a weekly posting schedule for a creator from what they tell you about their audience
+            and time zone. Start with "# Posting plan". Add a table of 7 days with best slot and reason, then 3 tips. Be clear
+            these are suggestions from general patterns, not measured data. Under 250 words.
+    goalTemplate: 'Task: posting times.
+
+      Audience and time zone: {details}
+
+      Write in the language with ISO code {lang}.'
+    output: markdown
+  - key: reply_drafter
+    role: main
+    description: Drafts replies to fan messages for the creator to approve.
+    when: task == 'reply'
+    memory: user
+    awaits:
+    - reply_ok
+    context:
+    - key: voice
+      from: collection:creators.voice_notes
+    profile:
+      inline:
+        display_name: Fanlane reply drafter
+        crews:
+        - id: reply_drafter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You draft a reply to a fan''s message in the creator''s voice. Start with "# Reply draft". Write
+            the draft, then one alternative shorter version. You never send anything: call the tool request_reply_ok with
+            the draft so the creator approves it first. Never promise meetings, personal contact details, or explicit content;
+            flag messages that look like harassment, minors, or off-platform payment requests. Use remember to store 3 notes
+            about the creator''s style.'
+    goalTemplate: 'Task: reply to a fan.
+
+      Fan message: {details}
+
+      Creator voice notes: {?voice}{voice}{/voice}{!voice}none yet{/voice}
+
+      Write in the language with ISO code {lang}.'
+    output: markdown
+  - key: moderator_bot
+    role: helper
+    description: Screens each new post and queues doubtful ones for a human moderator.
+    profile:
+      inline:
+        display_name: Fanlane moderation screener
+        crews:
+        - id: moderator_bot
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You screen a new post (title, caption, access level, file ids) against the platform rules: no minors
+            or anything suggesting them, no non-consensual content, no illegal content, no impersonation, no off-platform
+            payment solicitation. If the post has files, call read_upload to inspect images. Decide verdict clear, doubtful
+            or block with a short reason. ALWAYS call append_queue once with post_id, creator, verdict, reason. Only clear
+            items skip human review; doubtful and block go to a human. When unsure, say doubtful.'
+    appTools:
+    - name: read_upload
+      description: Read a file attached to the post
+      action: read_file
+    - name: append_queue
+      description: Add a screening result to the moderation queue
+      action: append
+      collection: moderation_queue
+    output: markdown
+  inputForm:
+    title: AI assistant
+    fields:
+    - name: task
+      type: select
+      required: true
+      label: What do you need?
+      options:
+      - value: caption
+        label: Write captions
+      - value: times
+        label: Suggest posting times
+      - value: reply
+        label: Draft a reply to a fan
+    - name: details
+      type: textarea
+      required: true
+      maxLength: 1500
+      label: Details
+      help: Post description, audience and time zone, or the fan's message
+  data:
+    collections:
+    - name: creators
+      description: Creator profile and prices
+      ownedBy: user
+      fields:
+      - name: display_name
+        type: text
+        required: true
+      - name: bio
+        type: textarea
+      - name: voice_notes
+        type: textarea
+        help: 'How you write: tone, emojis, phrases'
+      - name: subscription_price
+        type: number
+        required: true
+        label: Monthly subscription (GBP)
+      - name: ppv_default_price
+        type: number
+        label: Default pay-per-view price (GBP)
+      - name: age_assurance_ref
+        type: text
+        help: Reference from the approved age-assurance provider
+      - name: age_verified
+        type: boolean
+      access:
+      - role: moderator
+      - role: admin
+    - name: posts
+      description: Posts, photos and videos
+      ownedBy: user
+      fields:
+      - name: title
+        type: text
+        required: true
+      - name: caption
+        type: textarea
+      - name: media
+        type: file
+        accept:
+        - jpg
+        - jpeg
+        - png
+        - webp
+        - gif
+        maxMb: 15
+        multiple: true
+      - name: access_level
+        type: select
+        required: true
+        options:
+        - value: free
+          label: Free
+        - value: subscribers
+          label: Subscribers
+        - value: ppv
+          label: Pay per view
+      - name: price
+        type: number
+        label: PPV price (GBP)
+      - name: publish_at
+        type: date
+        label: Publish on
+      - name: moderation_status
+        type: select
+        options:
+        - pending
+        - approved
+        - rejected
+        default: pending
+      - name: unlocked_by
+        type: multiselect
+        help: Fan emails with access (set by payments)
+      - name: views
+        type: number
+      - name: revenue
+        type: number
+      access:
+      - role: user
+        where:
+          unlocked_by: '{user.email}'
+        can:
+        - read
+      - role: moderator
+        can:
+        - read
+        - write
+    - name: moderation_queue
+      description: Automated screening results awaiting review
+      ownedBy: org
+      fields:
+      - name: post_id
+        type: text
+      - name: creator
+        type: text
+      - name: verdict
+        type: select
+        options:
+        - clear
+        - doubtful
+        - block
+      - name: reason
+        type: textarea
+      - name: decision
+        type: select
+        options:
+        - open
+        - approved
+        - rejected
+        default: open
+      access:
+      - role: moderator
+        can:
+        - read
+        - write
+      retentionDays: 365
+    - name: earnings
+      description: Payment events per creator, fed by the payment webhook
+      ownedBy: user
+      fields:
+      - name: event_id
+        type: text
+      - name: kind
+        type: select
+        options:
+        - subscription
+        - ppv
+        - tip
+      - name: post_title
+        type: text
+      - name: gross
+        type: number
+      - name: commission
+        type: number
+      - name: net
+        type: number
+      - name: date
+        type: date
+  views:
+  - key: home
+    type: page
+    title: Fanlane
+    nav: false
+    sections:
+    - type: hero
+      title: Where creators earn from the **fans** who pay.
+      text: Subscriptions, pay-per-view posts and tips, AI help with captions and replies, and weekly payouts. Age-assured
+        and moderated.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Create your profile
+        text: Verify your identity and age, set your subscription and pay-per-view prices.
+      - title: Post and schedule
+        text: Upload posts and choose which are free, for subscribers, or pay per view.
+      - title: Get paid weekly
+        text: Follow subscribers and revenue on your dashboard; we pay out weekly minus our commission.
+    - type: cards
+      id: safety
+      title: Safety first
+      items:
+      - title: Age assurance
+        text: Creators and fans pass an approved age-assurance check for adult content.
+      - title: Moderation
+        text: Every upload is screened automatically; doubtful items go to a human moderator.
+    - type: note
+      content: 18+ content is only shown after age assurance.
+  - key: profile
+    type: form
+    title: My profile and prices
+    collection: creators
+    edit: true
+    submit:
+      label: Save profile
+      message: Profile saved
+      redirect: earnings
+    roles:
+    - user
+    - admin
+  - key: new_post
+    type: form
+    title: New post
+    collection: posts
+    submit:
+      label: Upload for screening
+      message: Uploaded. It goes live once moderation approves it.
+      redirect: my_posts
+    roles:
+    - user
+    - admin
+  - key: my_posts
+    type: table
+    title: My posts
+    source: collection:posts
+    data:
+      display: table
+      fields:
+      - key: title
+      - key: access_level
+        format: badge
+      - key: publish_at
+        format: date
+      - key: moderation_status
+        format: badge
+      - key: revenue
+        format: money
+      sort:
+        field: publish_at
+        dir: desc
+    roles:
+    - user
+    - admin
+  - key: earnings
+    type: page
+    title: Earnings
+    roles:
+    - user
+    - admin
+    sections:
+    - type: data
+      title: Revenue
+      source: collection:earnings
+      display: kpi
+      kpis:
+      - label: Gross
+        agg: sum
+        field: gross
+        format: money
+      - label: Net after commission
+        agg: sum
+        field: net
+        format: money
+      - label: Payments
+        agg: count
+    - type: data
+      title: Revenue by month
+      source: collection:earnings
+      display: chart
+      chart: bar
+      fields:
+      - key: date
+      - key: net
+      groupBy:
+        field: date
+        bucket: month
+        aggs:
+        - key: net
+          agg: sum
+          field: net
+    - type: data
+      title: Top posts
+      source: collection:posts
+      display: table
+      fields:
+      - key: title
+      - key: views
+        format: number
+      - key: revenue
+        format: money
+      sort:
+        field: revenue
+        dir: desc
+      limit: 10
+  - key: feed
+    type: cards
+    title: Unlocked content
+    source: collection:posts
+    data:
+      display: cards
+      fields:
+      - key: title
+      - key: caption
+      - key: access_level
+        format: badge
+      limit: 50
+    roles:
+    - user
+  - key: assistant
+    type: new_run
+    title: AI assistant
+    roles:
+    - user
+    - admin
+  - key: runs
+    type: history
+    title: My AI drafts
+    source: run
+    roles:
+    - user
+    - admin
+  - key: draft
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: replies
+    type: approvals
+    title: Replies to approve
+    roles:
+    - user
+    - admin
+  - key: moderation
+    type: table
+    title: Moderation queue
+    source: collection:moderation_queue
+    data:
+      display: table
+      fields:
+      - key: post_id
+      - key: creator
+      - key: verdict
+        format: badge
+      - key: reason
+      - key: decision
+        format: badge
+      filters:
+      - field: decision
+        op: '='
+        value: open
+    roles:
+    - moderator
+    - admin
+  - key: account
+    type: account
+    title: Credits
+    roles:
+    - user
+  - key: admin
+    type: tabs
+    title: Admin
+    children:
+    - admin_overview
+    - admin_users
+    - admin_data
+    roles:
+    - admin
+  - key: admin_overview
+    type: admin
+    title: Overview
+    roles:
+    - admin
+    nav: false
+  - key: admin_users
+    type: admin
+    title: Users
+    roles:
+    - admin
+    nav: false
+  - key: admin_data
+    type: admin
+    title: Data
+    roles:
+    - admin
+    nav: false
+  approvals:
+  - key: reply_ok
+    title: Send this reply to the fan?
+    decidedBy: requester
+    fields:
+    - draft
+  triggers:
+  - key: screen_post
+    description: Screen each new post
+    'on':
+      collection: posts
+      op: insert
+    start:
+      agent: moderator_bot
+    asUser: false
+    goal: 'Screen this new post. post_id: {record.id}. creator: {record.owner}. title: {record.title}. caption: {record.caption}.
+      access level: {record.access_level}. files: {record.media}.'
+  - key: notify_moderators
+    'on':
+      collection: moderation_queue
+      op: insert
+      where:
+        verdict: doubtful
+    notify:
+      to: role:moderator
+      subject: Post waiting for review
+      body: A post was flagged as doubtful and needs a human decision.
+      link: moderation
+  - key: payment_event
+    description: Payment provider webhook saved as an earnings record
+    'on':
+      webhook: true
+    write:
+      collection: earnings
+      fields:
+        event_id: id
+        kind: kind
+        post_title: post
+        gross: gross
+        commission: commission
+        net: net
+        date: date
+      keyBy: event_id
+  schedules: []
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - credits
+    - per_transaction
+    currency: gbp
+    signupCredits: 50
+    transactionFeePct: 20
+    sellers: collection:creators
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:caption_writer:
+        estimate: 10
+        metered: true
+      agent:timing_advisor:
+        estimate: 10
+        metered: true
+      agent:reply_drafter:
+        estimate: 10
+        metered: true
+    packs:
+    - key: small
+      credits: 500
+      price: 5
+      label: 500 credits
+  egress:
+    hosts:
+    - api.stripe.com
+    notes: Stripe Connect for fan card payments and weekly creator payouts.
+  extensions:
+  - key: age_assurance
+    description: Integration with an approved age-assurance provider (Online Safety Act) for creators and fans is not available
+      yet; the flag age_verified must be set by the provider's callback.
+  - key: video_hosting
+    description: Video upload, transcoding and streaming at scale are not available; files are limited to 15 MB images and
+      documents.
+  - key: weekly_payouts
+    description: Weekly Stripe Connect payouts with 20% commission, subscription renewals and tips need a payment integration
+      that writes unlocked_by and earnings; the webhook trigger stores the events.
+  - key: fan_messaging
+    description: Direct fan-to-creator messages and a public creator directory are not available yet.

@@ -1,0 +1,661 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: autowright
+  displayName: Autowright
+  tagline:
+    en: An AI agent that learns your business, then builds and runs its automations.
+  description:
+    en: Autowright interviews the owner, proposes automations, turns plain-English requests into tested workflows with approval
+      points, logs every run, alerts on failures and suggests new automations every week.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#1f2a44'
+      accent: '#e4572e'
+      background: '#f7f8fb'
+      foreground: '#18202f'
+    fonts:
+      body: Inter
+      display: Space Grotesk
+    wordmark:
+    - text: Auto
+      color: primary
+    - text: wright
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Get started
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      assignedBy: signup
+  limits:
+  - action: agent:builder
+    per: user
+    max: 30
+    window: day
+    roles:
+    - user
+  - action: chat
+    per: user
+    max: 100
+    window: day
+    roles:
+    - user
+  agents:
+  - key: interviewer
+    role: main
+    description: Interviews the owner about the business and proposes automations.
+    context:
+    - key: profile
+      from: collection:business_profile
+    - key: existing
+      from: collection:automations
+    goalTemplate: 'Known business profile:
+
+      {profile}
+
+      Existing automations:
+
+      {existing}
+
+      Conversation so far:
+
+      {history}
+
+      New message from {user}: {message}
+
+      Reply in the language with ISO code {lang}.'
+    appTools:
+    - name: save_profile
+      description: Save or update the business profile (name, sector, tools, recurring tasks, pain points)
+      action: write
+      collection: business_profile
+      scope: user
+    - name: propose_automation
+      description: Save a proposed automation as a draft
+      action: append
+      collection: automations
+      scope: user
+    profile:
+      inline:
+        display_name: Autowright interviewer
+        crews:
+        - id: interviewer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Autowright, a friendly operations consultant for small businesses. Interview the owner one
+            or two questions at a time about: what the business does, the tools it uses (email, accounting, CRM, shop, chat),
+            recurring tasks and pain points. As soon as you know enough, call save_profile with fields business_name, sector,
+            tools, recurring_tasks, pain_points. Then propose 3-5 concrete automations (for example weekly sales report, lead
+            follow-up, invoice reminders, social post drafts, stock alerts) and for each approved or interesting one call
+            propose_automation with name, description, trigger_type (schedule, webhook or form), trigger_detail, steps (a
+            short JSON list of steps with action type http, email, document or mcp, and approval points) and status draft.
+            Be honest: only connections through API keys are available, not OAuth sign-in. Never invent facts about the business.
+            Tell the user that the builder (New automation) will test it before it is switched on.'
+  - key: builder
+    role: helper
+    description: Turns a plain-English request into steps, tests them on sample data and asks approval before activation.
+    context:
+    - key: profile
+      from: collection:business_profile
+    - key: current
+      from: collection:automations.steps
+    goalTemplate: 'Business profile: {profile}
+
+      Automation id: {automation}
+
+      Current steps: {current}
+
+      {?request}Request from {user}: {request}{/request}
+
+      {?failure}Failure to fix: {failure}{/failure}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    awaits:
+    - activate_automation
+    output: markdown
+    limits:
+      maxTurns: 20
+      maxBudgetUsd: 1
+    appTools:
+    - name: read_automation
+      description: Read the user's automations
+      action: read
+      collection: automations
+      scope: user
+    - name: update_automation
+      description: Update an automation (steps, trigger, status)
+      action: write
+      collection: automations
+      scope: user
+    - name: log_run
+      description: Record a test or real run with status, minutes_saved and cost_credits
+      action: append
+      collection: automation_runs
+      scope: user
+    - name: hubspot_api
+      description: Call the user's HubSpot CRM API (GET)
+      action: http
+      http:
+        method: GET
+        url: https://api.hubapi.com/crm/v3/objects
+        allowPath: true
+        credential:
+          provider: hubspot
+        attribution: HubSpot API
+    - name: shop_orders
+      description: Read the user's Shopify orders (GET)
+      action: http
+      http:
+        method: GET
+        url: https://{host}/admin/api/2025-01/orders.json
+        allowPath: false
+        credential:
+          provider: shopify
+          header: X-Shopify-Access-Token
+          format: '{secret}'
+    profile:
+      inline:
+        display_name: Autowright builder
+        crews:
+        - id: builder
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You design automations for a small business. Read the automation with read_automation, then turn
+            the request into explicit steps: a trigger (schedule, webhook or form submission), actions (HTTP calls through
+            the available tools, emails, documents) and approval points before anything irreversible. Test it on sample data
+            (use the connected tools in read-only mode when the user has connected them, otherwise realistic labelled sample
+            data) and record the test with log_run (status success or failed, minutes_saved estimate, cost_credits estimate).
+            Start the report with a level-1 title "# Automation: <name>". Sections: ## Trigger, ## Steps, ## Test result,
+            ## Risks, ## Ready to switch on?. Save the steps with update_automation (status tested). Only when the test passed,
+            call request_activate_automation; the status becomes active only after the user confirms. When asked to fix a
+            failure, explain the cause and propose the corrected steps. Never invent results or figures; label sample data
+            as sample.'
+  - key: suggester
+    role: scheduled
+    description: Each week suggests new automations from what it has observed.
+    memory: instance
+    writesTo:
+      collection: suggestions
+    context:
+    - key: profile
+      from: collection:business_profile
+    - key: existing
+      from: collection:automations
+    - key: runs
+      from: collection:automation_runs
+    goalTemplate: 'Business profile: {profile}
+
+      Automations: {existing}
+
+      Recent runs: {runs}
+
+      Today is {date}. Write in the language with ISO code {lang}.'
+    profile:
+      inline:
+        display_name: Autowright weekly advisor
+        crews:
+        - id: suggester
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You review a small business''s profile, automations and run logs and suggest new automations. Start
+            with "# Suggestions — week of <date>". Sections: ## Observed, ## Suggested automations (3 at most, each with trigger,
+            steps, estimated minutes saved per week), ## Fixes worth making (failing or noisy automations). Never invent figures;
+            say when data is thin. Your memory holds past suggestions: do not repeat them. At the end call the tool remember
+            once with the key points.'
+  templates:
+  - key: weekly_advice
+    title: Weekly suggestions
+    description: Every Monday the agent suggests new automations for your business.
+    agent: suggester
+    params:
+    - name: focus
+      type: text
+      label: Focus area (optional)
+    goal: 'Weekly review "{instance}". {?focus}Focus on: {focus}.{/focus} Today is {date}. Language ISO code {lang}.'
+    schedule:
+      cron: 0 7 * * 1
+      userCanChange: true
+    maxPerUser: 1
+    cost:
+      perRun: 5
+    deliver:
+      to: owner
+      onlyIfNew: true
+  inputForm:
+    title: Build or fix an automation
+    fields:
+    - name: automation
+      type: select
+      required: true
+      label: Automation
+      optionsFrom: collection:automations
+    - name: request
+      type: textarea
+      maxLength: 1500
+      label: What should it do? (plain English)
+    - name: failure
+      type: textarea
+      maxLength: 800
+      label: Failure to fix (optional)
+  data:
+    collections:
+    - name: business_profile
+      description: The business, its tools, tasks and pain points
+      ownedBy: user
+      fields:
+      - name: business_name
+        type: text
+        label: Business name
+      - name: sector
+        type: text
+        label: Sector
+      - name: tools
+        type: textarea
+        label: Tools used
+      - name: recurring_tasks
+        type: textarea
+        label: Recurring tasks
+      - name: pain_points
+        type: textarea
+        label: Pain points
+    - name: automations
+      description: Automations owned by a user and shared with team members
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Name
+      - name: description
+        type: textarea
+        label: Description
+      - name: trigger_type
+        type: select
+        options:
+        - schedule
+        - webhook
+        - form
+        label: Trigger
+      - name: trigger_detail
+        type: text
+        label: Schedule or details
+      - name: steps
+        type: textarea
+        label: Steps
+      - name: status
+        type: select
+        options:
+        - draft
+        - tested
+        - active
+        - paused
+        default: draft
+        label: Status
+      - name: members
+        type: array
+        label: Shared with (emails)
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: automation_runs
+      description: Log of every test and real run
+      ownedBy: user
+      retentionDays: 365
+      fields:
+      - name: automation_name
+        type: text
+        label: Automation
+      - name: date
+        type: date
+        label: Date
+      - name: status
+        type: select
+        options:
+        - success
+        - failed
+        label: Status
+      - name: minutes_saved
+        type: number
+        label: Minutes saved
+      - name: cost_credits
+        type: number
+        label: Credits
+      - name: log
+        type: textarea
+        label: Log
+      - name: error
+        type: textarea
+        label: Error
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: suggestions
+      description: Weekly suggestions per watch
+      ownedBy: instance
+    credentials:
+    - provider: hubspot
+      kind: api_key
+      scope: user
+      label: HubSpot
+      help: 'HubSpot > Settings > Integrations > Private apps: create a token with CRM read scopes.'
+    - provider: shopify
+      kind: api_key
+      scope: user
+      label: Shopify
+      help: 'Shopify admin > Apps > Develop apps: create an Admin API access token with read orders.'
+      hostLabel: your-shop.myshopify.com
+  egress:
+    hosts:
+    - api.hubapi.com
+    - '*.myshopify.com'
+    notes: Users' own HubSpot and Shopify accounts with their own API keys. OAuth connections to Gmail, Slack, Notion, Xero
+      and Microsoft 365 are not available yet.
+  approvals:
+  - key: activate_automation
+    title: Switch on this automation?
+    decidedBy: requester
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: run_failed
+    'on':
+      collection: automation_runs
+      op: insert
+      where:
+        status: failed
+    notify:
+      to: owner
+      subject: 'Automation failed: {record.automation_name}'
+      body: 'An automation run failed.
+
+
+        Error: {record.error}
+
+
+        Open Autowright and ask the builder to propose a fix.'
+      link: new_run
+  notifications:
+    emailOnRunDone: true
+  views:
+  - key: home
+    type: page
+    nav: false
+    sections:
+    - type: hero
+      title: Your business, **automated** by an agent that learns it first.
+      text: Autowright interviews you about your business, proposes automations, builds and tests them, and runs them with
+        approval points, logs and failure alerts.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      note: 'Invite your team: everyone sees the automations they own or that are shared with them.'
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Interview
+        text: The agent asks about your business, tools and pain points in chat.
+      - title: Propose
+        text: 'It suggests automations: weekly sales report, lead follow-up, invoice reminders, social drafts, stock alerts.'
+      - title: Build and test
+        text: Describe it in plain English; it is tested on sample data and shown to you before it goes live.
+      - title: Run and improve
+        text: Runs are logged, failures email you with a proposed fix, and every week you get new ideas.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: Starter — 29 EUR/month
+        text: 500 credits per month.
+      - title: Business — 79 EUR/month
+        text: 2,000 credits per month.
+    - type: note
+      content: Connections use API keys per user (HubSpot, Shopify). OAuth sign-in to Gmail, Slack, Notion and Xero is not
+        available yet.
+  - key: onboarding
+    type: chat
+    title: Onboarding chat
+    source: agent:interviewer
+    examples:
+    - Let's set up my business
+    - Suggest automations for my shop
+    - I spend hours chasing invoices
+    placeholder: Tell me about your business…
+    roles:
+    - user
+    - admin
+  - key: overview
+    type: page
+    title: Dashboard
+    roles:
+    - user
+    - admin
+    sections:
+    - type: data
+      title: Totals
+      source: collection:automation_runs
+      display: kpi
+      kpis:
+      - label: Runs
+        agg: count
+      - label: Minutes saved
+        agg: sum
+        field: minutes_saved
+        format: number
+      - label: Credits spent
+        agg: sum
+        field: cost_credits
+        format: number
+    - type: data
+      title: Runs per month
+      source: collection:automation_runs
+      display: chart
+      chart: bar
+      fields:
+      - key: date
+      - key: count
+      - key: minutes_saved
+      groupBy:
+        field: date
+        bucket: month
+        aggs:
+        - key: minutes_saved
+          agg: sum
+          field: minutes_saved
+    - type: view
+      title: My automations
+      view: automations
+  - key: automations
+    type: table
+    title: Automations
+    source: collection:automations
+    columns:
+    - name
+    - trigger_type
+    - trigger_detail
+    - status
+    - members
+    export: true
+    roles:
+    - user
+    - admin
+  - key: automation_form
+    type: form
+    title: Add or share an automation
+    collection: automations
+    edit: true
+    submit:
+      label: Save
+      message: Saved.
+      redirect: automations
+    roles:
+    - user
+    - admin
+  - key: new_run
+    type: new_run
+    title: Build, test or fix
+    roles:
+    - user
+    - admin
+  - key: history
+    type: history
+    title: Builder reports
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: runs_log
+    type: table
+    title: Run log
+    source: collection:automation_runs
+    columns:
+    - date
+    - automation_name
+    - status
+    - minutes_saved
+    - cost_credits
+    - error
+    export: true
+    roles:
+    - user
+    - admin
+  - key: approvals
+    type: approvals
+    title: Approvals
+    roles:
+    - user
+    - admin
+  - key: weekly
+    type: instances
+    template: weekly_advice
+    title: Weekly suggestions
+    roles:
+    - user
+    - admin
+  - key: suggestions_list
+    type: list
+    title: Suggestions
+    source: collection:suggestions
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title: Plan and connections
+    roles:
+    - user
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:builder:
+        estimate: 10
+        metered: true
+      agent:interviewer:
+        estimate: 2
+        metered: true
+    packs:
+    - key: topup
+      credits: 500
+      price: 6
+      label: 500 credits
+    plans:
+    - key: starter
+      price: 29
+      interval: month
+      label: Starter
+      credits: 500
+      creditsReset: monthly
+    - key: business
+      price: 79
+      interval: month
+      label: Business
+      credits: 2000
+      creditsReset: monthly
+  extensions:
+  - key: oauth_connectors
+    description: OAuth per user to hundreds of SaaS tools (Gmail, Slack, Notion, Xero, Microsoft 365) is not available yet;
+      only API-key connections (HubSpot, Shopify) work. Automation steps are executed by the agent through app tools, not
+      by an always-on workflow engine.

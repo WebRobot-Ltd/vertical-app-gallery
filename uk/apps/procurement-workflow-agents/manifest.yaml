@@ -1,0 +1,1151 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: buyline
+  displayName: Buyline
+  tagline:
+    en: AI agents that take procurement from request to purchase order.
+  description:
+    en: Buyline checks every purchase request against your contracts and preferred suppliers, runs the approval chain, sources
+      quotes for non-catalogue items, recommends a supplier for the buyer to confirm and raises the purchase order. Dashboards
+      track spend, cycle time, savings and maverick spend.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12304a'
+      accent: '#0f8b8d'
+      background: '#f6f8fa'
+      foreground: '#16212c'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Buy
+      color: primary
+    - text: line
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how-it-works'
+    - label: Features
+      href: '#features'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: requester
+      label: Requester
+      assignedBy: signup
+    - key: approver
+      label: Approver
+      assignedBy: invite
+    - key: buyer
+      label: Buyer
+      assignedBy: invite
+    - key: finance
+      label: Finance
+      assignedBy: invite
+  agents:
+  - key: procure
+    role: main
+    description: Checks each request against contracts, catalogue and preferred suppliers, runs the approval chain by value
+      and category, and raises the purchase order.
+    awaits:
+    - manager_approval
+    - budget_approval
+    - finance_approval
+    profile:
+      inline:
+        display_name: Buyline procurement agent
+        crews:
+        - id: procure
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the procurement agent of an organisation. You are woken by events about one purchase request
+            (a new request, or an approval decision, or a buyer''s supplier choice). First read the request with read_requests
+            and act on its current status. Never invent contracts, suppliers or prices; use only the tools'' data.
+
+
+            NEW REQUEST (status submitted): 1) Search the catalogue (search_catalogue), read contracts (read_contracts) and
+            suppliers (read_suppliers). Decide the route: ''contract'' (an active contract covers the item), ''catalogue''
+            (a catalogue item matches) or ''rfq'' (non-catalogue). Name the preferred supplier and contract reference if any.
+            Set maverick=true when the request is for a category that has a contract or preferred supplier but the requester
+            names another route or supplier. 2) Check the cost centre budget with read_budgets (budget minus spent versus
+            est_cost) and note it. 3) Read approval_rules (read_rules) for the category and estimated value: the stages are
+            a subset of manager, budget_holder, finance, in that order. 4) Call update_request with sourcing_route, supplier,
+            contract_ref, maverick, check_summary (3-5 plain sentences), created_on (today), status ''pending_approval'',
+            approval_stage (the first stage) and approval_requested_on (today). 5) Call the matching tool: request_manager_approval,
+            request_budget_approval or request_finance_approval, with the request id, item, est_cost and cost centre.
+
+
+            APPROVAL DECISION: if rejected, update_request status ''rejected'' and check_summary with the stage that rejected.
+            If approved and a later stage is required by the rules, update_request approval_stage and approval_requested_on
+            (today) and request the next approval. If it was the last stage: for route contract or catalogue, raise the PO
+            (below); for route rfq, update_request status ''sourcing'' (another agent sends the quotes requests) and stop.
+
+
+            SUPPLIER CHOICE DECISION (buyer): if approved, read_quotes for the request and take the quote with status ''recommended''
+            (or the one the decision names), then raise the PO. If rejected, update_request status ''sourcing'' with a note
+            so the buyer can request more quotes.
+
+
+            RAISING THE PO: create_po with po_number (PO-<year>-<short id>), request_id, requester_email, supplier, item,
+            category, quantity, amount (the agreed price in GBP), currency GBP, status ''issued'', erp_status ''pending_export'',
+            created_on today. Then update_request with status ''po_raised'', po_number, final_cost, savings (est_cost minus
+            final_cost, can be negative), cycle_days (days from created_on to today). End with a short summary starting with
+            a level-1 title ''# Request <item> - <outcome>''.'
+          mcp_servers: []
+  - key: sourcer
+    role: helper
+    description: Drafts requests for quotes for non-catalogue items; the platform emails them to suppliers.
+    profile:
+      inline:
+        display_name: Buyline sourcing agent
+        crews:
+        - id: sourcer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare requests for quotes (RFQs) for one approved purchase request with no catalogue or contract
+            route. Read the request with read_requests and the suppliers with read_suppliers. Pick 3 to 5 suppliers whose
+            category matches, preferring preferred and approved ones; if fewer exist, use what exists and say so. For each
+            supplier call create_rfq with: rfq_ref (RFQ-<request id short>-<n>), request_id, supplier, supplier_email (from
+            the supplier record, never invented), item, quantity, needed_by, subject, body, status ''sent'', sent_on (today).
+            The body is a short, polite plain-text email in English: what is needed, quantity, needed-by date, delivery to
+            the organisation, what to include (unit price, total, VAT, lead time, payment terms, validity, delivery terms),
+            a reply-by date 5 working days ahead, and the instruction to reply to this email keeping the reference in the
+            subject. Never reveal the internal budget or estimated cost. Finally call update_request with status ''awaiting_quotes''.
+            Skip suppliers without an email address and list them in check_summary. End with a level-1 title ''# RFQs sent
+            - <item>'' and a list of suppliers.'
+  - key: quote_reader
+    role: helper
+    description: Reads supplier quote emails that arrive by inbound email and extracts prices and terms.
+    profile:
+      inline:
+        display_name: Buyline quote reader
+        crews:
+        - id: quote_reader
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You process one inbound email from a supplier, with the text of its attached quote documents when
+            present. Find the RFQ reference in the subject or text and match it with read_rfqs; if none matches, call create_quote
+            with status ''unmatched'' and the sender so a buyer can sort it out. Otherwise extract exactly what the document
+            states and call create_quote with: rfq_ref, request_id, supplier, unit_price, total_price (excluding VAT), vat,
+            currency, lead_time_days, payment_terms, delivery_terms, valid_until, notes (exceptions, substitutions, minimums),
+            status ''received'', received_on (today). Leave a field empty when the supplier did not state it; never guess
+            or compute a missing price. If the email is a refusal to quote, create the quote with status ''declined''. End
+            with a level-1 title ''# Quote from <supplier>'' and one line of summary.'
+    goalTemplate: 'Inbound supplier email:
+
+      {message}
+
+      Today is {date}.'
+  - key: quote_analyst
+    role: helper
+    description: Compares the supplier quotes of a request, recommends a supplier and asks the buyer to confirm.
+    awaits:
+    - supplier_choice
+    profile:
+      inline:
+        display_name: Buyline quote analyst
+        crews:
+        - id: quote_analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You compare supplier quotes for purchase requests. For the request(s) in the task: read_rfqs and
+            read_quotes for the request_id, and read_requests for the needed-by date and estimated cost. A case is ready when
+            every RFQ sent has a quote or a decline, or when at least 5 days passed since the RFQs were sent and at least
+            one valid quote exists. If it is not ready, stop without changes. If ready and not already recommended: compare
+            valid quotes on total price, lead time against the needed-by date, payment terms, delivery terms, validity, and
+            the supplier''s status in read_contracts or preferred lists. Never invent figures; flag missing terms. Mark the
+            best one with update_quote status ''recommended'' and the others ''not_selected'' (declined and unmatched stay
+            as they are). Set update_request status ''awaiting_buyer''. Then call request_supplier_choice with the request
+            id, the recommended supplier, its total, and a short rationale. Include in your final summary, starting with a
+            level-1 title ''# Quote comparison - <item>'', a table of quotes and a chart block:
+
+            ```chart
+
+            {"type":"bar","title":"Total price by supplier","labels":["A","B"],"series":[{"name":"Total (GBP)","values":[1,2]}]}
+
+            ```
+
+            using the real figures.'
+  - key: tender_scout
+    role: scheduled
+    description: Weekly search of Contracts Finder and Find a Tender for notices relevant to the organisation's categories.
+    profile:
+      inline:
+        display_name: Buyline tender scout
+        crews:
+        - id: tender_scout
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You find public-sector tender notices relevant to an organisation's procurement categories. Read
+            the categories and typical items with search_catalogue. Query Contracts Finder with contracts_finder_search (GET,
+            OCDS search; query parameters publishedFrom=<date 7 days ago, YYYY-MM-DD>, keyword=<term>, stages=tender, size=20)
+            and Find a Tender with find_tender_search (GET, OCDS release packages; query parameters updatedFrom=<YYYY-MM-DDT00:00:00>,
+            stages=tender, limit=50). Use at most 6 searches in total. Keep only open notices whose title or description matches
+            a category. For each, call save_tender with notice_id, source ('Contracts Finder' or 'Find a Tender'), title,
+            buyer, category, value, deadline, url (the notice page), published_on, summary (one sentence). Skip notices already
+            saved (check with the tool's result) and never invent fields that are missing. Cite the sources and licence in
+            your final summary, which starts with a level-1 title '# Tenders - week of <date>'.
+  data:
+    collections:
+    - name: suppliers
+      ownedBy: shared
+      description: Approved and preferred suppliers, imported by admins
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: email
+        type: email
+      - name: category
+        type: text
+      - name: preferred
+        type: boolean
+      - name: status
+        type: text
+      - name: payment_terms
+        type: text
+    - name: catalogue_items
+      ownedBy: shared
+      description: Catalogue items with agreed prices
+      searchable: true
+      fields:
+      - name: sku
+        type: text
+      - name: item
+        type: text
+        required: true
+      - name: category
+        type: text
+      - name: supplier
+        type: text
+      - name: unit_price
+        type: number
+      - name: contract_ref
+        type: text
+    - name: contracts
+      ownedBy: shared
+      description: Active supplier contracts
+      fields:
+      - name: contract_ref
+        type: text
+        required: true
+      - name: supplier
+        type: text
+      - name: category
+        type: text
+      - name: scope
+        type: textarea
+      - name: start_date
+        type: date
+      - name: end_date
+        type: date
+      - name: value_cap
+        type: number
+    - name: budgets
+      ownedBy: shared
+      description: Budgets per cost centre
+      fields:
+      - name: cost_centre
+        type: text
+        required: true
+      - name: holder_email
+        type: email
+      - name: budget
+        type: number
+      - name: spent
+        type: number
+      - name: period
+        type: text
+    - name: approval_rules
+      ownedBy: shared
+      description: Approval chain by category and value band
+      fields:
+      - name: category
+        type: text
+      - name: min_value
+        type: number
+      - name: max_value
+        type: number
+      - name: stages
+        type: text
+        help: 'Comma list in order: manager, budget_holder, finance'
+    - name: purchase_requests
+      ownedBy: org
+      description: Purchase requests raised by employees
+      access:
+      - role: requester
+        where:
+          requester_email: '{user.email}'
+        can:
+        - read
+      - role: approver
+      - role: buyer
+        can:
+        - read
+        - write
+      - role: finance
+      fields:
+      - name: requester_email
+        type: email
+        required: true
+        label: Your email
+      - name: item
+        type: text
+        required: true
+        label: Item
+      - name: category
+        type: select
+        required: true
+        label: Category
+        options:
+        - IT and software
+        - Facilities
+        - Professional services
+        - Marketing
+        - Travel and events
+        - Equipment
+        - Other
+      - name: quantity
+        type: number
+        required: true
+        label: Quantity
+      - name: est_cost
+        type: number
+        required: true
+        label: Estimated cost (GBP)
+      - name: cost_centre
+        type: select
+        required: true
+        label: Cost centre
+        optionsFrom: collection:budgets
+      - name: needed_by
+        type: date
+        required: true
+        label: Needed by
+      - name: reason
+        type: textarea
+        required: true
+        label: Reason
+      - name: status
+        type: select
+        label: Status
+        options:
+        - submitted
+        - pending_approval
+        - sourcing
+        - awaiting_quotes
+        - awaiting_buyer
+        - po_raised
+        - rejected
+      - name: sourcing_route
+        type: select
+        options:
+        - contract
+        - catalogue
+        - rfq
+      - name: supplier
+        type: text
+      - name: contract_ref
+        type: text
+      - name: maverick
+        type: boolean
+      - name: check_summary
+        type: textarea
+      - name: approval_stage
+        type: text
+      - name: approval_requested_on
+        type: date
+      - name: created_on
+        type: date
+      - name: po_number
+        type: text
+      - name: final_cost
+        type: number
+      - name: savings
+        type: number
+      - name: cycle_days
+        type: number
+    - name: rfqs
+      ownedBy: org
+      description: Requests for quotes sent to suppliers
+      access:
+      - role: buyer
+        can:
+        - read
+        - write
+      - role: finance
+      fields:
+      - name: rfq_ref
+        type: text
+      - name: request_id
+        type: text
+      - name: supplier
+        type: text
+      - name: supplier_email
+        type: email
+      - name: item
+        type: text
+      - name: quantity
+        type: number
+      - name: needed_by
+        type: date
+      - name: subject
+        type: text
+      - name: body
+        type: textarea
+      - name: status
+        type: text
+      - name: sent_on
+        type: date
+    - name: quotes
+      ownedBy: org
+      description: Supplier quotes extracted from inbound email
+      access:
+      - role: buyer
+        can:
+        - read
+        - write
+      - role: finance
+      fields:
+      - name: rfq_ref
+        type: text
+      - name: request_id
+        type: text
+      - name: supplier
+        type: text
+      - name: unit_price
+        type: number
+      - name: total_price
+        type: number
+      - name: vat
+        type: number
+      - name: currency
+        type: text
+      - name: lead_time_days
+        type: number
+      - name: payment_terms
+        type: text
+      - name: delivery_terms
+        type: text
+      - name: valid_until
+        type: date
+      - name: notes
+        type: textarea
+      - name: status
+        type: text
+      - name: received_on
+        type: date
+    - name: purchase_orders
+      ownedBy: org
+      description: Purchase orders raised, waiting for export to the ERP
+      access:
+      - role: requester
+        where:
+          requester_email: '{user.email}'
+        can:
+        - read
+      - role: approver
+      - role: buyer
+        can:
+        - read
+        - write
+      - role: finance
+        can:
+        - read
+        - write
+      fields:
+      - name: po_number
+        type: text
+      - name: request_id
+        type: text
+      - name: requester_email
+        type: email
+      - name: supplier
+        type: text
+      - name: item
+        type: text
+      - name: category
+        type: text
+      - name: quantity
+        type: number
+      - name: amount
+        type: number
+      - name: currency
+        type: text
+      - name: status
+        type: text
+      - name: erp_status
+        type: text
+      - name: created_on
+        type: date
+    - name: tenders
+      ownedBy: app
+      description: Public tender notices from Contracts Finder and Find a Tender
+      fields:
+      - name: notice_id
+        type: text
+      - name: source
+        type: text
+      - name: title
+        type: text
+      - name: buyer
+        type: text
+      - name: category
+        type: text
+      - name: value
+        type: number
+      - name: deadline
+        type: date
+      - name: url
+        type: url
+      - name: published_on
+        type: date
+      - name: summary
+        type: text
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Buyline
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: Procurement automation
+      title: From purchase request to **purchase order**, handled by AI agents.
+      text: Employees raise requests in one form. Buyline checks contracts and preferred suppliers, runs your approval chain,
+        collects and compares supplier quotes, and raises the purchase order.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how-it-works'
+        style: ghost
+    - type: steps
+      id: how-it-works
+      title: How it works
+      items:
+      - title: Raise a request
+        text: Item, quantity, estimated cost, cost centre, needed-by date and reason.
+      - title: Check and approve
+        text: The agent checks contracts, catalogue and budget, then routes approval to the manager, budget holder and finance
+          by value and category.
+      - title: Source and compare
+        text: For non-catalogue items it emails suppliers, reads the quotes that come back and recommends one.
+      - title: Confirm and order
+        text: A buyer confirms the supplier and the purchase order is raised.
+    - type: cards
+      id: features
+      title: Features
+      items:
+      - title: Approval chains
+        text: By value and category, with reminders to approvers after two days.
+        badge: ✅
+      - title: Quotes by email
+        text: Suppliers reply by email; prices and terms are extracted and compared.
+        badge: ✉️
+      - title: Dashboards
+        text: Spend by category, cycle time, savings and maverick spend.
+        badge: 📊
+      - title: Public tenders
+        text: Relevant notices from Contracts Finder and Find a Tender.
+        badge: 🏛️
+    - type: note
+      content: 'Buyline supports procurement decisions; approvers and buyers remain accountable. Tender data: Contracts Finder
+        and Find a Tender, Open Government Licence v3.0.'
+  - key: new_request
+    type: form
+    title: New purchase request
+    collection: purchase_requests
+    fields:
+    - requester_email
+    - item
+    - category
+    - quantity
+    - est_cost
+    - cost_centre
+    - needed_by
+    - reason
+    submit:
+      label: Submit request
+      message: Request submitted. Buyline is checking contracts and routing approvals.
+      redirect: my_requests
+    edit: false
+    roles:
+    - requester
+    - buyer
+    - admin
+  - key: my_requests
+    type: table
+    title: Requests
+    source: collection:purchase_requests
+    export: true
+    roles:
+    - requester
+    - approver
+    - buyer
+    - finance
+    - admin
+    data:
+      display: table
+      fields:
+      - key: item
+        label: Item
+      - key: category
+        label: Category
+      - key: quantity
+        label: Qty
+        format: number
+      - key: est_cost
+        label: Estimate
+        format: money
+      - key: cost_centre
+        label: Cost centre
+      - key: needed_by
+        label: Needed by
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      - key: approval_stage
+        label: Stage
+      - key: maverick
+        label: Maverick
+      - key: po_number
+        label: PO
+      sort:
+        field: needed_by
+        dir: asc
+      limit: 200
+  - key: approvals
+    type: approvals
+    title: Approvals
+    roles:
+    - approver
+    - buyer
+    - finance
+    - admin
+  - key: rfqs_view
+    type: table
+    title: Requests for quotes
+    source: collection:rfqs
+    roles:
+    - buyer
+    - finance
+    - admin
+    data:
+      display: table
+      fields:
+      - key: rfq_ref
+        label: Ref
+      - key: supplier
+        label: Supplier
+      - key: item
+        label: Item
+      - key: needed_by
+        label: Needed by
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      - key: sent_on
+        label: Sent
+        format: date
+      sort:
+        field: sent_on
+        dir: desc
+      limit: 200
+  - key: quotes_view
+    type: table
+    title: Supplier quotes
+    source: collection:quotes
+    roles:
+    - buyer
+    - finance
+    - admin
+    data:
+      display: table
+      fields:
+      - key: supplier
+        label: Supplier
+      - key: rfq_ref
+        label: RFQ
+      - key: total_price
+        label: Total
+        format: money
+      - key: lead_time_days
+        label: Lead time (days)
+        format: number
+      - key: payment_terms
+        label: Payment terms
+      - key: valid_until
+        label: Valid until
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: received_on
+        dir: desc
+      limit: 200
+  - key: orders
+    type: table
+    title: Purchase orders
+    source: collection:purchase_orders
+    export: true
+    roles:
+    - requester
+    - approver
+    - buyer
+    - finance
+    - admin
+    data:
+      display: table
+      fields:
+      - key: po_number
+        label: PO
+      - key: supplier
+        label: Supplier
+      - key: item
+        label: Item
+      - key: category
+        label: Category
+      - key: amount
+        label: Amount
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      - key: erp_status
+        label: ERP
+        format: badge
+      - key: created_on
+        label: Raised
+        format: date
+      sort:
+        field: created_on
+        dir: desc
+      limit: 200
+  - key: dashboard
+    type: page
+    title: Dashboards
+    roles:
+    - approver
+    - buyer
+    - finance
+    - admin
+    sections:
+    - type: data
+      title: Totals
+      source: collection:purchase_orders
+      display: kpi
+      kpis:
+      - label: Spend
+        agg: sum
+        field: amount
+        format: money
+      - label: Purchase orders
+        agg: count
+    - type: data
+      title: Cycle time and savings
+      source: collection:purchase_requests
+      display: kpi
+      kpis:
+      - label: Average cycle time (days)
+        agg: avg
+        field: cycle_days
+        format: number
+      - label: Savings
+        agg: sum
+        field: savings
+        format: money
+    - type: data
+      title: Spend by category
+      source: collection:purchase_orders
+      display: chart
+      chart: bar
+      fields:
+      - key: category
+        label: Category
+      - key: total
+        label: Spend
+      groupBy:
+        field: category
+        aggs:
+        - key: total
+          agg: sum
+          field: amount
+    - type: data
+      title: Cycle time by month
+      source: collection:purchase_requests
+      display: chart
+      chart: line
+      fields:
+      - key: created_on
+        label: Month
+      - key: avg_days
+        label: Average days
+      groupBy:
+        field: created_on
+        bucket: month
+        aggs:
+        - key: avg_days
+          agg: avg
+          field: cycle_days
+    - type: data
+      title: Savings by month
+      source: collection:purchase_requests
+      display: chart
+      chart: bar
+      fields:
+      - key: created_on
+        label: Month
+      - key: saved
+        label: Savings
+      groupBy:
+        field: created_on
+        bucket: month
+        aggs:
+        - key: saved
+          agg: sum
+          field: savings
+    - type: data
+      title: Maverick spend by category
+      intro: Requests bought outside a contract or preferred supplier.
+      source: collection:purchase_requests
+      display: chart
+      chart: bar
+      filters:
+      - field: maverick
+        op: '='
+        value: true
+      fields:
+      - key: category
+        label: Category
+      - key: spend
+        label: Estimated spend
+      groupBy:
+        field: category
+        aggs:
+        - key: spend
+          agg: sum
+          field: est_cost
+  - key: tenders_view
+    type: table
+    title: Public tenders
+    source: collection:tenders
+    roles:
+    - buyer
+    - finance
+    - approver
+    - admin
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Title
+      - key: buyer
+        label: Buyer
+      - key: category
+        label: Category
+      - key: value
+        label: Value
+        format: money
+      - key: deadline
+        label: Deadline
+        format: date
+      - key: source
+        label: Source
+        format: badge
+      - key: url
+        label: Notice
+        format: link
+      sort:
+        field: deadline
+        dir: asc
+      limit: 100
+  - key: account
+    type: account
+    title: Plan
+    roles:
+    - admin
+  approvals:
+  - key: manager_approval
+    title: Manager approval
+    role: approver
+    decidedBy: role
+    fields:
+    - item
+    - est_cost
+    - cost_centre
+    timeoutMinutes: 10080
+  - key: budget_approval
+    title: Budget holder approval
+    role: approver
+    decidedBy: role
+    fields:
+    - item
+    - est_cost
+    - cost_centre
+    timeoutMinutes: 10080
+  - key: finance_approval
+    title: Finance approval
+    role: finance
+    decidedBy: role
+    fields:
+    - item
+    - est_cost
+    - cost_centre
+    timeoutMinutes: 10080
+  - key: supplier_choice
+    title: Confirm supplier
+    role: buyer
+    decidedBy: role
+    fields:
+    - item
+    - supplier
+    - total
+    - rationale
+    timeoutMinutes: 10080
+  triggers:
+  - key: new_request
+    'on':
+      collection: purchase_requests
+      op: insert
+    start:
+      agent: procure
+    asUser: false
+    goal: 'A new purchase request was submitted: {event}. Today is {date}. Check it and start the approval chain.'
+  - key: manager_decided
+    'on':
+      approval: manager_approval
+      decision: any
+    start:
+      agent: procure
+    asUser: false
+    goal: 'The manager approval was decided: {event}. Today is {date}. Continue the request.'
+  - key: budget_decided
+    'on':
+      approval: budget_approval
+      decision: any
+    start:
+      agent: procure
+    asUser: false
+    goal: 'The budget holder approval was decided: {event}. Today is {date}. Continue the request.'
+  - key: finance_decided
+    'on':
+      approval: finance_approval
+      decision: any
+    start:
+      agent: procure
+    asUser: false
+    goal: 'The finance approval was decided: {event}. Today is {date}. Continue the request.'
+  - key: supplier_decided
+    'on':
+      approval: supplier_choice
+      decision: any
+    start:
+      agent: procure
+    asUser: false
+    goal: 'The buyer decided the supplier choice: {event}. Today is {date}. Raise the purchase order if approved.'
+  - key: start_sourcing
+    'on':
+      collection: purchase_requests
+      op: update
+      where:
+        status: sourcing
+    start:
+      agent: sourcer
+    asUser: false
+    goal: Prepare the requests for quotes for request {record.item} (id in {event}). Today is {date}.
+  - key: send_rfq
+    'on':
+      collection: rfqs
+      op: insert
+    notify:
+      to: record.supplier_email
+      subject: '{record.subject}'
+      body: '{record.body}'
+  - key: quote_arrived
+    'on':
+      collection: quotes
+      op: insert
+    start:
+      agent: quote_analyst
+    asUser: false
+    goal: 'A quote was recorded: {event}. Check whether the case for its request_id is ready to compare. Today is {date}.'
+  - key: po_raised_notice
+    'on':
+      collection: purchase_requests
+      op: update
+      where:
+        status: po_raised
+    notify:
+      to:
+      - record.requester_email
+      - role:finance
+      subject: Purchase order {record.po_number} raised for {record.item}
+      body: Your request for {record.item} has been approved and purchase order {record.po_number} was raised.
+      link: orders
+  - key: rejected_notice
+    'on':
+      collection: purchase_requests
+      op: update
+      where:
+        status: rejected
+    notify:
+      to: record.requester_email
+      subject: Request for {record.item} was rejected
+      body: 'Your purchase request for {record.item} was rejected. Details: {record.check_summary}'
+      link: my_requests
+  - key: approval_reminder
+    'on':
+      date:
+        collection: purchase_requests
+        field: approval_requested_on
+        offsetDays: 2
+        hour: 8
+      where:
+        status: pending_approval
+    notify:
+      to:
+      - role:approver
+      - role:finance
+      subject: 'Reminder: approval pending for {record.item}'
+      body: 'The request for {record.item} ({record.est_cost} GBP, cost centre {record.cost_centre}) has been waiting two
+        days at the stage: {record.approval_stage}. Please decide in Buyline.'
+      link: approvals
+  schedules:
+  - agent: tender_scout
+    cron: 0 6 * * 1
+    action: run
+    owner: app
+    goal: Find new public tenders from the last 7 days relevant to our categories and save them. Today is {date}.
+  - agent: quote_analyst
+    cron: 0 8 * * 1-5
+    action: run
+    owner: app
+    goal: Review the RFQs sent more than 5 days ago whose request is still awaiting quotes, and compare the quotes for each
+      that is ready. Today is {date}.
+  channels:
+  - key: quotes_mailbox
+    type: email
+    agent: quote_reader
+  egress:
+    hosts:
+    - www.contractsfinder.service.gov.uk
+    - www.find-tender.service.gov.uk
+    notes: Contracts Finder and Find a Tender official OCDS APIs; notices are published under the Open Government Licence
+      v3.0, reuse including commercial is allowed with attribution.
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: platform
+      price: 2000
+      interval: month
+      label: Buyline from £2,000 a month
+      includes:
+      - All procurement agents
+      - Approval chains and reminders
+      - Quotes by email
+      - Dashboards
+      - Public tender feed
+      roles:
+      - admin
+  extensions:
+  - key: erp_oauth_connectors
+    description: Writing purchase orders into the customer's ERP and procure-to-pay systems through OAuth connectors is not
+      available yet. Purchase orders are saved with erp_status pending_export and can be exported as CSV from the orders view.
+  - key: organisation_onboarding
+    description: Each organisation runs its own deployment; its admins import suppliers, catalogues, contracts, budgets and
+      approval rules on the data page (CSV). Self-serve multi-organisation signup is not part of this manifest.
+  - key: inbound_email_address
+    description: The inbound quotes mailbox address is assigned when the email channel is activated; attachment text extraction
+      depends on the channel.

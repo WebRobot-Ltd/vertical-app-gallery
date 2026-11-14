@@ -1,0 +1,1031 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: gridscout
+  displayName: Gridscout
+  tagline:
+    en: Find spare grid capacity for 1–5 MW projects, and connect.
+  description:
+    en: A map of spare electricity grid capacity by substation, built from open data of the distribution network operators
+      and NESO, with saved sites, alerts, a connection-process guide and board-ready PDF packs.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#0b2540'
+      accent: '#e8a200'
+      background: '#f6f8fa'
+      foreground: '#10202e'
+    fonts:
+      body: Inter
+      display: Space Grotesk
+    wordmark:
+    - text: Grid
+      color: primary
+    - text: scout
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    - label: Sources
+      href: '#sources'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    public: false
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: User
+      assignedBy: signup
+  limits:
+  - action: run
+    per: user
+    max: 20
+    window: day
+    roles:
+    - user
+  - action: create:saved_sites
+    max: 1
+    window: total
+    plans:
+      pro: 200
+      team: -1
+  agents:
+  - key: ingest_dno
+    role: scheduled
+    description: Ingests the distribution network operators' open data portals (headroom by substation).
+    profile:
+      inline:
+        display_name: Gridscout DNO ingester
+        crews:
+        - id: ingest_dno
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You ingest the open data portals of the UK electricity distribution network operators (UK Power
+            Networks, National Grid Electricity Distribution, Northern Powergrid, Electricity North West, SP Energy Networks,
+            SSEN) for demand headroom by substation (primary/BSP/grid supply points), constraint flags and connection queue
+            status. Use the WebRobot MCP to fetch and, where needed, build and run pipelines; never write code yourself. For
+            EACH operator: (1) find the dataset page and read its licence. Ingest only if the licence allows reuse (OGL, CC
+            BY, CC0 or equivalent); otherwise record status blocked_licence and skip the data. (2) Normalise every substation
+            to: id (operator-code-slug, stable), name, operator, voltage_kv, lat, lon (WGS84; convert from easting/northing
+            if needed), postcode if given, headroom_mw (demand headroom), constraint_level (none|low|medium|high), constraint
+            (short text), queue_mw, queue_status, source, source_licence, updated_at (date of the source data). Save each
+            with write_substation (keyed by id; update only fields the source provides). Never invent or estimate figures:
+            leave a field empty when the source has none. (3) Always finish each operator by calling write_status with source
+            (operator slug), operator, url, licence, status (ok|failed|blocked_licence), last_run (today), last_success (today
+            if ok, else keep previous), rows (number saved), error (plain text if failed, e.g. format changed, portal down,
+            columns missing). A failure of one operator must not stop the others. Finish with a short markdown summary starting
+            with ''# DNO ingestion <date>'' and a table of operators, status and rows.'
+    appTools:
+    - name: write_substation
+      description: Create or update a substation record
+      action: write
+      collection: substations
+      scope: all
+    - name: write_status
+      description: Create or update the ingestion status of a source
+      action: write
+      collection: source_status
+      scope: all
+    - name: read_status
+      description: Read the ingestion status records
+      action: read
+      collection: source_status
+      scope: all
+    goalTemplate: Run today's ingestion of all distribution network operator portals. Today is {date}.
+    output: markdown
+    limits:
+      maxTurns: 60
+      maxBudgetUsd: 3
+      timeoutSeconds: 3000
+  - key: ingest_registers
+    role: scheduled
+    description: Ingests the embedded capacity registers (generation and storage already connected or contracted, which reduces
+      headroom).
+    profile:
+      inline:
+        display_name: Gridscout embedded register ingester
+        crews:
+        - id: ingest_registers
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You ingest the embedded capacity registers published by the UK distribution network operators (connected
+            and accepted-to-connect generation, storage and demand with their substation). Use the WebRobot MCP; never write
+            code. Check each register''s licence first: reuse must be allowed (OGL, CC BY, CC0 or equivalent), else record
+            blocked_licence and skip. For each substation already present (use search_substations) or named in the register,
+            sum the contracted embedded MW and the accepted-not-yet-connected MW, and update the substation with queue_mw,
+            queue_status (e.g. ''N projects accepted, X MW pending'') and the source and source_licence via write_substation
+            (keep id stable: operator-code-slug). Never invent figures; leave empty what the source lacks. Finish each register
+            with write_status (source slug like ''ecr-<operator>'', operator, url, licence, status ok|failed|blocked_licence,
+            last_run, last_success, rows, error). One failure must not stop the others. End with a short markdown summary
+            starting ''# Register ingestion <date>''.'
+    appTools:
+    - name: write_substation
+      description: Create or update a substation record
+      action: write
+      collection: substations
+      scope: all
+    - name: write_status
+      description: Create or update the ingestion status of a source
+      action: write
+      collection: source_status
+      scope: all
+    - name: search_substations
+      description: Search substations
+      action: search
+      collection: substations
+      scope: all
+    goalTemplate: Run the weekly ingestion of the embedded capacity registers. Today is {date}.
+    output: markdown
+    limits:
+      maxTurns: 60
+      maxBudgetUsd: 3
+      timeoutSeconds: 3000
+  - key: ingest_neso
+    role: scheduled
+    description: Ingests the NESO data portal (transmission-distribution interface, connection queue and reform data).
+    profile:
+      inline:
+        display_name: Gridscout NESO ingester
+        crews:
+        - id: ingest_neso
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 50
+          max_budget_usd: 2.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You ingest the NESO data portal datasets useful for siting 1–5 MW demand: the transmission-distribution
+            interface / grid supply point headroom and the connections queue / reform status (Gate 2 to Whole Queue outcomes)
+            where published. Use the WebRobot MCP; never write code. Read each dataset''s licence first (NESO open data licence
+            / OGL): ingest only if reuse is allowed, else record blocked_licence. Match records to substations (search_substations;
+            match by grid supply point name or coordinates) and update headroom_mw, constraint_level, constraint, queue_status,
+            source and source_licence with write_substation; create a new substation only when the source gives coordinates.
+            Never invent figures. Finish each dataset with write_status (source slug ''neso-<dataset>'', operator ''NESO'',
+            url, licence, status ok|failed|blocked_licence, last_run, last_success, rows, error). End with a markdown summary
+            starting ''# NESO ingestion <date>''.'
+    appTools:
+    - name: write_substation
+      description: Create or update a substation record
+      action: write
+      collection: substations
+      scope: all
+    - name: write_status
+      description: Create or update the ingestion status of a source
+      action: write
+      collection: source_status
+      scope: all
+    - name: search_substations
+      description: Search substations
+      action: search
+      collection: substations
+      scope: all
+    goalTemplate: Run today's ingestion of the NESO data portal. Today is {date}.
+    output: markdown
+    limits:
+      maxTurns: 50
+      maxBudgetUsd: 2.5
+      timeoutSeconds: 2700
+  - key: finder
+    role: main
+    when: task == 'find'
+    description: Shortlists substations near a postcode by capacity, voltage and distance.
+    profile:
+      inline:
+        display_name: Gridscout site finder
+        crews:
+        - id: finder
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You help developers of 1–5 MW demand projects (EV hubs, heat networks, data centres) find substations
+            with spare capacity. Steps: look up the postcode with postcode_lookup (path = the postcode without spaces) to
+            get latitude/longitude; call search_substations for substations; keep those within the radius (compute distance
+            from coordinates, state it in km), above the minimum headroom and matching the voltage filter. Rank by headroom,
+            then distance. Output starts with ''# Site shortlist — <postcode>''. Then a table (substation, operator, voltage
+            kV, headroom MW, distance km, constraint, queue status, data date), then ## Constraints to check and ## Next steps.
+            Add a ```chart block (bar, headroom by substation) when 3+ results. Use only data from the tools and say when
+            headroom is missing or old; never invent figures. Headroom is indicative, not a connection offer.'
+    appTools:
+    - name: postcode_lookup
+      description: Look up a UK postcode (coordinates)
+      action: http
+      http:
+        method: GET
+        url: https://api.postcodes.io/postcodes
+        allowPath: true
+        attribution: postcodes.io, contains OS data © Crown copyright
+    - name: search_substations
+      description: Search substations
+      action: search
+      collection: substations
+      scope: all
+    goalTemplate: 'Find sites near postcode {postcode}, within {radius_km} km.
+
+      {?min_mw}Minimum headroom: {min_mw} MW.{/min_mw}
+
+      {?voltage_label}Voltage: {voltage_label}.{/voltage_label}
+
+      Today is {date}. Write in language {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.6
+  - key: explainer
+    role: main
+    when: task == 'explain'
+    description: Explains the connection process and current queue reform rules for a chosen site.
+    profile:
+      inline:
+        display_name: Gridscout connection guide
+        crews:
+        - id: explainer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You explain how to get a 1–5 MW demand connection at a given substation in Great Britain. Read the
+            substation with search_substations (operator, voltage, headroom, constraints, queue). Then use the WebRobot MCP
+            to read the operator''s own connections pages and Ofgem/NESO pages on the CURRENT connection reform (Gate 2 /
+            Whole Queue, demand connections, queue management, any new rules for demand and the transitions in force today);
+            cite each page you used with its URL and date. Output starts with ''# Connection route — <substation>''. Sections:
+            ## Where this site stands, ## Steps (application, budget estimate vs full quote, acceptance, design, construction,
+            with typical stages and who does what), ## Current queue reform rules and how they affect a demand project of
+            this size, ## Risks and what to ask the operator, ## Sources. Say clearly when a rule is uncertain or you could
+            not verify it. Never invent timelines, costs or rules; this is guidance, not legal or engineering advice.'
+    appTools:
+    - name: search_substations
+      description: Search substations
+      action: search
+      collection: substations
+      scope: all
+    goalTemplate: 'Explain the connection process for substation {substation}.
+
+      {?target_mw}Project size: {target_mw} MW.{/target_mw}
+
+      {?notes}Project notes: {notes}{/notes}
+
+      Today is {date}. Write in language {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 1
+  - key: packager
+    role: main
+    when: task == 'pack'
+    description: Builds a printable board pack from the user's saved sites.
+    profile:
+      inline:
+        display_name: Gridscout board pack writer
+        crews:
+        - id: packager
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write a board-ready site shortlist pack. Read the user''s saved sites with my_sites (include
+            their notes and target MW), and for each find its substation and the nearest other substations (within about 10
+            km) with search_substations. Output starts with ''# <pack title>''. Then ## Summary (one table: site, substation,
+            headroom MW, target MW, constraint level, queue status, recommendation), a ```chart block (bar, headroom vs target
+            per site), then one section per site with capacity, constraints, queue status, nearby connections (name, distance
+            km, headroom, voltage) and the user''s notes, and finally ## Caveats (data dates and sources, headroom is indicative,
+            not a connection offer). Use only tool data; never invent figures; flag stale or missing data. Under 900 words
+            plus tables.'
+    appTools:
+    - name: my_sites
+      description: Read the user's saved sites
+      action: read
+      collection: saved_sites
+      scope: user
+    - name: search_substations
+      description: Search substations
+      action: search
+      collection: substations
+      scope: all
+    goalTemplate: Build the board pack titled "{pack_title}" from my saved sites. Today is {date}. Write in language {lang}.
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 1
+  - key: watcher
+    role: helper
+    description: Watches substations near one saved site and reports changes in capacity or queue status.
+    memory: instance
+    writesTo:
+      collection: site_alerts
+    profile:
+      inline:
+        display_name: Gridscout site watcher
+        crews:
+        - id: watcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You watch the grid near one site. Search substations with search_substations, keep those within
+            the radius of the site''s coordinates, and compare them with your memory (the headroom, constraint level and queue
+            status you saw last time). Output starts with ''# <site> — grid update <date>''. Sections: ## What changed (substation,
+            field, before, after), ## Nearby now (short table). If nothing changed, write exactly ''# <site> — no change''
+            and one line. Never invent figures. At the end call remember once with the compact current state (substation id,
+            headroom_mw, constraint_level, queue_status for each nearby substation); it replaces the old one. On the first
+            run just record the baseline and say so.'
+    appTools:
+    - name: search_substations
+      description: Search substations
+      action: search
+      collection: substations
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.4
+  inputForm:
+    title: What do you need?
+    fields:
+    - name: task
+      type: select
+      required: true
+      label: Task
+      default: find
+      options:
+      - value: find
+        label: Find sites near a postcode
+      - value: explain
+        label: Explain the connection process for a substation
+      - value: pack
+        label: Export my saved sites as a PDF board pack
+    - name: postcode
+      type: text
+      label: Postcode
+      visibleWhen: task == 'find'
+      help: e.g. M1 1AE
+    - name: radius_km
+      type: number
+      label: Radius (km)
+      default: 10
+      visibleWhen: task == 'find'
+    - name: min_mw
+      type: number
+      label: Minimum headroom (MW)
+      default: 1
+      visibleWhen: task == 'find'
+    - name: voltage
+      type: select
+      label: Voltage
+      default: any
+      visibleWhen: task == 'find'
+      options:
+      - value: any
+        label: Any
+      - value: '11'
+        label: 11 kV
+      - value: '33'
+        label: 33 kV
+      - value: '66'
+        label: 66 kV
+      - value: '132'
+        label: 132 kV
+    - name: substation
+      type: select
+      label: Substation
+      optionsFrom: collection:substations
+      visibleWhen: task == 'explain'
+    - name: target_mw
+      type: number
+      label: Project size (MW)
+      visibleWhen: task == 'explain'
+    - name: notes
+      type: textarea
+      maxLength: 500
+      label: Project notes (optional)
+      visibleWhen: task == 'explain'
+    - name: pack_title
+      type: text
+      label: Pack title
+      default: Site shortlist
+      visibleWhen: task == 'pack'
+  data:
+    collections:
+    - name: substations
+      ownedBy: app
+      description: Headroom, constraints and queue status by substation, written by the ingestion agents
+      fields:
+      - name: id
+        type: text
+        label: ID
+      - name: name
+        type: text
+        label: Substation
+      - name: operator
+        type: text
+        label: Operator
+      - name: voltage_kv
+        type: number
+        label: Voltage (kV)
+      - name: lat
+        type: number
+        label: Latitude
+      - name: lon
+        type: number
+        label: Longitude
+      - name: postcode
+        type: text
+        label: Postcode
+      - name: headroom_mw
+        type: number
+        label: Headroom (MW)
+      - name: constraint_level
+        type: select
+        label: Constraint
+        options:
+        - value: none
+          label: None
+        - value: low
+          label: Low
+        - value: medium
+          label: Medium
+        - value: high
+          label: High
+      - name: constraint
+        type: text
+        label: Constraint detail
+      - name: queue_mw
+        type: number
+        label: Queue (MW)
+      - name: queue_status
+        type: text
+        label: Queue status
+      - name: source
+        type: text
+        label: Source
+      - name: source_licence
+        type: text
+        label: Licence
+      - name: updated_at
+        type: date
+        label: Data date
+      searchable: true
+    - name: source_status
+      ownedBy: app
+      description: Last update and health of each ingested source
+      fields:
+      - name: source
+        type: text
+        label: Source
+      - name: operator
+        type: text
+        label: Operator
+      - name: url
+        type: url
+        label: URL
+      - name: licence
+        type: text
+        label: Licence
+      - name: status
+        type: select
+        label: Status
+        options:
+        - value: ok
+          label: OK
+        - value: failed
+          label: Failed
+        - value: blocked_licence
+          label: 'Blocked: licence'
+      - name: last_run
+        type: date
+        label: Last run
+      - name: last_success
+        type: date
+        label: Last success
+      - name: rows
+        type: number
+        label: Rows
+      - name: error
+        type: text
+        label: Error
+    - name: saved_sites
+      ownedBy: user
+      description: Sites saved by users, with notes; teams share them through members
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Site name
+      - name: location
+        type: location
+        label: Position
+      - name: postcode
+        type: text
+        label: Postcode
+      - name: target_mw
+        type: number
+        label: Target (MW)
+      - name: substation
+        type: text
+        label: Nearest substation
+      - name: notes
+        type: textarea
+        label: Notes
+      - name: members
+        type: array
+        label: Team members' emails
+        help: Teammates (team plan) who can see and edit this site
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: site_alerts
+      ownedBy: instance
+      description: Changes found near each watched site
+      retentionDays: 365
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Gridscout
+    sections:
+    - type: hero
+      band: true
+      eyebrow: Grid capacity intelligence
+      title: Find **spare grid capacity** for your 1–5 MW project.
+      text: Gridscout maps headroom, constraints and connection queues by substation, from the open data of the distribution
+        network operators and NESO, so EV hubs, heat networks and data centres can find sites and connect.
+      actions:
+      - label: Open the map
+        href: /login
+        style: primary
+      - label: See pricing
+        href: '#pricing'
+        style: ghost
+      note: Viewing the map is free.
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: We ingest the open data
+        text: Scheduled agents read operator portals, embedded capacity registers and the NESO portal every day, checking
+          each licence.
+        badge: 📥
+      - title: Search and filter
+        text: Search by postcode, filter by capacity, voltage and distance, and see substations and constraints on the map.
+        badge: 🗺️
+      - title: Save, watch, connect
+        text: Save sites with notes, get emailed when capacity or queue status changes nearby, and read the connection route
+          including current queue reform rules.
+        badge: 🔔
+      - title: Take it to the board
+        text: Export your shortlist as a PDF pack with capacity, constraints and nearby connections.
+        badge: 📄
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: Free
+        text: Map, substation table and site finder.
+        badge: £0
+      - title: Pro
+        text: Saved sites with notes, alerts by email, connection guide and PDF packs.
+        badge: £79/mo
+      - title: Team
+        text: Everything in Pro with shared sites for your team.
+        badge: £249/mo
+    - type: cards
+      id: sources
+      title: Sources
+      items:
+      - title: Distribution network operators
+        text: Open data portals of the GB DNOs, used where the licence allows reuse.
+      - title: Embedded capacity registers
+        text: Connected and accepted generation and storage that use up headroom.
+      - title: NESO data portal
+        text: Grid supply point and connection queue data. Each source shows its licence and last update.
+    - type: note
+      content: Headroom figures are indicative, come from public data that may be out of date, and are not a connection offer.
+        Always confirm with the network operator.
+  - key: map
+    type: map
+    title: Map
+    source: collection:substations
+    map:
+      lat: lat
+      lon: lon
+      title: name
+      popup:
+      - operator
+      - voltage_kv
+      - headroom_mw
+      - constraint
+      - queue_status
+      - updated_at
+    roles:
+    - user
+    - admin
+  - key: substations
+    type: table
+    title: Substations
+    source: collection:substations
+    export: true
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Substation
+      - key: operator
+        label: Operator
+      - key: voltage_kv
+        label: kV
+        format: number
+      - key: headroom_mw
+        label: Headroom MW
+        format: number
+      - key: constraint_level
+        label: Constraint
+        format: badge
+      - key: queue_status
+        label: Queue
+      - key: updated_at
+        label: Data date
+        format: date
+      sort:
+        field: headroom_mw
+        dir: desc
+      limit: 200
+      actions:
+      - type: directions
+        label: Directions
+        field: postcode
+    roles:
+    - user
+    - admin
+  - key: new_run
+    type: new_run
+    title: Finder, guide and packs
+    roles:
+    - user
+    - admin
+  - key: history
+    type: history
+    title: My results
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: add_site
+    type: form
+    title: Save a site
+    collection: saved_sites
+    edit: true
+    submit:
+      label: Save site
+      message: Site saved.
+      redirect: my_sites
+    roles:
+    - user
+    - admin
+  - key: my_sites
+    type: table
+    title: My sites
+    source: collection:saved_sites
+    export: true
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Site
+      - key: postcode
+        label: Postcode
+      - key: target_mw
+        label: Target MW
+        format: number
+      - key: substation
+        label: Substation
+      - key: notes
+        label: Notes
+      actions:
+      - type: directions
+        label: Directions
+        field: location
+    roles:
+    - user
+    - admin
+  - key: watches
+    type: instances
+    template: site_watch
+    title: Alerts
+    roles:
+    - user
+    - admin
+  - key: alerts_feed
+    type: table
+    title: Recent changes
+    source: collection:site_alerts
+    data:
+      display: list
+      fields:
+      - key: title
+        label: Update
+      - key: createdAt
+        label: Date
+        format: date
+      sort:
+        field: createdAt
+        dir: desc
+      limit: 50
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title: Plan
+    roles:
+    - user
+  - key: admin
+    type: tabs
+    title: Admin
+    children:
+    - ingestion
+    - admin_users
+    roles:
+    - admin
+  - key: ingestion
+    type: table
+    title: Source health
+    source: collection:source_status
+    data:
+      display: table
+      fields:
+      - key: source
+        label: Source
+      - key: operator
+        label: Operator
+      - key: status
+        label: Status
+        format: badge
+      - key: last_success
+        label: Last success
+        format: date
+      - key: last_run
+        label: Last run
+        format: date
+      - key: rows
+        label: Rows
+        format: number
+      - key: licence
+        label: Licence
+      - key: error
+        label: Error
+      sort:
+        field: last_run
+        dir: desc
+      limit: 100
+    roles:
+    - admin
+    nav: false
+  - key: admin_users
+    type: admin
+    title: Users
+    roles:
+    - admin
+    nav: false
+  schedules:
+  - agent: ingest_dno
+    cron: 0 3 * * *
+    action: run
+    owner: app
+    goal: Run today's ingestion of all distribution network operator portals.
+  - agent: ingest_registers
+    cron: 0 4 * * 1
+    action: run
+    owner: app
+    goal: Run the weekly ingestion of the embedded capacity registers.
+  - agent: ingest_neso
+    cron: 30 4 * * *
+    action: run
+    owner: app
+    goal: Run today's ingestion of the NESO data portal.
+  templates:
+  - key: site_watch
+    title: Site alert
+    description: Emails you when capacity or connection queue status changes near a site.
+    agent: watcher
+    params:
+    - name: site
+      type: text
+      required: true
+      label: Site name
+    - name: location
+      type: location
+      required: true
+      label: Site position
+    - name: radius_km
+      type: number
+      default: 5
+      label: Radius (km)
+    goal: 'Watch "{instance}": site {site} at coordinates {location}, radius {radius_km} km. Today is {date}.'
+    schedule:
+      cron: 0 6 * * *
+      userCanChange: false
+    maxPerUser: 20
+    deliver:
+      to: owner
+      onlyIfNew: true
+      subject: 'Gridscout: {title}'
+  triggers:
+  - key: source_failed
+    description: Tell the admins when an ingestion fails
+    'on':
+      collection: source_status
+      op: any
+      where:
+        status: failed
+    notify:
+      to: admins
+      subject: 'Gridscout ingestion failed: {record.source}'
+      body: 'The source {record.source} ({record.operator}) failed on {record.last_run}.
+
+
+        {record.error}
+
+
+        Last success: {record.last_success}.'
+      link: ingestion
+  - key: source_blocked
+    'on':
+      collection: source_status
+      op: any
+      where:
+        status: blocked_licence
+    notify:
+      to: admins
+      subject: 'Gridscout: licence blocks {record.source}'
+      body: 'The source {record.source} was skipped because its licence does not allow reuse: {record.licence}.'
+      link: ingestion
+  notifications:
+    emailOnRunDone: true
+  egress:
+    hosts:
+    - api.postcodes.io
+    notes: Postcode to coordinates lookup, postcodes.io (open data; contains OS data © Crown copyright). Operator and NESO
+      portals are read by the agents through the WebRobot MCP, each only after its licence is checked.
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: pro
+      price: 79
+      interval: month
+      label: Pro
+      includes:
+      - saved sites and notes
+      - email alerts
+      - connection guide
+      - PDF board packs
+    - key: team
+      price: 249
+      interval: month
+      label: Team
+      includes:
+      - everything in Pro
+      - shared sites for the team
+    costs:
+      agent:packager:
+        requiresPlan: pro
+      agent:explainer:
+        requiresPlan: pro
+  extensions:
+  - key: draw_area_filters
+    description: Drawing an area on the map and live interactive filters (capacity, voltage, distance) on the map itself are
+      not available yet. The site finder (postcode, radius, minimum MW, voltage) and the substations table cover the search
+      for now.
+  - key: plan_gating
+    description: 'Alerts and saved sites are meant for paid plans only: saved sites are limited by plan (1 free, 200 Pro,
+      unlimited Team); gating alert instances and making the Team plan also pass the Pro requirement for the guide and packs
+      must be checked by the owner. Seat management for teams is done by listing members'' emails on each site.'
+  - key: pdf_pack
+    description: The PDF pack is the printable report page (browser Save as PDF).

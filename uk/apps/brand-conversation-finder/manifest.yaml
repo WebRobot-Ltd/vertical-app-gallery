@@ -1,0 +1,816 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: chatterscope
+  displayName: Chatterscope
+  tagline:
+    en: Find the conversations your brand should join, and draft what to say.
+  description:
+    en: Daily monitors scan the web, news, forums and (through official paid APIs) X, TikTok and Reddit. Chatterscope scores
+      each conversation, drafts replies in your brand voice, and nothing goes out without a human approval.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#1d2b4f'
+      accent: '#e4572e'
+      background: '#f7f8fb'
+      foreground: '#17202e'
+    fonts:
+      body: Inter
+      display: Sora
+    wordmark:
+    - text: Chatter
+      color: primary
+    - text: scope
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Channels
+      href: '#channels'
+    cta:
+      label: Start
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: Brand owner
+      assignedBy: signup
+    - key: editor
+      label: Editor
+      assignedBy: invite
+    - key: viewer
+      label: Viewer
+      assignedBy: invite
+  limits:
+  - action: agent:drafter
+    per: user
+    max: 40
+    window: day
+    roles:
+    - user
+    - editor
+  egress:
+    hosts:
+    - api.x.com
+    - oauth.reddit.com
+    - open.tiktokapis.com
+    notes: X, Reddit and TikTok are read only through their official paid APIs, with keys held by the app owner, under each
+      platform's developer terms. Other web sources are reached by search and by crawling only sites whose robots rules allow
+      it.
+  agents:
+  - key: monitor
+    role: scheduled
+    description: Daily scan of the public web and official social APIs for one brand.
+    memory: instance
+    profile:
+      inline:
+        display_name: Chatterscope monitor
+        crews:
+        - id: monitor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are a social listening analyst for one brand. Its profile (products, audience, tone, topics
+            to follow, topics to avoid, team members) is in your context as {profile}. Find recent (last 48h) public conversations
+            worth joining: use web search and news for the open web; crawl a site only if its robots rules allow it; read
+            X, Reddit and TikTok ONLY through the tools x_search, reddit_search and tiktok_search (official APIs), never by
+            scraping them. Skip topics the brand avoids and conversations you already recorded (use list_conversations to
+            check). For each conversation call add_conversation with: date (today, YYYY-MM-DD), channel (web|news|forum|x|reddit|tiktok),
+            source (site or account), link, topic (one of the brand''s topics or a short new one), sentiment (positive|neutral|negative),
+            relevance (0-100 integer), competitor (name if a competitor is mentioned, else empty), question (true if someone
+            asks an open question), why (2-3 sentences: why the brand should take part, and risks), status ("new" if relevance
+            >= 70, else "skip"), members (copy the brand''s members list). Never invent links or quotes; record only what
+            you actually saw. Finish with a short markdown summary starting with a level-1 title "# Monitor — <brand> — <date>".
+            Call remember with the 5 key points so tomorrow you avoid repeats.'
+    appTools:
+    - name: add_conversation
+      description: Record a conversation found
+      action: append
+      collection: conversations
+      scope: user
+    - name: list_conversations
+      description: List conversations already recorded
+      action: read
+      collection: conversations
+      scope: user
+    - name: x_search
+      description: Search recent posts on X (official API v2)
+      action: http
+      http:
+        method: GET
+        url: https://api.x.com/2/tweets/search/recent
+        attribution: X API
+        credential:
+          provider: x_api
+    - name: reddit_search
+      description: Search Reddit (official API)
+      action: http
+      http:
+        method: GET
+        url: https://oauth.reddit.com/search
+        attribution: Reddit API
+        credential:
+          provider: reddit_api
+    - name: tiktok_search
+      description: Search TikTok videos (official Research/Display API)
+      action: http
+      http:
+        method: POST
+        url: https://open.tiktokapis.com/v2/research/video/query/
+        attribution: TikTok API
+        credential:
+          provider: tiktok_api
+    context:
+    - key: profile
+      from: collection:brand_profile
+    output: markdown
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+  - key: drafter
+    role: helper
+    description: Drafts a reply, post or short article in the brand voice and sends it for approval.
+    awaits:
+    - draft_review
+    profile:
+      inline:
+        display_name: Chatterscope drafter
+        crews:
+        - id: drafter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write content for one brand in its exact voice. Context: {profile} (tone of voice, audience,
+            products, topics to avoid) and {past_drafts} (earlier drafts with final_text where an editor changed them, and
+            status approved/rejected). Learn from the edits: compare text with final_text, copy the editors'' preferences
+            (length, wording, what they remove), avoid what got rejected. Pick the right format for the channel: a short reply,
+            a post, or a short article (under 300 words). Never claim facts or figures about the brand that are not in the
+            profile, never be spammy, disclose the brand affiliation when replying on a forum or social channel. Save the
+            draft with add_draft (conversation_link, channel, topic, type reply|post|article, text, status "pending", members
+            copied from the profile), then call request_draft_review. Nothing is published by you.'
+    appTools:
+    - name: add_draft
+      description: Save a draft for review
+      action: append
+      collection: drafts
+      scope: user
+    context:
+    - key: profile
+      from: collection:brand_profile
+    - key: past_drafts
+      from: collection:drafts
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.5
+  - key: reporter
+    role: scheduled
+    description: Weekly report of themes, emerging questions and competitor mentions.
+    profile:
+      inline:
+        display_name: Chatterscope weekly reporter
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the weekly brief for a brand from its recorded conversations (read them with list_conversations;
+            use only those of the last 7 days) and drafts (list_drafts). Start with "# Weekly brief — <brand> — week of <date>".
+            Sections: ## Top themes, ## Emerging questions (conversations with question=true), ## Competitor mentions (who,
+            sentiment, links), ## Drafts this week (approved, rejected, published counts), ## Recommended focus. Add one chart
+            block: ```chart
+
+            {"type":"bar","title":"Conversations by topic","labels":[...],"series":[{"name":"Conversations","values":[...]}]}
+
+            ```. Real figures only; if there is little data, say so. Under 450 words. Plain and specific.'
+    appTools:
+    - name: list_conversations
+      description: Read recorded conversations
+      action: read
+      collection: conversations
+      scope: user
+    - name: list_drafts
+      description: Read drafts
+      action: read
+      collection: drafts
+      scope: user
+    context:
+    - key: profile
+      from: collection:brand_profile
+    goalTemplate: 'Brand profile: {profile}
+
+      Today is {date}. Write the weekly brief in language {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.5
+  templates:
+  - key: daily_monitor
+    title: Daily monitor
+    description: A daily scan of the web, news, forums, X, Reddit and TikTok for your brand's topics.
+    agent: monitor
+    params:
+    - name: label
+      type: text
+      required: true
+      label: Monitor name
+    - name: channels
+      type: multiselect
+      label: Channels
+      options:
+      - value: web
+        label: Web and news
+      - value: forum
+        label: Forums
+      - value: x
+        label: X
+      - value: reddit
+        label: Reddit
+      - value: tiktok
+        label: TikTok
+    - name: focus
+      type: textarea
+      maxLength: 400
+      label: Extra focus (optional)
+    goal: 'Run the daily scan "{instance}" for the brand profile in your context. Channels: {channels}. {?focus}Extra focus:
+      {focus}{/focus} Today is {date}. Write in language {lang}.'
+    schedule:
+      cron: 0 6 * * *
+      userCanChange: true
+    maxPerUser: 5
+    cost:
+      perRun: 10
+  - key: weekly_report
+    title: Weekly report
+    description: Top themes, emerging questions and competitor mentions, by email every Monday.
+    agent: reporter
+    params:
+    - name: label
+      type: text
+      required: true
+      label: Report name
+    goal: Weekly brief "{instance}". Today is {date}. Language {lang}.
+    schedule:
+      cron: 0 7 * * 1
+      userCanChange: true
+    maxPerUser: 2
+    cost:
+      perRun: 15
+    deliver:
+      to: owner
+      onlyIfNew: true
+  triggers:
+  - key: draft_new
+    description: A relevant conversation starts a draft
+    'on':
+      collection: conversations
+      op: insert
+      where:
+        status: new
+    start:
+      agent: drafter
+    goal: 'Draft content for this conversation: channel {record.channel}, source {record.source}, link {record.link}, topic
+      {record.topic}, sentiment {record.sentiment}. Why join: {record.why}. Choose reply, post or short article. Language
+      {lang}.'
+    asUser: true
+  - key: draft_decided
+    'on':
+      approval: draft_review
+      decision: approved
+    notify:
+      to:
+      - owner
+      - role:editor
+      subject: A Chatterscope draft was approved
+      body: A draft has been approved and is ready to publish. Open it in the app to copy the final text and mark it as published.
+      link: drafts
+  approvals:
+  - key: draft_review
+    title: Review draft
+    decidedBy: requester
+    fields:
+    - channel
+    - topic
+    - type
+    - text
+    timeoutMinutes: 10080
+    onTimeout: reject
+  inputForm:
+    title: Brand profile
+    fields: []
+  data:
+    collections:
+    - name: brand_profile
+      description: 'The brand''s profile: products, audience, tone, topics to follow and avoid, team'
+      ownedBy: user
+      fields:
+      - name: brand
+        type: text
+        required: true
+        label: Brand name
+      - name: products
+        type: textarea
+        required: true
+        label: Products and services
+      - name: audience
+        type: textarea
+        required: true
+        label: Audience
+      - name: tone
+        type: textarea
+        required: true
+        label: Tone of voice
+        help: Style, words to use, words to avoid, example sentences
+      - name: topics_follow
+        type: textarea
+        required: true
+        label: Topics to follow
+      - name: topics_avoid
+        type: textarea
+        label: Topics to avoid
+      - name: competitors
+        type: textarea
+        label: Competitors
+      - name: members
+        type: array
+        label: Team emails
+        fields:
+        - name: email
+          type: email
+      access:
+      - role: editor
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: viewer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: conversations
+      description: Conversations found by the monitors
+      ownedBy: user
+      retentionDays: 365
+      fields:
+      - name: date
+        type: date
+        label: Date
+      - name: channel
+        type: select
+        label: Channel
+        options:
+        - web
+        - news
+        - forum
+        - x
+        - reddit
+        - tiktok
+      - name: source
+        type: text
+        label: Source
+      - name: link
+        type: url
+        label: Link
+      - name: topic
+        type: text
+        label: Topic
+      - name: sentiment
+        type: select
+        label: Sentiment
+        options:
+        - positive
+        - neutral
+        - negative
+      - name: relevance
+        type: number
+        label: Relevance
+      - name: competitor
+        type: text
+        label: Competitor
+      - name: question
+        type: boolean
+        label: Open question
+      - name: why
+        type: textarea
+        label: Why take part
+      - name: status
+        type: select
+        label: Status
+        options:
+        - new
+        - skip
+      - name: members
+        type: json
+      access:
+      - role: editor
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: viewer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: drafts
+      description: Drafts awaiting review, with the editors' final text (the agent's learning source)
+      ownedBy: user
+      fields:
+      - name: created
+        type: date
+        label: Date
+      - name: conversation_link
+        type: url
+        label: Conversation
+      - name: channel
+        type: text
+        label: Channel
+      - name: topic
+        type: text
+        label: Topic
+      - name: type
+        type: select
+        label: Type
+        options:
+        - reply
+        - post
+        - article
+      - name: text
+        type: textarea
+        label: Agent draft
+      - name: final_text
+        type: textarea
+        label: Final text (your edit)
+      - name: status
+        type: select
+        required: true
+        label: Status
+        options:
+        - pending
+        - approved
+        - rejected
+        - published
+      - name: editor_notes
+        type: textarea
+        label: Notes for the agent
+      - name: members
+        type: json
+      access:
+      - role: editor
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: viewer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    credentials:
+    - provider: x_api
+      kind: api_key
+      scope: org
+      label: X API key (paid)
+      help: Bearer token of the app owner's X developer project
+    - provider: reddit_api
+      kind: api_key
+      scope: org
+      label: Reddit API token (paid)
+      help: Access token of the app owner's Reddit API account
+    - provider: tiktok_api
+      kind: api_key
+      scope: org
+      label: TikTok API token
+      help: Access token of the app owner's TikTok developer account
+  views:
+  - key: home
+    type: page
+    title: Chatterscope
+    nav: false
+    sections:
+    - type: hero
+      title: Join the conversations that **matter** to your brand.
+      text: Daily monitors find where people talk about your topics, score each conversation and explain why to take part.
+        An agent drafts the reply in your voice. You approve every word.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Describe your brand
+        text: Products, audience, tone of voice, topics to follow and to avoid.
+      - title: Monitors run daily
+        text: Web, news, forums, X, Reddit and TikTok, each conversation scored and explained.
+      - title: Review the drafts
+        text: Approve, edit or reject. The agent learns from your edits.
+      - title: Weekly brief
+        text: Top themes, emerging questions and competitor mentions by email.
+    - type: cards
+      id: channels
+      title: Channels
+      items:
+      - title: Open web and news
+        text: Search plus crawling of sites that allow it.
+      - title: X, Reddit, TikTok
+        text: Only through their official paid APIs.
+      - title: Your data stays yours
+        text: Each brand sees only its own data.
+    - type: note
+      content: Nothing is published automatically. Drafts are suggestions that a person approves.
+  - key: brand
+    type: form
+    title: Brand profile
+    collection: brand_profile
+    edit: true
+    roles:
+    - user
+    - admin
+    submit:
+      label: Save profile
+      message: Profile saved.
+      redirect: monitors
+  - key: monitors
+    type: instances
+    template: daily_monitor
+    title: Monitors
+    roles:
+    - user
+    - admin
+  - key: reports
+    type: instances
+    template: weekly_report
+    title: Weekly report
+    roles:
+    - user
+    - admin
+  - key: conversations_table
+    type: table
+    title: Conversations
+    source: collection:conversations
+    export: true
+    roles:
+    - user
+    - editor
+    - viewer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: date
+        format: date
+      - key: channel
+        format: badge
+      - key: topic
+      - key: sentiment
+        format: badge
+      - key: relevance
+        format: number
+      - key: source
+      - key: link
+        format: link
+      - key: why
+      sort:
+        field: relevance
+        dir: desc
+      limit: 100
+  - key: drafts_table
+    type: table
+    title: Drafts
+    source: collection:drafts
+    roles:
+    - user
+    - editor
+    - viewer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: created
+        format: date
+      - key: channel
+      - key: type
+      - key: text
+      - key: final_text
+      - key: status
+        format: badge
+      sort:
+        field: created
+        dir: desc
+      limit: 100
+  - key: drafts
+    type: page
+    title: Drafts
+    nav: false
+    sections:
+    - type: view
+      view: drafts_table
+  - key: edit_draft
+    type: form
+    title: Edit draft
+    collection: drafts
+    edit: true
+    fields:
+    - text
+    - final_text
+    - status
+    - editor_notes
+    roles:
+    - user
+    - editor
+    - admin
+    nav: false
+    submit:
+      label: Save
+      message: Draft updated.
+      redirect: drafts_table
+  - key: review
+    type: approvals
+    title: Approvals
+    approvals:
+    - draft_review
+    roles:
+    - user
+    - admin
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - user
+    - editor
+    - viewer
+    - admin
+    sections:
+    - type: data
+      title: Conversations over time
+      source: collection:conversations
+      display: chart
+      chart: line
+      fields:
+      - key: date
+      - key: count
+      groupBy:
+        field: date
+        bucket: week
+        aggs: []
+    - type: data
+      title: By topic
+      source: collection:conversations
+      display: chart
+      chart: bar
+      fields:
+      - key: topic
+      - key: count
+      groupBy:
+        field: topic
+        aggs: []
+    - type: data
+      title: By channel
+      source: collection:conversations
+      display: chart
+      chart: pie
+      fields:
+      - key: channel
+      - key: count
+      groupBy:
+        field: channel
+        aggs: []
+    - type: data
+      title: Drafts by status (approved, published)
+      source: collection:drafts
+      display: chart
+      chart: bar
+      fields:
+      - key: status
+      - key: count
+      groupBy:
+        field: status
+        aggs: []
+    - type: data
+      title: Drafts over time
+      source: collection:drafts
+      display: chart
+      chart: line
+      fields:
+      - key: created
+      - key: count
+      groupBy:
+        field: created
+        bucket: week
+        aggs: []
+  - key: history
+    type: history
+    title: Report history
+    source: run
+    roles:
+    - user
+    - editor
+    - viewer
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: account
+    type: account
+    title: Plan and credits
+    roles:
+    - user
+    - admin
+  notifications:
+    emailOnRunDone: false
+  billing:
+    modes:
+    - subscription
+    - credits
+    signupCredits: 50
+    costs:
+      agent:drafter: 5
+    packs:
+    - key: topup
+      credits: 500
+      price: 19
+      label: 500 extra credits
+    plans:
+    - key: starter
+      price: 49
+      interval: month
+      label: Starter
+      credits: 300
+      creditsReset: monthly
+      includes:
+      - 1 monitor
+      - 300 credits a month
+    - key: growth
+      price: 149
+      interval: month
+      label: Growth
+      credits: 1200
+      creditsReset: monthly
+      includes:
+      - 5 monitors
+      - 1200 credits a month
+      - weekly report
+  extensions:
+  - key: oauth_social_tokens
+    description: Reddit and TikTok APIs use OAuth tokens that expire; for now the app owner pastes a current token as the
+      org credential. Automatic token refresh is not available yet.

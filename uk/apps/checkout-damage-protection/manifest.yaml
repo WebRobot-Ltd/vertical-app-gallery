@@ -1,0 +1,1219 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: fixsure
+  displayName: Fixsure
+  tagline:
+    en: Accidental-damage protection, built into checkout.
+  description:
+    en: Retailers offer accidental-damage protection at checkout, priced by product category and value. Shoppers manage policies
+      and claims in a portal. An AI agent triages each claim against the policy wording, and claims handlers make every final
+      decision.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0b3d4a'
+      accent: '#f26b3a'
+      background: '#f7f9fa'
+      foreground: '#14232b'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Fix
+      color: primary
+    - text: sure
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: For retailers
+      href: '#retailers'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: Signed-in user
+      assignedBy: signup
+    - key: retailer
+      label: Retailer
+      assignedBy: derived
+      from: collection:retailers.contact_email
+    - key: shopper
+      label: Shopper
+      assignedBy: derived
+      from: collection:policies.shopper_email
+    - key: claims_handler
+      label: Claims handler
+      assignedBy: invite
+    - key: insurer
+      label: Insurer (read-only)
+      assignedBy: invite
+  agents:
+  - key: assessor
+    role: helper
+    description: Checks a claim against the policy wording, asks for missing evidence and proposes an outcome. A claims handler
+      always decides.
+    profile:
+      inline:
+        display_name: Fixsure claims assessor
+        crews:
+        - id: assessor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 16
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the first-line claims assessor for Fixsure, accidental-damage protection sold at retail
+            checkout. You never make the final decision: you prepare it for a human claims handler.
+
+
+            For each claim:
+
+            1. Call read_policy to load the policy named in the claim (status, dates, category, product value, retailer).
+            Call read_wording to load the policy wording (cover, exclusions, excess, limits).
+
+            2. Call update_claim first to set evidence_complete=false, copy retailer_email, policy_ref and product_name from
+            the policy onto the claim.
+
+            3. Open each evidence file and the receipt with read_upload (call it with the file id; it reads images and OCR).
+            Check: the policy was active on the incident date; the product matches the receipt; the damage photos are consistent
+            with the described accident; the incident is accidental damage (not wear and tear, theft, loss, cosmetic-only,
+            deliberate or pre-existing damage).
+
+            4. If something needed is missing or unreadable (no damage photo, no receipt, unclear date), call update_claim
+            with status=info_needed and missing_evidence = a short, polite, numbered list of exactly what the shopper must
+            add. Then stop and wait: the shopper will resubmit.
+
+            5. Otherwise decide a proposal: repair, replace, refund or decline. Prefer repair when economical, replace when
+            not repairable, refund when no replacement is possible. Decline only when the wording clearly excludes the claim;
+            cite the clause. Write assessment = clause references, evidence findings, confidence (low/medium/high), and any
+            fraud or inconsistency flags. Never invent facts that are not in the files or the wording.
+
+            6. Call update_claim with status=awaiting_handler, proposed_outcome and assessment. Then call request_claim_decision
+            with the proposal. A decline ALWAYS goes to a human; so does every other outcome.
+
+            7. When the decision returns, call update_claim with final_outcome = the approved outcome, status=decided and
+            approved_amount if known. If it was rejected, set status=awaiting_handler and leave the handler to set the outcome.
+
+            Be concise and neutral. This is not legal advice.'
+          mcp_servers: []
+    appTools:
+    - name: read_policy
+      description: Read the policy named in the claim
+      action: read
+      collection: policies
+      scope: all
+    - name: read_wording
+      description: Read the policy wording sections
+      action: read
+      collection: wording
+      scope: all
+    - name: read_claim
+      description: Read the shopper's claim record
+      action: read
+      collection: claims
+      scope: user
+    - name: update_claim
+      description: Update fields of the shopper's claim record
+      action: write
+      collection: claims
+      scope: user
+    - name: read_upload
+      description: Read a file the shopper uploaded (photo, receipt)
+      action: read_file
+    awaits:
+    - claim_decision
+    output: markdown
+    limits:
+      maxTurns: 16
+      maxBudgetUsd: 0.6
+  - key: report_writer
+    role: main
+    description: 'Writes the monthly report for one retailer (for the insurer and the retailer): attach rate, premium, commission,
+      claims and claims ratio.'
+    profile:
+      inline:
+        display_name: Fixsure monthly reporter
+        crews:
+        - id: report_writer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the monthly performance report of one retailer''s Fixsure protection scheme, read by the
+            retailer and the insurer. Use list_policies, list_claims and list_sales (filter by retailer_email and the month)
+            to get the real figures. Never invent figures; if data is missing say so.
+
+
+            Structure: a level-1 title "# <Retailer> — Fixsure report <month>", then ## Summary, ## Sales and attach rate
+            (policies sold / checkout orders from list_sales), ## Premium and commission (retailer commission = sum of retailer_commission),
+            ## Claims (count, outcomes, paid amount, claims ratio = paid claims / premium written), ## Observations. Add a
+            chart block with the main figures:
+
+            ```chart
+
+            {"type":"bar","title":"...","labels":["..."],"series":[{"name":"...","values":[0]}]}
+
+            ```
+
+            Finish with ONE final fenced json block with these keys: report_key (retailer_email + "-" + month), retailer_email,
+            month, orders, policies, attach_rate (percent), premium, commission, claims_count, claims_paid, claims_ratio (percent),
+            summary (two sentences). Amounts in GBP.'
+          mcp_servers: []
+    appTools:
+    - name: list_policies
+      description: Read policies (filter by retailer_email and start_date)
+      action: read
+      collection: policies
+      scope: all
+    - name: list_claims
+      description: Read claims (filter by retailer_email and incident date)
+      action: read
+      collection: claims
+      scope: all
+    - name: list_sales
+      description: Read the retailers' monthly checkout order counts
+      action: read
+      collection: retailer_sales
+      scope: all
+    goalTemplate: 'Retailer: {retailer_email}
+
+      Month: {month} (format YYYY-MM)
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    output: markdown+json
+    writesTo:
+      collection: reports
+      parse: json_last
+      keyBy: report_key
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  inputForm:
+    title: Monthly report
+    fields:
+    - name: retailer_email
+      type: email
+      required: true
+      label: Retailer email
+      help: The retailer's contact email as registered
+    - name: month
+      type: text
+      required: true
+      label: Month
+      help: e.g. 2026-10
+  data:
+    collections:
+    - name: retailers
+      description: Retailer company profile (each retailer's own)
+      ownedBy: user
+      fields:
+      - name: company
+        type: text
+        required: true
+        label: Company
+      - name: contact_email
+        type: email
+        required: true
+        label: Contact email
+      - name: website
+        type: url
+        label: Website
+      - name: platform
+        type: select
+        label: Checkout platform
+        options:
+        - shopify
+        - woocommerce
+        - magento
+        - custom
+        - other
+      - name: integration
+        type: select
+        label: Integration
+        options:
+        - value: widget
+          label: Checkout widget
+        - value: api
+          label: API
+    - name: products
+      description: Retailer's product catalogue
+      ownedBy: user
+      fields:
+      - name: sku
+        type: text
+        required: true
+        label: SKU
+      - name: name
+        type: text
+        required: true
+        label: Product
+      - name: category
+        type: select
+        required: true
+        label: Category
+        options:
+        - phones
+        - laptops
+        - tablets
+        - tv_audio
+        - small_appliances
+        - large_appliances
+        - cameras
+        - wearables
+        - gaming
+        - other
+      - name: price
+        type: number
+        required: true
+        label: Price (GBP)
+    - name: retailer_sales
+      description: Monthly checkout orders per retailer, used for the attach rate
+      ownedBy: user
+      fields:
+      - name: retailer_email
+        type: email
+        required: true
+        label: Retailer email
+      - name: month
+        type: text
+        required: true
+        label: Month (YYYY-MM)
+      - name: orders
+        type: number
+        required: true
+        label: Checkout orders with eligible products
+    - name: rates
+      description: Premium by category and value band; commission share to the retailer. Kept by the admins.
+      ownedBy: shared
+      fields:
+      - name: category
+        type: text
+        required: true
+      - name: min_value
+        type: number
+        required: true
+      - name: max_value
+        type: number
+        required: true
+      - name: premium
+        type: number
+        required: true
+        label: Premium per policy (GBP)
+      - name: retailer_commission_pct
+        type: number
+        label: Retailer commission %
+      - name: term_months
+        type: number
+    - name: wording
+      description: Policy wording sections the assessor checks claims against. Kept by the admins.
+      ownedBy: shared
+      fields:
+      - name: clause
+        type: text
+        required: true
+      - name: title
+        type: text
+        required: true
+      - name: text
+        type: textarea
+        required: true
+      - name: kind
+        type: select
+        options:
+        - cover
+        - exclusion
+        - excess
+        - limit
+        - process
+    - name: policies
+      description: Policies created from the checkout widget or API
+      ownedBy: org
+      fields:
+      - name: policy_ref
+        type: text
+        required: true
+        label: Policy
+      - name: retailer_email
+        type: email
+        required: true
+        label: Retailer
+      - name: retailer_name
+        type: text
+      - name: shopper_email
+        type: email
+        required: true
+        label: Shopper
+      - name: shopper_name
+        type: text
+      - name: order_ref
+        type: text
+        label: Order
+      - name: product_name
+        type: text
+        label: Product
+      - name: category
+        type: text
+        label: Category
+      - name: product_value
+        type: number
+        label: Product value
+      - name: premium
+        type: number
+        label: Premium
+      - name: retailer_commission
+        type: number
+        label: Retailer commission
+      - name: start_date
+        type: date
+        label: Start
+      - name: end_date
+        type: date
+        label: End
+      - name: status
+        type: select
+        label: Status
+        options:
+        - active
+        - cancelled
+        - expired
+      - name: ipid_url
+        type: url
+        label: IPID
+      - name: documents_url
+        type: url
+        label: Policy documents
+      access:
+      - role: retailer
+        where:
+          retailer_email: '{user.email}'
+      - role: shopper
+        where:
+          shopper_email: '{user.email}'
+      - role: claims_handler
+      - role: insurer
+    - name: claims
+      description: Shoppers' claims, with the agent's proposal and the handler's decision
+      ownedBy: user
+      fields:
+      - name: policy_id
+        type: select
+        required: true
+        label: Policy
+        optionsFrom: collection:policies
+      - name: what_happened
+        type: textarea
+        required: true
+        label: What happened
+        maxLength: 2000
+      - name: incident_date
+        type: date
+        required: true
+        label: Date of incident
+      - name: evidence
+        type: file
+        required: true
+        label: Photos of the damage
+        accept:
+        - jpg
+        - jpeg
+        - png
+        - webp
+        - pdf
+        maxMb: 15
+        multiple: true
+      - name: receipt
+        type: file
+        required: true
+        label: Receipt
+        accept:
+        - pdf
+        - jpg
+        - jpeg
+        - png
+        maxMb: 10
+      - name: extra_info
+        type: textarea
+        label: Extra information
+        maxLength: 2000
+      - name: evidence_complete
+        type: boolean
+        label: I have added everything requested
+      - name: status
+        type: select
+        label: Status
+        default: submitted
+        options:
+        - submitted
+        - info_needed
+        - awaiting_handler
+        - decided
+        - closed
+      - name: missing_evidence
+        type: textarea
+        label: Evidence we need
+      - name: proposed_outcome
+        type: select
+        label: Proposed outcome
+        options:
+        - repair
+        - replace
+        - refund
+        - decline
+      - name: assessment
+        type: textarea
+        label: Assessment
+      - name: final_outcome
+        type: select
+        label: Final outcome
+        options:
+        - repair
+        - replace
+        - refund
+        - decline
+      - name: approved_amount
+        type: number
+        label: Approved amount (GBP)
+      - name: handler_notes
+        type: textarea
+        label: Handler notes
+      - name: retailer_email
+        type: email
+        label: Retailer
+      - name: policy_ref
+        type: text
+        label: Policy ref
+      - name: product_name
+        type: text
+        label: Product
+      access:
+      - role: claims_handler
+        can:
+        - read
+        - write
+      - role: insurer
+      - role: retailer
+        where:
+          retailer_email: '{user.email}'
+      retentionDays: 2555
+    - name: repairers
+      description: Partner repairers. Kept by the admins.
+      ownedBy: shared
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: categories
+        type: text
+      - name: city
+        type: text
+      - name: address
+        type: text
+      - name: phone
+        type: text
+    - name: repair_bookings
+      description: Repair appointments booked by shoppers
+      ownedBy: user
+      fields:
+      - name: claim_ref
+        type: text
+        label: Claim reference
+      - name: notes
+        type: textarea
+        label: Notes for the repairer
+      access:
+      - role: claims_handler
+      - role: insurer
+    - name: reports
+      description: Monthly reports per retailer, written by the report agent
+      ownedBy: org
+      fields:
+      - name: report_key
+        type: text
+      - name: retailer_email
+        type: email
+        label: Retailer
+      - name: month
+        type: text
+        label: Month
+      - name: orders
+        type: number
+        label: Orders
+      - name: policies
+        type: number
+        label: Policies
+      - name: attach_rate
+        type: number
+        label: Attach rate %
+      - name: premium
+        type: number
+        label: Premium
+      - name: commission
+        type: number
+        label: Commission
+      - name: claims_count
+        type: number
+        label: Claims
+      - name: claims_paid
+        type: number
+        label: Claims paid
+      - name: claims_ratio
+        type: number
+        label: Claims ratio %
+      - name: summary
+        type: textarea
+        label: Summary
+      access:
+      - role: retailer
+        where:
+          retailer_email: '{user.email}'
+      - role: insurer
+      - role: claims_handler
+  views:
+  - key: home
+    type: page
+    title: Fixsure
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: Embedded protection
+      title: Accidental-damage protection, **built into checkout**.
+      text: Retailers offer a protection plan priced by product category and value. Shoppers get their policy and IPID by
+        email and can claim in minutes from their portal.
+      actions:
+      - label: Retailer sign-up
+        href: /login
+        style: primary
+      - label: Make a claim
+        href: /login
+        style: ghost
+      note: Underwritten by our FCA-authorised MGA with insurer capacity.
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Retailer connects
+        text: Describe your catalogue and add the checkout widget or call the API.
+      - title: Shopper buys
+        text: The policy is created and the documents and IPID are emailed.
+      - title: Claim in minutes
+        text: Describe the damage, add photos and the receipt. An agent checks it against the wording.
+      - title: A human decides
+        text: Claims handlers approve or change the outcome. Declines are always human.
+    - type: cards
+      id: retailers
+      title: For retailers
+      items:
+      - title: Dashboard
+        text: Attach rate, commission and claims ratio, month by month.
+      - title: Commission share
+        text: Premium per policy, with commission shared with you.
+      - title: Partner repairers
+        text: Repairs are booked with partner repairers.
+    - type: note
+      content: Fixsure software supports a regulated activity. Cover, exclusions and limits are set by the policy wording
+        and IPID.
+  - key: retailer_profile
+    type: form
+    title: Company profile
+    collection: retailers
+    fields:
+    - company
+    - contact_email
+    - website
+    - platform
+    - integration
+    submit:
+      label: Save profile
+      message: Profile saved.
+      redirect: integration
+    roles:
+    - user
+    - retailer
+    - admin
+  - key: integration
+    type: page
+    title: Integration
+    roles:
+    - retailer
+    - admin
+    sections:
+    - type: text
+      title: Offer protection at checkout
+      content: '1. Add your products on the Catalogue page.
+
+        2. Read prices by category and value from the public rates feed at `/api/rates`.
+
+        3. When a shopper buys, send the sale to the Fixsure webhook `/api/hooks/policy_sale` with the app''s hook secret.
+        Include: ref, retailer_email, retailer_name, shopper_email, shopper_name, order_ref, product_name, category, product_value,
+        premium, retailer_commission, start_date, end_date, ipid_url, documents_url.
+
+        4. The policy is created and the shopper is emailed the documents and IPID.'
+    - type: view
+      view: products
+  - key: add_product
+    type: form
+    title: Add a product
+    collection: products
+    submit:
+      label: Add product
+      message: Product added.
+      redirect: products
+    roles:
+    - retailer
+    - admin
+  - key: products
+    type: table
+    title: Catalogue
+    source: collection:products
+    export: true
+    data:
+      display: table
+      fields:
+      - key: sku
+        label: SKU
+      - key: name
+        label: Product
+      - key: category
+        label: Category
+        format: badge
+      - key: price
+        label: Price
+        format: money
+    roles:
+    - retailer
+    - admin
+  - key: sales_form
+    type: form
+    title: Report monthly orders
+    collection: retailer_sales
+    submit:
+      label: Save
+      message: Saved. Used for your attach rate.
+    roles:
+    - retailer
+    - admin
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - retailer
+    - insurer
+    - claims_handler
+    - admin
+    sections:
+    - type: data
+      title: Policies
+      source: collection:policies
+      display: kpi
+      kpis:
+      - label: Policies sold
+        agg: count
+      - label: Premium
+        agg: sum
+        field: premium
+        format: money
+      - label: Retailer commission
+        agg: sum
+        field: retailer_commission
+        format: money
+    - type: data
+      title: Claims
+      source: collection:claims
+      display: kpi
+      kpis:
+      - label: Claims
+        agg: count
+      - label: Paid out
+        agg: sum
+        field: approved_amount
+        format: money
+    - type: data
+      title: Attach rate and claims ratio by month
+      source: collection:reports
+      display: chart
+      chart: line
+      fields:
+      - key: month
+        label: Month
+      - key: attach_rate
+        label: Attach rate %
+      - key: claims_ratio
+        label: Claims ratio %
+      sort:
+        field: month
+        dir: asc
+      limit: 24
+      empty: No monthly reports yet.
+    - type: view
+      title: Monthly reports
+      view: reports
+  - key: reports
+    type: table
+    title: Monthly reports
+    source: collection:reports
+    export: true
+    data:
+      display: table
+      fields:
+      - key: month
+        label: Month
+      - key: retailer_email
+        label: Retailer
+      - key: policies
+        label: Policies
+        format: number
+      - key: attach_rate
+        label: Attach rate %
+        format: number
+      - key: premium
+        label: Premium
+        format: money
+      - key: commission
+        label: Commission
+        format: money
+      - key: claims_count
+        label: Claims
+        format: number
+      - key: claims_ratio
+        label: Claims ratio %
+        format: number
+      - key: summary
+        label: Summary
+      sort:
+        field: month
+        dir: desc
+      limit: 100
+    roles:
+    - retailer
+    - insurer
+    - claims_handler
+    - admin
+  - key: policies
+    type: table
+    title: Policies
+    source: collection:policies
+    export: true
+    data:
+      display: table
+      fields:
+      - key: policy_ref
+        label: Policy
+      - key: product_name
+        label: Product
+      - key: category
+        label: Category
+        format: badge
+      - key: premium
+        label: Premium
+        format: money
+      - key: start_date
+        label: Start
+        format: date
+      - key: end_date
+        label: End
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      - key: ipid_url
+        label: IPID
+        format: link
+      - key: documents_url
+        label: Documents
+        format: link
+      sort:
+        field: start_date
+        dir: desc
+      limit: 200
+    roles:
+    - shopper
+    - retailer
+    - claims_handler
+    - insurer
+    - admin
+  - key: new_claim
+    type: form
+    title: Make a claim
+    collection: claims
+    fields:
+    - policy_id
+    - what_happened
+    - incident_date
+    - evidence
+    - receipt
+    submit:
+      label: Send claim
+      message: Claim received. We will check it and email you.
+      redirect: claims
+    roles:
+    - shopper
+    - admin
+  - key: claim_more
+    type: form
+    title: Add evidence to a claim
+    collection: claims
+    fields:
+    - extra_info
+    - evidence
+    - evidence_complete
+    edit: true
+    submit:
+      label: Send
+      message: Thank you. We are re-checking your claim.
+      redirect: claims
+    nav: false
+    roles:
+    - shopper
+    - admin
+  - key: claims
+    type: table
+    title: Claims
+    source: collection:claims
+    export: true
+    data:
+      display: table
+      fields:
+      - key: policy_ref
+        label: Policy
+      - key: product_name
+        label: Product
+      - key: incident_date
+        label: Incident
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      - key: missing_evidence
+        label: We need
+      - key: proposed_outcome
+        label: Proposed
+        format: badge
+      - key: final_outcome
+        label: Outcome
+        format: badge
+      - key: approved_amount
+        label: Amount
+        format: money
+      sort:
+        field: incident_date
+        dir: desc
+      limit: 200
+    roles:
+    - shopper
+    - retailer
+    - claims_handler
+    - insurer
+    - admin
+  - key: handle_claim
+    type: form
+    title: Decide a claim
+    collection: claims
+    fields:
+    - final_outcome
+    - approved_amount
+    - status
+    - handler_notes
+    edit: true
+    submit:
+      label: Save decision
+      message: Decision saved.
+    nav: false
+    roles:
+    - claims_handler
+    - admin
+  - key: decisions
+    type: approvals
+    title: Decisions to approve
+    approvals:
+    - claim_decision
+    roles:
+    - claims_handler
+    - admin
+  - key: book_repair
+    type: booking
+    title: Book a repair
+    collection: repair_bookings
+    resources: collection:repairers
+    fields:
+    - claim_ref
+    - notes
+    slots:
+      days:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      from: 09:00
+      to: '17:30'
+      minutes: 30
+      tz: Europe/London
+      aheadDays: 21
+      minNoticeHours: 24
+      capacity: 1
+    roles:
+    - shopper
+    - admin
+  - key: repair_list
+    type: table
+    title: Repair bookings
+    source: collection:repair_bookings
+    data:
+      display: table
+      fields:
+      - key: claim_ref
+        label: Claim
+      - key: resource
+        label: Repairer
+      - key: start
+        label: When
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      limit: 200
+    roles:
+    - claims_handler
+    - insurer
+    - admin
+  - key: new_report
+    type: new_run
+    title: Run monthly report
+    roles:
+    - admin
+    - claims_handler
+  - key: report_runs
+    type: history
+    title: Report runs
+    source: run
+    roles:
+    - admin
+    - claims_handler
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  approvals:
+  - key: claim_decision
+    title: Claim outcome
+    description: The assessor proposes an outcome; a claims handler approves it or rejects it to set a different one. Declines
+      always need a human.
+    role: claims_handler
+    fields:
+    - policy_ref
+    - product_name
+    - proposed_outcome
+    - assessment
+    timeoutMinutes: 10080
+    onTimeout: reject
+    decidedBy: role
+  triggers:
+  - key: policy_sale
+    description: The checkout widget or the retailer API reports a sale; the policy is created
+    'on':
+      webhook: true
+    write:
+      collection: policies
+      fields:
+        policy_ref: ref
+        retailer_email: retailer_email
+        retailer_name: retailer_name
+        shopper_email: shopper_email
+        shopper_name: shopper_name
+        order_ref: order_ref
+        product_name: product_name
+        category: category
+        product_value: product_value
+        premium: premium
+        retailer_commission: retailer_commission
+        start_date: start_date
+        end_date: end_date
+        status: status
+        ipid_url: ipid_url
+        documents_url: documents_url
+      keyBy: policy_ref
+  - key: policy_documents
+    'on':
+      collection: policies
+      op: insert
+    notify:
+      to: record.shopper_email
+      subject: Your protection policy {record.policy_ref}
+      body: 'Hello {record.shopper_name},
+
+
+        Your accidental-damage protection for {record.product_name} is active from {record.start_date} to {record.end_date}.
+
+
+        Insurance Product Information Document (IPID): {record.ipid_url}
+
+        Policy documents: {record.documents_url}
+
+
+        To make a claim, sign in with this email address.'
+      link: policies
+  - key: claim_received
+    description: 'A shopper sends a claim: the assessor checks it'
+    'on':
+      collection: claims
+      op: insert
+      where:
+        status: submitted
+    start:
+      agent: assessor
+    goal: 'Assess the new claim. Claim record: {event}. Policy id: {record.policy_id}. What happened: {record.what_happened}.
+      Incident date: {record.incident_date}. Evidence file ids: {record.evidence}. Receipt file id: {record.receipt}.'
+  - key: claim_more_evidence
+    description: 'The shopper added the evidence requested: assess again'
+    'on':
+      collection: claims
+      op: update
+      where:
+        evidence_complete: true
+    start:
+      agent: assessor
+    goal: 'The shopper added evidence to an existing claim. Claim record: {event}. Policy id: {record.policy_id}. Original
+      evidence file ids: {record.evidence}. Receipt file id: {record.receipt}. Extra information: {record.extra_info}. Missing
+      evidence asked before: {record.missing_evidence}. Assess again.'
+  - key: evidence_request
+    'on':
+      collection: claims
+      op: update
+      where:
+        status: info_needed
+    notify:
+      to: owner
+      subject: We need more information about your claim
+      body: 'To continue with your claim for {record.product_name} please add:
+
+
+        {record.missing_evidence}
+
+
+        Open Claims in your portal and use Add evidence.'
+      link: claims
+  - key: handler_queue
+    'on':
+      collection: claims
+      op: update
+      where:
+        status: awaiting_handler
+    notify:
+      to: role:claims_handler
+      subject: 'Claim ready for decision: {record.policy_ref}'
+      body: A claim for {record.product_name} has a proposed outcome ({record.proposed_outcome}) and needs your decision.
+      link: decisions
+  - key: claim_decided
+    'on':
+      collection: claims
+      op: update
+      where:
+        status: decided
+    notify:
+      to: owner
+      subject: Your claim has been decided
+      body: 'The outcome of your claim for {record.product_name} is: {record.final_outcome}.
+
+
+        If the outcome is a repair, book your appointment with a partner repairer from Book a repair in your portal.'
+      link: claims
+  - key: report_published
+    'on':
+      collection: reports
+      op: insert
+    notify:
+      to:
+      - role:insurer
+      - record.retailer_email
+      subject: Fixsure monthly report {record.month}
+      body: 'The monthly report for {record.month} is ready.
+
+
+        Policies: {record.policies}. Attach rate: {record.attach_rate}%. Premium: {record.premium}. Commission: {record.commission}.
+        Claims ratio: {record.claims_ratio}%.
+
+
+        {record.summary}'
+      link: reports
+  - key: month_start
+    description: Reminder to run the monthly reports
+    'on':
+      cron: 0 8 1 * *
+    notify:
+      to: admins
+      subject: Run the Fixsure monthly reports
+      body: It is the first of the month. Run the monthly report for each retailer so it reaches the retailer and the insurer.
+      link: new_report
+  notifications:
+    emailOnRunDone: true
+  exports:
+  - path: /api/rates
+    source: collection:rates
+    format: json
+    access: public
+  billing:
+    modes:
+    - free
+  extensions:
+  - key: checkout_widget
+    description: An embeddable checkout widget (JavaScript snippet) is not generated by the platform yet. Retailers integrate
+      through the public rates feed /api/rates and the sale webhook /api/hooks/policy_sale; the widget needs to be built separately
+      on those two endpoints.
+  - key: server_side_pricing
+    description: Premium and commission are looked up by the caller from the rates feed and sent with the sale; server-side
+      quote calculation and validation against the rates table are not available.
+  - key: policy_documents_pdf
+    description: Policy documents and the IPID are emailed as links (documents_url, ipid_url) supplied with the sale. Generating
+      and attaching PDFs is not available.
+  - key: claim_video
+    description: Photos and PDFs can be uploaded as claim evidence; video files are not an accepted file type yet.
+  - key: repairer_notifications
+    description: 'Partner repairers are not app users: repair bookings are visible to claims handlers, who pass them on. Direct
+      repairer notification and SMS are not available.'
+  - key: regulatory
+    description: Underwriting, FCA compliance, the IPID content and the policy wording belong to the MGA and insurer. This
+      app only holds the wording the assessor reads, kept by the admins in the wording collection.

@@ -1,0 +1,1173 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: craftella
+  displayName: Craftella
+  tagline: Book verified tradeswomen you can trust.
+  description: 'Craftella connects customers with vetted, independent tradeswomen: electricians, plumbers, decorators, gas
+    engineers and handywomen. Post a job, get matched, book or request quotes, and pay by card.'
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#3b1f4a'
+      accent: '#e0703a'
+      background: '#fbf8f4'
+      foreground: '#201826'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Craft
+      color: primary
+    - text: ella
+      color: accent
+    buttonShape: rounded
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Trades
+      href: '#trades'
+    cta:
+      label: Post a job
+      href: /v/post_job
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+      - directory_map
+      - terms
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      assignedBy: signup
+    - key: pro
+      label: Tradeswoman
+      assignedBy: derived
+      from: collection:directory.email
+  egress:
+    hosts:
+    - api.postcodes.io
+    notes: 'Postcodes.io: free open postcode lookup (lat/lon) built on open ONS/OS Open Data, used only to place jobs and
+      tradeswomen on the map.'
+  agents:
+  - key: vetter
+    role: main
+    description: Pre-checks a tradeswoman's documents and public registers, then asks an admin to approve.
+    awaits:
+    - vetting
+    profile:
+      inline:
+        display_name: Craftella vetting assistant
+        crews:
+        - id: vetter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You pre-check new tradeswomen applying to Craftella. Open each uploaded document (photo ID, insurance
+            certificate, qualifications) with the read_upload tool using the file ids you are given. Check: ID is legible
+            and matches the name; insurance covers public liability, is in date and covers the declared trades; qualifications
+            fit the trades. For gas work, look the person up on the public Gas Safe register (gassaferegister.co.uk) with
+            the web tools and compare name, registration number and gas categories. For electrical work, check NICEIC membership
+            on the public NICEIC find-a-contractor page. Never invent a result: if a register cannot be checked, say so. Save
+            a short checklist with save_vetting_notes (status stays pending) and then call request_vetting with a summary:
+            PASS / NEEDS ATTENTION per item and your recommendation. You only recommend; an admin decides. Do not store or
+            repeat ID numbers beyond what is needed.'
+    appTools:
+    - name: read_upload
+      description: Read a file the applicant uploaded
+      action: read_file
+    - name: save_vetting_notes
+      description: Save the vetting checklist on the application
+      action: write
+      collection: tradeswomen
+      scope: user
+    goalTemplate: 'New tradeswoman application. Name: {record.full_name}. Trades: {record.trades}. Gas Safe number: {record.gas_safe_number}.
+      NICEIC number: {record.niceic_number}. ID file ids: {record.id_doc}. Insurance file ids: {record.insurance_doc}. Qualification
+      file ids: {record.qualification_docs}. Today is {date}. Run the checks and request approval.'
+    output: markdown
+  - key: publisher
+    role: helper
+    description: After admin approval, publishes the tradeswoman on the directory with map coordinates.
+    profile:
+      inline:
+        display_name: Craftella publisher
+        crews:
+        - id: publisher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'An admin approved a tradeswoman. Read her application with read_application, look up the latitude
+            and longitude of her postcode with postcode_lookup (GET path like /postcodes/SW1A1AA, response result.latitude
+            and result.longitude), then call publish_profile once with: full_name, email, trades, postcode, lat, lon, area_miles,
+            day_rate, bio, phone, gas_safe_verified, niceic_verified (true only if the vetting notes say the register check
+            passed), rating 0, review_count 0. Reply with one line confirming.'
+    appTools:
+    - name: read_application
+      description: Read the tradeswoman's application
+      action: read
+      collection: tradeswomen
+      scope: user
+    - name: postcode_lookup
+      description: Look up a UK postcode (lat/lon)
+      action: http
+      http:
+        method: GET
+        url: https://api.postcodes.io/postcodes
+        allowPath: true
+        attribution: Postcodes.io, open ONS/OS data
+    - name: publish_profile
+      description: Create or update the public directory profile
+      action: write
+      collection: directory
+      scope: all
+    goalTemplate: 'Publish the approved tradeswoman. Event: {event}'
+    output: markdown
+  - key: matcher
+    role: helper
+    description: Matches a new job with the best-fit nearby tradeswomen and invites them.
+    profile:
+      inline:
+        display_name: Craftella matcher
+        crews:
+        - id: matcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You match a customer's job with up to 5 verified tradeswomen. Get the job's coordinates with postcode_lookup
+            (GET path /postcodes/<postcode without spaces>; result.latitude, result.longitude). Search the directory with
+            search_directory for her trade. Keep only those whose service area (area_miles) covers the job distance, and for
+            gas work require gas_safe_verified, for electrical work niceic_verified. Rank by distance, rating, day rate versus
+            budget and fit. For each pick, call create_match with job_title, job_trade, job_postcode, pro_email, pro_name,
+            score (0-100), reason (one sentence) and status "invited". If nobody fits, say so plainly. Never invent tradeswomen.
+    appTools:
+    - name: postcode_lookup
+      description: Look up a UK postcode (lat/lon)
+      action: http
+      http:
+        method: GET
+        url: https://api.postcodes.io/postcodes
+        allowPath: true
+        attribution: Postcodes.io, open ONS/OS data
+    - name: search_directory
+      description: Search verified tradeswomen
+      action: search
+      collection: directory
+      scope: all
+    - name: create_match
+      description: Invite a tradeswoman to a job
+      action: append
+      collection: matches
+      scope: user
+    goalTemplate: 'New job. Trade: {record.trade}. Postcode: {record.postcode}. Budget: {record.budget}. Preferred dates:
+      {record.preferred_dates}. Mode: {record.mode}. Description: {record.description}. Today is {date}.'
+    output: markdown
+  - key: rating_updater
+    role: scheduled
+    description: Daily refresh of directory ratings from reviews.
+    profile:
+      inline:
+        display_name: Craftella ratings
+        crews:
+        - id: rating_updater
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: Read all reviews with read_reviews. Only reviews with reviewer_role customer count towards a tradeswoman's
+            rating. For each tradeswoman reviewed (about_email), compute the average rating (one decimal) and the review count,
+            and call update_directory with her email, rating and review_count. Do not touch anyone else. Reply with the number
+            updated.
+    appTools:
+    - name: read_reviews
+      description: Read all reviews
+      action: read
+      collection: reviews
+      scope: all
+    - name: update_directory
+      description: Update a directory profile's rating
+      action: write
+      collection: directory
+      scope: all
+    goalTemplate: Refresh the directory ratings. Today is {date}.
+    output: markdown
+  schedules:
+  - agent: rating_updater
+    cron: 0 3 * * *
+    action: run
+    owner: app
+  approvals:
+  - key: vetting
+    title: Approve tradeswoman
+    description: Review the vetting checklist and approve or reject the tradeswoman.
+    role: admin
+    fields:
+    - summary
+    decidedBy: role
+  triggers:
+  - key: application_received
+    'on':
+      collection: tradeswomen
+      op: insert
+      where:
+        status: pending
+    start:
+      agent: vetter
+  - key: vetting_approved
+    'on':
+      approval: vetting
+      decision: approved
+    start:
+      agent: publisher
+    goal: 'The admin approved this tradeswoman. Publish her profile. Event: {event}'
+  - key: vetting_rejected
+    'on':
+      approval: vetting
+      decision: rejected
+    notify:
+      to: owner
+      subject: Your Craftella application
+      body: Thank you for applying. We could not approve your application at this time. Please contact us if you would like
+        to resubmit updated documents.
+      link: join
+  - key: job_posted
+    'on':
+      collection: jobs
+      op: insert
+    start:
+      agent: matcher
+    goal: 'Match this job. Trade: {record.trade}. Postcode: {record.postcode}. Budget: {record.budget}. Preferred dates: {record.preferred_dates}.
+      Mode: {record.mode}. Description: {record.description}.'
+  - key: lead_invited
+    'on':
+      collection: matches
+      op: insert
+    notify:
+      to: record.pro_email
+      subject: 'New job near you: {record.job_trade}'
+      body: A customer in {record.job_postcode} needs a {record.job_trade}. Open Craftella to see the job and accept or send
+        a quote.
+      link: leads
+  - key: booking_confirmed
+    'on':
+      collection: bookings
+      op: insert
+    notify:
+      to:
+      - owner
+      - admins
+      subject: Booking received
+      body: Your booking has been recorded. The tradeswoman will confirm shortly.
+      link: my_bookings
+  - key: booking_reminder
+    'on':
+      date:
+        collection: bookings
+        field: start
+        offsetDays: -1
+        hour: 8
+    notify:
+      to: owner
+      subject: 'Reminder: your booking is tomorrow'
+      body: This is a reminder of your Craftella booking tomorrow.
+      link: my_bookings
+  - key: job_complete
+    'on':
+      collection: jobs
+      op: update
+      where:
+        status: complete
+    write:
+      collection: payments
+      fields:
+        job_title: title
+        pro_email: assigned_email
+        amount: agreed_price
+      keyBy: job_title
+  - key: dispute_raised
+    'on':
+      collection: disputes
+      op: insert
+    notify:
+      to: admins
+      subject: 'New dispute: {record.job_title}'
+      body: 'A dispute was raised: {record.details}'
+      link: admin
+  inputForm:
+    title: Post a job
+    fields:
+    - name: trade
+      type: text
+  data:
+    collections:
+    - name: tradeswomen
+      description: Applications and private profiles of tradeswomen
+      ownedBy: user
+      fields:
+      - name: full_name
+        type: text
+        required: true
+        label: Full name
+      - name: phone
+        type: text
+        label: Phone
+      - name: trades
+        type: multiselect
+        required: true
+        label: Trades
+        options:
+        - electrician
+        - plumber
+        - decorator
+        - gas engineer
+        - handywoman
+      - name: postcode
+        type: text
+        required: true
+        label: Base postcode
+      - name: area_miles
+        type: number
+        required: true
+        label: Service area (miles)
+      - name: day_rate
+        type: number
+        required: true
+        label: Day rate (GBP)
+      - name: availability
+        type: textarea
+        label: Availability
+      - name: bio
+        type: textarea
+        maxLength: 800
+        label: About you
+      - name: gas_safe_number
+        type: text
+        label: Gas Safe registration number (gas work)
+      - name: niceic_number
+        type: text
+        label: NICEIC membership number (electrical work)
+      - name: id_doc
+        type: file
+        required: true
+        accept:
+        - pdf
+        - jpg
+        - png
+        maxMb: 10
+        label: Photo ID
+      - name: insurance_doc
+        type: file
+        required: true
+        accept:
+        - pdf
+        - jpg
+        - png
+        maxMb: 10
+        label: Insurance certificate
+      - name: qualification_docs
+        type: file
+        accept:
+        - pdf
+        - jpg
+        - png
+        maxMb: 10
+        multiple: true
+        label: Qualifications
+      - name: vetting_notes
+        type: textarea
+        label: Vetting notes
+      - name: status
+        type: select
+        default: pending
+        label: Status
+        options:
+        - pending
+        - approved
+        - rejected
+      retentionDays: 2555
+    - name: directory
+      description: Public profiles of approved tradeswomen
+      ownedBy: shared
+      fields:
+      - name: full_name
+        type: text
+        label: Name
+      - name: email
+        type: email
+      - name: trades
+        type: multiselect
+        label: Trades
+        options:
+        - electrician
+        - plumber
+        - decorator
+        - gas engineer
+        - handywoman
+      - name: postcode
+        type: text
+      - name: lat
+        type: number
+      - name: lon
+        type: number
+      - name: area_miles
+        type: number
+        label: Area (miles)
+      - name: day_rate
+        type: number
+        label: Day rate
+      - name: bio
+        type: textarea
+      - name: phone
+        type: text
+      - name: gas_safe_verified
+        type: boolean
+        label: Gas Safe verified
+      - name: niceic_verified
+        type: boolean
+        label: NICEIC verified
+      - name: rating
+        type: number
+        label: Rating
+      - name: review_count
+        type: number
+        label: Reviews
+      - name: slots
+        type: json
+    - name: jobs
+      description: Jobs posted by customers
+      ownedBy: user
+      fields:
+      - name: trade
+        type: select
+        required: true
+        label: Trade
+        options:
+        - electrician
+        - plumber
+        - decorator
+        - gas engineer
+        - handywoman
+      - name: title
+        type: text
+        required: true
+        label: Job title
+      - name: description
+        type: textarea
+        required: true
+        label: Describe the job
+      - name: photos
+        type: file
+        accept:
+        - jpg
+        - png
+        - webp
+        maxMb: 10
+        multiple: true
+        label: Photos
+      - name: postcode
+        type: text
+        required: true
+        label: Postcode
+      - name: preferred_dates
+        type: text
+        label: Preferred dates
+      - name: budget
+        type: number
+        label: Budget (GBP)
+      - name: mode
+        type: select
+        required: true
+        label: How
+        options:
+        - value: quotes
+          label: Request quotes
+        - value: book
+          label: Book a slot
+      - name: status
+        type: select
+        default: open
+        label: Status
+        options:
+        - open
+        - matched
+        - booked
+        - in_progress
+        - complete
+        - disputed
+      - name: assigned_email
+        type: email
+        label: Tradeswoman
+      - name: agreed_price
+        type: number
+        label: Agreed price
+      access:
+      - role: pro
+        where:
+          assigned_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: matches
+      description: Invitations and quotes linking a job to a tradeswoman
+      ownedBy: user
+      fields:
+      - name: job_title
+        type: text
+        label: Job
+      - name: job_trade
+        type: text
+        label: Trade
+      - name: job_postcode
+        type: text
+        label: Postcode
+      - name: pro_email
+        type: email
+      - name: pro_name
+        type: text
+        label: Tradeswoman
+      - name: score
+        type: number
+        label: Match score
+      - name: reason
+        type: text
+        label: Why
+      - name: status
+        type: select
+        default: invited
+        label: Status
+        options:
+        - invited
+        - accepted
+        - declined
+        - quoted
+        - chosen
+      - name: quote_amount
+        type: number
+        label: Quote (GBP)
+      - name: proposed_date
+        type: date
+        label: Proposed date
+      - name: message
+        type: textarea
+        label: Message
+      access:
+      - role: pro
+        where:
+          pro_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: bookings
+      description: Slot bookings
+      ownedBy: user
+      fields:
+      - name: notes
+        type: textarea
+        label: Notes
+      - name: job_title
+        type: text
+        label: Job
+    - name: payments
+      description: Payments and payouts per completed job
+      ownedBy: user
+      fields:
+      - name: job_title
+        type: text
+        label: Job
+      - name: pro_email
+        type: email
+      - name: amount
+        type: number
+        label: Amount (GBP)
+      - name: status
+        type: select
+        default: due
+        label: Status
+        options:
+        - held
+        - due
+        - released
+        - refunded
+      access:
+      - role: pro
+        where:
+          pro_email: '{user.email}'
+    - name: reviews
+      description: Reviews from both sides
+      ownedBy: org
+      fields:
+      - name: job_title
+        type: text
+        required: true
+        label: Job
+      - name: about_email
+        type: email
+        required: true
+        label: Email of the person reviewed
+      - name: reviewer_role
+        type: select
+        required: true
+        label: I am the
+        options:
+        - customer
+        - tradeswoman
+      - name: rating
+        type: number
+        required: true
+        label: Rating (1-5)
+      - name: comment
+        type: textarea
+        label: Comment
+    - name: disputes
+      description: Disputes raised by either side
+      ownedBy: org
+      fields:
+      - name: job_title
+        type: text
+        required: true
+        label: Job
+      - name: details
+        type: textarea
+        required: true
+        label: What went wrong
+      - name: evidence
+        type: file
+        accept:
+        - pdf
+        - jpg
+        - png
+        maxMb: 10
+        multiple: true
+        label: Evidence
+  views:
+  - key: home
+    type: page
+    title: Craftella
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: Verified tradeswomen
+      title: Skilled **tradeswomen**, checked and ready to work.
+      text: Electricians, plumbers, decorators, gas engineers and handywomen. Every one is ID, insurance and qualification
+        checked before she appears.
+      actions:
+      - label: Post a job
+        href: /v/post_job
+        style: primary
+      - label: Browse the map
+        href: /v/directory_map
+        style: ghost
+      - label: Join as a tradeswoman
+        href: /v/join
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Post your job
+        text: Trade, description, photos, postcode, dates and budget.
+        badge: 📝
+      - title: Get matched
+        text: We invite the best-fit verified tradeswomen near you.
+        badge: 📍
+      - title: Book or compare quotes
+        text: Pick a slot or choose between quotes.
+        badge: 📅
+      - title: Pay safely
+        text: Pay by card in the app. Mark the job complete when happy, then review each other.
+        badge: 💳
+    - type: cards
+      id: trades
+      title: Trades
+      items:
+      - title: Electricians
+        text: NICEIC membership checked for electrical work.
+        badge: ⚡
+      - title: Gas engineers
+        text: Gas Safe register checked.
+        badge: 🔥
+      - title: Plumbers
+        text: Insurance and qualifications checked.
+        badge: 🚰
+      - title: Decorators and handywomen
+        text: ID and insurance checked.
+        badge: 🎨
+    - type: note
+      content: Tradeswomen on Craftella are independent businesses, not employees. See our [terms for independent tradeswomen](/v/terms).
+  - key: join
+    type: form
+    title: Join as a tradeswoman
+    collection: tradeswomen
+    fields:
+    - full_name
+    - phone
+    - trades
+    - postcode
+    - area_miles
+    - day_rate
+    - availability
+    - bio
+    - gas_safe_number
+    - niceic_number
+    - id_doc
+    - insurance_doc
+    - qualification_docs
+    submit:
+      label: Submit for vetting
+      message: Thanks! We are checking your documents and will email you when you are approved.
+    edit: false
+  - key: directory_map
+    type: map
+    title: Find a tradeswoman
+    source: collection:directory
+    map:
+      lat: lat
+      lon: lon
+      title: full_name
+      popup:
+      - trades
+      - rating
+      - day_rate
+  - key: directory
+    type: cards
+    title: Directory
+    source: collection:directory
+    data:
+      display: cards
+      fields:
+      - key: full_name
+        label: Name
+      - key: trades
+        label: Trades
+      - key: rating
+        label: Rating
+        format: number
+      - key: day_rate
+        label: Day rate
+        format: money
+      - key: gas_safe_verified
+        label: Gas Safe
+      - key: niceic_verified
+        label: NICEIC
+      sort:
+        field: rating
+        dir: desc
+      limit: 100
+      actions:
+      - type: call
+        field: phone
+  - key: post_job
+    type: form
+    title: Post a job
+    collection: jobs
+    fields:
+    - trade
+    - title
+    - description
+    - photos
+    - postcode
+    - preferred_dates
+    - budget
+    - mode
+    submit:
+      label: Post job
+      message: Job posted. We are matching you with tradeswomen now.
+      redirect: my_jobs
+    edit: false
+  - key: book
+    type: booking
+    title: Book a slot
+    collection: bookings
+    resources: collection:directory
+    fields:
+    - job_title
+    - notes
+    slots:
+      days:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      from: 08:00
+      to: '17:00'
+      minutes: 240
+      tz: Europe/London
+      aheadDays: 28
+      minNoticeHours: 24
+      capacity: 1
+  - key: my_jobs
+    type: table
+    title: My jobs
+    source: collection:jobs
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Job
+      - key: trade
+        label: Trade
+      - key: postcode
+        label: Postcode
+      - key: status
+        label: Status
+        format: badge
+      - key: assigned_email
+        label: Tradeswoman
+      - key: agreed_price
+        label: Price
+        format: money
+      sort:
+        field: title
+        dir: asc
+      limit: 100
+  - key: leads
+    type: table
+    title: Quotes and leads
+    source: collection:matches
+    data:
+      display: table
+      fields:
+      - key: job_title
+        label: Job
+      - key: pro_name
+        label: Tradeswoman
+      - key: score
+        label: Match
+        format: number
+      - key: status
+        label: Status
+        format: badge
+      - key: quote_amount
+        label: Quote
+        format: money
+      - key: proposed_date
+        label: Date
+        format: date
+      - key: reason
+        label: Why
+      limit: 100
+  - key: respond
+    type: form
+    title: Reply to a lead
+    collection: matches
+    fields:
+    - status
+    - quote_amount
+    - proposed_date
+    - message
+    submit:
+      label: Send reply
+      message: Reply sent to the customer.
+      redirect: leads
+    edit: true
+    nav: false
+    roles:
+    - pro
+    - admin
+  - key: my_bookings
+    type: table
+    title: Bookings
+    source: collection:bookings
+    data:
+      display: table
+      fields:
+      - key: job_title
+        label: Job
+      - key: date
+        label: Date
+        format: date
+      - key: resource
+        label: Tradeswoman
+      - key: status
+        label: Status
+        format: badge
+      - key: notes
+        label: Notes
+      sort:
+        field: date
+        dir: desc
+      limit: 100
+  - key: earnings
+    type: table
+    title: Earnings
+    source: collection:payments
+    roles:
+    - pro
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: job_title
+        label: Job
+      - key: amount
+        label: Amount
+        format: money
+      - key: status
+        label: Payout
+        format: badge
+      kpis:
+      - label: Total
+        agg: sum
+        field: amount
+        format: money
+      - label: Jobs paid
+        agg: count
+      limit: 200
+  - key: review
+    type: form
+    title: Leave a review
+    collection: reviews
+    submit:
+      label: Submit review
+      message: Thank you for your review.
+    edit: false
+  - key: dispute
+    type: form
+    title: Raise a dispute
+    collection: disputes
+    submit:
+      label: Send to Craftella
+      message: We received your dispute and will contact you within two working days.
+    edit: false
+  - key: terms
+    type: page
+    title: Terms for tradeswomen
+    nav: false
+    sections:
+    - type: text
+      title: Independent tradeswomen
+      content: 'Tradeswomen on Craftella are self-employed and run their own businesses. Craftella is an introduction and
+        payment-collection platform, not their employer.
+
+
+        - She decides whether to accept any job and is never obliged to take work.
+
+        - She sets her own day rates and quotes and chooses her own hours.
+
+        - She may send a suitably qualified substitute, subject to the customer''s agreement and our document checks.
+
+        - She uses her own tools, materials and vehicle and carries her own public liability insurance.
+
+        - She is responsible for her own tax, National Insurance and any VAT.
+
+        - Craftella gives no day-to-day direction on how work is done and offers no holiday pay, sick pay or exclusivity.
+
+        - The service contract for each job is between the customer and the tradeswoman. Craftella collects payment and deducts
+        its commission.'
+    - type: note
+      content: 'Draft terms: have a UK employment solicitor review them against current worker-status and IR35 guidance before
+        launch.'
+  - key: admin
+    type: tabs
+    title: Admin
+    children:
+    - admin_queue
+    - admin_pros
+    - admin_jobs
+    - admin_disputes
+    - admin_reviews
+    - admin_payments
+    roles:
+    - admin
+  - key: admin_queue
+    type: approvals
+    title: Vetting queue
+    approvals:
+    - vetting
+    roles:
+    - admin
+    nav: false
+  - key: admin_pros
+    type: table
+    title: Tradeswomen
+    source: collection:tradeswomen
+    roles:
+    - admin
+    nav: false
+    export: true
+    data:
+      display: table
+      fields:
+      - key: full_name
+        label: Name
+      - key: trades
+        label: Trades
+      - key: postcode
+        label: Postcode
+      - key: status
+        label: Status
+        format: badge
+      - key: vetting_notes
+        label: Vetting notes
+      limit: 200
+  - key: admin_jobs
+    type: table
+    title: All jobs
+    source: collection:jobs
+    roles:
+    - admin
+    nav: false
+    export: true
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Job
+      - key: trade
+        label: Trade
+      - key: postcode
+        label: Postcode
+      - key: status
+        label: Status
+        format: badge
+      - key: agreed_price
+        label: Price
+        format: money
+      limit: 200
+  - key: admin_disputes
+    type: table
+    title: Disputes
+    source: collection:disputes
+    roles:
+    - admin
+    nav: false
+    data:
+      display: table
+      fields:
+      - key: job_title
+        label: Job
+      - key: details
+        label: Details
+      limit: 200
+  - key: admin_reviews
+    type: table
+    title: Reviews
+    source: collection:reviews
+    roles:
+    - admin
+    nav: false
+    data:
+      display: table
+      fields:
+      - key: job_title
+        label: Job
+      - key: about_email
+        label: About
+      - key: reviewer_role
+        label: By
+      - key: rating
+        label: Rating
+        format: number
+      - key: comment
+        label: Comment
+      limit: 200
+  - key: admin_payments
+    type: table
+    title: Payments and payouts
+    source: collection:payments
+    roles:
+    - admin
+    nav: false
+    export: true
+    data:
+      display: table
+      fields:
+      - key: job_title
+        label: Job
+      - key: pro_email
+        label: Tradeswoman
+      - key: amount
+        label: Amount
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      kpis:
+      - label: Volume
+        agg: sum
+        field: amount
+        format: money
+      limit: 200
+  billing:
+    modes:
+    - per_transaction
+    currency: gbp
+    transactionFeePct: 12
+    sellers: collection:directory
+  notifications:
+    emailOnRunDone: false
+  extensions:
+  - key: escrow_hold
+    description: Card payment is taken through Stripe Connect with a 12% commission. Holding the money until the customer
+      marks the job complete, then releasing the payout, is not expressible in the manifest yet; the payments collection tracks
+      held/due/released manually via admin.
+  - key: accept_quote_button
+    description: A one-click Accept quote button on the leads table, linking each row to the respond form, is not available;
+      customers and tradeswomen update records through the edit form.
+  - key: booking_staff_access
+    description: Tradeswomen seeing their own slot bookings needs the booking's resource to be linked to her email; today
+      admins see all bookings and tradeswomen see jobs and leads.
+  - key: sms_push
+    description: SMS, WhatsApp and push alerts to matched tradeswomen are not available; email notifications are used.

@@ -1,0 +1,793 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: homefinch
+  displayName: Homefinch
+  tagline:
+    en: Describe your next home in plain words. Homefinch finds it.
+  description:
+    en: An AI home-search agent for people buying or renting in the UK. It turns plain-language wishes or photos of homes
+      you like into structured criteria, ranks listings from licensed feeds by fit, and enriches each one with open data.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f4d3a'
+      accent: '#e07a3f'
+      background: '#fbf8f3'
+      foreground: '#1c2321'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Home
+      color: primary
+    - text: finch
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Data and sources
+      href: '#sources'
+    - label: For estate agents
+      href: '#agents'
+    cta:
+      label: Start searching
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      label: Searcher
+      assignedBy: signup
+    - key: agent
+      label: Estate agent
+      assignedBy: invite
+  limits:
+  - action: agent:matcher
+    per: user
+    max: 10
+    window: day
+    roles:
+    - user
+  - action: create:agent_listings
+    max: 5
+    window: total
+    plans:
+      agent_pro: -1
+  egress:
+    hosts:
+    - api.postcodes.io
+    - landregistry.data.gov.uk
+    - epc.opendatacommunities.org
+    - www.planning.data.gov.uk
+    - api.beta.ons.gov.uk
+    - api.tfl.gov.uk
+    notes: 'api.postcodes.io: postcode geocoding (open data). landregistry.data.gov.uk: HM Land Registry Price Paid Data,
+      Open Government Licence v3.0. epc.opendatacommunities.org: EPC register, OGL, requires the app''s registered key. www.planning.data.gov.uk:
+      planning applications, OGL. api.beta.ons.gov.uk: ONS statistics, OGL. api.tfl.gov.uk: TfL journey planner for London
+      commute times, subject to TfL terms. No property portal is called: listings come only from licensed feeds or from agents
+      who confirm their own licence.'
+  agents:
+  - key: matcher
+    role: main
+    description: Turns the user's wishes into criteria, ranks licensed listings by fit and enriches each with open data.
+    profile:
+      inline:
+        display_name: Homefinch matcher
+        crews:
+        - id: matcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Homefinch, a home-search assistant for people buying or renting in the UK.
+
+
+            STEP 1 - CRITERIA. Turn the user''s plain-language description (and any photos they uploaded) into structured
+            criteria: buy or rent, budget, bedrooms, property type, must-haves (garden, parking...), nice-to-haves, target
+            area or commute (destination and maximum minutes), school proximity. For photos, call read_upload with each file
+            id and note recurring style and features (period features, open plan, natural light, garden, kitchen type); treat
+            them as soft preferences. State the criteria as a short table and mark which ones you inferred.
+
+
+            STEP 2 - SEARCH. Use search_listings to find candidate listings. It only contains licensed feed listings; never
+            claim to have searched any other site and never invent a listing. If nothing fits, say so and suggest which criterion
+            to relax.
+
+
+            STEP 3 - ENRICH the top 5 to 8 listings with open data, only through your tools:
+
+            - postcode_lookup: GET path /<postcode without spaces> gives lat/lon, local authority and LSOA.
+
+            - ppd_street: HM Land Registry Price Paid, query e.g. propertyAddress.postcode=<POSTCODE>&_pageSize=20&_sort=-transactionDate.
+            Summarise recent sold prices on the street.
+
+            - epc_search: query postcode=<POSTCODE>&size=10 (response is JSON); report the EPC rating of the matching address,
+            or say it could not be matched.
+
+            - planning_nearby: query e.g. dataset=planning-application&longitude=<lon>&latitude=<lat>&limit=10; list notable
+            applications nearby.
+
+            - ons_stats: use only to cite an area statistic (for example median age, house price or earnings for the local
+            authority) that you actually retrieved.
+
+            - tfl_journey: path /<from lat,lon>/to/<destination> with query mode=tube,national-rail,bus; use it only for London-area
+            commutes and report the shortest duration returned. For other commutes say the time is an estimate.
+
+            If a call fails or returns nothing, write ''not available'' for that item. Never invent figures, ratings, school
+            quality or commute times. Features seen in listing photos come only from the listing''s photo_features field.
+
+
+            STEP 4 - REPORT. Start with a level-1 title ''# Homefinch - <short summary of the search>''. Then: ## Your criteria;
+            ## Best matches - for each listing a block with title, price, address, fit score out of 100, ''Why it fits'' (2
+            to 4 bullets, each tied to a criterion), ''Watch out'', then a small list: Street price history, EPC, Planning
+            nearby, Area statistics, Commute, with the source of each; the agent''s name and the listing url. ## Compare -
+            one table of the matches. ## Next steps - suggest saving to a shortlist, sending an enquiry to the agent, and
+            setting up an alert. Add one chart block for price versus bedrooms if there are 3 or more matches, as ```chart
+            {"type":"bar","title":"Asking price","labels":[...],"series":[{"name":"Price","values":[...]}]} ```. Finish with
+            a note that data comes from licensed feeds and open government data (OGL v3.0), is not financial, legal or surveying
+            advice, and should be checked before any offer.'
+          mcp_servers: []
+    goalTemplate: 'The user wants to {intent_label} a home in the UK.
+
+      Their description: {wishes}
+
+      {?max_budget}Maximum budget: {max_budget} GBP ({intent_label}).{/max_budget}
+
+      {?photos}Photos of homes they like (file ids): {photos}. Open each with read_upload.{/photos}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    appTools:
+    - name: search_listings
+      description: Search the licensed listings (buy and rent) by text, area, price and bedrooms
+      action: search
+      collection: listings
+      scope: all
+    - name: read_upload
+      description: Read a photo the user uploaded (OCR included)
+      action: read_file
+    - name: postcode_lookup
+      description: 'Geocode a UK postcode: lat/lon, local authority, LSOA'
+      action: http
+      http:
+        method: GET
+        url: https://api.postcodes.io/postcodes
+        allowPath: true
+        attribution: postcodes.io, OS and ONS open data
+    - name: ppd_street
+      description: HM Land Registry Price Paid transactions for a postcode or street
+      action: http
+      http:
+        method: GET
+        url: https://landregistry.data.gov.uk/data/ppi/transaction-record.json
+        attribution: Contains HM Land Registry data, Crown copyright, OGL v3.0
+    - name: epc_search
+      description: Search Energy Performance Certificates for a postcode
+      action: http
+      http:
+        method: GET
+        url: https://epc.opendatacommunities.org/api/v1/domestic/search
+        headers:
+          Accept: application/json
+        attribution: EPC register, MHCLG, OGL v3.0
+        credential:
+          provider: epc
+          header: Authorization
+          format: Basic {secret}
+    - name: planning_nearby
+      description: Planning applications near a location from planning.data.gov.uk
+      action: http
+      http:
+        method: GET
+        url: https://www.planning.data.gov.uk/entity.json
+        attribution: planning.data.gov.uk, OGL v3.0
+    - name: ons_stats
+      description: Area statistics from the ONS API
+      action: http
+      http:
+        method: GET
+        url: https://api.beta.ons.gov.uk/v1/datasets
+        allowPath: true
+        attribution: Office for National Statistics, OGL v3.0
+    - name: tfl_journey
+      description: Journey times in London from the TfL journey planner
+      action: http
+      http:
+        method: GET
+        url: https://api.tfl.gov.uk/Journey/JourneyResults
+        allowPath: true
+        attribution: Powered by TfL Open Data
+    output: markdown
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 1.0
+  - key: alert_watcher
+    role: helper
+    description: Runs a saved search every day and reports only listings that are new since last time.
+    memory: instance
+    writesTo:
+      collection: alert_matches
+    profile:
+      inline:
+        display_name: Homefinch alert watcher
+        crews:
+        - id: alert_watcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You watch one saved home search. Use search_listings to find licensed listings that fit the saved
+            criteria. Your memory holds the listing references you already reported: report only new ones, ranked by fit,
+            each with price, address, fit score, a one-line reason and the listing url. Start with ''# New homes - <date>''.
+            If there are no new matches, write ''# No new matches - <date>'' and one line saying so. Never invent listings
+            or figures. At the end call remember once with the references of all listings you have now reported (old and new).'
+          mcp_servers: []
+    goalTemplate: 'Saved search "{instance}": {intent} in the UK. Wishes: {criteria}. {?max_budget}Maximum budget: {max_budget}
+      GBP.{/max_budget} Today is {date}. Write in the language with ISO code {lang}.'
+    appTools:
+    - name: search_listings
+      description: Search the licensed listings (buy and rent) by text, area, price and bedrooms
+      action: search
+      collection: listings
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.3
+  templates:
+  - key: saved_search
+    title: Saved search alert
+    description: Describe what you want once; get an email when new matching homes appear.
+    agent: alert_watcher
+    params:
+    - name: criteria
+      type: textarea
+      required: true
+      label: What are you looking for?
+      maxLength: 600
+    - name: intent
+      type: select
+      required: true
+      label: Buy or rent
+      options:
+      - value: buy
+        label: Buy
+      - value: rent
+        label: Rent
+    - name: max_budget
+      type: number
+      label: Maximum budget (GBP)
+    schedule:
+      cron: 0 7 * * *
+      userCanChange: true
+    maxPerUser: 3
+    deliver:
+      to: owner
+      onlyIfNew: true
+  inputForm:
+    title: New home search
+    fields:
+    - name: intent
+      type: select
+      required: true
+      label: I want to
+      options:
+      - value: buy
+        label: Buy
+      - value: rent
+        label: Rent
+    - name: wishes
+      type: textarea
+      required: true
+      maxLength: 1500
+      label: Describe your ideal home
+      help: e.g. three bedrooms near a good primary school, under 30 minutes to King's Cross, a garden
+    - name: max_budget
+      type: number
+      label: Maximum budget (GBP, or per month for rent)
+    - name: photos
+      type: file
+      label: Photos of homes you like (optional)
+      accept:
+      - jpg
+      - jpeg
+      - png
+      - webp
+      maxMb: 10
+      multiple: true
+      extract: none
+  data:
+    collections:
+    - name: listings
+      ownedBy: shared
+      description: Licensed listings from feeds and from agents who confirm their own licence
+      searchable: true
+      fields:
+      - name: ref
+        type: text
+        required: true
+      - name: title
+        type: text
+        required: true
+      - name: tenure
+        type: select
+        options:
+        - value: buy
+          label: For sale
+        - value: rent
+          label: To rent
+      - name: price
+        type: number
+      - name: bedrooms
+        type: number
+      - name: bathrooms
+        type: number
+      - name: property_type
+        type: text
+      - name: garden
+        type: boolean
+      - name: address
+        type: text
+      - name: postcode
+        type: text
+      - name: lat
+        type: number
+      - name: lon
+        type: number
+      - name: description
+        type: textarea
+      - name: photo_features
+        type: text
+        help: Features recognised in the photos by the feed provider
+      - name: url
+        type: url
+      - name: agent_name
+        type: text
+      - name: agent_email
+        type: email
+      - name: feed
+        type: text
+        help: Feed provider or licence reference
+    - name: agent_listings
+      ownedBy: user
+      description: An estate agent's own listings; those with a confirmed licence are published to the listings catalogue
+      fields:
+      - name: ref
+        type: text
+        required: true
+      - name: title
+        type: text
+        required: true
+      - name: tenure
+        type: select
+        required: true
+        options:
+        - value: buy
+          label: For sale
+        - value: rent
+          label: To rent
+      - name: price
+        type: number
+        required: true
+      - name: bedrooms
+        type: number
+      - name: bathrooms
+        type: number
+      - name: property_type
+        type: text
+      - name: garden
+        type: boolean
+      - name: address
+        type: text
+        required: true
+      - name: postcode
+        type: text
+        required: true
+      - name: lat
+        type: number
+      - name: lon
+        type: number
+      - name: description
+        type: textarea
+      - name: photo_features
+        type: text
+      - name: url
+        type: url
+      - name: agent_name
+        type: text
+        required: true
+      - name: agent_email
+        type: email
+        required: true
+      - name: feed
+        type: text
+      - name: licensed
+        type: boolean
+        required: true
+        help: I confirm I hold the rights to publish this listing and its data
+    - name: shortlist
+      ownedBy: user
+      description: Saved homes with notes, shared with a partner by email
+      fields:
+      - name: listing_ref
+        type: text
+        required: true
+      - name: title
+        type: text
+        required: true
+      - name: price
+        type: number
+      - name: url
+        type: url
+      - name: notes
+        type: textarea
+      - name: members
+        type: array
+        help: Email addresses of the people who can see and edit this shortlist item
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: enquiries
+      ownedBy: user
+      description: Enquiries sent by searchers to estate agents
+      retentionDays: 365
+      fields:
+      - name: listing_ref
+        type: text
+        required: true
+      - name: agent_email
+        type: email
+        required: true
+        help: The agent's email, shown on the listing
+      - name: message
+        type: textarea
+        required: true
+      - name: phone
+        type: text
+      - name: status
+        type: select
+        options:
+        - value: new
+          label: New
+        - value: replied
+          label: Replied
+        - value: closed
+          label: Closed
+        default: new
+      access:
+      - role: agent
+        where:
+          agent_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: alert_matches
+      ownedBy: instance
+      description: The reports of each saved search alert
+    credentials:
+    - provider: epc
+      kind: api_key
+      scope: org
+      label: EPC register key
+      help: Register at epc.opendatacommunities.org and paste base64(email:apikey)
+  views:
+  - key: home
+    type: page
+    title: Homefinch
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: UK homes, buy or rent
+      title: Describe your next home. **Homefinch** finds it.
+      text: Say what you want in plain words or show us photos of homes you like. An AI agent turns it into criteria, ranks
+        licensed listings by fit, and explains why, with the street's price history, EPC, nearby planning and area statistics.
+      actions:
+      - label: Start a search
+        href: /login
+        style: primary
+      - label: I'm an estate agent
+        href: '#agents'
+        style: ghost
+      aside: '<div style="padding:16px"><strong>3 bed, near a good primary, under 30 min to King''s Cross, garden</strong><br>Best
+        match: 94/100. Garden, 22 min by train, EPC C, 2 sales on the street in the last year.</div>'
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Tell us what you want
+        text: Plain language or photos of homes you like.
+      - title: Get ranked matches
+        text: Each result has a fit score and reasons, on cards and on a map.
+      - title: Shortlist and share
+        text: Save homes, add notes, share with a partner.
+      - title: Get alerts
+        text: A daily email when new matching homes appear.
+    - type: cards
+      id: sources
+      title: Data and sources
+      intro: Listings only come from licensed feeds and from agents who publish their own. We never scrape the property portals.
+      items:
+      - title: HM Land Registry
+        text: Price Paid history for the street.
+      - title: EPC register
+        text: Energy rating of the home.
+      - title: planning.data.gov.uk
+        text: Planning applications nearby.
+      - title: ONS
+        text: Area statistics.
+    - type: cards
+      id: agents
+      title: For estate agents
+      intro: Free for searchers. Agents subscribe to publish listings and receive enquiries.
+      items:
+      - title: Manage your listings
+        text: Add and edit your own listings, with your licence confirmed.
+      - title: Receive enquiries
+        text: Enquiries arrive by email and in your inbox.
+    - type: note
+      content: Homefinch is decision support, not financial, legal or surveying advice. Contains public sector information
+        licensed under the Open Government Licence v3.0 and HM Land Registry data, Crown copyright.
+  - key: new_search
+    type: new_run
+    title: New search
+    roles:
+    - user
+    - admin
+  - key: searches
+    type: history
+    title: My searches
+    source: run
+    roles:
+    - user
+    - admin
+  - key: search
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: map
+    type: map
+    title: Map
+    source: collection:listings
+    map:
+      lat: lat
+      lon: lon
+      title: title
+      popup:
+      - price
+      - bedrooms
+      - address
+    roles:
+    - user
+    - admin
+  - key: browse
+    type: cards
+    title: Browse homes
+    source: collection:listings
+    roles:
+    - user
+    - admin
+    data:
+      display: cards
+      fields:
+      - key: title
+      - key: price
+        format: money
+      - key: bedrooms
+        format: number
+      - key: address
+      - key: agent_name
+      sort:
+        field: price
+        dir: asc
+      limit: 60
+      actions:
+      - type: directions
+        field: address
+      - type: share
+        field: url
+  - key: shortlist_view
+    type: table
+    title: Shortlist
+    source: collection:shortlist
+    roles:
+    - user
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: title
+      - key: price
+        format: money
+      - key: notes
+      - key: url
+        format: link
+  - key: shortlist_add
+    type: form
+    title: Save a home
+    collection: shortlist
+    edit: true
+    roles:
+    - user
+    - admin
+    submit:
+      label: Save to shortlist
+      message: Saved to your shortlist.
+      redirect: shortlist_view
+  - key: alerts
+    type: instances
+    template: saved_search
+    title: My alerts
+    roles:
+    - user
+    - admin
+  - key: enquire
+    type: form
+    title: Contact an agent
+    collection: enquiries
+    roles:
+    - user
+    - admin
+    submit:
+      label: Send enquiry
+      message: Your enquiry has been sent to the agent.
+  - key: enquiries_view
+    type: table
+    title: Enquiries
+    source: collection:enquiries
+    roles:
+    - user
+    - agent
+    - admin
+    data:
+      display: table
+      fields:
+      - key: listing_ref
+      - key: message
+      - key: phone
+      - key: status
+        format: badge
+  - key: my_listings
+    type: table
+    title: My listings
+    source: collection:agent_listings
+    roles:
+    - agent
+    export: true
+    data:
+      display: table
+      fields:
+      - key: ref
+      - key: title
+      - key: tenure
+        format: badge
+      - key: price
+        format: money
+      - key: postcode
+  - key: listing_form
+    type: form
+    title: Add or edit a listing
+    collection: agent_listings
+    edit: true
+    roles:
+    - agent
+    submit:
+      label: Publish listing
+      message: Listing saved. It is published once your licence is confirmed.
+      redirect: my_listings
+  - key: account
+    type: account
+    title: Subscription
+    roles:
+    - agent
+    - user
+  triggers:
+  - key: listing_feed
+    description: A licensed feed provider posts listings to the app's webhook
+    'on':
+      webhook: true
+    write:
+      collection: listings
+      keyBy: ref
+  - key: listing_mirror
+    description: Publishes an agent's licensed listing in the shared catalogue
+    'on':
+      collection: agent_listings
+      op: any
+      where:
+        licensed: true
+    write:
+      collection: listings
+      keyBy: ref
+  - key: enquiry_notify
+    'on':
+      collection: enquiries
+      op: insert
+    notify:
+      to:
+      - record.agent_email
+      subject: New enquiry about {record.listing_ref}
+      body: 'You have a new enquiry on Homefinch about {record.listing_ref}.
+
+
+        {record.message}
+
+
+        Phone: {record.phone}'
+      link: enquiries_view
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: agent_pro
+      price: 49
+      interval: month
+      label: Agent Pro
+      includes:
+      - Unlimited own listings
+      - Enquiries by email and in your inbox
+      - Licensed feed ingestion
+      credits: 0
+      roles:
+      - agent
+  extensions:
+  - key: agent_signup
+    description: Estate agents get the agent role by invitation from an admin (invite role); a self-service agent sign-up
+      with verification is not available yet.
+  - key: licensed_feeds
+    description: Listings come only from licensed feed providers posting to the webhook /api/hooks/listing_feed and from agents
+      confirming their licence. The admins must sign the feed agreements; no portal is scraped.
+  - key: photo_recognition
+    description: Features recognised in listing photos are read from the listing's photo_features field supplied by the feed
+      or provider. The agent cannot yet view photos of listings; it can view photos uploaded by the user.
+  - key: enquiry_prefill
+    description: The enquiry form asks for the agent's email shown on the card; prefilling it from the chosen listing is not
+      available yet.
+  - key: school_quality
+    description: Ofsted and school-catchment data are not wired in; the agent will not claim school quality.
+  - key: shortlist_sharing
+    description: Sharing a shortlist item with a partner works by listing their email; the partner must have a Homefinch account.

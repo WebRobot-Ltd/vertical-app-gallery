@@ -1,0 +1,624 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: parcelyn
+  displayName: Parcelyn
+  tagline:
+    en: Environmental and property risk reports for conveyancers, reviewed by a solicitor before release.
+  description:
+    en: Fee earners order a report from an address. An AI agent geocodes it, gathers open data on flood, ground stability,
+      radon, landfill, contaminated land, coal mining and planning, scores each risk and writes a plain-English summary with
+      recommended further searches. A solicitor reviews it before the PDF is released to the client file.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12304a'
+      accent: '#1f8a70'
+      background: '#f6f8fa'
+      foreground: '#17222d'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Parcel
+      color: primary
+    - text: yn
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how-it-works'
+    - label: Data sources
+      href: '#sources'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Order a report
+      href: /v/new_order
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Firm admin
+      assignedBy: admin_emails
+    - key: reviewer
+      label: Reviewing solicitor
+      assignedBy: invite
+    - key: user
+      label: Fee earner
+      assignedBy: signup
+  agents:
+  - key: analyst
+    role: main
+    description: Geocodes the property, collects open environmental data, scores each risk, writes the report and asks a solicitor
+      to review it.
+    awaits:
+    - release_report
+    writesTo:
+      collection: reports
+      parse: json_last
+    profile:
+      inline:
+        display_name: Parcelyn risk analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are an environmental and property risk analyst producing a pre-purchase report for a conveyancing
+            solicitor in England and Wales. Steps:
+
+            1. Geocode the address with the geocode tool (Nominatim: query q=<address, postcode>&format=json&limit=1&countrycodes=gb;
+            use lat and lon from the first result). If the address is ambiguous, retry with the postcode alone and say so
+            in the report.
+
+            2. Collect open data for that point with the tools: Environment Agency flood risk from rivers and sea and from
+            surface water (ea_spatial), British Geological Survey ground stability (shrink-swell, landslides, dissolution,
+            compressible ground) and radon potential (bgs_geology), planning data where published as open data (planning_data:
+            GET entity.json with longitude, latitude and dataset=conservation-area, listed-building, article-4-direction,
+            flood-risk-zone etc.). For historic landfill, local-authority contaminated land registers and Coal Authority coal
+            mining reporting areas, use the webrobot MCP to read the official open-data pages or datasets. Never guess: if
+            a source cannot be reached or has no coverage, write ''not retrieved'' for that risk and recommend the matching
+            paid search.
+
+            3. Score each risk from 0 (none) to 5 (severe): flood_score (worst of rivers/sea/surface water), ground_score,
+            radon_score, landfill_score, contamination_score, coal_score. Unknown = null. Give overall_score (the maximum,
+            adjusted by judgment) and overall_risk (low 0-1, medium 2-3, high 4-5).
+
+            4. Do NOT use HM Land Registry title registers or plans, or any commercial search data, unless the order explicitly
+            provides it or an authorised provider tool is available; these are paid or licensed. Recommend them as further
+            searches instead.
+
+            5. Write the report in plain English. Start with a level-1 title ''# Property risk report — <address>''. Sections
+            with ## headings: Summary, Property and order details, Risk scores (a table: risk, score, finding, source and
+            date), Map (the coordinates, an OpenStreetMap link https://www.openstreetmap.org/?mlat=<lat>&mlon=<lon>#map=17/<lat>/<lon>,
+            and the nearby features found), Recommended further searches (tailored to property type and transaction type,
+            e.g. drainage and water, full environmental, mining, title register from an authorised provider), Sources and
+            licences, Limitations. Add a bar chart of the scores as a fenced ```chart block with real figures only. Never
+            invent figures. This is decision support, not legal advice; the reviewing solicitor decides.
+
+            6. Call request_release_report with the report title and the overall risk so a solicitor reviews it; it is released
+            to the client file only after approval.
+
+            7. End your final message with a single JSON object on the last lines with keys: client_ref, address, postcode,
+            title_number, property_type, transaction_type, lat, lon (numbers), flood_score, ground_score, radon_score, landfill_score,
+            contamination_score, coal_score, overall_score, overall_risk, summary (max 400 characters), status (''pending_review''),
+            created_date (YYYY-MM-DD, today).'
+    goalTemplate: 'Order for a conveyancing risk report.
+
+      Address: {address}
+
+      Postcode: {postcode}
+
+      {?title_number}Title number: {title_number}{/title_number}
+
+      Property type: {property_type_label}
+
+      Transaction type: {transaction_type_label}
+
+      {?client_ref}Client reference: {client_ref}{/client_ref}
+
+      Today is {date}. Write the report in the language with ISO code {lang}.'
+    output: markdown+json
+    appTools:
+    - name: geocode
+      description: Geocode a UK address to latitude and longitude (OpenStreetMap Nominatim)
+      action: http
+      http:
+        method: GET
+        url: https://nominatim.openstreetmap.org/search
+        attribution: © OpenStreetMap contributors, ODbL
+    - name: ea_spatial
+      description: Environment Agency open spatial data (flood risk from rivers, sea and surface water); the path selects
+        the service
+      action: http
+      http:
+        method: GET
+        url: https://environment.data.gov.uk/spatialdata
+        allowPath: true
+        attribution: Environment Agency, Open Government Licence v3.0
+    - name: bgs_geology
+      description: British Geological Survey open geohazard and radon data (OGC API)
+      action: http
+      http:
+        method: GET
+        url: https://ogcapi.bgs.ac.uk
+        allowPath: true
+        attribution: Contains British Geological Survey materials © UKRI
+    - name: planning_data
+      description: Planning designations and applications published as open data (planning.data.gov.uk)
+      action: http
+      http:
+        method: GET
+        url: https://www.planning.data.gov.uk/entity.json
+        attribution: planning.data.gov.uk, Open Government Licence v3.0
+  inputForm:
+    title:
+      en: Order a report
+    fields:
+    - name: address
+      type: text
+      required: true
+      maxLength: 200
+      label:
+        en: Property address
+    - name: postcode
+      type: text
+      required: true
+      maxLength: 10
+      label:
+        en: Postcode
+    - name: title_number
+      type: text
+      maxLength: 20
+      label:
+        en: Title number (if known)
+    - name: property_type
+      type: select
+      required: true
+      label:
+        en: Property type
+      options:
+      - value: house
+        label:
+          en: House
+      - value: flat
+        label:
+          en: Flat / apartment
+      - value: new_build
+        label:
+          en: New build
+      - value: commercial
+        label:
+          en: Commercial
+      - value: land
+        label:
+          en: Land
+    - name: transaction_type
+      type: select
+      required: true
+      label:
+        en: Transaction type
+      options:
+      - value: purchase
+        label:
+          en: Purchase
+      - value: sale
+        label:
+          en: Sale
+      - value: remortgage
+        label:
+          en: Remortgage
+      - value: transfer
+        label:
+          en: Transfer of equity
+    - name: client_ref
+      type: text
+      maxLength: 60
+      label:
+        en: Client reference
+  data:
+    collections:
+    - name: reports
+      ownedBy: user
+      description: 'One record per ordered report: location, risk scores and review status'
+      retentionDays: 2555
+      access:
+      - role: reviewer
+      fields:
+      - name: client_ref
+        type: text
+        label:
+          en: Client reference
+      - name: address
+        type: text
+        label:
+          en: Address
+      - name: postcode
+        type: text
+        label:
+          en: Postcode
+      - name: title_number
+        type: text
+        label:
+          en: Title number
+      - name: property_type
+        type: text
+        label:
+          en: Property type
+      - name: transaction_type
+        type: text
+        label:
+          en: Transaction
+      - name: lat
+        type: number
+      - name: lon
+        type: number
+      - name: flood_score
+        type: number
+        label:
+          en: Flood
+      - name: ground_score
+        type: number
+        label:
+          en: Ground stability
+      - name: radon_score
+        type: number
+        label:
+          en: Radon
+      - name: landfill_score
+        type: number
+        label:
+          en: Landfill
+      - name: contamination_score
+        type: number
+        label:
+          en: Contaminated land
+      - name: coal_score
+        type: number
+        label:
+          en: Coal mining
+      - name: overall_score
+        type: number
+        label:
+          en: Overall score
+      - name: overall_risk
+        type: select
+        label:
+          en: Overall risk
+        options:
+        - low
+        - medium
+        - high
+      - name: summary
+        type: textarea
+        label:
+          en: Summary
+      - name: status
+        type: select
+        label:
+          en: Status
+        options:
+        - pending_review
+        - released
+      - name: created_date
+        type: date
+        label:
+          en: Ordered on
+    credentials:
+    - provider: hmlr_authorised_provider
+      kind: api_key
+      scope: org
+      label:
+        en: Authorised provider key (HM Land Registry / commercial searches)
+      help:
+        en: Only if your firm holds a licence with an authorised provider. Without it, reports use open data only.
+  approvals:
+  - key: release_report
+    title:
+      en: Release report to the client file
+    description: A solicitor reviews the draft report before the PDF is released.
+    role: reviewer
+    fields:
+    - title
+    - overall_risk
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: review_needed
+    'on':
+      collection: reports
+      op: insert
+    notify:
+      to:
+      - role:reviewer
+      subject:
+        en: 'Report awaiting review: {record.address}'
+      body:
+        en: A new report for {record.address} ({record.postcode}), overall risk {record.overall_risk}, is waiting for solicitor
+          review.
+      link: review
+  - key: review_reminder
+    'on':
+      date:
+        collection: reports
+        field: created_date
+        offsetDays: 1
+        hour: 8
+      where:
+        status: pending_review
+    notify:
+      to:
+      - role:reviewer
+      - admins
+      subject:
+        en: 'Reminder: report pending review for {record.address}'
+      body:
+        en: The report for {record.address} ({record.postcode}) ordered on {record.created_date} is still pending review.
+      link: review
+  - key: report_released
+    'on':
+      approval: release_report
+      decision: approved
+    notify:
+      to:
+      - owner
+      subject:
+        en: Your report is ready
+      body:
+        en: Your property risk report has been reviewed and released. You can open and print the PDF from your orders.
+      link: orders
+  views:
+  - key: home
+    type: page
+    title: Parcelyn
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: For conveyancing solicitors
+      title: Environmental and property risk reports, **reviewed by a solicitor** before release.
+      text: Order from an address. Parcelyn gathers open flood, ground, radon, landfill, contamination, coal and planning
+        data, scores each risk and recommends further searches in plain English.
+      actions:
+      - label: Order a report
+        href: /v/new_order
+        style: primary
+      - label: Sign in
+        href: /login
+        style: ghost
+      aside: '<div style="padding:16px"><b>Example report</b><br>Flood: 2 · Ground: 1 · Radon: 3<br>Landfill: 0 · Coal: 0<br><b>Overall:
+        medium</b><br>Recommended: drainage and water, radon test</div>'
+    - type: steps
+      id: how-it-works
+      title: How it works
+      items:
+      - title: 1 · Order
+        text: Fee earners enter address, postcode, title number if known, property type, transaction and client reference.
+      - title: 2 · Analysis
+        text: The agent geocodes the address, collects open data, maps it and scores each risk.
+      - title: 3 · Solicitor review
+        text: A reviewing solicitor approves the draft; only then is the PDF released to the client file.
+    - type: cards
+      id: sources
+      title: Data sources
+      items:
+      - title: Environment Agency
+        text: Flood risk from rivers, sea and surface water (Open Government Licence).
+      - title: British Geological Survey
+        text: Ground stability and radon potential.
+      - title: Landfill, contaminated land, coal
+        text: Historic landfill, published contaminated land registers and Coal Authority mining areas, where open data exists.
+      - title: Licensed data
+        text: HM Land Registry title registers and plans and commercial searches are used only with your licence or through
+          an authorised provider.
+    - type: cards
+      id: pricing
+      title: Pricing
+      intro: Pay per report by card, or buy a discounted bundle for your firm.
+      items:
+      - title: Single report
+        text: One report, paid via Stripe.
+      - title: Firm bundles
+        text: 10 or 50 reports at a lower price each.
+    - type: note
+      content: Decision support, not legal advice. Reports use open data and are reviewed by a solicitor before release.
+  - key: new_order
+    type: new_run
+    title: Order a report
+    roles:
+    - user
+    - admin
+  - key: orders
+    type: history
+    title: My orders
+    source: run
+    roles:
+    - user
+    - admin
+  - key: report
+    type: report
+    title: Report
+    source: run
+    printable: true
+    nav: false
+  - key: review
+    type: approvals
+    title: Review queue
+    approvals:
+    - release_report
+    roles:
+    - reviewer
+    - admin
+  - key: all_reports
+    type: table
+    title: Orders and risk
+    source: collection:reports
+    export: true
+    roles:
+    - user
+    - admin
+    - reviewer
+    data:
+      display: table
+      fields:
+      - key: created_date
+        label: Ordered
+        format: date
+      - key: client_ref
+        label: Client ref
+      - key: address
+        label: Address
+      - key: postcode
+        label: Postcode
+      - key: overall_risk
+        label: Risk
+        format: badge
+      - key: overall_score
+        label: Score
+        format: number
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: created_date
+        dir: desc
+      limit: 100
+      empty: No orders yet.
+  - key: risk_map
+    type: map
+    title: Map
+    source: collection:reports
+    roles:
+    - user
+    - admin
+    - reviewer
+    map:
+      lat: lat
+      lon: lon
+      title: address
+      popup:
+      - postcode
+      - overall_risk
+      - status
+  - key: risk_distribution
+    type: chart
+    title: Risk distribution
+    source: collection:reports
+    nav: false
+    data:
+      display: chart
+      chart: pie
+      fields:
+      - key: overall_risk
+        label: Risk
+      - key: count
+        label: Reports
+      groupBy:
+        field: overall_risk
+        aggs:
+        - key: avg_score
+          agg: avg
+          field: overall_score
+  - key: orders_over_time
+    type: chart
+    title: Orders per month
+    source: collection:reports
+    nav: false
+    data:
+      display: chart
+      chart: bar
+      fields:
+      - key: created_date
+        label: Month
+      - key: count
+        label: Orders
+      groupBy:
+        field: created_date
+        bucket: month
+        aggs:
+        - key: avg_score
+          agg: avg
+          field: overall_score
+  - key: dashboard
+    type: dashboard
+    title: Dashboard
+    children:
+    - orders_over_time
+    - risk_distribution
+    - all_reports
+    roles:
+    - admin
+    - reviewer
+  - key: account
+    type: account
+    title: Credits and billing
+    roles:
+    - user
+    - admin
+  billing:
+    modes:
+    - credits
+    currency: gbp
+    signupCredits: 0
+    costs:
+      agent:analyst: 10
+    packs:
+    - key: single
+      credits: 10
+      price: 29
+      label: Single report
+    - key: bundle10
+      credits: 100
+      price: 240
+      label: 'Firm bundle: 10 reports'
+    - key: bundle50
+      credits: 500
+      price: 1000
+      label: 'Firm bundle: 50 reports'
+  egress:
+    hosts:
+    - nominatim.openstreetmap.org
+    - environment.data.gov.uk
+    - ogcapi.bgs.ac.uk
+    - www.planning.data.gov.uk
+    notes: Nominatim within its usage policy (ODbL); Environment Agency and planning.data.gov.uk under Open Government Licence
+      v3.0; BGS open data with attribution.
+  extensions:
+  - key: turnaround_metric
+    description: 'Turnaround time (order to release) is not computed yet: the dashboard shows orders per month and risk distribution;
+      the approval decision time is visible in the review queue.'
+  - key: licensed_data
+    description: HM Land Registry title registers and plans and commercial search data need a licence or an authorised provider;
+      an org credential is declared but a tool is added only once the provider and its API host are known.
+  - key: firm_scope
+    description: 'Assumes one firm per app instance: the admin role sees all orders of the app. Several firms in one app would
+      need a firm-specific role.'

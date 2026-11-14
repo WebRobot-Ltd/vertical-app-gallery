@@ -1,0 +1,1012 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: tracemark
+  displayName: Tracemark
+  tagline: Advertising measurement and attribution you can trust, with consent built in.
+  description: Tracemark records impressions, clicks, visits and conversions with their consent status, compares attribution
+    models side by side, flags suspicious traffic and gives each publisher a read-only report of its own results.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#0f2742'
+      accent: '#12a38a'
+      background: '#f6f8fb'
+      foreground: '#14202e'
+    fonts:
+      body: Inter
+      display: Space Grotesk
+    wordmark:
+    - text: Trace
+      color: primary
+    - text: mark
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Consent
+      href: '#consent'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: advertiser_admin
+      label: Advertiser admin
+      assignedBy: signup
+    - key: analyst
+      label: Analyst
+      assignedBy: invite
+    - key: publisher
+      label: Publisher viewer
+      assignedBy: derived
+      from: collection:publishers.contact_email
+    - key: admin
+      label: Platform admin
+      assignedBy: admin_emails
+  limits:
+  - action: agent:analyst
+    per: user
+    max: 20
+    window: day
+  agents:
+  - key: analyst
+    role: main
+    description: Compares attribution models, explains changes in performance, measures incrementality and channel overlap,
+      and flags suspicious traffic.
+    profile:
+      inline:
+        display_name: Tracemark analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a senior advertising measurement analyst. You work ONLY from the user''s events, read with
+            search_events (and incrementality inputs with read_tests). Use ONLY events whose consent_status is ''granted'';
+            report how many events you excluded for missing or denied consent and never use them in any figure. Never invent
+            figures: if data is thin, say so.
+
+
+            Start with a level-1 title ''# <Property> — attribution review <period>''. Sections (## headings): Summary (3
+            bullets), Performance (conversions and revenue per campaign and per publisher, table), Attribution models side
+            by side (a table of conversions and revenue per campaign under each requested model: last click = 100% to the
+            last click before conversion; first touch = 100% to the first touch; linear = equal split across touchpoints;
+            data-driven = a removal-effect estimate over observed paths — label it as an estimate and state the number of
+            paths used), What changed and why (compare with the previous period of equal length; cite the campaigns, creatives,
+            placements or devices that moved), Channel overlap (share of converting users touched by more than one channel,
+            top pairs), Incrementality (for each test from read_tests compute lift = (exposed rate - holdout rate) / holdout
+            rate and say whether the sample is large enough), Suspicious traffic (bots, click spikes, impossible click-to-visit
+            ratios, repeated ip_hash or user_ref patterns), Next steps.
+
+            For every suspicious pattern call flag_traffic once with campaign, publisher, reason, severity (low|medium|high),
+            status ''open''. Do not call it for normal variation.
+
+            Add a chart for the model comparison and one for conversions per publisher as fenced blocks:
+
+            ```chart
+
+            {"type":"bar","title":"...","labels":["A"],"series":[{"name":"...","values":[1]}]}
+
+            ```
+
+            Write in English, under 700 words plus tables.'
+          mcp_servers: []
+    goalTemplate: 'Property: {property}
+
+      Period: {date_from} to {?date_to}{date_to}{/date_to}{!date_to}{date}{/date_to}
+
+      Attribution models to compare: {models}
+
+      {?question}Question from the user: {question}{/question}
+
+      Today is {date}.'
+    appTools:
+    - name: search_events
+      description: Search the user's tracking events (type, campaign, creative, placement, publisher, device, revenue, consent_status,
+        ts)
+      action: search
+      collection: events
+      scope: all
+    - name: read_tests
+      description: Read the incrementality tests
+      action: read
+      collection: incrementality_tests
+      scope: all
+    - name: flag_traffic
+      description: Record a suspicious traffic flag for human review
+      action: append
+      collection: traffic_flags
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 1.0
+  - key: guard
+    role: helper
+    description: Daily check of one property for bots and click spikes.
+    profile:
+      inline:
+        display_name: Tracemark traffic guard
+        crews:
+        - id: guard
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You watch one property for invalid traffic. Read recent events with search_events, using only consent_status
+            ''granted''. Look for click spikes against the 7-day baseline, clicks without visits, many events from one ip_hash
+            or user_ref, unusual device or placement mixes and conversions with no prior touch. For each real concern call
+            flag_traffic once (campaign, publisher, reason with the numbers, severity low|medium|high, status ''open''). Never
+            invent data. Start with ''# Traffic check — <property> — <date>'', then ## Findings and ## All clear areas, under
+            150 words. English.'
+          mcp_servers: []
+    goalTemplate: Check property "{instance}" ({property}) for suspicious traffic in the last 24 hours versus the previous
+      7 days. Today is {date}.
+    appTools:
+    - name: search_events
+      description: Search the user's tracking events (type, campaign, creative, placement, publisher, device, revenue, consent_status,
+        ts)
+      action: search
+      collection: events
+      scope: all
+    - name: flag_traffic
+      description: Record a suspicious traffic flag for human review
+      action: append
+      collection: traffic_flags
+      scope: user
+    output: markdown
+  - key: reporter
+    role: helper
+    description: Writes the weekly report for one publisher of a property, showing only that publisher's results.
+    profile:
+      inline:
+        display_name: Tracemark publisher reporter
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write a weekly performance report for ONE publisher. Read events with search_events and use
+            ONLY events where publisher equals the given publisher and consent_status is ''granted''. Never mention other
+            publishers, their figures, or the advertiser''s totals or margins. Start with ''# <Publisher> — week of <date>''.
+            Sections: ## Results (impressions, clicks, visits, conversions, revenue, last click basis), ## What changed vs
+            last week, ## Quality notes (only if traffic looks invalid), ## Suggestions. Under 250 words; real figures only.
+            Then call save_report once with publisher, publisher_email (as given), period, conversions (number), revenue (number)
+            and summary (the report text).'
+          mcp_servers: []
+    goalTemplate: 'Property: {property}. Publisher: {publisher}. Publisher email: {publisher_email}. Report for the 7 days
+      before {date}.'
+    appTools:
+    - name: search_events
+      description: Search the user's tracking events (type, campaign, creative, placement, publisher, device, revenue, consent_status,
+        ts)
+      action: search
+      collection: events
+      scope: all
+    - name: save_report
+      description: Save the publisher's weekly report
+      action: append
+      collection: publisher_reports
+      scope: user
+    output: markdown
+  inputForm:
+    title: New attribution review
+    fields:
+    - name: property
+      type: select
+      required: true
+      label: Property
+      optionsFrom: collection:properties
+    - name: date_from
+      type: date
+      required: true
+      label: From
+    - name: date_to
+      type: date
+      label: To (default today)
+    - name: models
+      type: multiselect
+      required: true
+      label: Attribution models
+      default:
+      - last_click
+      - first_touch
+      - linear
+      - data_driven
+      options:
+      - value: last_click
+        label: Last click
+      - value: first_touch
+        label: First touch
+      - value: linear
+        label: Linear
+      - value: data_driven
+        label: Data-driven
+    - name: question
+      type: textarea
+      maxLength: 500
+      label: Question (optional)
+      help: e.g. why did conversions drop last week?
+  data:
+    collections:
+    - name: properties
+      description: Tracked sites and apps of an advertiser
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Name
+      - name: domain
+        type: text
+        required: true
+        label: Domain
+      - name: members
+        type: array
+        label: Team emails (analysts)
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: publishers
+      description: Publishers and the ad server each one runs
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Publisher
+      - name: contact_email
+        type: email
+        required: true
+        label: Contact email
+      - name: ad_server
+        type: text
+        label: Ad server
+      - name: members
+        type: array
+        label: Team emails (analysts)
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: events
+      description: Impressions, clicks, visits and conversions with consent status, written by the pixel and server-side tag
+      ownedBy: user
+      retentionDays: 395
+      fields:
+      - name: ts
+        type: date
+        label: Time
+      - name: type
+        type: select
+        label: Type
+        options:
+        - impression
+        - click
+        - visit
+        - conversion
+      - name: property
+        type: text
+        label: Property
+      - name: campaign
+        type: text
+        label: Campaign
+      - name: creative
+        type: text
+        label: Creative
+      - name: placement
+        type: text
+        label: Placement
+      - name: publisher
+        type: text
+        label: Publisher
+      - name: channel
+        type: text
+        label: Channel
+      - name: device
+        type: select
+        label: Device
+        options:
+        - desktop
+        - mobile
+        - tablet
+        - other
+      - name: revenue
+        type: number
+        label: Revenue (GBP)
+      - name: consent_status
+        type: select
+        required: true
+        label: Consent
+        options:
+        - granted
+        - denied
+        - unknown
+      - name: consent_basis
+        type: text
+        label: Consent string / CMP reference
+      - name: user_ref
+        type: text
+        label: Pseudonymous user id
+      - name: ip_hash
+        type: text
+        label: IP hash
+      - name: click_id
+        type: text
+        label: Click id
+      - name: members
+        type: array
+        label: Team emails
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: incrementality_tests
+      description: Holdout / geo tests used to measure incremental lift
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Test name
+      - name: campaign
+        type: text
+        required: true
+        label: Campaign
+      - name: start
+        type: date
+        label: Start
+      - name: end
+        type: date
+        label: End
+      - name: exposed_users
+        type: number
+        label: Exposed users
+      - name: exposed_conversions
+        type: number
+        label: Exposed conversions
+      - name: holdout_users
+        type: number
+        label: Holdout users
+      - name: holdout_conversions
+        type: number
+        label: Holdout conversions
+      - name: members
+        type: array
+        label: Team emails
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: traffic_flags
+      description: Suspicious traffic flagged by the agents, for human review
+      ownedBy: user
+      fields:
+      - name: campaign
+        type: text
+        label: Campaign
+      - name: publisher
+        type: text
+        label: Publisher
+      - name: reason
+        type: textarea
+        label: Reason
+      - name: severity
+        type: select
+        label: Severity
+        options:
+        - low
+        - medium
+        - high
+      - name: status
+        type: select
+        label: Status
+        default: open
+        options:
+        - open
+        - confirmed
+        - dismissed
+      - name: members
+        type: array
+        label: Team emails
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: publisher_reports
+      description: Weekly per-publisher reports; a publisher sees only its own
+      ownedBy: user
+      fields:
+      - name: publisher
+        type: text
+        label: Publisher
+      - name: publisher_email
+        type: email
+        label: Publisher email
+      - name: period
+        type: text
+        label: Period
+      - name: conversions
+        type: number
+        label: Conversions
+      - name: revenue
+        type: number
+        label: Revenue (GBP)
+      - name: summary
+        type: textarea
+        label: Report
+      access:
+      - role: publisher
+        where:
+          publisher_email: '{user.email}'
+        can:
+        - read
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Tracemark
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: Measurement and attribution
+      title: Know which ads **really** drive conversions.
+      text: Install one pixel and a server-side tag, record every impression, click, visit and conversion with its consent
+        status, and compare attribution models side by side. An AI analyst explains what changed and flags suspicious traffic.
+      actions:
+      - label: Start measuring
+        href: /login
+        style: primary
+      aside: <div style="padding:16px"><b>Last click</b> 42 · <b>First touch</b> 31 · <b>Linear</b> 37 · <b>Data-driven</b>
+        35<br>conversions for the same campaign, same week.</div>
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Add a property
+        text: Create a property, then install the pixel and server-side tag on your site.
+        badge: '1'
+      - title: Connect publishers
+        text: Add each publisher and its ad server; events carry campaign, creative, placement and device.
+        badge: '2'
+      - title: Compare and act
+        text: Dashboards, attribution models, incrementality tests, overlap and fraud flags.
+        badge: '3'
+      - title: Share per publisher
+        text: Every publisher gets a read-only weekly report with only its own results.
+        badge: '4'
+    - type: cards
+      id: consent
+      title: Consent first
+      items:
+      - title: PECR and UK GDPR
+        text: Your tag fires only after the visitor consents. Every event stores its consent status and reference.
+        badge: 🔒
+      - title: Consented data only
+        text: Dashboards and the analyst use only events with granted consent.
+        badge: ✅
+      - title: Data minimisation
+        text: Events are deleted automatically after 13 months.
+        badge: 🗑
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: £300 a month
+        text: Includes up to one million events a month, then billed per extra million.
+    - type: note
+      content: Tracemark supports measurement decisions; data-driven attribution is a model-based estimate.
+  - key: overview
+    type: page
+    title: Dashboard
+    roles:
+    - advertiser_admin
+    - analyst
+    - admin
+    sections:
+    - type: data
+      title: Conversions and revenue per campaign
+      source: collection:events
+      display: chart
+      chart: bar
+      filters:
+      - field: type
+        op: '='
+        value: conversion
+      - field: consent_status
+        op: '='
+        value: granted
+      groupBy:
+        field: campaign
+        aggs:
+        - key: revenue
+          agg: sum
+          field: revenue
+      fields:
+      - key: campaign
+        label: Campaign
+      - key: count
+        label: Conversions
+      - key: revenue
+        label: Revenue
+        format: money
+    - type: data
+      title: Conversions and revenue per publisher
+      source: collection:events
+      display: table
+      filters:
+      - field: type
+        op: '='
+        value: conversion
+      - field: consent_status
+        op: '='
+        value: granted
+      groupBy:
+        field: publisher
+        aggs:
+        - key: revenue
+          agg: sum
+          field: revenue
+      fields:
+      - key: publisher
+        label: Publisher
+      - key: count
+        label: Conversions
+      - key: revenue
+        label: Revenue
+        format: money
+    - type: data
+      title: 'Overlap: conversions by channel'
+      source: collection:events
+      display: chart
+      chart: pie
+      filters:
+      - field: type
+        op: '='
+        value: conversion
+      - field: consent_status
+        op: '='
+        value: granted
+      groupBy:
+        field: channel
+        aggs: []
+      fields:
+      - key: channel
+        label: Channel
+      - key: count
+        label: Conversions
+    - type: data
+      title: Events by consent status
+      source: collection:events
+      display: bar
+      groupBy:
+        field: consent_status
+        aggs: []
+      fields:
+      - key: consent_status
+        label: Consent
+      - key: count
+        label: Events
+    - type: data
+      title: Recent events
+      source: collection:events
+      display: table
+      sort:
+        field: ts
+        dir: desc
+      limit: 50
+      fields:
+      - key: ts
+        label: Time
+        format: date
+      - key: type
+        format: badge
+      - key: campaign
+      - key: publisher
+      - key: device
+      - key: consent_status
+        label: Consent
+        format: badge
+  - key: new_analysis
+    type: new_run
+    title: Attribution review
+    roles:
+    - advertiser_admin
+    - analyst
+    - admin
+  - key: analyses
+    type: history
+    title: My reviews
+    source: run
+    roles:
+    - advertiser_admin
+    - analyst
+    - admin
+  - key: analysis
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: add_property
+    type: form
+    title: Add property
+    collection: properties
+    roles:
+    - advertiser_admin
+    - admin
+    submit:
+      label: Save property
+      message: Property saved. Install the tag next.
+      redirect: setup
+  - key: setup
+    type: page
+    title: Install the tag
+    roles:
+    - advertiser_admin
+    - analyst
+    - admin
+    sections:
+    - type: text
+      title: Pixel and server-side tag
+      content: 'Load the Tracemark pixel only after your consent banner returns ''granted''. Both the browser pixel and your
+        server-side tag send each event as JSON to your app''s ingest hook (POST /api/hooks/ingest, with your hook secret)
+        with: ts, type, property, campaign, creative, placement, publisher, channel, device, revenue, consent_status, consent_basis,
+        user_ref, ip_hash, click_id, team. Send consent_status ''granted'' only when the visitor consented; otherwise do not
+        fire the pixel.'
+    - type: data
+      title: Your properties
+      source: collection:properties
+      display: table
+      fields:
+      - key: name
+      - key: domain
+  - key: add_publisher
+    type: form
+    title: Add publisher
+    collection: publishers
+    roles:
+    - advertiser_admin
+    - admin
+    submit:
+      label: Save publisher
+      message: Publisher saved.
+      redirect: publisher_list
+  - key: publisher_list
+    type: table
+    title: Publishers
+    source: collection:publishers
+    roles:
+    - advertiser_admin
+    - analyst
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Publisher
+      - key: contact_email
+        label: Contact
+      - key: ad_server
+        label: Ad server
+    export: true
+  - key: add_test
+    type: form
+    title: New incrementality test
+    collection: incrementality_tests
+    roles:
+    - advertiser_admin
+    - analyst
+    - admin
+    submit:
+      label: Save test
+      message: Test saved. Include it in your next review.
+      redirect: tests
+  - key: tests
+    type: table
+    title: Incrementality tests
+    source: collection:incrementality_tests
+    roles:
+    - advertiser_admin
+    - analyst
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+      - key: campaign
+      - key: exposed_conversions
+        label: Exposed conv.
+      - key: holdout_conversions
+        label: Holdout conv.
+  - key: flags
+    type: table
+    title: Traffic to review
+    source: collection:traffic_flags
+    roles:
+    - advertiser_admin
+    - analyst
+    - admin
+    data:
+      display: table
+      fields:
+      - key: severity
+        format: badge
+      - key: campaign
+      - key: publisher
+      - key: reason
+      - key: status
+        format: badge
+      sort:
+        field: severity
+        dir: desc
+    export: true
+  - key: review_flag
+    type: form
+    title: Review a flag
+    collection: traffic_flags
+    fields:
+    - status
+    edit: true
+    nav: false
+    roles:
+    - advertiser_admin
+    - analyst
+    - admin
+    submit:
+      label: Save decision
+      message: Saved.
+      redirect: flags
+  - key: publisher_reports_view
+    type: cards
+    title: Publisher reports
+    source: collection:publisher_reports
+    roles:
+    - advertiser_admin
+    - analyst
+    - publisher
+    - admin
+    data:
+      display: cards
+      fields:
+      - key: publisher
+      - key: period
+      - key: conversions
+        format: number
+      - key: revenue
+        format: money
+      - key: summary
+      sort:
+        field: period
+        dir: desc
+  - key: watches
+    type: instances
+    template: traffic_watch
+    title: Traffic watches
+    roles:
+    - advertiser_admin
+    - admin
+  - key: weekly
+    type: instances
+    template: weekly_report
+    title: Weekly publisher reports
+    roles:
+    - advertiser_admin
+    - admin
+  - key: account
+    type: account
+    title: Plan and credits
+    roles:
+    - advertiser_admin
+    - admin
+  templates:
+  - key: traffic_watch
+    title: Traffic watch
+    description: Daily check of a property for bots and click spikes.
+    agent: guard
+    params:
+    - name: property
+      type: text
+      required: true
+      label: Property name
+    goal: Check property "{instance}" ({property}) for suspicious traffic in the last 24 hours versus the previous 7 days.
+      Today is {date}.
+    schedule:
+      cron: 0 6 * * *
+      userCanChange: true
+    maxPerUser: 10
+    cost:
+      perRun: 5
+  - key: weekly_report
+    title: Weekly publisher report
+    description: Every Monday, a read-only report of one publisher's results, emailed to you and to the publisher.
+    agent: reporter
+    params:
+    - name: property
+      type: text
+      required: true
+      label: Property name
+    - name: publisher
+      type: text
+      required: true
+      label: Publisher name
+    - name: publisher_email
+      type: email
+      required: true
+      label: Publisher email
+    goal: 'Property: {property}. Publisher: {publisher}. Publisher email: {publisher_email}. Report for the 7 days before
+      {date}.'
+    schedule:
+      cron: 0 7 * * 1
+      userCanChange: true
+    maxPerUser: 50
+    cost:
+      perRun: 5
+    deliver:
+      to: owner
+      onlyIfNew: true
+  triggers:
+  - key: ingest
+    description: Events from the pixel and server-side tag
+    'on':
+      webhook: true
+    write:
+      collection: events
+      fields:
+        ts: ts
+        type: type
+        property: property
+        campaign: campaign
+        creative: creative
+        placement: placement
+        publisher: publisher
+        channel: channel
+        device: device
+        revenue: revenue
+        consent_status: consent_status
+        consent_basis: consent_basis
+        user_ref: user_ref
+        ip_hash: ip_hash
+        click_id: click_id
+        members: team
+  - key: high_flag
+    'on':
+      collection: traffic_flags
+      op: insert
+      where:
+        severity: high
+    notify:
+      to:
+      - owner
+      subject: 'High-severity suspicious traffic: {record.campaign}'
+      body: 'Tracemark flagged {record.campaign} / {record.publisher}: {record.reason}'
+      link: flags
+  - key: publisher_report_mail
+    'on':
+      collection: publisher_reports
+      op: insert
+    notify:
+      to:
+      - record.publisher_email
+      subject: 'Your weekly performance report: {record.period}'
+      body: 'Your weekly report is ready: {record.summary}'
+      link: publisher_reports_view
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: gbp
+    signupCredits: 100
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:analyst:
+        estimate: 10
+        metered: true
+    packs:
+    - key: extra_million
+      credits: 1000
+      price: 40
+      label: Extra million events
+    plans:
+    - key: standard
+      price: 300
+      interval: month
+      label: Standard — up to 1M events a month
+      includes:
+      - 1,000,000 events a month
+      - all attribution models
+      - publisher reports
+      credits: 500
+      creditsReset: monthly
+      roles:
+      - advertiser_admin
+  egress:
+    hosts:
+    - tracemark.invalid
+    notes: Placeholder; no external hosts are called until an ad server is chosen.
+  extensions:
+  - key: realtime_ingestion
+    description: Events arrive through the app's webhook and are stored as records. A true high-volume real-time pipeline
+      (millions of events, streaming aggregation) needs a dedicated ingestion service outside this manifest.
+  - key: adserver_integrations
+    description: Ad server connection by OAuth is not available yet; API-key integrations need a chosen vendor and host, then
+      an http app tool with a credential.
+  - key: consent_enforcement
+    description: The tag must fire only after consent (PECR/UK GDPR); the app stores consent_status per event and uses only
+      granted events, but the pixel and CMP integration run on the advertiser's site.
+  - key: event_metering
+    description: The £300 plan includes up to one million events; counting events and billing per extra million is not enforced
+      automatically. The £40 per million price is an assumption to confirm.
+  - key: event_ownership
+    description: Hook events must carry the owning user and a team list (members) so analysts can read them; this mapping
+      needs confirming against the hook's authentication.

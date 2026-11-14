@@ -1,0 +1,1198 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: clearmonth
+  displayName: Clearmonth
+  tagline:
+    en: Cut down on alcohol with clinician-led support, a daily log and an AI coach.
+  description:
+    en: Clearmonth is the software around a clinician-led alcohol-reduction programme. Members complete a digital intake,
+      a clinician reviews every case and decides on treatment, and members then log drinks, get reminders, chat with a coach
+      and book monthly check-ins.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f4e5f'
+      accent: '#2a9d8f'
+      background: '#f6faf9'
+      foreground: '#14262b'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Clear
+      color: primary
+    - text: month
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Safety
+      href: '#safety'
+    cta:
+      label: Get started
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Programme admin
+      assignedBy: admin_emails
+    - key: user
+      label: Member
+      assignedBy: signup
+    - key: clinician
+      label: Clinician
+      assignedBy: derived
+      from: collection:cases.clinician_email
+    - key: pharmacist
+      label: Pharmacist
+      assignedBy: invite
+  limits:
+  - action: chat
+    per: user
+    max: 40
+    window: day
+    roles:
+    - user
+  - action: login
+    per: ip
+    max: 20
+    window: hour
+  agents:
+  - key: screener
+    role: main
+    description: Summarises a new intake and flags possible contraindications for the clinician. Never decides.
+    profile:
+      inline:
+        display_name: Clearmonth intake screener
+        crews:
+        - id: screener
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare a clinician''s review of a new intake for a prescribed naltrexone alcohol-reduction
+            programme in the UK. You do NOT decide, diagnose or prescribe: a clinician reviews every case and holds a video
+            consultation.
+
+            From the intake record: (1) compute the AUDIT score as the sum of audit_q1..audit_q10 and give its band (0-7 low,
+            8-15 hazardous, 16-19 harmful, 20+ possible dependence); (2) write a concise clinical summary: drinking pattern,
+            medical history, current medicines, liver history, pregnancy status, GP details, consent given; (3) list flags
+            for the clinician, each with the reason: any opioid use or opioid-containing medicines (including codeine, patches,
+            opioid substitution), acute hepatitis or liver failure or cirrhosis, pregnancy, breastfeeding or trying to conceive,
+            kidney problems, allergy to naltrexone, planned surgery, AUDIT of 20+ (withdrawal risk, medically supervised detox
+            may be needed), any mention of self-harm, missing or unclear answers, missing consent. If nothing is flagged say
+            so, and that the clinician must still review.
+
+            Then call the tool save_screening to update that same case record (use its id from the event) with ai_summary
+            (the summary with the AUDIT score), ai_flags (the flags, one per line) and status "in_review". Never invent facts
+            that are not in the record.
+
+            Your final answer is a Markdown report that starts with a level-1 title "# Intake screening — <full name>", then
+            sections ## AUDIT, ## Summary, ## Flags for the clinician.'
+          mcp_servers: []
+    appTools:
+    - name: save_screening
+      description: Update the member's case record with the screening summary, flags and status
+      action: write
+      collection: cases
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.3
+  - key: coach
+    role: helper
+    description: Supportive coach for motivation and coping tips; escalates anything clinical or risky to the clinician.
+    memory: user
+    context:
+    - key: clinician
+      from: collection:cases.clinician_email
+    - key: recent_logs
+      from: collection:drink_logs
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New message from the member: {message}
+
+      Assigned clinician: {clinician}
+
+      Recent drink log (JSON lines): {recent_logs}
+
+      Reply in English.'
+    profile:
+      inline:
+        display_name: Clearmonth coach
+        chat_mode: true
+        crews:
+        - id: coach
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 5
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a warm, non-judgemental coach for people in a clinician-led alcohol-reduction programme.
+            You help with motivation, cravings, routines, triggers, social situations and celebrating progress, using the
+            member''s drink log when it helps. Keep replies short and practical.
+
+            You are NOT a clinician. Never give medical advice: no dosing, no advice on starting, stopping or changing medicines,
+            no interpreting symptoms, no advice about stopping drinking suddenly after heavy use (that can be dangerous).
+            For anything clinical or risky, tell the member kindly that their clinician will be told and call the tool escalate_to_clinician
+            with a category (clinical, risk or other), the reason and a short excerpt of what they said, and put the assigned
+            clinician''s email in clinician_email. Clinical examples: side effects, missed or extra doses, other medicines,
+            pregnancy, jaundice, vomiting, withdrawal symptoms such as shakes, confusion or seizures. Risk examples: self-harm,
+            hopelessness, violence, a relapse with a binge. If there is immediate danger, tell them to call 999 or NHS 111,
+            and also escalate. Use remember at the end of a conversation to keep the member''s goals and triggers.'
+          mcp_servers: []
+    appTools:
+    - name: escalate_to_clinician
+      description: Record an escalation for the member's clinician
+      action: append
+      collection: escalations
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 5
+      maxBudgetUsd: 0.2
+  - key: checkin_prep
+    role: helper
+    description: Prepares a one-page summary of the member's month for the clinician before a check-in.
+    context:
+    - key: clinician
+      from: collection:cases.clinician_email
+    - key: logs
+      from: collection:drink_logs
+    goalTemplate: 'A monthly check-in was booked. Event: {event}
+
+      Assigned clinician: {clinician}
+
+      The member''s drink log (JSON lines, latest 30): {logs}
+
+      Summarise the month in English.'
+    profile:
+      inline:
+        display_name: Clearmonth check-in prep
+        crews:
+        - id: checkin_prep
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare a factual summary for a clinician before a monthly check-in. From the drink log compute:
+            days logged, total and average units per logged day, change versus the first logged week, days with high cravings,
+            and days the medicine was marked as taken. Flag gaps in logging and any worrying note. Do not give advice or interpret
+            clinically; never invent figures. Save the result with the tool save_checkin_note (fields: clinician_email, period,
+            summary), then answer with a Markdown report starting with "# Check-in summary".'
+          mcp_servers: []
+    appTools:
+    - name: save_checkin_note
+      description: Save the check-in summary for the clinician
+      action: append
+      collection: checkin_notes
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 4
+      maxBudgetUsd: 0.2
+  inputForm:
+    title: Intake
+    fields: []
+  data:
+    collections:
+    - name: cases
+      ownedBy: user
+      description: 'One record per member: intake answers, AI screening, clinician decision and dispensing status'
+      fields:
+      - name: full_name
+        type: text
+        required: true
+        label: Full name
+      - name: date_of_birth
+        type: date
+        required: true
+        label: Date of birth
+      - name: phone
+        type: text
+        required: true
+        label: Mobile phone
+      - name: address
+        type: textarea
+        required: true
+        label: Delivery address
+        help: Where the pharmacy should send your medicine
+      - name: audit_q1
+        type: select
+        required: true
+        label: 'AUDIT 1: How often do you have a drink containing alcohol?'
+        help: 0 never, 1 monthly or less, 2 2-4 times a month, 3 2-3 times a week, 4 4+ times a week
+        options:
+        - '0'
+        - '1'
+        - '2'
+        - '3'
+        - '4'
+      - name: audit_q2
+        type: select
+        required: true
+        label: 'AUDIT 2: Drinks on a typical day when you drink'
+        help: 0 1-2, 1 3-4, 2 5-6, 3 7-9, 4 10+
+        options:
+        - '0'
+        - '1'
+        - '2'
+        - '3'
+        - '4'
+      - name: audit_q3
+        type: select
+        required: true
+        label: 'AUDIT 3: How often six or more drinks on one occasion?'
+        help: 0 never, 1 less than monthly, 2 monthly, 3 weekly, 4 daily or almost daily
+        options:
+        - '0'
+        - '1'
+        - '2'
+        - '3'
+        - '4'
+      - name: audit_q4
+        type: select
+        required: true
+        label: 'AUDIT 4: How often in the last year could you not stop drinking once started?'
+        help: 0 never, 1 less than monthly, 2 monthly, 3 weekly, 4 daily or almost daily
+        options:
+        - '0'
+        - '1'
+        - '2'
+        - '3'
+        - '4'
+      - name: audit_q5
+        type: select
+        required: true
+        label: 'AUDIT 5: How often did drinking stop you doing what was expected?'
+        help: 0 never, 1 less than monthly, 2 monthly, 3 weekly, 4 daily or almost daily
+        options:
+        - '0'
+        - '1'
+        - '2'
+        - '3'
+        - '4'
+      - name: audit_q6
+        type: select
+        required: true
+        label: 'AUDIT 6: How often did you need a morning drink to get going?'
+        help: 0 never, 1 less than monthly, 2 monthly, 3 weekly, 4 daily or almost daily
+        options:
+        - '0'
+        - '1'
+        - '2'
+        - '3'
+        - '4'
+      - name: audit_q7
+        type: select
+        required: true
+        label: 'AUDIT 7: How often did you feel guilt or remorse after drinking?'
+        help: 0 never, 1 less than monthly, 2 monthly, 3 weekly, 4 daily or almost daily
+        options:
+        - '0'
+        - '1'
+        - '2'
+        - '3'
+        - '4'
+      - name: audit_q8
+        type: select
+        required: true
+        label: 'AUDIT 8: How often could you not remember the night before?'
+        help: 0 never, 1 less than monthly, 2 monthly, 3 weekly, 4 daily or almost daily
+        options:
+        - '0'
+        - '1'
+        - '2'
+        - '3'
+        - '4'
+      - name: audit_q9
+        type: select
+        required: true
+        label: 'AUDIT 9: Have you or someone else been injured because of your drinking?'
+        help: 0 no, 2 yes but not in the last year, 4 yes in the last year
+        options:
+        - '0'
+        - '2'
+        - '4'
+      - name: audit_q10
+        type: select
+        required: true
+        label: 'AUDIT 10: Has anyone suggested you cut down?'
+        help: 0 no, 2 yes but not in the last year, 4 yes in the last year
+        options:
+        - '0'
+        - '2'
+        - '4'
+      - name: medical_history
+        type: textarea
+        required: true
+        label: Medical history
+        help: Conditions, operations, mental health, kidney problems
+      - name: current_medicines
+        type: textarea
+        required: true
+        label: Current medicines
+        help: Include prescribed, over-the-counter and supplements. Say if you take any opioid painkillers (e.g. codeine,
+          morphine, tramadol) or use opioid substitution.
+      - name: allergies
+        type: text
+        label: Allergies
+      - name: liver_condition
+        type: select
+        required: true
+        label: Liver condition
+        options:
+        - value: none
+          label: None known
+        - value: fatty_liver
+          label: Fatty liver
+        - value: hepatitis
+          label: Hepatitis
+        - value: cirrhosis
+          label: Cirrhosis
+        - value: other
+          label: Other
+        - value: unsure
+          label: Not sure
+      - name: liver_detail
+        type: textarea
+        label: Liver details (tests, specialist)
+      - name: pregnancy
+        type: select
+        required: true
+        label: Pregnancy
+        options:
+        - value: 'no'
+          label: Not pregnant, not breastfeeding
+        - value: pregnant
+          label: Pregnant
+        - value: breastfeeding
+          label: Breastfeeding
+        - value: trying
+          label: Trying to conceive
+        - value: na
+          label: Not applicable
+      - name: gp_name
+        type: text
+        required: true
+        label: GP name
+      - name: gp_practice
+        type: text
+        required: true
+        label: GP practice and address
+      - name: gp_contact
+        type: text
+        label: GP phone or email
+      - name: consent_treatment
+        type: boolean
+        required: true
+        label: I confirm my answers are accurate and consent to a clinical assessment, including a video consultation
+      - name: consent_gp
+        type: boolean
+        required: true
+        label: I consent to my GP being informed of my treatment
+      - name: consent_data
+        type: boolean
+        required: true
+        label: I consent to my health data being processed as described in the privacy notice
+      - name: status
+        type: select
+        label: Status
+        default: submitted
+        options:
+        - submitted
+        - in_review
+        - consultation
+        - prescribed
+        - declined
+        - referred
+      - name: ai_summary
+        type: textarea
+        label: AI summary
+      - name: ai_flags
+        type: textarea
+        label: AI flags
+      - name: clinician_email
+        type: email
+        label: Assigned clinician
+      - name: clinician_notes
+        type: textarea
+        label: Clinician notes
+      - name: decision
+        type: select
+        label: Clinical decision
+        default: pending
+        options:
+        - pending
+        - prescribe
+        - decline
+        - refer
+      - name: rx_drug
+        type: text
+        label: Medicine
+      - name: rx_dose
+        type: text
+        label: Dose and directions
+      - name: rx_duration
+        type: text
+        label: Duration / quantity
+      - name: dispense_status
+        type: select
+        label: Dispensing
+        default: none
+        options:
+        - none
+        - dispensed
+        - shipped
+      - name: tracking_ref
+        type: text
+        label: Tracking reference
+      access:
+      - role: clinician
+        where:
+          clinician_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: pharmacist
+        where:
+          decision: prescribe
+        can:
+        - read
+        - write
+    - name: drink_logs
+      ownedBy: user
+      description: Daily drink log of each member
+      fields:
+      - name: log_date
+        type: date
+        required: true
+        label: Date
+      - name: units
+        type: number
+        required: true
+        label: Units of alcohol today
+        help: 0 if none
+      - name: drinks
+        type: text
+        label: What you drank
+      - name: craving
+        type: select
+        label: Craving
+        options:
+        - value: none
+          label: None
+        - value: low
+          label: Low
+        - value: medium
+          label: Medium
+        - value: high
+          label: High
+      - name: took_medicine
+        type: boolean
+        label: Took my medicine as directed
+      - name: notes
+        type: textarea
+        label: Notes
+    - name: appointments
+      ownedBy: user
+      description: Monthly clinician check-ins booked in the app
+      fields:
+      - name: notes
+        type: textarea
+        label: What would you like to cover?
+      - name: start
+        type: date
+        label: Start
+      - name: end
+        type: date
+        label: End
+      - name: date
+        type: date
+        label: Date
+      - name: resource
+        type: text
+        label: Clinician
+      - name: status
+        type: text
+        label: Status
+    - name: clinicians
+      ownedBy: shared
+      description: Clinicians who can be booked for check-ins (filled by the admins on the data page)
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Name
+      - name: title
+        type: text
+        label: Role
+      - name: email
+        type: email
+        label: Email
+    - name: checkin_notes
+      ownedBy: user
+      description: AI-prepared monthly summaries for the clinician
+      fields:
+      - name: clinician_email
+        type: email
+      - name: period
+        type: text
+      - name: summary
+        type: textarea
+      access:
+      - role: clinician
+        where:
+          clinician_email: '{user.email}'
+        can:
+        - read
+    - name: escalations
+      ownedBy: user
+      description: Things the coach passed to the clinician
+      fields:
+      - name: clinician_email
+        type: email
+      - name: category
+        type: select
+        options:
+        - clinical
+        - risk
+        - other
+      - name: reason
+        type: textarea
+      - name: excerpt
+        type: textarea
+      access:
+      - role: clinician
+        where:
+          clinician_email: '{user.email}'
+        can:
+        - read
+  views:
+  - key: home
+    type: page
+    title: Clearmonth
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: Alcohol reduction, supported
+      title: Drink less, with **clinicians** beside you.
+      text: Clearmonth supports a clinician-led programme that combines prescribed naltrexone with virtual clinicians. Complete
+        a short intake, speak to a clinician, and track your progress with daily logs, reminders and a supportive coach.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: 1 · Intake
+        text: Answer the AUDIT questionnaire and tell us about your health, medicines and GP.
+        badge: 📝
+      - title: 2 · Clinician review
+        text: A clinician reviews every case and holds a video consultation, then decides whether treatment is right for you.
+        badge: 🩺
+      - title: 3 · Pharmacy delivery
+        text: If prescribed, our pharmacy dispenses and ships your medicine.
+        badge: 📦
+      - title: 4 · Daily support
+        text: Log your drinks, get reminders, talk to the coach and book a monthly check-in.
+        badge: 📱
+    - type: cards
+      id: safety
+      title: Safe by design
+      items:
+      - title: Clinician decides
+        text: The software summarises and flags. Only a clinician decides about treatment.
+        badge: ✅
+      - title: Your record is private
+        text: You see your own record; clinicians see their patients; pharmacists see prescriptions to dispense.
+        badge: 🔒
+      - title: Clinical issues go to people
+        text: The AI coach is for motivation and coping tips. Anything clinical or risky is passed to your clinician.
+        badge: 💬
+    - type: note
+      content: Clearmonth is software support for a service delivered by registered clinicians and a registered pharmacy.
+        The coach is not a clinician. In an emergency call 999; for urgent advice call NHS 111. Do not suddenly stop drinking
+        if you drink heavily without medical advice.
+  - key: intake
+    type: form
+    title: Start your intake
+    collection: cases
+    fields:
+    - full_name
+    - date_of_birth
+    - phone
+    - address
+    - audit_q1
+    - audit_q2
+    - audit_q3
+    - audit_q4
+    - audit_q5
+    - audit_q6
+    - audit_q7
+    - audit_q8
+    - audit_q9
+    - audit_q10
+    - medical_history
+    - current_medicines
+    - allergies
+    - liver_condition
+    - liver_detail
+    - pregnancy
+    - gp_name
+    - gp_practice
+    - gp_contact
+    - consent_treatment
+    - consent_gp
+    - consent_data
+    submit:
+      label: Submit intake
+      message: Thank you. A clinician will review your intake and contact you to arrange a video consultation.
+      redirect: status
+    edit: false
+    roles:
+    - user
+  - key: status
+    type: table
+    title: My treatment
+    source: collection:cases
+    data:
+      display: table
+      fields:
+      - key: status
+        label: Status
+        format: badge
+      - key: decision
+        label: Decision
+        format: badge
+      - key: rx_drug
+        label: Medicine
+      - key: rx_dose
+        label: Directions
+      - key: dispense_status
+        label: Delivery
+        format: badge
+      - key: tracking_ref
+        label: Tracking
+      empty: Complete your intake to get started.
+    roles:
+    - user
+  - key: log
+    type: form
+    title: Log today
+    collection: drink_logs
+    fields:
+    - log_date
+    - units
+    - drinks
+    - craving
+    - took_medicine
+    - notes
+    submit:
+      label: Save
+      message: Logged. Well done for keeping track.
+      redirect: progress
+    edit: false
+    roles:
+    - user
+  - key: progress
+    type: page
+    title: My progress
+    roles:
+    - user
+    sections:
+    - type: data
+      title: Units per day
+      source: collection:drink_logs
+      display: chart
+      chart: line
+      fields:
+      - key: log_date
+        label: Date
+      - key: units
+        label: Units
+      sort:
+        field: log_date
+        dir: asc
+      limit: 60
+      empty: No entries yet. Log your first day.
+    - type: data
+      title: Recent entries
+      source: collection:drink_logs
+      display: table
+      fields:
+      - key: log_date
+        label: Date
+        format: date
+      - key: units
+        label: Units
+      - key: craving
+        label: Craving
+        format: badge
+      - key: took_medicine
+        label: Medicine taken
+      sort:
+        field: log_date
+        dir: desc
+      limit: 30
+  - key: coach
+    type: chat
+    title: Coach
+    source: agent:coach
+    examples:
+    - I have a craving right now
+    - How do I say no at a party?
+    - I had a bad day and feel like drinking
+    - I missed a dose
+    placeholder: Talk to your coach…
+    roles:
+    - user
+  - key: book
+    type: booking
+    title: Book a check-in
+    collection: appointments
+    resources: collection:clinicians
+    fields:
+    - notes
+    slots:
+      days:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      from: 09:00
+      to: '17:00'
+      minutes: 30
+      tz: Europe/London
+      aheadDays: 30
+      minNoticeHours: 24
+      capacity: 1
+    roles:
+    - user
+  - key: checkins
+    type: table
+    title: My check-ins
+    source: collection:appointments
+    data:
+      display: table
+      fields:
+      - key: start
+        label: When
+        format: date
+      - key: resource
+        label: Clinician
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: start
+        dir: desc
+      actions:
+      - type: calendar
+        label: Add to calendar
+        title: resource
+        start: start
+        end: end
+    roles:
+    - user
+  - key: account
+    type: account
+    title: Subscription
+    roles:
+    - user
+  - key: patients
+    type: table
+    title: My patients
+    source: collection:cases
+    data:
+      display: table
+      fields:
+      - key: full_name
+        label: Patient
+      - key: status
+        label: Status
+        format: badge
+      - key: ai_flags
+        label: AI flags
+      - key: ai_summary
+        label: AI summary
+      - key: decision
+        label: Decision
+        format: badge
+      - key: phone
+        label: Phone
+      actions:
+      - type: call
+        label: Call
+        field: phone
+      empty: No patients assigned yet.
+    roles:
+    - clinician
+  - key: review
+    type: form
+    title: Clinical review
+    collection: cases
+    fields:
+    - status
+    - clinician_notes
+    - decision
+    - rx_drug
+    - rx_dose
+    - rx_duration
+    submit:
+      label: Save review
+      message: Review saved.
+      redirect: patients
+    edit: true
+    roles:
+    - clinician
+  - key: clinician_notes
+    type: table
+    title: Check-in summaries
+    source: collection:checkin_notes
+    data:
+      display: list
+      fields:
+      - key: period
+        label: Period
+      - key: summary
+        label: Summary
+    roles:
+    - clinician
+  - key: escalations
+    type: table
+    title: Coach escalations
+    source: collection:escalations
+    data:
+      display: table
+      fields:
+      - key: category
+        label: Type
+        format: badge
+      - key: reason
+        label: Reason
+      - key: excerpt
+        label: Excerpt
+    roles:
+    - clinician
+  - key: dispensing
+    type: table
+    title: To dispense
+    source: collection:cases
+    data:
+      display: table
+      fields:
+      - key: full_name
+        label: Patient
+      - key: address
+        label: Address
+      - key: allergies
+        label: Allergies
+      - key: rx_drug
+        label: Medicine
+      - key: rx_dose
+        label: Directions
+      - key: rx_duration
+        label: Quantity
+      - key: dispense_status
+        label: Status
+        format: badge
+      filters:
+      - field: decision
+        op: '='
+        value: prescribe
+      actions:
+      - type: directions
+        label: Address
+        field: address
+      empty: No prescriptions waiting.
+    roles:
+    - pharmacist
+  - key: dispense
+    type: form
+    title: Update dispensing
+    collection: cases
+    fields:
+    - dispense_status
+    - tracking_ref
+    submit:
+      label: Save
+      message: Dispensing updated.
+      redirect: dispensing
+    edit: true
+    roles:
+    - pharmacist
+  - key: cases_admin
+    type: table
+    title: All intakes
+    source: collection:cases
+    data:
+      display: table
+      fields:
+      - key: full_name
+        label: Patient
+      - key: status
+        label: Status
+        format: badge
+      - key: clinician_email
+        label: Clinician
+      - key: decision
+        label: Decision
+        format: badge
+      - key: dispense_status
+        label: Delivery
+        format: badge
+    export: true
+    roles:
+    - admin
+  - key: assign
+    type: form
+    title: Assign a clinician
+    collection: cases
+    fields:
+    - clinician_email
+    submit:
+      label: Assign
+      message: Clinician assigned.
+      redirect: cases_admin
+    edit: true
+    nav: false
+    roles:
+    - admin
+  - key: dashboard
+    type: page
+    title: Programme dashboard
+    roles:
+    - admin
+    sections:
+    - type: data
+      title: Reduction in units (all members, by month)
+      intro: Anonymous aggregates; groups under 5 members are hidden.
+      source: collection:drink_logs
+      display: chart
+      chart: line
+      fields:
+      - key: log_date
+        label: Month
+      - key: avg_units
+        label: Average units per entry
+      groupBy:
+        field: log_date
+        bucket: month
+        aggs:
+        - key: avg_units
+          agg: avg
+          field: units
+        - key: total_units
+          agg: sum
+          field: units
+        minCount: 5
+        acrossUsers: true
+    - type: data
+      title: Adherence (log entries per month)
+      source: collection:drink_logs
+      display: bar
+      fields:
+      - key: log_date
+        label: Month
+      - key: count
+        label: Entries logged
+      groupBy:
+        field: log_date
+        bucket: month
+        aggs:
+        - key: medicine_days
+          agg: count
+          field: took_medicine
+        minCount: 5
+        acrossUsers: true
+    - type: data
+      title: Cases
+      source: collection:cases
+      display: kpi
+      kpis:
+      - label: Intakes
+        agg: count
+  triggers:
+  - key: intake_screen
+    description: Screen each new intake
+    'on':
+      collection: cases
+      op: insert
+      where:
+        status: submitted
+    start:
+      agent: screener
+    goal: 'A new intake was submitted. Event: {event}. Screen it as instructed, save it with save_screening, and answer in
+      English.'
+    asUser: true
+  - key: intake_admin_notify
+    'on':
+      collection: cases
+      op: insert
+    notify:
+      to: admins
+      subject: New Clearmonth intake to assign
+      body: A new intake has been submitted. Please assign a clinician.
+      link: cases_admin
+  - key: prescribed_notify
+    'on':
+      collection: cases
+      op: update
+      where:
+        decision: prescribe
+    notify:
+      to:
+      - owner
+      - role:pharmacist
+      subject: Your Clearmonth treatment decision
+      body: A clinician has completed the review. Open Clearmonth to see the details; prescriptions are passed to the pharmacy
+        for dispensing.
+      link: status
+  - key: shipped_notify
+    'on':
+      collection: cases
+      op: update
+      where:
+        dispense_status: shipped
+    notify:
+      to: owner
+      subject: Your medicine has been shipped
+      body: Your medicine is on its way. Open Clearmonth for the tracking reference.
+      link: status
+  - key: checkin_prep_trigger
+    'on':
+      collection: appointments
+      op: insert
+    start:
+      agent: checkin_prep
+    goal: 'A check-in was booked. Event: {event}. Prepare the clinician summary and save it.'
+    asUser: true
+  - key: checkin_reminder
+    'on':
+      date:
+        collection: appointments
+        field: start
+        offsetDays: -1
+        hour: 8
+    notify:
+      to: owner
+      subject: Your Clearmonth check-in is tomorrow
+      body: 'Reminder: you have a clinician check-in tomorrow. Please log your drinks beforehand.'
+      link: checkins
+  - key: escalation_notify
+    'on':
+      collection: escalations
+      op: insert
+    notify:
+      to:
+      - record.clinician_email
+      - admins
+      subject: 'Coach escalation: {record.category}'
+      body: 'The coach passed a message to the clinical team: {record.reason}'
+      link: escalations
+  - key: daily_log_reminder
+    'on':
+      cron: 0 18 * * *
+    notify:
+      to: role:user
+      subject: Log today's drinks
+      body: A quick daily log keeps you on track. It takes a minute.
+      link: log
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: monthly
+      price: 49
+      interval: month
+      label: Clearmonth monthly
+      includes:
+      - Clinician review and monthly check-ins
+      - Daily log and reminders
+      - AI coach
+      roles:
+      - user
+  notifications:
+    emailOnRunDone: false
+  mobile:
+    appId: com.clearmonth.app
+    appName: Clearmonth
+    capabilities:
+    - name: push
+    - name: biometrics
+      reason: To keep your health record private when you open the app
+    lock: biometric
+  extensions:
+  - key: video_consultation
+    description: Video consultations are held in the clinical service's own video tool; the app only books the check-in slot.
+      Embedded video and a link on the booking are not available yet.
+  - key: clinician_booking_view
+    description: Clinicians cannot yet see their own bookings in the app, only the check-in summaries; bookings are not tied
+      to the clinician's email.
+  - key: field_level_access
+    description: The pharmacist sees the whole case record of prescribed patients; restricting them to name, address, allergies
+      and prescription fields is not available.
+  - key: prescribing_and_regulation
+    description: Prescribing, dispensing and the clinical service itself, with CQC, GPhC and MHRA compliance, are outside
+      the software. A GP letter, e-prescription transmission and SMS reminders are not available yet.
+  - key: clinician_assignment
+    description: Admins assign a clinician to each new case (view 'Assign a clinician'); the clinician role is derived from
+      that assignment. Clinicians must also be added to the clinicians catalogue on the data page to be bookable.

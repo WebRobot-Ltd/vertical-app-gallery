@@ -1,0 +1,1187 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: answerscope
+  displayName: Answerscope
+  tagline:
+    en: See how AI assistants talk about your brand, and fix it.
+  description:
+    en: Answerscope asks buyer questions to the major AI assistants on a schedule, records whether your brand and your competitors
+      are mentioned, in what position, with what sentiment and which sources, then audits your website and drafts the content
+      changes that improve your visibility.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#1e1b4b'
+      accent: '#0d9488'
+      background: '#f8fafc'
+      foreground: '#0f172a'
+    fonts:
+      body: Inter
+      display: Space Grotesk
+    wordmark:
+    - text: Answer
+      color: primary
+    - text: scope
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: Marketer / agency
+      assignedBy: signup
+    - key: client
+      label: Client
+      assignedBy: derived
+      from: collection:brands.client_email
+  limits:
+  - action: agent:suggester
+    per: user
+    max: 10
+    window: day
+    roles:
+    - user
+  - action: agent:auditor
+    per: user
+    max: 5
+    window: day
+    roles:
+    - user
+  egress:
+    hosts:
+    - api.openai.com
+    - api.anthropic.com
+    - generativelanguage.googleapis.com
+    - api.perplexity.ai
+    notes: Official APIs of the language models being measured (OpenAI, Anthropic, Google Gemini, Perplexity), called with
+      the app owner's own API keys under each provider's terms.
+  agents:
+  - key: suggester
+    role: main
+    description: Suggests more buyer questions for a brand.
+    when: mode == 'questions'
+    profile:
+      inline:
+        display_name: Answerscope question suggester
+        crews:
+        - id: suggester
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You help marketers find the buyer questions people ask AI assistants about a product category. Call
+            read_brands and find the brand named in the goal (name, products, competitors, markets, existing buyer_questions).
+            Propose new questions that real buyers would ask (comparisons, best-of, how-to, pricing, alternatives, local-market
+            variants), different from the existing ones, in the language of each market. Save EACH with append_suggestions
+            (brand, question, rationale, status "suggested", client_email copied from the brand record). Then write a report
+            starting with a level-1 title "# Suggested questions — <brand>", a table of question and why it matters. Never
+            invent facts about the brand.
+    appTools:
+    - name: read_brands
+      description: Read the brand setups
+      action: read
+      collection: brands
+      scope: user
+    - name: append_suggestions
+      description: Save a suggested question
+      action: append
+      collection: question_suggestions
+      scope: user
+    goalTemplate: 'Brand: {brand}. Suggest {?count}{count}{/count}{!count}10{/count} new buyer questions. Today is {date}.
+      Write the report in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.4
+  - key: auditor
+    role: main
+    description: Crawls the brand's website and drafts content changes for approval.
+    when: mode == 'audit'
+    awaits:
+    - content_changes
+    profile:
+      inline:
+        display_name: Answerscope site auditor
+        crews:
+        - id: auditor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 2.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You audit a company website for visibility in AI assistant answers. Call read_brands to get the
+            website, products and buyer_questions of the brand in the goal, then crawl the site (home, product, pricing, about,
+            FAQ, blog pages, up to about 30 pages) through the WebRobot MCP. Check: structured data (JSON-LD: Organization,
+            Product, FAQPage, Article), page clarity (is it plain what the company does, for whom, with facts), FAQ coverage
+            of the buyer questions, and missing topics. Save one record with append_audits (brand, client_email from the brand,
+            date, structured_data, clarity_score 0-100, faq_coverage 0-100, missing_topics, summary). Then draft 5-10 concrete
+            recommended content changes (page, change, rationale) and call request_content_changes with the full list so the
+            marketer can approve. When approved, save each change with append_recommendations (status "approved"). If rejected,
+            save nothing. Finish with a report starting with "# Site audit — <brand>". Never invent what the site contains;
+            cite pages you actually fetched.'
+    appTools:
+    - name: read_brands
+      description: Read the brand setups
+      action: read
+      collection: brands
+      scope: user
+    - name: append_audits
+      description: Save a site audit
+      action: append
+      collection: site_audits
+      scope: user
+    - name: append_recommendations
+      description: Save an approved content change
+      action: append
+      collection: recommendations
+      scope: user
+    goalTemplate: 'Audit the website of the brand: {brand}. Today is {date}. Write the report in the language with ISO code
+      {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 60
+      maxBudgetUsd: 2.5
+  - key: monitor
+    role: scheduled
+    description: Asks the tracked questions to several LLMs and records brand and competitor visibility.
+    profile:
+      inline:
+        display_name: Answerscope monitor
+        crews:
+        - id: monitor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 80
+          max_budget_usd: 3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You measure how a brand appears in answers from AI assistants. 1) read_brands: find the brand in
+            the goal (name, website, competitors, products, markets, buyer_questions, client_email). 2) read_suggestions:
+            add the questions with status "approved" for that brand. 3) For each question, ask each model through its tool,
+            with the bare question as a real user would ask it, never naming the brand: ask_openai (POST body {"model":"gpt-5","tools":[{"type":"web_search"}],"input":"<question>"};
+            sources are the url_citation annotations), ask_anthropic (body {"model":"claude-sonnet-5-5","max_tokens":1500,"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":3}],"messages":[{"role":"user","content":"<question>"}]};
+            sources from the search result blocks), ask_gemini (body {"contents":[{"parts":[{"text":"<question>"}]}],"tools":[{"google_search":{}}]};
+            sources from groundingMetadata), ask_perplexity (body {"model":"sonar","messages":[{"role":"user","content":"<question>"}]};
+            sources from citations). Skip a model whose tool reports no key connected. 4) For each answer, for the brand AND
+            for each competitor save one row with append_mentions: brand, brand_name, client_email (from the brand record),
+            date (today), model, question, entity, kind ("brand" or "competitor"), mentioned (1 or 0), position (rank in the
+            answer''s list of recommendations, 0 if absent), sentiment (positive, neutral or negative), sources (cited domains,
+            comma separated). Judge only from the answer text; never invent mentions. 5) Compare the brand''s mention rate
+            today with the previous runs (read_mentions). If it dropped by 20 points or more, save an alert with append_alerts
+            (brand, client_email, date, drop_pct, message naming the models and questions that changed). End with a report
+            starting with "# Visibility — <brand> — <date>" with a table by model and a chart block: ```chart {"type":"bar","title":"Mention
+            rate by model","labels":[],"series":[{"name":"Brand","values":[]}],"unit":"%"} ``` filled with real figures.'
+    appTools:
+    - name: read_brands
+      description: Read the brand setups
+      action: read
+      collection: brands
+      scope: user
+    - name: read_suggestions
+      description: Read suggested and approved questions
+      action: read
+      collection: question_suggestions
+      scope: user
+    - name: read_mentions
+      description: Read earlier measurements
+      action: read
+      collection: mentions
+      scope: user
+    - name: append_mentions
+      description: Save one measurement row
+      action: append
+      collection: mentions
+      scope: user
+    - name: append_alerts
+      description: Save a visibility alert
+      action: append
+      collection: alerts
+      scope: user
+    - name: ask_openai
+      description: Ask a question to OpenAI (Responses API with web search)
+      action: http
+      http:
+        method: POST
+        url: https://api.openai.com/v1/responses
+        attribution: OpenAI API
+        timeoutMs: 30000
+        maxBytes: 200000
+        credential:
+          provider: openai
+    - name: ask_anthropic
+      description: Ask a question to Anthropic Claude (Messages API with web search)
+      action: http
+      http:
+        method: POST
+        url: https://api.anthropic.com/v1/messages
+        attribution: Anthropic API
+        timeoutMs: 30000
+        maxBytes: 200000
+        headers:
+          anthropic-version: '2023-06-01'
+        credential:
+          provider: anthropic
+          header: x-api-key
+          format: '{secret}'
+    - name: ask_gemini
+      description: Ask a question to Google Gemini (generateContent with Google Search)
+      action: http
+      http:
+        method: POST
+        url: https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent
+        attribution: Google Gemini API
+        timeoutMs: 30000
+        maxBytes: 200000
+        credential:
+          provider: google
+          query: key
+    - name: ask_perplexity
+      description: Ask a question to Perplexity (Sonar API)
+      action: http
+      http:
+        method: POST
+        url: https://api.perplexity.ai/chat/completions
+        attribution: Perplexity API
+        timeoutMs: 30000
+        maxBytes: 200000
+        credential:
+          provider: perplexity
+    goalTemplate: 'Measure the brand: {brand}. Today is {date}. Write the report in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 80
+      maxBudgetUsd: 3
+  - key: reporter
+    role: scheduled
+    description: Writes the monthly client report for a brand.
+    profile:
+      inline:
+        display_name: Answerscope monthly reporter
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the monthly AI-visibility report for a brand''s client. Use read_brands, read_mentions,
+            read_audits, read_recommendations and read_alerts for the brand in the goal and the last 30 days compared with
+            the 30 before. Sections: ## Summary, ## Visibility by model, ## Competitors, ## Questions that moved, ## Sources
+            cited, ## Site health, ## Recommended actions. Add a ```chart block for visibility by model and one for the trend,
+            with real figures only. Plain, client-ready language; never invent figures. Save the report with append_reports
+            (brand, client_email from the brand, month as YYYY-MM, title, content = the whole Markdown). Start the report
+            with "# <brand> — AI visibility report — <month>".'
+    appTools:
+    - name: read_brands
+      description: Read the brand setups
+      action: read
+      collection: brands
+      scope: user
+    - name: read_mentions
+      description: Read earlier measurements
+      action: read
+      collection: mentions
+      scope: user
+    - name: read_audits
+      description: Read site audits
+      action: read
+      collection: site_audits
+      scope: user
+    - name: read_recommendations
+      description: Read approved content changes
+      action: read
+      collection: recommendations
+      scope: user
+    - name: read_alerts
+      description: Read visibility alerts
+      action: read
+      collection: alerts
+      scope: user
+    - name: append_reports
+      description: Save the monthly report
+      action: append
+      collection: reports
+      scope: user
+    goalTemplate: 'Write the monthly report for the brand: {brand}. Today is {date}. Write it in the language with ISO code
+      {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.8
+  inputForm:
+    title:
+      en: Brand tools
+    fields:
+    - name: mode
+      type: select
+      required: true
+      label:
+        en: What do you want?
+      default: questions
+      options:
+      - value: questions
+        label:
+          en: Suggest more buyer questions
+      - value: audit
+        label:
+          en: Audit the website and draft changes
+    - name: brand
+      type: select
+      required: true
+      label:
+        en: Brand
+      optionsFrom: collection:brands
+    - name: count
+      type: number
+      label:
+        en: How many questions
+      visibleWhen: mode == 'questions'
+      default: 10
+  templates:
+  - key: visibility_watch
+    title:
+      en: Visibility tracking
+    description:
+      en: Asks the brand's questions to the AI assistants on a schedule and records the answers.
+    agent: monitor
+    params:
+    - name: brand
+      type: select
+      required: true
+      label:
+        en: Brand
+      optionsFrom: collection:brands
+    goal: 'Measure the brand: {brand} (tracking "{instance}"). Today is {date}. Write the report in the language with ISO
+      code {lang}.'
+    schedule:
+      cron: 0 5 * * 1
+      userCanChange: true
+    maxPerUser: 30
+    cost:
+      perRun: 25
+  - key: monthly_report
+    title:
+      en: Monthly client report
+    description:
+      en: A monthly report per brand, saved for the client and emailed.
+    agent: reporter
+    params:
+    - name: brand
+      type: select
+      required: true
+      label:
+        en: Brand
+      optionsFrom: collection:brands
+    goal: 'Write the monthly report for the brand: {brand} ("{instance}"). Today is {date}. Write it in the language with
+      ISO code {lang}.'
+    schedule:
+      cron: 0 6 1 * *
+      userCanChange: false
+    maxPerUser: 30
+    cost:
+      perRun: 10
+  approvals:
+  - key: content_changes
+    title: Recommended content changes
+    description: The marketer approves the drafted website changes before they become recommendations.
+    decidedBy: requester
+    fields:
+    - summary
+  triggers:
+  - key: alert_email
+    'on':
+      collection: alerts
+      op: insert
+    notify:
+      to:
+      - owner
+      - record.client_email
+      subject: Visibility drop for {record.brand}
+      body: '{record.message}
+
+
+        Drop: {record.drop_pct} points.'
+      link: dashboard
+  - key: report_email
+    'on':
+      collection: reports
+      op: insert
+    notify:
+      to:
+      - owner
+      - record.client_email
+      subject: '{record.title}'
+      body: Your monthly AI visibility report for {record.brand} is ready. Open it to read or save it as PDF.
+      link: reports
+  - key: changes_approved
+    'on':
+      approval: content_changes
+      decision: approved
+    notify:
+      to: owner
+      subject: Content changes approved
+      body: The recommended content changes were approved and saved.
+      link: recommendations
+  notifications:
+    emailOnRunDone: true
+  views:
+  - key: home
+    type: page
+    title: Answerscope
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: AI search visibility
+      title: Know what AI assistants say about **your brand**.
+      text: Answerscope asks your buyers' questions to the leading AI assistants, tracks whether you and your competitors
+        are mentioned, and tells you what to change on your site to be recommended.
+      actions:
+      - label: Start tracking
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Set up a brand
+        text: Brand, website, competitors, products, markets and the buyer questions that matter. An agent suggests more.
+        badge: '1'
+      - title: We ask the assistants
+        text: On a schedule, the questions go to several large language models through their official APIs. Mentions, position,
+          sentiment and cited sources are recorded for you and your competitors.
+        badge: '2'
+      - title: Fix what is missing
+        text: An agent crawls your site, checks structured data, clarity and FAQ coverage, and drafts content changes you
+          approve.
+        badge: '3'
+      - title: Stay informed
+        text: Share-of-voice charts, email alerts on sharp drops, and a monthly PDF report for each client.
+        badge: '4'
+    - type: cards
+      id: agencies
+      title: Built for agencies
+      items:
+      - title: Many client brands
+        text: Manage every client from one account.
+      - title: Client access
+        text: Invite client users who see only their own brand.
+      - title: Monthly reports
+        text: A client-ready report, emailed every month.
+    - type: cards
+      id: pricing
+      title: Pricing
+      intro: Plans by questions tracked and models queried; extra runs are credits.
+      items:
+      - title: Starter — €49/month
+        text: Up to 25 questions, 2 models, weekly runs.
+      - title: Growth — €149/month
+        text: Up to 100 questions, 4 models, daily runs.
+      - title: Agency — €449/month
+        text: Up to 400 questions, all models, daily runs, unlimited client brands.
+    - type: note
+      content: Answerscope measures what AI assistants answer at the time of the query; answers vary between runs. Figures
+        are indicators, not guarantees.
+  - key: brand_setup
+    type: form
+    title: Brand setup
+    collection: brands
+    fields:
+    - name
+    - website
+    - competitors
+    - products
+    - markets
+    - buyer_questions
+    - client_name
+    - client_email
+    submit:
+      label: Save brand
+      message: Brand saved.
+      redirect: brands
+    edit: true
+    roles:
+    - user
+    - admin
+  - key: brands
+    type: table
+    title: My brands
+    source: collection:brands
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Brand
+      - key: website
+        label: Website
+        format: link
+      - key: client_name
+        label: Client
+      - key: client_email
+        label: Client email
+    roles:
+    - user
+    - admin
+  - key: tools
+    type: new_run
+    title: Questions and audit
+    roles:
+    - user
+    - admin
+  - key: runs
+    type: history
+    title: My runs
+    source: run
+    roles:
+    - user
+    - admin
+  - key: run_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: suggestions
+    type: table
+    title: Suggested questions
+    source: collection:question_suggestions
+    data:
+      display: table
+      fields:
+      - key: brand
+        label: Brand
+      - key: question
+        label: Question
+      - key: rationale
+        label: Why
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: brand
+        dir: asc
+      limit: 200
+    roles:
+    - user
+    - admin
+  - key: suggestion_edit
+    type: form
+    title: Approve a question
+    collection: question_suggestions
+    fields:
+    - question
+    - status
+    edit: true
+    submit:
+      label: Save
+      message: Saved.
+      redirect: suggestions
+    nav: false
+    roles:
+    - user
+    - admin
+  - key: watches
+    type: instances
+    template: visibility_watch
+    title: Tracking
+    roles:
+    - user
+    - admin
+  - key: report_jobs
+    type: instances
+    template: monthly_report
+    title: Monthly reports setup
+    roles:
+    - user
+    - admin
+  - key: dashboard
+    type: page
+    title: Visibility
+    roles:
+    - user
+    - admin
+    - client
+    sections:
+    - type: data
+      id: trend
+      title: Brand visibility over time (mention rate)
+      source: collection:mentions
+      display: chart
+      chart: line
+      fields:
+      - key: date
+        label: Week
+      - key: visibility
+        label: Mention rate
+        format: percent
+      filters:
+      - field: kind
+        op: '='
+        value: brand
+      groupBy:
+        field: date
+        bucket: week
+        aggs:
+        - key: visibility
+          agg: avg
+          field: mentioned
+    - type: data
+      title: Mention rate by model
+      source: collection:mentions
+      display: chart
+      chart: bar
+      fields:
+      - key: model
+        label: Model
+      - key: visibility
+        label: Mention rate
+        format: percent
+      filters:
+      - field: kind
+        op: '='
+        value: brand
+      groupBy:
+        field: model
+        aggs:
+        - key: visibility
+          agg: avg
+          field: mentioned
+    - type: data
+      title: 'Share of voice: brand vs competitors'
+      source: collection:mentions
+      display: chart
+      chart: bar
+      fields:
+      - key: entity
+        label: Brand
+      - key: mentions
+        label: Mentions
+      filters:
+      - field: mentioned
+        op: '='
+        value: 1
+      groupBy:
+        field: entity
+        aggs:
+        - key: mentions
+          agg: sum
+          field: mentioned
+    - type: data
+      title: By question
+      source: collection:mentions
+      display: table
+      fields:
+      - key: question
+        label: Question
+      - key: visibility
+        label: Mention rate
+        format: percent
+      - key: avg_position
+        label: Avg position
+        format: number
+      filters:
+      - field: kind
+        op: '='
+        value: brand
+      groupBy:
+        field: question
+        aggs:
+        - key: visibility
+          agg: avg
+          field: mentioned
+        - key: avg_position
+          agg: avg
+          field: position
+    - type: data
+      title: Latest answers
+      source: collection:mentions
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: model
+        label: Model
+      - key: question
+        label: Question
+      - key: entity
+        label: Entity
+      - key: mentioned
+        label: Mentioned
+      - key: position
+        label: Position
+      - key: sentiment
+        label: Sentiment
+        format: badge
+      - key: sources
+        label: Sources
+      sort:
+        field: date
+        dir: desc
+      limit: 100
+    - type: data
+      title: Alerts
+      source: collection:alerts
+      display: list
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: brand
+        label: Brand
+      - key: message
+        label: What changed
+      sort:
+        field: date
+        dir: desc
+      limit: 20
+      empty: No alerts.
+  - key: audits
+    type: table
+    title: Site audits
+    source: collection:site_audits
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: brand
+        label: Brand
+      - key: clarity_score
+        label: Clarity
+        format: number
+      - key: faq_coverage
+        label: FAQ coverage
+        format: number
+      - key: structured_data
+        label: Structured data
+      - key: missing_topics
+        label: Missing topics
+      - key: summary
+        label: Summary
+      sort:
+        field: date
+        dir: desc
+    roles:
+    - user
+    - admin
+    - client
+  - key: recommendations
+    type: table
+    title: Recommended changes
+    source: collection:recommendations
+    data:
+      display: table
+      fields:
+      - key: brand
+        label: Brand
+      - key: page
+        label: Page
+      - key: change
+        label: Change
+      - key: rationale
+        label: Why
+      - key: status
+        label: Status
+        format: badge
+    roles:
+    - user
+    - admin
+    - client
+  - key: approvals
+    type: approvals
+    title: Approvals
+    roles:
+    - user
+    - admin
+  - key: reports
+    type: cards
+    title: Monthly reports
+    source: collection:reports
+    printable: true
+    data:
+      display: cards
+      fields:
+      - key: title
+        label: Report
+      - key: brand
+        label: Brand
+      - key: month
+        label: Month
+      - key: content
+        label: Report
+      sort:
+        field: month
+        dir: desc
+      limit: 24
+    roles:
+    - user
+    - admin
+    - client
+  - key: account
+    type: account
+    title: Plan and credits
+    roles:
+    - user
+  data:
+    credentials:
+    - provider: openai
+      kind: api_key
+      scope: org
+      label: OpenAI API key
+      help: Platform API key from the OpenAI dashboard; set by the app admins.
+    - provider: anthropic
+      kind: api_key
+      scope: org
+      label: Anthropic API key
+      help: Key from the Anthropic Console; set by the app admins.
+    - provider: google
+      kind: api_key
+      scope: org
+      label: Google Gemini API key
+      help: Key from Google AI Studio; set by the app admins.
+    - provider: perplexity
+      kind: api_key
+      scope: org
+      label: Perplexity API key
+      help: Key from the Perplexity API settings; set by the app admins.
+    collections:
+    - name: brands
+      ownedBy: user
+      description: Each marketer's or agency's client brands, with the optional client user who sees only it.
+      access:
+      - role: client
+        where:
+          client_email: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Brand name
+      - name: website
+        type: url
+        required: true
+        label: Website
+      - name: competitors
+        type: textarea
+        label: Competitors (one per line)
+      - name: products
+        type: textarea
+        label: Products or services (one per line)
+      - name: markets
+        type: textarea
+        label: Markets (countries and languages)
+      - name: buyer_questions
+        type: textarea
+        label: Buyer questions (one per line)
+      - name: client_name
+        type: text
+        label: Client name
+      - name: client_email
+        type: email
+        label: Client user email (sees only this brand)
+    - name: question_suggestions
+      ownedBy: user
+      description: Questions suggested by the agent; the approved ones are tracked.
+      access:
+      - role: client
+        where:
+          client_email: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: brand
+        type: text
+      - name: question
+        type: text
+        required: true
+      - name: rationale
+        type: text
+      - name: status
+        type: select
+        options:
+        - suggested
+        - approved
+        - rejected
+      - name: client_email
+        type: email
+    - name: mentions
+      ownedBy: user
+      retentionDays: 730
+      description: One row per model, question and entity (brand or competitor) per run.
+      access:
+      - role: client
+        where:
+          client_email: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: brand
+        type: text
+      - name: brand_name
+        type: text
+      - name: client_email
+        type: email
+      - name: date
+        type: date
+      - name: model
+        type: text
+      - name: question
+        type: text
+      - name: entity
+        type: text
+      - name: kind
+        type: select
+        options:
+        - brand
+        - competitor
+      - name: mentioned
+        type: number
+      - name: position
+        type: number
+      - name: sentiment
+        type: select
+        options:
+        - positive
+        - neutral
+        - negative
+      - name: sources
+        type: text
+    - name: alerts
+      ownedBy: user
+      description: Sharp visibility drops.
+      access:
+      - role: client
+        where:
+          client_email: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: brand
+        type: text
+      - name: client_email
+        type: email
+      - name: date
+        type: date
+      - name: drop_pct
+        type: number
+      - name: message
+        type: textarea
+    - name: site_audits
+      ownedBy: user
+      description: Website audits.
+      access:
+      - role: client
+        where:
+          client_email: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: brand
+        type: text
+      - name: client_email
+        type: email
+      - name: date
+        type: date
+      - name: structured_data
+        type: textarea
+      - name: clarity_score
+        type: number
+      - name: faq_coverage
+        type: number
+      - name: missing_topics
+        type: textarea
+      - name: summary
+        type: textarea
+    - name: recommendations
+      ownedBy: user
+      description: Approved content changes.
+      access:
+      - role: client
+        where:
+          client_email: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: brand
+        type: text
+      - name: client_email
+        type: email
+      - name: page
+        type: text
+      - name: change
+        type: textarea
+      - name: rationale
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - approved
+        - done
+    - name: reports
+      ownedBy: user
+      description: Monthly client reports.
+      access:
+      - role: client
+        where:
+          client_email: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: brand
+        type: text
+      - name: client_email
+        type: email
+      - name: month
+        type: text
+      - name: title
+        type: text
+      - name: content
+        type: textarea
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:suggester:
+        estimate: 10
+        metered: true
+      agent:auditor:
+        estimate: 60
+        metered: true
+    packs:
+    - key: credits_1000
+      credits: 1000
+      price: 10
+      label: 1,000 extra run credits
+    - key: credits_5000
+      credits: 5000
+      price: 45
+      label: 5,000 extra run credits
+    plans:
+    - key: starter
+      price: 49
+      interval: month
+      label: Starter
+      includes:
+      - Up to 25 questions
+      - 2 models
+      - Weekly runs
+      credits: 600
+      creditsReset: monthly
+      roles:
+      - user
+    - key: growth
+      price: 149
+      interval: month
+      label: Growth
+      includes:
+      - Up to 100 questions
+      - 4 models
+      - Daily runs
+      credits: 3000
+      creditsReset: monthly
+      roles:
+      - user
+    - key: agency
+      price: 449
+      interval: month
+      label: Agency
+      includes:
+      - Up to 400 questions
+      - All models
+      - Daily runs
+      - Unlimited client brands
+      credits: 12000
+      creditsReset: monthly
+      roles:
+      - user
+  extensions:
+  - key: plan_enforcement
+    description: The number of questions tracked, the models queried and daily-vs-weekly frequency per plan are described
+      in the plans but not enforced automatically; the marketer picks the schedule on the tracking page and run credits are
+      charged per run.
+  - key: pdf_report
+    description: The monthly report is a printable page (save as PDF from the browser) and the email links to it; a PDF file
+      attachment is not generated.

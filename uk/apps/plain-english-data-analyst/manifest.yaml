@@ -1,0 +1,880 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: askwell
+  displayName: Askwell
+  tagline:
+    en: Ask your data a question. Get a chart, an explanation and the SQL.
+  description:
+    en: Askwell is an AI data analyst for business users who do not write SQL. Upload your CSV or Excel files, ask questions
+      in English, Spanish or French, and get a chart, a short explanation and the query behind it. Analysts verify answers,
+      and verified queries are reused.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12304a'
+      accent: '#0f8b8d'
+      background: '#f7f9fb'
+      foreground: '#16222d'
+    fonts:
+      body: Inter
+      display: Inter
+    wordmark:
+    - text: Ask
+      color: primary
+    - text: well
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Start free trial
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: analyst
+      label: Analyst
+      assignedBy: invite
+    - key: user
+      label: Business user
+      assignedBy: signup
+  limits:
+  - action: agent:analyst
+    per: user
+    max: 30
+    window: day
+  - action: create:datasets
+    max: 3
+    window: total
+    plans:
+      seat: 50
+  agents:
+  - key: analyst
+    role: main
+    description: 'Answers a business question from the user''s uploaded data: writes SQL, runs it, checks it, explains it.'
+    profile:
+      inline:
+        display_name: Askwell analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Askwell, a careful data analyst for business users who do not write SQL. The question may
+            be in English, Spanish or French: answer in the language of the question.
+
+            ONLY use the customer''s own data: the datasets listed in your goal (files the user uploaded, opened with read_upload
+            using the file id) and, when connected, the HubSpot account through hubspot_query. Never use outside knowledge
+            for figures.
+
+            Method: 1) search_verified for a similar verified query and reuse it when it fits; 2) search_catalog for business
+            descriptions of tables and columns; 3) read the file(s) with read_upload; 4) call run_sql with args {tables:{<table_name>:{columns:[...],rows:[[...]]}},
+            sql:"SELECT ..."}; tables are loaded into SQLite, so write SQLite SQL, SELECT only; 5) CHECK the result: empty
+            result, nulls, duplicated rows, implausible totals, wrong period, units; fix the query and rerun if needed; say
+            plainly what you could not verify. Never invent figures.
+
+            Report structure: first line a level-1 title ''# <short answer headline>''. Then ## Answer (2-4 sentences with
+            the key figures), a fenced chart block when numbers are compared:
+
+            ```chart
+
+            {"type":"bar","title":"...","labels":["A"],"series":[{"name":"...","values":[1]}],"unit":""}
+
+            ```
+
+            then ## How I checked it (the checks you did and any caveats), and ## Query with the exact SQL in a ```sql block.
+            Always show the query. Finish with a final JSON block with keys question, sql, summary, status set to "unverified";
+            it is saved for analysts to verify.'
+          mcp_servers: []
+    goalTemplate: 'Question: {question}
+
+      {?focus}Focus / dataset hint: {focus}{/focus}
+
+      The user''s datasets (one JSON line each; open the files with read_upload):
+
+      {datasets}
+
+      Today is {date}. Reply in the language of the question.'
+    context:
+    - key: datasets
+      from: collection:datasets
+    appTools:
+    - name: read_upload
+      description: Read an uploaded CSV/Excel file by its file id
+      action: read_file
+    - name: run_sql
+      description: Run a SELECT over tables loaded in memory (SQLite) and return the rows
+      action: call
+      slot: sql_runner
+    - name: search_catalog
+      description: Business descriptions of tables and columns
+      action: search
+      collection: data_catalog
+      scope: all
+    - name: search_verified
+      description: Find analyst-verified queries for similar questions
+      action: search
+      collection: verified_queries
+      scope: all
+    - name: hubspot_query
+      description: GET from the connected HubSpot account (CRM API)
+      action: http
+      http:
+        method: GET
+        url: https://api.hubapi.com/crm/v3/objects
+        allowPath: true
+        attribution: HubSpot CRM API, customer's own account
+        credential:
+          provider: hubspot
+          format: Bearer {secret}
+    output: markdown+json
+    resultSchema:
+      type: object
+      properties:
+        question:
+          type: string
+        sql:
+          type: string
+        summary:
+          type: string
+        status:
+          type: string
+    writesTo:
+      collection: answers
+      parse: json_last
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 0.8
+      timeoutSeconds: 600
+  - key: describer
+    role: helper
+    description: Drafts business descriptions for tables and columns and asks an admin to approve them.
+    awaits:
+    - approve_descriptions
+    profile:
+      inline:
+        display_name: Askwell catalog writer
+        crews:
+        - id: describer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You document a company''s data for business users. When given a catalog record with status ''new''
+            (table_name and columns), write a plain-business-language description of the table and of each column (what it
+            means, unit, typical values) using only what the record says; mark guesses with ''(to confirm)''. Update the record
+            with write_catalog: set description and status ''draft'', then call the approval tool request_approve_descriptions
+            once. When the goal says the descriptions were approved, set the record''s status to ''approved'' with write_catalog.
+            Never invent facts about the business. Reply with a short ''# Catalog update'' note.'
+    goalTemplate: '{event}'
+    appTools:
+    - name: read_catalog
+      description: Read catalog records
+      action: read
+      collection: data_catalog
+      scope: all
+    - name: write_catalog
+      description: Update catalog records
+      action: write
+      collection: data_catalog
+      scope: all
+    output: markdown
+  - key: librarian
+    role: helper
+    description: Stores an analyst-verified answer in the library of verified queries.
+    profile:
+      inline:
+        display_name: Askwell librarian
+        crews:
+        - id: librarian
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You file verified answers. Given a verified answer record, call add_verified once with question (normalised,
+            in English plus the original wording), sql, and tables (the table names used). Then reply '# Filed' and one line.
+    appTools:
+    - name: add_verified
+      description: Add a verified query to the library
+      action: append
+      collection: verified_queries
+      scope: all
+    output: markdown
+  - key: tile_runner
+    role: scheduled
+    description: Re-runs a saved question for a dashboard tile and stores the latest result.
+    memory: instance
+    profile:
+      inline:
+        display_name: Askwell tile refresher
+        crews:
+        - id: tile_runner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You refresh one dashboard tile from the user''s own uploaded data. Open the files with read_upload,
+            run the saved SQL (or the question, if no SQL) with run_sql (SQLite, SELECT only), check the result for obvious
+            errors and report. Start with ''# <tile title> — <date>''. Then ## Result (figures), a chart block ```chart {...}```
+            when numbers are compared, ## Change vs last time, and ## Query with the SQL. Never invent figures. End with a
+            final JSON block {"title":"","date":"","summary":"","sql":""}.'
+    goalTemplate: 'Tile "{instance}": {question}
+
+      {?sql}Saved SQL:
+
+      {sql}{/sql}
+
+      Datasets:
+
+      {datasets}
+
+      Today is {date}.'
+    context:
+    - key: datasets
+      from: collection:datasets
+    appTools:
+    - name: read_upload
+      description: Read an uploaded CSV/Excel file by its file id
+      action: read_file
+    - name: run_sql
+      description: Run a SELECT over tables loaded in memory (SQLite) and return the rows
+      action: call
+      slot: sql_runner
+    output: markdown+json
+    writesTo:
+      collection: tile_results
+      parse: json_last
+  - key: alert_checker
+    role: scheduled
+    description: Checks a metric against a threshold.
+    profile:
+      inline:
+        display_name: Askwell alert checker
+        crews:
+        - id: alert_checker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You check one alert on the user's own uploaded data. Compute the metric with run_sql (SQLite, SELECT
+            only; open files with read_upload), compare it with the threshold and condition, and sanity-check the figure.
+            Start with '# Alert check — <date>'; give the value and the SQL. End with a final JSON block {"date":"YYYY-MM-DD","value":<number>,"breached":true|false,"message":"one
+            sentence for the email","sql":""}. Never invent figures; if the data cannot answer, set breached false and explain
+            in message.
+    goalTemplate: 'Alert "{instance}": {question}. Notify when the value is {condition} {threshold}.
+
+      Datasets:
+
+      {datasets}
+
+      Today is {date}.'
+    context:
+    - key: datasets
+      from: collection:datasets
+    appTools:
+    - name: read_upload
+      description: Read an uploaded CSV/Excel file by its file id
+      action: read_file
+    - name: run_sql
+      description: Run a SELECT over tables loaded in memory (SQLite) and return the rows
+      action: call
+      slot: sql_runner
+    output: markdown+json
+    writesTo:
+      collection: alert_checks
+      parse: json_last
+  inputForm:
+    title:
+      en: Ask a question
+    fields:
+    - name: question
+      type: textarea
+      required: true
+      maxLength: 600
+      label:
+        en: Your question
+      help:
+        en: e.g. Which region grew fastest last quarter? (Spanish and French also work)
+    - name: focus
+      type: text
+      maxLength: 200
+      label:
+        en: Dataset or period (optional)
+    examples:
+    - question: Which region grew fastest last quarter?
+    - question: ¿Cuáles fueron los 5 productos más vendidos este mes?
+    - question: Quel est le chiffre d'affaires par semaine ?
+  data:
+    collections:
+    - name: datasets
+      description: Files the user uploaded (CSV or Excel) and their team
+      ownedBy: user
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Name (used as table name)
+      - name: team
+        type: text
+        label: Team
+      - name: file
+        type: file
+        required: true
+        accept:
+        - csv
+        - xlsx
+        maxMb: 15
+        extract: none
+      - name: notes
+        type: textarea
+        label: What is in this file
+      access:
+      - role: analyst
+        can:
+        - read
+    - name: data_catalog
+      description: Business descriptions of tables and columns, kept by admins
+      ownedBy: shared
+      fields:
+      - name: table_name
+        type: text
+        required: true
+      - name: columns
+        type: textarea
+        help: One column per line, optionally with a sample value
+      - name: description
+        type: textarea
+      - name: team
+        type: text
+      - name: status
+        type: select
+        options:
+        - new
+        - draft
+        - approved
+        default: new
+    - name: answers
+      description: Answers with the query, for analysts to verify
+      ownedBy: user
+      retentionDays: 365
+      fields:
+      - name: question
+        type: textarea
+      - name: sql
+        type: textarea
+      - name: summary
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - unverified
+        - verified
+        default: unverified
+      access:
+      - role: analyst
+        can:
+        - read
+        - write
+    - name: verified_queries
+      description: Analyst-verified queries reused for similar questions
+      ownedBy: app
+      fields:
+      - name: question
+        type: textarea
+      - name: sql
+        type: textarea
+      - name: tables
+        type: text
+    - name: tile_results
+      description: Latest results of each dashboard tile
+      ownedBy: instance
+      retentionDays: 180
+      fields:
+      - name: title
+        type: text
+      - name: date
+        type: date
+      - name: summary
+        type: textarea
+      - name: sql
+        type: textarea
+    - name: alert_checks
+      description: Results of each alert check
+      ownedBy: instance
+      retentionDays: 90
+      fields:
+      - name: date
+        type: date
+      - name: value
+        type: number
+      - name: breached
+        type: boolean
+      - name: message
+        type: textarea
+      - name: sql
+        type: textarea
+    credentials:
+    - provider: hubspot
+      kind: api_key
+      scope: user
+      label: HubSpot private app token
+      help: 'In HubSpot: Settings > Integrations > Private apps > create an app with read-only CRM scopes and paste its token.'
+  egress:
+    hosts:
+    - api.hubapi.com
+    notes: HubSpot CRM API, called with the customer's own private-app token, read only.
+  slots:
+  - key: sql_runner
+    description: Runs a SELECT over small tables in an in-memory SQLite database
+    timeoutMs: 8000
+    example:
+      args:
+        tables:
+          sales:
+            columns:
+            - region
+            - amount
+            rows:
+            - - N
+              - 1
+            - - S
+              - 2
+        sql: SELECT region, SUM(amount) AS total FROM sales GROUP BY region
+    code: "import sqlite3, re\n\ndef main(input):\n    a = input.get('args') or {}\n    sql = (a.get('sql') or '').strip().rstrip(';')\n\
+      \    if not re.match(r'(?is)^\\s*(select|with)\\b', sql) or re.search(r'(?i)\\b(insert|update|delete|drop|alter|create|attach|pragma|replace)\\\
+      b', sql):\n        return {'error': 'Only SELECT queries are allowed'}\n    con = sqlite3.connect(':memory:')\n    try:\n\
+      \        for name, t in (a.get('tables') or {}).items():\n            if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', name):\n\
+      \                return {'error': 'bad table name ' + name}\n            cols = [c for c in t.get('columns', [])]\n\
+      \            q = ', '.join('\"' + str(c).replace('\"', '') + '\"' for c in cols)\n            con.execute('CREATE TABLE\
+      \ \"%s\" (%s)' % (name, q))\n            ph = ','.join('?' * len(cols))\n            con.executemany('INSERT INTO \"\
+      %s\" VALUES (%s)' % (name, ph), [list(r)[:len(cols)] + [None] * (len(cols) - len(r)) for r in t.get('rows', [])])\n\
+      \        cur = con.execute(sql)\n        names = [d[0] for d in cur.description]\n        rows = cur.fetchmany(200)\n\
+      \        return {'columns': names, 'rows': rows, 'row_count': len(rows), 'truncated': len(rows) == 200}\n    except\
+      \ Exception as e:\n        return {'error': str(e)}\n    finally:\n        con.close()\n"
+  approvals:
+  - key: approve_descriptions
+    title: Approve table and column descriptions
+    role: admin
+    decidedBy: role
+    fields:
+    - table_name
+    - description
+  templates:
+  - key: tile
+    title: Dashboard tile
+    description: A saved question that refreshes on a schedule.
+    agent: tile_runner
+    params:
+    - name: question
+      type: textarea
+      required: true
+      label: Question
+    - name: sql
+      type: textarea
+      label: Saved SQL (optional, from a verified answer)
+    schedule:
+      cron: 0 6 * * *
+      userCanChange: true
+    maxPerUser: 12
+    cost:
+      perRun: 3
+  - key: alert
+    title: Alert
+    description: Email me when a metric crosses a value.
+    agent: alert_checker
+    params:
+    - name: question
+      type: text
+      required: true
+      label: Metric (e.g. weekly sales)
+    - name: condition
+      type: select
+      required: true
+      label: Notify when it is
+      options:
+      - value: below
+        label: below
+      - value: above
+        label: above
+    - name: threshold
+      type: number
+      required: true
+      label: Value
+    schedule:
+      cron: 0 7 * * *
+      userCanChange: true
+    maxPerUser: 10
+    cost:
+      perRun: 2
+  triggers:
+  - key: describe_new
+    description: A new table in the catalog gets a drafted description
+    'on':
+      collection: data_catalog
+      op: insert
+      where:
+        status: new
+    start:
+      agent: describer
+    goal: 'Document catalog record {record.table_name}. Columns: {record.columns}. Status new.'
+    asUser: false
+  - key: publish_descriptions
+    'on':
+      approval: approve_descriptions
+      decision: approved
+    start:
+      agent: describer
+    goal: 'The descriptions were approved: set status approved on the record {event}.'
+    asUser: false
+  - key: file_verified
+    description: 'An analyst verified an answer: store it for reuse'
+    'on':
+      collection: answers
+      op: update
+      where:
+        status: verified
+    start:
+      agent: librarian
+    goal: 'File this verified answer. Question: {record.question}
+
+      SQL: {record.sql}'
+    asUser: false
+  - key: alert_hit
+    'on':
+      collection: alert_checks
+      op: insert
+      where:
+        breached: true
+    notify:
+      to: owner
+      subject: 'Askwell alert: {record.message}'
+      body: 'Your alert was triggered on {record.date}.
+
+
+        {record.message}
+
+        Value: {record.value}
+
+
+        Query:
+
+        {record.sql}'
+      link: alerts
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Askwell
+    sections:
+    - type: hero
+      title: Ask your data in plain words. **Askwell** shows its work.
+      text: An AI data analyst for people who do not write SQL. Get a chart, a short explanation and the exact query for every
+        answer, so an analyst can verify it. Questions in English, Spanish or French. Only your own data is used.
+      actions:
+      - label: Start free trial
+        href: /login
+        style: primary
+      note: Free trial on uploaded CSV data.
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Add your data
+        text: Upload CSV or Excel files. Admins describe tables and columns, with an agent drafting the text for approval.
+        badge: 📂
+      - title: Ask
+        text: Type a question. The agent writes the SQL, runs it, checks the result and answers with a chart.
+        badge: 💬
+      - title: Verify and reuse
+        text: Analysts mark answers as verified, and verified queries are reused for similar questions.
+        badge: ✅
+      - title: Track
+        text: Save questions as dashboard tiles that refresh on a schedule, and set alerts by email.
+        badge: 🔔
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: £25 per user per month
+        text: Minimum five users. Free trial on uploaded CSV data.
+    - type: note
+      content: Askwell uses only the data you connect. Always check important decisions with the query shown.
+  - key: ask
+    type: new_run
+    title: Ask
+    roles:
+    - user
+    - analyst
+    - admin
+  - key: history
+    type: history
+    title: My questions
+    source: run
+    roles:
+    - user
+    - analyst
+    - admin
+  - key: answer
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: upload
+    type: form
+    title: Add data
+    collection: datasets
+    submit:
+      label: Save dataset
+      message: Dataset added. You can now ask about it.
+      redirect: my_data
+    roles:
+    - user
+    - analyst
+    - admin
+  - key: my_data
+    type: table
+    title: My data
+    source: collection:datasets
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Name
+      - key: team
+        label: Team
+      - key: notes
+        label: Notes
+    roles:
+    - user
+    - analyst
+    - admin
+  - key: catalog
+    type: table
+    title: Data catalog
+    source: collection:data_catalog
+    data:
+      display: table
+      fields:
+      - key: table_name
+        label: Table
+      - key: description
+        label: Description
+      - key: team
+        label: Team
+      - key: status
+        label: Status
+        format: badge
+    roles:
+    - user
+    - analyst
+    - admin
+  - key: descriptions
+    type: approvals
+    title: Approve descriptions
+    approvals:
+    - approve_descriptions
+    roles:
+    - admin
+  - key: verify
+    type: table
+    title: Answers to verify
+    source: collection:answers
+    data:
+      display: table
+      fields:
+      - key: question
+        label: Question
+      - key: sql
+        label: SQL
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: status
+        dir: asc
+    export: true
+    roles:
+    - analyst
+    - admin
+  - key: verify_edit
+    type: form
+    title: Verify an answer
+    collection: answers
+    edit: true
+    fields:
+    - question
+    - sql
+    - status
+    submit:
+      label: Save
+      message: Saved.
+      redirect: verify
+    roles:
+    - analyst
+    - admin
+    nav: false
+  - key: tiles
+    type: instances
+    title: Dashboard tiles
+    template: tile
+    roles:
+    - user
+    - analyst
+    - admin
+  - key: tile_results_view
+    type: cards
+    title: Tile results
+    source: collection:tile_results
+    data:
+      display: cards
+      fields:
+      - key: title
+        label: Tile
+      - key: date
+        label: Date
+        format: date
+      - key: summary
+        label: Summary
+      sort:
+        field: date
+        dir: desc
+      limit: 50
+    roles:
+    - user
+    - analyst
+    - admin
+  - key: alerts
+    type: instances
+    title: Alerts
+    template: alert
+    roles:
+    - user
+    - analyst
+    - admin
+  - key: account
+    type: account
+    title: Plan and connections
+    roles:
+    - user
+    - analyst
+    - admin
+  schedules: []
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: gbp
+    signupCredits: 60
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:analyst:
+        estimate: 10
+        metered: true
+    packs:
+    - key: topup
+      credits: 500
+      price: 5
+      label: 500 credits
+    plans:
+    - key: seat
+      price: 25
+      interval: month
+      label: Askwell seat (£25 per user, minimum 5 users)
+      credits: 300
+      creditsReset: monthly
+      includes:
+      - questions on your data
+      - dashboard tiles
+      - alerts
+      - verified query library
+  notifications:
+    emailOnRunDone: false
+  extensions:
+  - key: oauth_connectors
+    description: OAuth connectors to Snowflake, BigQuery, Postgres, Salesforce and Google Analytics 4 are not available yet;
+      live SQL against a warehouse needs them. For now data comes from CSV/Excel upload (queries run in SQLite) and from HubSpot
+      with a private-app API key.
+  - key: minimum_seats
+    description: The five-user minimum of the £25 seat plan and per-seat billing are not enforceable by the manifest; set
+      them in Stripe. A free trial is given as signup credits for uploaded CSV data.
+  - key: team_row_rules
+    description: 'Row-level rules by team are only partly expressed: datasets and answers are private to their owner (plus
+      analysts'' read access). Team-wide sharing of datasets with per-team filters needs a team-membership collection and
+      derived roles, to be added once the teams are known.'

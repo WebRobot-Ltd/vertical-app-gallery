@@ -1,0 +1,914 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: pensivo
+  displayName: Pensivo
+  tagline:
+    en: Your pensions, ISAs and investments in one place, explained in plain English.
+  description:
+    en: 'Pensivo gives you a single view of your pensions, ISAs and investments: total wealth, asset allocation, fees and
+      projected retirement income. An AI assistant explains your position using MoneyHelper guidance and current HMRC allowances.
+      It gives guidance, not regulated financial advice.'
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#0f3d3e'
+      accent: '#d98e04'
+      background: '#f6f8f7'
+      foreground: '#14201f'
+    fonts:
+      body: Inter
+      display: Fraunces
+    width: wide
+    wordmark:
+    - text: Pens
+      color: primary
+    - text: ivo
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how-it-works'
+    - label: Your data
+      href: '#privacy'
+    cta:
+      label: Get started
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      assignedBy: signup
+  limits:
+  - action: agent:assistant
+    max: 15
+    window: month
+    roles:
+    - user
+    plans:
+      premium: -1
+  - action: agent:importer
+    max: 5
+    window: month
+    roles:
+    - user
+    plans:
+      premium: 50
+  - action: agent:planner
+    max: 3
+    window: month
+    roles:
+    - user
+    plans:
+      premium: 30
+  agents:
+  - key: assistant
+    role: helper
+    description: 'Explains the user''s position in plain English: guidance, never personal advice.'
+    profile:
+      inline:
+        display_name: Pensivo assistant
+        crews:
+        - id: assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Pensivo''s assistant. You help one UK person understand their own pensions, ISAs and investments
+            in plain English. You give general GUIDANCE and information, never regulated personal financial advice (you do
+            not have FCA permission).
+
+
+            Tools: my_accounts returns the user''s own accounts (name, provider, type, balance, fee_pct, main_asset_class,
+            contributions_ytd, employer_contributions_ytd, as_of, source). tax_allowances returns the current allowance figures
+            kept by the app''s admins (tax year, ISA allowance, Lifetime ISA allowance, pension annual allowance, money purchase
+            annual allowance, tax year end). Always use these tools rather than guessing; quote the tax year the figures belong
+            to. If a figure is missing, say so.
+
+
+            What you do: explain terms (workplace vs personal pension, SIPP, Stocks & Shares ISA, Lifetime ISA, fees, asset
+            allocation, drawdown vs annuity) using the style of MoneyHelper guidance, and point people to MoneyHelper (moneyhelper.org.uk)
+            and Pension Wise for free impartial help. Explain the user''s total, split by type and asset class, and the weight
+            of fees (a 1% fee on a pot costs 1% of the pot every year). Compare contributions this tax year with the allowances:
+            ISA contributions across all ISAs count towards one allowance; pension contributions including employer ones count
+            towards the annual allowance. When someone is at 80% or more of an allowance, or may exceed it, warn clearly,
+            and mention that the annual allowance can be tapered for high earners, is reduced to the money purchase allowance
+            after flexibly accessing a pension, and that carry forward from earlier years may apply, which is a question for
+            an adviser or HMRC. Remind about the tax year end (5 April) when relevant.
+
+
+            What you never do: tell the user which product, fund or provider to buy or sell, whether to transfer, consolidate,
+            retire, or how much to contribute or draw. If the user asks what they should do, explain the general considerations
+            and trade-offs, say plainly that a personal recommendation is regulated advice you cannot give, suggest 3-5 good
+            questions to put to an adviser, and offer a referral to a partner adviser: tell them to open the Adviser referral
+            page (/v/adviser_referral). Never invent figures or tax rules; say when you are unsure. Tax rules depend on individual
+            circumstances and can change. Keep answers short, in plain English, with a small table when it helps. If the user
+            has no accounts yet, invite them to add one on the Add account page or import a CSV or statement.'
+          mcp_servers: []
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      The user ({user}) writes: {message}
+
+
+      Today is {date}. Reply in English.'
+    appTools:
+    - name: my_accounts
+      description: The user's own accounts and holdings
+      action: read
+      collection: accounts
+      scope: user
+    - name: tax_allowances
+      description: Current ISA and pension allowance figures
+      action: read
+      collection: allowances
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.4
+  - key: planner
+    role: main
+    description: Projects retirement income from the user's accounts with a fixed calculation and explains the assumptions.
+    profile:
+      inline:
+        display_name: Pensivo retirement projector
+        crews:
+        - id: planner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write an indicative retirement income projection for one UK person from their accounts (given
+            in the goal as JSON lines). Start with a level-1 title "# Retirement income projection". Use the tool project_pot
+            for every calculation, once for the pension accounts together (types workplace_pension, personal_pension, sipp)
+            and once for the rest (ISAs, investments, cash) if they are meant for retirement; never do the compound maths
+            yourself. Arguments: balance, annual_contribution (employee plus employer contributions this year, as a yearly
+            amount), years (retirement age minus current age), growth_pct (from the chosen scenario), fee_pct (balance-weighted
+            average of the accounts'' fee_pct), inflation_pct (2.5). The tool returns the pot in today''s money and an indicative
+            income at a 4% withdrawal rate. Sections with ## headings: Where you are today (a small table of accounts and
+            total), Projection (pot and yearly/monthly income in today''s money, plus state pension if the user gave one,
+            and the comparison with their target if given), What moves the result (the effect of fees: rerun the tool with
+            fee_pct reduced by 0.5 and show the difference; the effect of retiring later), Questions to ask an adviser. Add
+            one chart as a fenced block ```chart {"type":"line","title":"Projected pot in today''s money","labels":[...years...],"series":[{"name":"Pot","values":[...]}],"unit":"GBP"}
+            ``` using the path returned by the tool. State the assumptions clearly. This is an illustration, not a forecast
+            and not advice; never recommend products or contribution levels. Never invent figures.'
+          mcp_servers: []
+    context:
+    - key: accounts
+      from: collection:accounts
+    goalTemplate: 'Current age: {current_age}. Planned retirement age: {retirement_age}. Scenario: {growth_label}.
+
+      {?target_income}Target income per year in today''s money: £{target_income}.{/target_income}
+
+      {?state_pension}Expected state pension per year in today''s money: £{state_pension}.{/state_pension}
+
+      The user''s accounts (one JSON line each):
+
+      {accounts}
+
+      Today is {date}. Write the report in English.'
+    appTools:
+    - name: project_pot
+      description: Compound a pot to retirement and give an indicative income
+      action: call
+      slot: projection
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.5
+  - key: importer
+    role: helper
+    description: Reads an uploaded CSV or statement and adds the accounts to the user's records.
+    profile:
+      inline:
+        display_name: Pensivo importer
+        crews:
+        - id: importer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You import a user''s holdings from a file they uploaded (CSV, spreadsheet, PDF or photo of a statement).
+            Open each file id with the tool read_upload. For each account or holding found, call add_account once with: name,
+            provider, type (one of workplace_pension, personal_pension, sipp, stocks_shares_isa, cash_isa, lifetime_isa, general_investment,
+            cash, other), balance (number in GBP), as_of (YYYY-MM-DD, the statement date), fee_pct if stated (otherwise leave
+            out), main_asset_class (equity, bonds, cash, property, mixed or other, only if clear), source (csv or statement).
+            Never guess balances; skip lines you cannot read and say so. Do not add duplicates of the same account in one
+            file. Finish with a level-1 title "# Import summary" and a short list of what was added and what was skipped.'
+          mcp_servers: []
+    goalTemplate: 'Import the accounts from the uploaded file(s). File ids: {record.file}. Note from the user: {record.note}'
+    appTools:
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
+    - name: add_account
+      description: Add one account to the user's records
+      action: append
+      collection: accounts
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  - key: summariser
+    role: helper
+    description: Writes the user's monthly summary (emailed to them).
+    memory: instance
+    writesTo:
+      collection: summaries
+      parse: whole
+    profile:
+      inline:
+        display_name: Pensivo monthly summary
+        crews:
+        - id: summariser
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write a short monthly summary of one person''s pensions, ISAs and investments from their accounts
+            (JSON lines in the goal). Start with "# Your Pensivo summary — <month year>". Sections ## Your position (total,
+            split by type, a small table), ## What changed (use your memory of last month''s total and say what moved; if
+            no memory, say this is the first summary), ## Allowances (compare contributions this tax year with the figures
+            from tax_allowances; warn plainly at 80% or more of the ISA or pension annual allowance and mention how many days
+            remain to 5 April), ## Fees (the highest-fee accounts and what the fee costs per year in pounds), ## Questions
+            worth asking an adviser. Plain English, under 300 words, plain text style suitable for email. Guidance only, never
+            a recommendation of products, transfers or amounts. Never invent figures. At the end call the tool remember once
+            with the total and the date of this summary (it replaces the old ones).'
+          mcp_servers: []
+    context:
+    - key: accounts
+      from: collection:accounts
+    appTools:
+    - name: summary_allowances
+      description: Current ISA and pension allowance figures
+      action: read
+      collection: allowances
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.3
+  templates:
+  - key: monthly_summary
+    title: Monthly summary
+    description: A summary of your wealth, allowances and fees by email on the first of each month.
+    agent: summariser
+    params:
+    - name: tips
+      type: boolean
+      default: true
+      label: Include questions to ask an adviser
+    goal: 'Write {user}''s monthly summary. Today is {date}. Their accounts:
+
+      {accounts}
+
+      Include the adviser questions: {tips}. Write in English.'
+    schedule:
+      cron: 0 8 1 * *
+      userCanChange: false
+    maxPerUser: 1
+    deliver:
+      to: owner
+      subject: Your Pensivo monthly summary
+      onlyIfNew: false
+  inputForm:
+    title: Retirement projection
+    fields:
+    - name: current_age
+      type: number
+      required: true
+      label: Your age
+    - name: retirement_age
+      type: number
+      required: true
+      label: Retirement age you have in mind
+    - name: growth
+      type: select
+      required: true
+      label: Growth scenario
+      default: moderate
+      options:
+      - value: cautious
+        label: Cautious (3% a year before fees)
+      - value: moderate
+        label: Moderate (4.5% a year before fees)
+      - value: optimistic
+        label: Optimistic (6% a year before fees)
+    - name: target_income
+      type: number
+      label: Income you would like per year (optional, in today's money)
+    - name: state_pension
+      type: number
+      label: Expected state pension per year (optional)
+      help: Check your forecast at gov.uk/check-state-pension
+  data:
+    collections:
+    - name: accounts
+      ownedBy: user
+      description: A person's pensions, ISAs and investments
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Account name
+      - name: provider
+        type: text
+        label: Provider
+      - name: type
+        type: select
+        required: true
+        label: Type
+        options:
+        - workplace_pension
+        - personal_pension
+        - sipp
+        - stocks_shares_isa
+        - cash_isa
+        - lifetime_isa
+        - general_investment
+        - cash
+        - other
+      - name: balance
+        type: number
+        required: true
+        label: Balance (£)
+      - name: as_of
+        type: date
+        label: Balance date
+      - name: fee_pct
+        type: number
+        label: Total yearly fee (%)
+      - name: main_asset_class
+        type: select
+        label: Mainly invested in
+        options:
+        - equity
+        - bonds
+        - cash
+        - property
+        - mixed
+        - other
+      - name: contributions_ytd
+        type: number
+        label: Your contributions this tax year (£)
+      - name: employer_contributions_ytd
+        type: number
+        label: Employer contributions this tax year (£)
+      - name: source
+        type: select
+        label: Source
+        options:
+        - manual
+        - csv
+        - statement
+        - aggregated
+        default: manual
+    - name: statements
+      ownedBy: user
+      description: Uploaded CSV files and statements waiting to be imported
+      retentionDays: 30
+      fields:
+      - name: file
+        type: file
+        required: true
+        label: CSV, spreadsheet, PDF or photo of a statement
+        accept:
+        - csv
+        - xlsx
+        - pdf
+        - jpg
+        - jpeg
+        - png
+        maxMb: 10
+        multiple: true
+      - name: note
+        type: text
+        maxLength: 300
+        label: Note (optional)
+    - name: allowances
+      ownedBy: shared
+      description: Current HMRC allowance figures per tax year, kept by the admins
+      fields:
+      - name: tax_year
+        type: text
+        required: true
+        label: Tax year
+      - name: isa_allowance
+        type: number
+        label: ISA allowance (£)
+      - name: lifetime_isa_allowance
+        type: number
+        label: Lifetime ISA limit (£)
+      - name: pension_annual_allowance
+        type: number
+        label: Pension annual allowance (£)
+      - name: mpaa
+        type: number
+        label: Money purchase annual allowance (£)
+      - name: tax_year_end
+        type: date
+        required: true
+        label: Tax year end
+      - name: notes
+        type: text
+        label: Notes
+    - name: summaries
+      ownedBy: instance
+      description: The monthly summaries of each user
+      fields:
+      - name: title
+        type: text
+      - name: body
+        type: textarea
+    - name: adviser_referrals
+      ownedBy: org
+      description: Requests to be introduced to a partner adviser
+      retentionDays: 365
+      fields:
+      - name: full_name
+        type: text
+        required: true
+        label: Your name
+      - name: email
+        type: email
+        required: true
+        label: Email
+      - name: phone
+        type: text
+        label: Phone (optional)
+      - name: topic
+        type: select
+        required: true
+        label: What would you like help with?
+        options:
+        - retirement planning
+        - consolidating pensions
+        - ISA and tax allowances
+        - investing a lump sum
+        - taking money from a pension
+        - other
+      - name: summary
+        type: textarea
+        maxLength: 600
+        label: Anything the adviser should know (no account numbers)
+      - name: consent
+        type: boolean
+        required: true
+        label: I agree that Pensivo shares these details with a partner adviser, who will contact me
+  views:
+  - key: home
+    type: page
+    title: Pensivo
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: Pensions · ISAs · investments
+      title: All your **savings for later**, in one clear view.
+      text: See your total wealth, how it is invested, what you pay in fees and what you could have in retirement. Ask the
+        assistant anything and get an answer in plain English.
+      actions:
+      - label: Get started free
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how-it-works'
+        style: ghost
+      note: Guidance, not regulated financial advice.
+      aside: <div style="padding:20px;border-radius:12px;background:#ffffff"><strong>Your position</strong><p>Total wealth,
+        split by pensions, ISAs and investments, with fees and projected income in charts.</p></div>
+    - type: steps
+      id: how-it-works
+      title: How it works
+      items:
+      - title: Add your accounts
+        text: Enter them by hand, or upload a CSV or a statement and let Pensivo read it. Automatic balances through Open
+          Banking and Pensions Dashboards come with Premium as the connections go live.
+        badge: '1'
+      - title: See the whole picture
+        text: Total wealth, asset allocation, fees and projected retirement income in charts.
+        badge: '2'
+      - title: Ask in plain English
+        text: The assistant explains your position using MoneyHelper-style guidance and current HMRC allowances, and warns
+          you when you are near an allowance.
+        badge: '3'
+      - title: Stay on track
+        text: A monthly email summary and reminders before the tax year ends on 5 April.
+        badge: '4'
+    - type: cards
+      title: Free and Premium
+      items:
+      - title: Free
+        text: Manual entry, imports, the overview charts and a few assistant questions every month.
+      - title: Premium
+        text: Automatic aggregation as it becomes available and unlimited assistant questions, monthly subscription.
+    - type: text
+      id: privacy
+      title: Your data stays yours
+      content: Each person sees only their own accounts. The team behind Pensivo sees aggregate usage, never your balances.
+    - type: note
+      content: 'Pensivo provides guidance and general information, not regulated financial advice. Personal recommendations
+        need FCA permission: if you want one, we can introduce you to a partner adviser. The value of investments can fall
+        as well as rise.'
+  - key: overview
+    type: page
+    title: Overview
+    roles:
+    - user
+    - admin
+    sections:
+    - type: data
+      id: totals
+      title: Your wealth
+      source: collection:accounts
+      display: kpi
+      kpis:
+      - label: Total wealth (£)
+        agg: sum
+        field: balance
+        format: money
+      - label: Accounts
+        agg: count
+      - label: Average yearly fee (%)
+        agg: avg
+        field: fee_pct
+        format: number
+      empty: Add your first account to see your wealth here.
+    - type: data
+      title: By type of account
+      source: collection:accounts
+      display: chart
+      chart: pie
+      fields:
+      - key: type
+        label: Type
+      - key: total
+        label: Balance
+        format: money
+      groupBy:
+        field: type
+        aggs:
+        - key: total
+          agg: sum
+          field: balance
+    - type: data
+      title: Asset allocation
+      source: collection:accounts
+      display: chart
+      chart: pie
+      fields:
+      - key: main_asset_class
+        label: Asset class
+      - key: total
+        label: Balance
+        format: money
+      groupBy:
+        field: main_asset_class
+        aggs:
+        - key: total
+          agg: sum
+          field: balance
+    - type: data
+      title: Fees by account (% a year)
+      source: collection:accounts
+      display: chart
+      chart: bar
+      fields:
+      - key: name
+        label: Account
+      - key: fee_pct
+        label: Fee %
+        format: number
+      sort:
+        field: fee_pct
+        dir: desc
+      limit: 20
+    - type: data
+      title: Contributions this tax year
+      source: collection:accounts
+      display: kpi
+      kpis:
+      - label: Your contributions (£)
+        agg: sum
+        field: contributions_ytd
+        format: money
+      - label: Employer contributions (£)
+        agg: sum
+        field: employer_contributions_ytd
+        format: money
+    - type: data
+      title: Current allowances
+      source: collection:allowances
+      display: table
+      fields:
+      - key: tax_year
+        label: Tax year
+      - key: isa_allowance
+        label: ISA
+        format: money
+      - key: lifetime_isa_allowance
+        label: Lifetime ISA
+        format: money
+      - key: pension_annual_allowance
+        label: Pension annual allowance
+        format: money
+      - key: tax_year_end
+        label: Ends
+        format: date
+      sort:
+        field: tax_year_end
+        dir: desc
+      limit: 3
+      empty: Allowance figures are not published yet.
+    - type: cards
+      title: Next steps
+      items:
+      - title: Ask the assistant
+        text: Open Assistant and ask about your position, fees or allowances.
+      - title: Project your retirement income
+        text: Open Projection for a chart of your pot and income.
+  - key: accounts
+    type: table
+    title: My accounts
+    source: collection:accounts
+    export: true
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Account
+      - key: provider
+        label: Provider
+      - key: type
+        label: Type
+        format: badge
+      - key: balance
+        label: Balance
+        format: money
+      - key: fee_pct
+        label: Fee %
+        format: number
+      - key: as_of
+        label: As of
+        format: date
+      - key: source
+        label: Source
+        format: badge
+      sort:
+        field: balance
+        dir: desc
+      limit: 100
+      empty: No accounts yet. Add one or import a file.
+  - key: add_account
+    type: form
+    title: Add account
+    collection: accounts
+    edit: true
+    roles:
+    - user
+    - admin
+    submit:
+      label: Save account
+      message: Account saved.
+      redirect: overview
+  - key: import
+    type: form
+    title: Import CSV or statement
+    collection: statements
+    roles:
+    - user
+    - admin
+    submit:
+      label: Import
+      message: Thanks. Your accounts will appear in a minute.
+      redirect: accounts
+  - key: assistant
+    type: chat
+    title: Assistant
+    source: agent:assistant
+    roles:
+    - user
+    - admin
+    placeholder: Ask about your pensions, ISAs, fees or allowances
+    examples:
+    - Explain my total position in plain English
+    - Am I close to my annual allowance?
+    - What do my fees cost me each year?
+    - What should I ask an adviser before consolidating pensions?
+  - key: projection
+    type: new_run
+    title: Projection
+    roles:
+    - user
+    - admin
+  - key: projections
+    type: history
+    title: My projections
+    source: run
+    roles:
+    - user
+    - admin
+  - key: projection_report
+    type: report
+    title: Projection
+    source: run
+    printable: true
+    nav: false
+  - key: monthly
+    type: instances
+    template: monthly_summary
+    title: Monthly summary
+    roles:
+    - user
+    - admin
+  - key: adviser_referral
+    type: form
+    title: Talk to an adviser
+    collection: adviser_referrals
+    roles:
+    - user
+    - admin
+    submit:
+      label: Request an introduction
+      message: Thanks. A partner adviser will contact you.
+      redirect: overview
+  - key: account
+    type: account
+    title: Plan
+    roles:
+    - user
+  - key: admin_usage
+    type: admin
+    title: Usage
+    roles:
+    - admin
+  triggers:
+  - key: statement_import
+    'on':
+      collection: statements
+      op: insert
+    start:
+      agent: importer
+    goal: 'Import the accounts from the uploaded file(s). File ids: {record.file}. Note from the user: {record.note}'
+  - key: referral_admins
+    'on':
+      collection: adviser_referrals
+      op: insert
+    notify:
+      to: admins
+      subject: 'New adviser referral: {record.topic}'
+      body: '{record.full_name} asked to be introduced to a partner adviser about {record.topic}. Contact: {record.email}.
+        Consent to share details was given.'
+      link: admin_usage
+  - key: referral_confirm
+    'on':
+      collection: adviser_referrals
+      op: insert
+    notify:
+      to: record.email
+      subject: We received your request
+      body: Thank you {record.full_name}. We will pass your request about {record.topic} to a partner adviser, who will contact
+        you. Pensivo itself gives guidance, not regulated advice.
+  - key: tax_year_30
+    'on':
+      date:
+        collection: allowances
+        field: tax_year_end
+        offsetDays: -30
+        hour: 8
+    notify:
+      to: role:user
+      subject: 30 days to the tax year end
+      body: The tax year ends on 5 April. Unused ISA allowance does not carry over, so it is a good moment to check what you
+        have used. Open Pensivo and ask the assistant how close you are to your allowances.
+      link: assistant
+  - key: tax_year_7
+    'on':
+      date:
+        collection: allowances
+        field: tax_year_end
+        offsetDays: -7
+        hour: 8
+    notify:
+      to: role:user
+      subject: One week to the tax year end
+      body: The tax year ends in a week. Check your ISA and pension contributions against this year's allowances in Pensivo
+        before 5 April.
+      link: overview
+  slots:
+  - key: projection
+    description: Compound a pot to retirement in today's money and give an indicative 4% income
+    timeoutMs: 2000
+    example:
+      args:
+        balance: 50000
+        annual_contribution: 6000
+        years: 25
+        growth_pct: 4.5
+        fee_pct: 0.75
+        inflation_pct: 2.5
+    code: "def main(input):\n    a = input.get('args') or {}\n    def f(k, d=0.0):\n        try:\n            return float(a.get(k,\
+      \ d))\n        except Exception:\n            return float(d)\n    bal = f('balance')\n    c = f('annual_contribution')\n\
+      \    yrs = max(int(f('years')), 0)\n    g = f('growth_pct', 4.5) / 100.0\n    fee = f('fee_pct', 0.75) / 100.0\n   \
+      \ inf = f('inflation_pct', 2.5) / 100.0\n    r = (1 + g - fee) / (1 + inf) - 1\n    pot = bal\n    path = [{'year':\
+      \ 0, 'pot': round(pot)}]\n    for y in range(1, yrs + 1):\n        pot = pot * (1 + r) + c\n        if y % 5 == 0 or\
+      \ y == yrs:\n            path.append({'year': y, 'pot': round(pot)})\n    return {'pot_today_money': round(pot), 'income_year_4pct':\
+      \ round(pot * 0.04), 'income_month_4pct': round(pot * 0.04 / 12), 'real_return_pct': round(r * 100, 2), 'path': path}\n"
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: premium
+      price: 7.99
+      interval: month
+      label: Premium
+      includes:
+      - Unlimited assistant questions
+      - More imports and projections each month
+      - Automatic account aggregation when available
+  notifications:
+    emailOnRunDone: true
+  extensions:
+  - key: open_banking_aggregation
+    description: Automatic balances through an Open Banking / Open Finance aggregation partner need an OAuth consent flow,
+      which is not available yet. Until then users enter holdings manually or import a CSV or statement; the accounts source
+      field already has an 'aggregated' value for later.
+  - key: pensions_dashboards
+    description: Pensions Dashboards connection is not available yet; to add once the programme is live and a connection route
+      exists.
+  - key: premium_gating_of_aggregation
+    description: Aggregation as a Premium-only feature has to be gated when the connection is built; today Premium unlocks
+      unlimited assistant questions and higher import and projection quotas.
+  - key: admin_balance_privacy
+    description: Admins are meant to see aggregate usage only (the Usage page). The built-in admin data page can reach user
+      collections, so restrict who holds the admin role and do not use it on accounts.
+  - key: fca_permission
+    description: The app gives guidance only. Personal recommendations are not made; users are referred to a partner adviser
+      via the Adviser referral form. The referral partner agreement and compliance wording need legal review.
+  - key: allowance_upkeep
+    description: Admins must add each tax year's allowance figures (ISA, Lifetime ISA, annual allowance, MPAA, tax year end)
+      on the data page; reminders and the assistant read them from there.

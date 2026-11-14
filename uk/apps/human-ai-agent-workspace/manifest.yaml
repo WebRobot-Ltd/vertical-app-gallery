@@ -1,0 +1,880 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: crewdeck
+  displayName: Crewdeck
+  tagline:
+    en: A workspace where your staff and AI agents serve customers together.
+  description:
+    en: Build AI agents, group them into teams, watch a shared inbox, take over any conversation, approve sensitive actions
+      and teach the agents with your notes.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/Rome
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#12304a'
+      accent: '#0e8f87'
+      background: '#f6f8fa'
+      foreground: '#16212b'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Crew
+      color: primary
+    - text: deck
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Channels
+      href: '#channels'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: builder
+      label: Builder
+      assignedBy: invite
+    - key: operator
+      label: Operator
+      assignedBy: invite
+    - key: user
+      label: Workspace owner
+      assignedBy: signup
+  limits:
+  - action: create:agent_configs
+    max: 1
+    window: total
+    plans:
+      starter: 3
+      growth: 15
+      scale: -1
+  - action: chat
+    per: user
+    max: 200
+    window: day
+  agents:
+  - key: intake
+    role: main
+    description: 'Front-line agent: qualifies the customer request, answers from the knowledge base, hands over to the booking
+      agent or to a human.'
+    delegates:
+    - booking
+    awaits:
+    - agent_action
+    profile:
+      inline:
+        display_name: Crewdeck intake agent
+        crews:
+        - id: intake
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the intake agent of a company''s customer service. Greet the customer, understand what they
+            need and collect the minimum details: name, email, the request, urgency. Answer questions only from the knowledge
+            base (search_knowledge) and from the operators'' notes (read_notes); if you do not know, say so and hand over
+            to a human. If the customer wants to book something, call ask_booking with the qualified details. Any action with
+            side effects (refund, cancellation, price change, sending data) needs request_agent_action first and must wait
+            for the decision. When the customer asks for a person, is upset, or you are unsure, set the conversation to handover.
+            At the end of every exchange call log_conversation with customer_name, customer_email, channel "web", agent "intake",
+            status (open, handover or resolved), handed_over (1 or 0), resolved (1 or 0), a short summary and the transcript
+            so far. Never invent policies, prices or availability. Reply briefly, warmly, in the customer''s language.'
+    appTools:
+    - name: search_knowledge
+      description: Search the knowledge documents the builders uploaded
+      action: search
+      collection: knowledge_docs
+      scope: user
+    - name: read_notes
+      description: Read the notes operators left for the agents
+      action: read
+      collection: agent_notes
+      scope: user
+    - name: log_conversation
+      description: Save or update the conversation record shown in the shared inbox
+      action: append
+      collection: conversations
+      scope: user
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New customer message: {message}
+
+      Reply in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.5
+  - key: booking
+    role: helper
+    description: Receives a qualified request from intake and books the appointment.
+    awaits:
+    - agent_action
+    profile:
+      inline:
+        display_name: Crewdeck booking agent
+        crews:
+        - id: booking
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You are the booking agent. You receive a qualified request from the intake agent. Propose two or
+            three slots consistent with the company's rules in the knowledge base (search_knowledge), confirm one with the
+            customer details you were given, and record it with save_booking. Cancellations or changes to existing bookings
+            need request_agent_action first. Never promise a slot that the knowledge base does not allow. Finish with a two-line
+            confirmation for the customer.
+    appTools:
+    - name: search_knowledge
+      description: Search the knowledge documents the builders uploaded
+      action: search
+      collection: knowledge_docs
+      scope: user
+    - name: read_notes
+      description: Read the notes operators left for the agents
+      action: read
+      collection: agent_notes
+      scope: user
+    - name: save_booking
+      description: Record a confirmed booking
+      action: append
+      collection: bookings
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.4
+  - key: follow_up
+    role: scheduled
+    description: 'Each workspace''s follow-up agent: finds conversations that need a follow-up or reminder and drafts it.'
+    writesTo:
+      collection: followup_log
+      parse: whole
+    profile:
+      inline:
+        display_name: Crewdeck follow-up agent
+        crews:
+        - id: follow_up
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare follow-ups for a team''s customer conversations. Read the conversations with read_conversations,
+            pick the ones that are open or handed over and have had no activity for the number of days you are given, and
+            for each write a short, friendly follow-up message and the reason. Start with a level-1 title "# Follow-ups —
+            <date>", then one ## section per customer with: channel, last status, proposed message. If there is nothing to
+            follow up, say so in one line. Never invent facts about a conversation.'
+    appTools:
+    - name: read_conversations
+      description: Read the workspace's conversations
+      action: read
+      collection: conversations
+      scope: user
+    - name: read_notes
+      description: Read the notes operators left for the agents
+      action: read
+      collection: agent_notes
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.4
+  data:
+    collections:
+    - name: agent_configs
+      description: Agent definitions created by builders
+      ownedBy: user
+      access:
+      - role: builder
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: operator
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Agent name
+      - name: purpose
+        type: textarea
+        required: true
+        label: Purpose
+      - name: instructions
+        type: textarea
+        required: true
+        label: Instructions
+      - name: tools
+        type: textarea
+        label: Tools (HTTP endpoints, MCP servers)
+        help: 'One per line: name, URL, what it does'
+      - name: approval_actions
+        type: textarea
+        label: Actions that need human approval
+      - name: channels
+        type: multiselect
+        label: Channels served
+        options:
+        - value: web
+          label: Web chat widget
+        - value: email
+          label: Email
+        - value: whatsapp
+          label: WhatsApp
+        - value: sms
+          label: SMS
+        - value: instagram
+          label: Instagram
+      - name: team
+        type: text
+        label: Team
+      - name: status
+        type: select
+        label: Status
+        options:
+        - draft
+        - active
+        - paused
+      - name: members
+        type: array
+        label: Staff emails of this team
+    - name: knowledge_docs
+      description: Knowledge uploads the agents search
+      ownedBy: user
+      searchable: true
+      access:
+      - role: builder
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      fields:
+      - name: title
+        type: text
+        required: true
+        label: Title
+      - name: agent_name
+        type: text
+        label: Agent (optional)
+      - name: file
+        type: file
+        accept:
+        - pdf
+        - docx
+        - txt
+        - md
+        - csv
+        maxMb: 15
+        multiple: true
+        label: Documents
+      - name: content
+        type: textarea
+        label: Or paste text
+      - name: members
+        type: array
+        label: Staff emails of this team
+    - name: conversations
+      description: 'Shared inbox: one record per customer conversation'
+      ownedBy: user
+      retentionDays: 365
+      access:
+      - role: operator
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: builder
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: customer_name
+        type: text
+        label: Customer
+      - name: customer_email
+        type: email
+        label: Customer email
+      - name: channel
+        type: select
+        label: Channel
+        options:
+        - web
+        - email
+        - whatsapp
+        - sms
+        - instagram
+      - name: agent
+        type: text
+        label: Agent
+      - name: team
+        type: text
+        label: Team
+      - name: status
+        type: select
+        label: Status
+        options:
+        - open
+        - handover
+        - resolved
+      - name: handed_over
+        type: number
+        label: Handed over (1/0)
+      - name: resolved
+        type: number
+        label: Resolved (1/0)
+      - name: first_response_seconds
+        type: number
+        label: First response (s)
+      - name: assigned_to
+        type: email
+        label: Operator
+      - name: summary
+        type: textarea
+        label: Summary
+      - name: transcript
+        type: textarea
+        label: Transcript
+      - name: operator_reply
+        type: textarea
+        label: Operator reply
+      - name: follow_up_date
+        type: date
+        label: Follow up on
+      - name: members
+        type: array
+        label: Staff emails of this team
+    - name: agent_notes
+      description: Operator notes the agents learn from
+      ownedBy: user
+      access:
+      - role: operator
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: builder
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: agent_name
+        type: text
+        label: Agent
+      - name: note
+        type: textarea
+        required: true
+        label: Note for the agent
+      - name: members
+        type: array
+        label: Staff emails of this team
+    - name: bookings
+      description: Bookings made by the booking agent
+      ownedBy: user
+      access:
+      - role: operator
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: customer_name
+        type: text
+        label: Customer
+      - name: customer_email
+        type: email
+        label: Email
+      - name: slot
+        type: text
+        label: Slot
+      - name: notes
+        type: textarea
+        label: Notes
+      - name: members
+        type: array
+        label: Staff emails of this team
+    - name: followup_log
+      description: Follow-up drafts written by each workspace's scheduled agent
+      ownedBy: instance
+  templates:
+  - key: followup_watch
+    title: Follow-up agent
+    description: Every working day the agent finds conversations that need a follow-up and drafts the messages.
+    agent: follow_up
+    params:
+    - name: team
+      type: text
+      required: true
+      label: Team
+    - name: days
+      type: number
+      required: true
+      label: Days without activity
+    goal: 'Follow-ups for "{instance}", team {team}: conversations with no activity for {days} days. Today is {date}. Write
+      in the language with ISO code {lang}.'
+    schedule:
+      cron: 0 8 * * 1-5
+      userCanChange: true
+    maxPerUser: 5
+    cost:
+      perRun: 5
+    deliver:
+      to: owner
+      onlyIfNew: true
+  approvals:
+  - key: agent_action
+    title: Agent action to approve
+    description: An agent asks permission before an action with side effects.
+    role: operator
+    fields:
+    - action
+    - customer
+    - details
+    timeoutMinutes: 10
+    onTimeout: reject
+  triggers:
+  - key: approval_waiting
+    description: Alert when an approval waited ten minutes without a decision
+    'on':
+      approval: agent_action
+      decision: timeout
+    notify:
+      to:
+      - admins
+      - role:operator
+      subject: Approval waiting more than 10 minutes
+      body: An agent action has been waiting for approval for more than ten minutes and was not decided. Open the approvals
+        page to review it.
+      link: approvals
+  - key: handover_alert
+    description: Tell operators when a conversation needs a human
+    'on':
+      collection: conversations
+      op: any
+      where:
+        status: handover
+    notify:
+      to:
+      - role:operator
+      subject: 'Conversation waiting for a human: {record.customer_name}'
+      body: 'The agent handed over a conversation with {record.customer_name} on {record.channel}. Summary: {record.summary}'
+      link: inbox
+  - key: customer_reminder
+    description: Reminder email to the customer on the follow-up date
+    'on':
+      date:
+        collection: conversations
+        field: follow_up_date
+        offsetDays: 0
+        hour: 8
+    notify:
+      to:
+      - record.customer_email
+      subject: Following up on your request
+      body: 'Hello {record.customer_name}, we are following up on your request: {record.summary}. Reply to this message if
+        you still need help.'
+  channels:
+  - key: web
+    type: web
+    agent: intake
+    greeting: Hi! How can we help you today?
+  views:
+  - key: home
+    type: page
+    title: Crewdeck
+    nav: false
+    sections:
+    - type: hero
+      band: true
+      eyebrow: Humans + AI agents
+      title: Customer service where **staff and AI agents** work as one crew.
+      text: Build agents with a form, group them into teams, watch one shared inbox, take over any conversation and teach
+        the agents with your notes.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Build
+        text: 'Builders describe an agent: purpose, instructions, knowledge, tools and which actions need approval.'
+      - title: Serve
+        text: Agents answer customers; an intake agent qualifies and hands over to a booking agent.
+      - title: Supervise
+        text: Operators watch the inbox, take over, approve actions and leave notes the agents learn from.
+      - title: Measure
+        text: Dashboards show channels, handovers, resolution and response times per agent and per human.
+    - type: cards
+      id: channels
+      title: Channels and connectors
+      items:
+      - title: Web chat widget
+        text: Available now.
+        badge: 💬
+      - title: WhatsApp, SMS, Instagram, email
+        text: Coming with the full product.
+        badge: 📱
+      - title: Calendars, CRMs, shops
+        text: OAuth connectors coming with the full product; API-key services work today.
+        badge: 🔌
+    - type: note
+      content: Agents answer from your knowledge base and never invent policies. Sensitive actions always wait for a human.
+  - key: inbox
+    type: table
+    title: Shared inbox
+    source: collection:conversations
+    roles:
+    - operator
+    - user
+    - admin
+    - builder
+    export: true
+    data:
+      display: table
+      fields:
+      - key: customer_name
+        label: Customer
+      - key: channel
+        label: Channel
+        format: badge
+      - key: agent
+        label: Agent
+      - key: status
+        label: Status
+        format: badge
+      - key: assigned_to
+        label: Operator
+      - key: summary
+        label: Summary
+      sort:
+        field: status
+        dir: asc
+      limit: 100
+      empty: No conversations yet.
+  - key: takeover
+    type: form
+    title: Take over a conversation
+    collection: conversations
+    fields:
+    - status
+    - assigned_to
+    - operator_reply
+    - follow_up_date
+    edit: true
+    submit:
+      label: Save
+      message: Conversation updated.
+      redirect: inbox
+    roles:
+    - operator
+    - user
+    - admin
+    nav: false
+  - key: note_form
+    type: form
+    title: Leave a note for the agents
+    collection: agent_notes
+    submit:
+      label: Save note
+      message: The agents will use this note.
+    roles:
+    - operator
+    - user
+    - admin
+  - key: approvals
+    type: approvals
+    title: Approvals
+    approvals:
+    - agent_action
+    roles:
+    - operator
+    - admin
+  - key: new_agent
+    type: form
+    title: New agent
+    collection: agent_configs
+    submit:
+      label: Save agent
+      message: Agent saved.
+      redirect: agents
+    roles:
+    - builder
+    - user
+    - admin
+  - key: agents
+    type: table
+    title: Agents
+    source: collection:agent_configs
+    roles:
+    - builder
+    - user
+    - admin
+    - operator
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Agent
+      - key: team
+        label: Team
+      - key: channels
+        label: Channels
+      - key: status
+        label: Status
+        format: badge
+      limit: 100
+      empty: No agents yet.
+  - key: knowledge
+    type: form
+    title: Knowledge upload
+    collection: knowledge_docs
+    submit:
+      label: Upload
+      message: Knowledge saved.
+    roles:
+    - builder
+    - user
+    - admin
+  - key: test_chat
+    type: chat
+    title: Try the agent
+    source: agent:intake
+    examples:
+    - I need to book an appointment next week
+    - What are your opening hours?
+    - I want a refund
+    placeholder: Type as a customer…
+    roles:
+    - builder
+    - operator
+    - user
+    - admin
+  - key: followups
+    type: instances
+    template: followup_watch
+    title: Follow-up agents
+    roles:
+    - user
+    - admin
+  - key: dashboard
+    type: dashboard
+    title: Dashboards
+    children:
+    - by_channel
+    - agent_perf
+    - human_perf
+    roles:
+    - user
+    - admin
+    - builder
+    - operator
+  - key: by_channel
+    type: chart
+    title: Conversations by channel
+    source: collection:conversations
+    nav: false
+    data:
+      display: chart
+      chart: bar
+      fields:
+      - key: channel
+        label: Channel
+      - key: count
+        label: Conversations
+      - key: handovers
+        label: Handovers
+      groupBy:
+        field: channel
+        aggs:
+        - key: handovers
+          agg: sum
+          field: handed_over
+  - key: agent_perf
+    type: table
+    title: 'Per agent: handovers, resolutions, response time'
+    source: collection:conversations
+    nav: false
+    data:
+      display: table
+      fields:
+      - key: agent
+        label: Agent
+      - key: count
+        label: Conversations
+        format: number
+      - key: handovers
+        label: Handovers
+        format: number
+      - key: resolved
+        label: Resolved
+        format: number
+      - key: avg_response
+        label: Avg first response (s)
+        format: number
+      groupBy:
+        field: agent
+        aggs:
+        - key: handovers
+          agg: sum
+          field: handed_over
+        - key: resolved
+          agg: sum
+          field: resolved
+        - key: avg_response
+          agg: avg
+          field: first_response_seconds
+  - key: human_perf
+    type: table
+    title: 'Per operator: conversations and response time'
+    source: collection:conversations
+    nav: false
+    data:
+      display: table
+      fields:
+      - key: assigned_to
+        label: Operator
+      - key: count
+        label: Conversations
+        format: number
+      - key: resolved
+        label: Resolved
+        format: number
+      - key: avg_response
+        label: Avg first response (s)
+        format: number
+      groupBy:
+        field: assigned_to
+        aggs:
+        - key: resolved
+          agg: sum
+          field: resolved
+        - key: avg_response
+          agg: avg
+          field: first_response_seconds
+  - key: account
+    type: account
+    title: Plan and credits
+    roles:
+    - user
+    - admin
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 50
+    costs:
+      agent:intake: 1
+    packs:
+    - key: credits_1000
+      credits: 1000
+      price: 15
+      label: 1,000 message credits
+    - key: credits_5000
+      credits: 5000
+      price: 60
+      label: 5,000 message credits
+    plans:
+    - key: starter
+      price: 49
+      interval: month
+      label: Starter — up to 3 agents
+      includes:
+      - 3 agents
+      - 2,000 message credits a month
+      credits: 2000
+      creditsReset: monthly
+    - key: growth
+      price: 149
+      interval: month
+      label: Growth — up to 15 agents
+      includes:
+      - 15 agents
+      - 10,000 message credits a month
+      credits: 10000
+      creditsReset: monthly
+    - key: scale
+      price: 399
+      interval: month
+      label: Scale — unlimited agents
+      includes:
+      - Unlimited agents
+      - 40,000 message credits a month
+      credits: 40000
+      creditsReset: monthly
+  extensions:
+  - key: oauth_connectors
+    description: Connectors to calendars, CRMs and shops through OAuth (Google, Microsoft 365, Meta) are not available yet.
+      Services with API keys can be connected through credentials and HTTP tools.
+  - key: messaging_channels
+    description: WhatsApp, SMS, Instagram and email conversations are not available yet; only the web chat is live. Builders
+      can already mark these channels on an agent.
+  - key: public_widget_logging
+    description: The embeddable chat widget for anonymous customers cannot write conversation records yet; conversations are
+      logged for signed-in sessions.
+  - key: builder_publish
+    description: 'The agent form saves a configuration; turning it into a running agent is done from the App Studio. Real-time
+      live takeover of a chat by a human is a later step: operators reply through the takeover form.'

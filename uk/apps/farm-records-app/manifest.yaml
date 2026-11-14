@@ -1,0 +1,756 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: fieldbook
+  displayName: Fieldbook
+  tagline:
+    en: Farm records made in the field, ready for inspection.
+  description:
+    en: Record spraying, fertiliser, livestock movements, treatments and feed on your phone. An AI agent checks them against
+      DAERA and DEFRA guidance, reminds you of deadlines and drafts inspection reports for you to check. Partners see aggregated
+      data only from farms that consent.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#2f4b2a'
+      accent: '#c58a1b'
+      background: '#f7f5ee'
+      foreground: '#1d241b'
+    fonts:
+      body: Inter
+      display: Merriweather
+    wordmark:
+    - text: Field
+      color: primary
+    - text: book
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: For partners
+      href: '#partners'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: Farmer
+      assignedBy: signup
+    - key: partner
+      label: Partner
+      assignedBy: invite
+  limits:
+  - action: agent:reporter
+    per: user
+    max: 10
+    window: day
+    roles:
+    - user
+  agents:
+  - key: reporter
+    role: main
+    description: Turns the farmer's records into an inspection or assurance report and asks the farmer to check it.
+    awaits:
+    - farmer_review
+    context:
+    - key: farm_name
+      from: collection:farms.name
+    - key: nation
+      from: collection:farms.nation
+    appTools:
+    - name: read_activities
+      description: Read the farmer's activity records
+      action: read
+      collection: activities
+      scope: user
+    - name: read_fields
+      description: Read the farmer's fields
+      action: read
+      collection: fields
+      scope: user
+    - name: read_herds
+      description: Read the farmer's herds
+      action: read
+      collection: herds
+      scope: user
+    - name: search_guidance
+      description: Search the guidance and scheme rules
+      action: search
+      collection: guidance
+      scope: all
+    goalTemplate: 'Farm: {farm_name} ({nation}).
+
+      Report type: {report_kind_label}.
+
+      Period: {period_start} to {period_end}.
+
+      {?notes}Notes: {notes}{/notes}
+
+      Today is {date}. Write in English.'
+    output: markdown
+    profile:
+      inline:
+        display_name: Fieldbook reporter
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare farm record reports for inspections and assurance schemes in the UK. Read the farmer''s
+            activities, fields and herds with your tools and check the guidance with search_guidance for the farm''s nation
+            (DAERA for Northern Ireland, DEFRA for England, and the devolved rules for Scotland and Wales). Start with a level-1
+            title ''# <Farm> - <report type> <period>''. Sections: ## Summary, ## Records by area (spraying, fertiliser, livestock
+            movements, treatments, feed), ## Gaps and possible non-compliance, ## Deadlines, ## Items for the farmer to confirm.
+            Use only recorded facts; never invent dates, quantities, product approvals or tag numbers. Flag missing data plainly.
+            You give decision support, not legal advice. When the draft is ready, call request_farmer_review so the farmer
+            checks it before submitting anywhere.'
+  - key: checker
+    role: helper
+    description: Checks each new activity against guidance and writes findings.
+    writesTo:
+      collection: findings
+      parse: whole
+    appTools:
+    - name: search_guidance_check
+      description: Search the guidance and scheme rules
+      action: search
+      collection: guidance
+      scope: all
+    - name: read_recent_activities
+      description: Read the farmer's activity records
+      action: read
+      collection: activities
+      scope: user
+    output: markdown
+    profile:
+      inline:
+        display_name: Fieldbook checker
+        crews:
+        - id: checker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You check one new farm activity record against the stored DAERA and DEFRA guidance and scheme rules.
+            Start with ''# Check - <activity type> <date>''. Then ## Result (OK, Warning or Problem), ## Why (cite the guidance
+            title), ## What to do. Under 120 words. Never invent rules; if the guidance does not cover it, say so.'
+  - key: consent_sync
+    role: helper
+    description: Copies the farm's sharing choice onto its activity records so partners see only consenting farms.
+    appTools:
+    - name: read_farm
+      description: Read the farmer's farm
+      action: read
+      collection: farms
+      scope: user
+    - name: read_acts
+      description: Read the farmer's activities
+      action: read
+      collection: activities
+      scope: user
+    - name: write_acts
+      description: Update the farmer's activities
+      action: write
+      collection: activities
+      scope: user
+    output: markdown
+    profile:
+      inline:
+        display_name: Fieldbook consent sync
+        crews:
+        - id: consent_sync
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'Read the farm''s shared_with list and set exactly that list as shared_with on every activity record
+            of the farmer. An empty list means consent withdrawn: clear shared_with. Change no other field. Finish with ''#
+            Consent synced'' and the number of records updated.'
+  inputForm:
+    title:
+      en: New report
+    fields:
+    - name: report_kind
+      type: select
+      required: true
+      label:
+        en: Report
+      options:
+      - value: inspection
+        label: Inspection pack
+      - value: assurance
+        label: Assurance scheme record
+      - value: nvz
+        label: Nutrient and spreading records
+      - value: medicines
+        label: Medicine and treatment book
+    - name: period_start
+      type: date
+      required: true
+      label:
+        en: From
+    - name: period_end
+      type: date
+      required: true
+      label:
+        en: To
+    - name: notes
+      type: textarea
+      maxLength: 400
+      label:
+        en: Notes (optional)
+  data:
+    collections:
+    - name: farms
+      ownedBy: user
+      description: The farmer's farm profile
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Farm name
+      - name: nation
+        type: select
+        required: true
+        label: Nation
+        options:
+        - value: ni
+          label: Northern Ireland
+        - value: england
+          label: England
+        - value: scotland
+          label: Scotland
+        - value: wales
+          label: Wales
+      - name: holding_number
+        type: text
+        label: Holding / herd number
+      - name: schemes
+        type: multiselect
+        label: Schemes
+        options:
+        - Red Tractor
+        - Farm Quality Assurance
+        - Organic
+        - Countryside Stewardship
+        - Farm Sustainability Payment
+      - name: next_inspection
+        type: date
+        label: Next inspection or deadline
+      - name: farm_location
+        type: location
+        label: Farm location
+      - name: shared_with
+        type: multiselect
+        label: Share aggregated data with
+        optionsFrom: collection:partners
+        help: Untick a partner to withdraw consent at any time.
+      access:
+      - role: partner
+        where:
+          shared_with: '{user.email}'
+        can:
+        - read
+    - name: fields
+      ownedBy: user
+      description: The farmer's fields
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Field name
+      - name: parcel_id
+        type: text
+        label: Parcel / LPIS ID
+      - name: hectares
+        type: number
+        label: Hectares
+      - name: crop
+        type: text
+        label: Crop or use
+      - name: centre
+        type: location
+        label: Field position
+    - name: herds
+      ownedBy: user
+      description: The farmer's herds and flocks
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Herd or flock
+      - name: species
+        type: select
+        label: Species
+        options:
+        - Cattle
+        - Sheep
+        - Pigs
+        - Poultry
+        - Other
+      - name: head_count
+        type: number
+        label: Head count
+    - name: activities
+      ownedBy: user
+      description: Activities recorded in the field
+      fields:
+      - name: activity_type
+        type: select
+        required: true
+        label: Activity
+        options:
+        - value: spraying
+          label: Spraying
+        - value: fertiliser
+          label: Fertiliser
+        - value: movement
+          label: Livestock movement
+        - value: treatment
+          label: Treatment
+        - value: feed
+          label: Feed
+      - name: date
+        type: date
+        required: true
+        label: Date
+      - name: field_name
+        type: text
+        label: Field or herd
+      - name: product
+        type: text
+        label: Product
+      - name: product_code
+        type: barcode
+        label: Product barcode
+      - name: ear_tag
+        type: barcode
+        label: Ear tag
+      - name: quantity
+        type: number
+        label: Quantity
+      - name: unit
+        type: text
+        label: Unit
+      - name: position
+        type: location
+        label: Position
+      - name: photo
+        type: file
+        label: Photo
+        accept:
+        - jpg
+        - jpeg
+        - png
+        capture: true
+        maxMb: 10
+      - name: notes
+        type: textarea
+        label: Notes
+      - name: shared_with
+        type: multiselect
+        label: Shared with
+        optionsFrom: collection:partners
+      access:
+      - role: partner
+        where:
+          shared_with: '{user.email}'
+        can:
+        - read
+      retentionDays: 3650
+    - name: findings
+      ownedBy: user
+      description: Guidance checks of each activity
+    - name: guidance
+      ownedBy: shared
+      description: DAERA, DEFRA and scheme rules, imported by admins
+      fields:
+      - name: title
+        type: text
+        label: Title
+      - name: nation
+        type: text
+        label: Nation
+      - name: topic
+        type: text
+        label: Topic
+      - name: rule
+        type: textarea
+        label: Rule
+      - name: source_url
+        type: url
+        label: Source
+    - name: partners
+      ownedBy: shared
+      description: Co-ops and processors that farmers can share with, imported by admins
+      fields:
+      - name: name
+        type: text
+        label: Organisation
+      - name: email
+        type: email
+        label: Partner contact email
+  views:
+  - key: home
+    type: page
+    title: Fieldbook
+    nav: false
+    sections:
+    - type: hero
+      eyebrow: Farm records
+      title: Records made in the **field**, ready for inspection.
+      text: Log spraying, fertiliser, livestock movements, treatments and feed on your phone with GPS, photos and barcode
+        scans. Free for farmers.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Set up your farm
+        text: Add your farm, fields and herds once.
+      - title: Record as you work
+        text: Scan the product or ear tag, take a photo, save. Works in the field.
+      - title: Check and report
+        text: An agent checks your records against DAERA and DEFRA guidance and drafts your inspection report for you to confirm.
+    - type: cards
+      id: partners
+      title: For co-ops and processors
+      items:
+      - title: Consent-based
+        text: You see only farms that granted you access, and they can withdraw at any time.
+      - title: Aggregated dashboards
+        text: Input use and practices across your membership, with CSV export.
+    - type: note
+      content: Fieldbook is decision support, not legal advice. You check every report before submitting.
+  - key: farm
+    type: form
+    title: My farm
+    collection: farms
+    edit: true
+    submit:
+      label: Save farm
+      message: Farm saved.
+      redirect: activities
+    roles:
+    - user
+  - key: field_form
+    type: form
+    title: Add field
+    collection: fields
+    submit:
+      label: Save field
+      message: Field saved.
+    roles:
+    - user
+  - key: herd_form
+    type: form
+    title: Add herd
+    collection: herds
+    submit:
+      label: Save herd
+      message: Herd saved.
+    roles:
+    - user
+  - key: record
+    type: form
+    title: Record activity
+    collection: activities
+    submit:
+      label: Save record
+      message: Record saved and checked.
+      redirect: activities
+    roles:
+    - user
+  - key: activities
+    type: table
+    title: My records
+    source: collection:activities
+    export: true
+    roles:
+    - user
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: activity_type
+        label: Activity
+        format: badge
+      - key: field_name
+        label: Field or herd
+      - key: product
+        label: Product
+      - key: quantity
+        label: Qty
+        format: number
+      - key: position
+        label: Position
+        format: location
+      sort:
+        field: date
+        dir: desc
+      limit: 100
+      actions:
+      - type: directions
+        field: position
+        label: Directions
+  - key: my_fields
+    type: table
+    title: My fields
+    source: collection:fields
+    roles:
+    - user
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Field
+      - key: parcel_id
+        label: Parcel
+      - key: hectares
+        label: Ha
+        format: number
+      - key: crop
+        label: Crop
+  - key: my_herds
+    type: table
+    title: My herds
+    source: collection:herds
+    roles:
+    - user
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Herd
+      - key: species
+        label: Species
+      - key: head_count
+        label: Head
+        format: number
+  - key: checks
+    type: list
+    title: Guidance checks
+    source: collection:findings
+    roles:
+    - user
+  - key: new_report
+    type: new_run
+    title: New report
+    roles:
+    - user
+  - key: reports
+    type: history
+    title: My reports
+    source: run
+    roles:
+    - user
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: review
+    type: approvals
+    title: Check before submitting
+    roles:
+    - user
+  - key: partner_inputs
+    type: table
+    title: Input use by month
+    source: collection:activities
+    export: true
+    roles:
+    - partner
+    - admin
+    data:
+      display: chart
+      chart: bar
+      fields:
+      - key: date
+        label: Month
+      - key: total
+        label: Quantity
+      groupBy:
+        field: date
+        bucket: month
+        aggs:
+        - key: total
+          agg: sum
+          field: quantity
+  - key: partner_practices
+    type: table
+    title: Practices by activity
+    source: collection:activities
+    export: true
+    roles:
+    - partner
+    - admin
+    data:
+      display: table
+      fields:
+      - key: activity_type
+        label: Activity
+      - key: count
+        label: Records
+      - key: total
+        label: Quantity
+      groupBy:
+        field: activity_type
+        aggs:
+        - key: total
+          agg: sum
+          field: quantity
+  - key: partner_farms
+    type: table
+    title: Member farms
+    source: collection:farms
+    export: true
+    roles:
+    - partner
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Farm
+      - key: nation
+        label: Nation
+        format: badge
+      - key: schemes
+        label: Schemes
+  - key: partners_view
+    type: table
+    title: Partner organisations
+    source: collection:partners
+    roles:
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Organisation
+      - key: email
+        label: Email
+  - key: admin
+    type: admin
+    title: Admin
+    roles:
+    - admin
+  approvals:
+  - key: farmer_review
+    title: Check your report before submitting
+    decidedBy: requester
+    description: Review the draft report and confirm it is accurate.
+  triggers:
+  - key: check_new
+    'on':
+      collection: activities
+      op: insert
+    start:
+      agent: checker
+    goal: 'Check this new record: type {record.activity_type}, date {record.date}, field or herd {record.field_name}, product
+      {record.product}, quantity {record.quantity} {record.unit}. Notes: {record.notes}.'
+  - key: sync_consent
+    'on':
+      collection: farms
+      op: update
+    start:
+      agent: consent_sync
+    goal: The farm's sharing list changed. Set shared_with on all the farmer's activities to match the farm's list.
+  - key: inspection_reminder
+    'on':
+      date:
+        collection: farms
+        field: next_inspection
+        offsetDays: -14
+        hour: 8
+    notify:
+      to: owner
+      subject: 'Deadline in two weeks: {record.name}'
+      body: Your inspection or scheme deadline on {record.next_inspection} is two weeks away. Open Fieldbook to check your
+        records and draft your report.
+      link: new_report
+  billing:
+    modes:
+    - free
+  notifications:
+    emailOnRunDone: true
+  mobile:
+    appId: eu.webrobot.fieldbook
+    appName: Fieldbook
+    capabilities:
+    - name: location
+      reason:
+        en: To tag where a field activity took place
+    - name: barcode
+      reason:
+        en: To scan product barcodes and ear tags
+    - name: camera
+      reason:
+        en: To photograph sprayed products, treatments and fields
+    - name: push
+  extensions:
+  - key: offline_sync
+    description: Offline capture in fields with later sync is not available yet; records are saved when the phone has a connection.
+  - key: partner_oauth_feeds
+    description: OAuth-secured partner data feeds are not available yet; partners use the dashboards and CSV export.
+  - key: partner_per_farm_billing
+    description: 'Partners pay per consenting farm: Stripe per-farm invoicing is not available yet and must be agreed and
+      billed outside the app. Farmers are free.'
+  - key: deadline_rules
+    description: Scheme and nation deadlines come from the guidance collection loaded by admins by CSV; farm reminders use
+      the next inspection date on the farm.

@@ -1,0 +1,820 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: renewlo
+  displayName: Renewlo
+  tagline:
+    en: Spot the signals on your customers before they renew, churn or grow.
+  description:
+    en: Renewlo checks every customer account each day (Companies House, news, careers pages, usage trends), scores risk and
+      expansion, and drafts the next action for the account manager to approve or edit.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: light
+    palette:
+      primary: '#12304a'
+      accent: '#0f8b7d'
+      background: '#f6f8fa'
+      foreground: '#16222e'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Renew
+      color: primary
+    - text: lo
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Signals
+      href: '#signals'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Head of Customer Success
+      assignedBy: admin_emails
+    - key: team_lead
+      label: Team lead
+      assignedBy: derived
+      from: collection:accounts.team_lead_email
+    - key: account_manager
+      label: Account manager
+      assignedBy: derived
+      from: collection:accounts.am_email
+    - key: user
+      assignedBy: signup
+  agents:
+  - key: monitor
+    role: scheduled
+    description: Checks every account each day, writes a signal with scores and drafts a next action.
+    profile:
+      inline:
+        display_name: Renewlo account monitor
+        crews:
+        - id: monitor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 80
+          max_budget_usd: 5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: "You are Renewlo, a customer-success analyst for a B2B company. Every day you check each customer\
+            \ account and write a short, factual signal.\n\nProcedure:\n1. Call list_accounts. Call list_signals and skip\
+            \ accounts that already have a signal dated today. Work through accounts with the nearest renewal_date first,\
+            \ as far as your budget allows.\n2. For each account gather evidence:\n a) Companies House: call companies_house\
+            \ with path \"/<registration_number>/filing-history\" and query \"items_per_page=10\", then path \"/<registration_number>/officers\"\
+            \ (pad the number to 8 characters with leading zeros). Filing history returns items[] with date, category, description\
+            \ (look for accounts filed late, charges, insolvency or strike-off notices, confirmation statements). Officers\
+            \ returns items[] with name, officer_role, appointed_on, resigned_on (look for recent director or CFO changes).\
+            \ If the tool says the key is not connected, skip this source and say so.\n b) Public news and press releases\
+            \ about the company in the last 30 days: use the WebRobot MCP to read news pages. Report only what you actually\
+            \ found.\n c) Job ads on the company's own careers page (careers_url, else website): use the WebRobot MCP. Note\
+            \ hiring growth, hiring freezes, or roles that signal need for our product.\n d) Usage trend: (usage_current -\
+            \ usage_previous) / usage_previous from the account row. A fall of more than 20% is a risk.\n e) Optionally hubspot_company_search\
+            \ to read CRM context when crm_id is set.\n3. Score: risk_score 0-100 (churn likelihood) and expansion_score 0-100.\
+            \ Base both on the evidence above, the plan and days to renewal. Never invent figures, facts or sources; when\
+            \ evidence is missing say so and keep the score cautious.\n4. Call save_signal with account (company_name), registration_number,\
+            \ date (today), kind (risk, expansion or neutral), risk_score, expansion_score, summary (at most 80 words, lead\
+            \ with the most important fact), sources (one per line, with the URL or filing name), am_email and team_lead_email\
+            \ copied from the account.\n5. Call update_account with the account record's fields days_to_renewal (renewal_date\
+            \ minus today in days), risk_score, expansion_score, last_signal (the summary) and last_checked (today).\n6. When\
+            \ risk_score >= 60, expansion_score >= 60, or renewal is within 90 days with risk_score >= 40, call create_action\
+            \ once with account, kind (check_in, upsell or exec_meeting), subject, body (a short, polite English email or\
+            \ meeting brief, under 120 words, no invented facts, no pricing promises), contact_email, crm_id, status \"draft\"\
+            , am_email, team_lead_email. An account manager reviews every draft; you never send anything.\nFinish with a short\
+            \ plain summary: number of accounts checked, the top 5 risks and top 5 opportunities."
+          name: monitor
+    appTools:
+    - name: list_accounts
+      description: Read the customer accounts
+      action: read
+      collection: accounts
+      scope: all
+    - name: update_account
+      description: Update derived fields of an account
+      action: write
+      collection: accounts
+      scope: all
+    - name: list_signals
+      description: Read existing signals
+      action: read
+      collection: signals
+      scope: all
+    - name: save_signal
+      description: Save a signal for an account
+      action: append
+      collection: signals
+      scope: all
+    - name: create_action
+      description: Save a drafted next action for review
+      action: append
+      collection: next_actions
+      scope: all
+    - name: companies_house
+      description: 'Companies House API: filing history and officers of a company'
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk/company
+        allowPath: true
+        credential:
+          provider: companies_house
+          header: Authorization
+          format: Basic {secret}
+        attribution: Companies House, Open Government Licence v3.0
+    - name: hubspot_company_search
+      description: 'Search HubSpot companies (body: filterGroups, properties, limit)'
+      action: http
+      http:
+        method: POST
+        url: https://api.hubapi.com/crm/v3/objects/companies/search
+        credential:
+          provider: hubspot
+        attribution: HubSpot
+    goalTemplate: Today is {date}. Run the daily check of every customer account and draft next actions where needed.
+    output: markdown
+    limits:
+      maxTurns: 80
+      maxBudgetUsd: 5
+  - key: digester
+    role: helper
+    description: Writes the weekly digest of top risks and opportunities for one user, from the accounts they can see.
+    profile:
+      inline:
+        display_name: Renewlo weekly digest
+        crews:
+        - id: digester
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the weekly customer-success digest for one person. Use read_signals (signals of the last
+            7 days) and read_accounts, which return only the accounts this person may see. Start with "# Renewlo digest —
+            week of <date>". Sections: ## Top risks (up to 5: account, risk score, why, renewal date), ## Top opportunities
+            (up to 5: account, expansion score, why), ## Renewals in the next 30 days, ## Drafts waiting for your approval.
+            Plain, under 300 words. Never invent figures; if there is nothing to report say so.'
+          name: digester
+    appTools:
+    - name: read_signals
+      description: Signals of the accounts the user may see
+      action: read
+      collection: signals
+      scope: user
+    - name: read_accounts
+      description: Accounts the user may see
+      action: read
+      collection: accounts
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.5
+  - key: crm_logger
+    role: helper
+    description: Logs an approved action as a note on the HubSpot company.
+    profile:
+      inline:
+        display_name: Renewlo CRM logger
+        crews:
+        - id: crm_logger
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You log an approved customer action in HubSpot. If the goal has no crm_id, do nothing and say so.
+            Otherwise call hubspot_log_note once with a JSON body: {"properties":{"hs_timestamp":"<now ISO 8601>","hs_note_body":"<action
+            kind, subject and body, prefixed with ''Renewlo:''>"},"associations":[{"to":{"id":"<crm_id>"},"types":[{"associationCategory":"HUBSPOT_DEFINED","associationTypeId":190}]}]}.
+            Then call mark_action_logged with the record id from the event and status "sent". Reply with one line.'
+          name: crm_logger
+    appTools:
+    - name: hubspot_log_note
+      description: Create a note on a HubSpot company
+      action: http
+      http:
+        method: POST
+        url: https://api.hubapi.com/crm/v3/objects/notes
+        credential:
+          provider: hubspot
+        attribution: HubSpot
+    - name: mark_action_logged
+      description: Set the status of a next action
+      action: write
+      collection: next_actions
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.2
+  data:
+    collections:
+    - name: accounts
+      ownedBy: org
+      description: Customer accounts imported by CSV (or synced from the CRM). Admins import them on /admin/data.
+      searchable: true
+      fields:
+      - name: company_name
+        type: text
+        required: true
+        label: Company
+      - name: registration_number
+        type: text
+        label: Registration number
+      - name: website
+        type: url
+        label: Website
+      - name: careers_url
+        type: url
+        label: Careers page
+      - name: plan
+        type: text
+        label: Plan
+      - name: contract_value
+        type: number
+        label: Contract value
+      - name: renewal_date
+        type: date
+        label: Renewal date
+      - name: usage_current
+        type: number
+        label: Usage, last 30 days
+      - name: usage_previous
+        type: number
+        label: Usage, previous 30 days
+      - name: am_email
+        type: email
+        label: Account manager
+      - name: team_lead_email
+        type: email
+        label: Team lead
+      - name: contact_email
+        type: email
+        label: Customer contact
+      - name: crm_id
+        type: text
+        label: CRM id
+      - name: days_to_renewal
+        type: number
+        label: Days to renewal
+      - name: risk_score
+        type: number
+        label: Risk
+      - name: expansion_score
+        type: number
+        label: Expansion
+      - name: last_signal
+        type: textarea
+        label: Latest signal
+      - name: last_checked
+        type: date
+        label: Last checked
+      access:
+      - role: account_manager
+        where:
+          am_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: team_lead
+        where:
+          team_lead_email: '{user.email}'
+        can:
+        - read
+    - name: signals
+      ownedBy: org
+      description: Daily signals written by the monitor agent
+      retentionDays: 365
+      fields:
+      - name: account
+        type: text
+        label: Account
+      - name: registration_number
+        type: text
+      - name: date
+        type: date
+        label: Date
+      - name: kind
+        type: select
+        label: Kind
+        options:
+        - value: risk
+          label: Risk
+        - value: expansion
+          label: Expansion
+        - value: neutral
+          label: Neutral
+      - name: risk_score
+        type: number
+        label: Risk
+      - name: expansion_score
+        type: number
+        label: Expansion
+      - name: summary
+        type: textarea
+        label: Signal
+      - name: sources
+        type: textarea
+        label: Sources
+      - name: am_email
+        type: email
+      - name: team_lead_email
+        type: email
+      access:
+      - role: account_manager
+        where:
+          am_email: '{user.email}'
+        can:
+        - read
+      - role: team_lead
+        where:
+          team_lead_email: '{user.email}'
+        can:
+        - read
+    - name: next_actions
+      ownedBy: org
+      description: Drafted next actions that the account manager approves or edits
+      retentionDays: 730
+      fields:
+      - name: account
+        type: text
+        label: Account
+      - name: kind
+        type: select
+        label: Action
+        options:
+        - value: check_in
+          label: Check-in email
+        - value: upsell
+          label: Upsell proposal
+        - value: exec_meeting
+          label: Executive meeting
+      - name: subject
+        type: text
+        label: Subject
+      - name: body
+        type: textarea
+        label: Message
+      - name: contact_email
+        type: email
+        label: Send to
+      - name: crm_id
+        type: text
+      - name: status
+        type: select
+        label: Status
+        options:
+        - value: draft
+          label: Draft
+        - value: approved
+          label: 'Approved: send'
+        - value: sent
+          label: Sent
+        - value: dismissed
+          label: Dismissed
+      - name: am_email
+        type: email
+      - name: team_lead_email
+        type: email
+      access:
+      - role: account_manager
+        where:
+          am_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: team_lead
+        where:
+          team_lead_email: '{user.email}'
+        can:
+        - read
+    credentials:
+    - provider: companies_house
+      kind: api_key
+      scope: org
+      label: Companies House API key
+      help: Create a free key at developer.company-information.service.gov.uk, then paste base64 of "<key>:" (the key followed
+        by a colon).
+    - provider: hubspot
+      kind: api_key
+      scope: org
+      label: HubSpot private app token
+      help: 'In HubSpot: Settings > Integrations > Private apps. Scopes: crm.objects.companies.read, crm.objects.notes.write.'
+  views:
+  - key: home
+    type: page
+    title: Renewlo
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: Account management assistant
+      title: Know what is happening at your customers **before** they tell you.
+      text: Renewlo checks every account each day, scores churn risk and expansion potential, and drafts the next action for
+        you to approve.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Import your accounts
+        text: 'Upload a CSV: company, registration number, plan, contract value, renewal date, usage and owners.'
+      - title: Daily signals
+        text: Companies House filings and officer changes, news, careers pages and usage trends, in one short signal per account.
+      - title: Approve the next action
+        text: A check-in email, upsell proposal or executive meeting is drafted. You edit and approve it; it is logged in
+          the CRM.
+    - type: cards
+      id: signals
+      title: What it watches
+      items:
+      - title: Companies House
+        text: Late filings, charges, director and CFO changes.
+        badge: 🏛
+      - title: News and hiring
+        text: Press releases and the customer's own job ads.
+        badge: 📰
+      - title: Usage
+        text: Trend of the figures you upload.
+        badge: 📉
+    - type: note
+      content: Account managers see only their accounts, team leads their team's, the head of customer success everything.
+        Scores are decision support, not facts.
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - admin
+    - team_lead
+    - account_manager
+    sections:
+    - type: data
+      title: Overview
+      source: collection:accounts
+      display: kpi
+      kpis:
+      - label: Accounts
+        agg: count
+      - label: Contract value
+        agg: sum
+        field: contract_value
+        format: money
+      - label: Average risk
+        agg: avg
+        field: risk_score
+        format: number
+    - type: data
+      title: Renewals in the next 90 days
+      source: collection:accounts
+      display: table
+      fields:
+      - key: company_name
+        label: Company
+      - key: renewal_date
+        label: Renews
+        format: date
+      - key: days_to_renewal
+        label: Days
+        format: number
+      - key: contract_value
+        label: Value
+        format: money
+      - key: risk_score
+        label: Risk
+        format: number
+      - key: am_email
+        label: Manager
+      filters:
+      - field: days_to_renewal
+        op: '>='
+        value: 0
+      - field: days_to_renewal
+        op: <=
+        value: 90
+      sort:
+        field: renewal_date
+        dir: asc
+      limit: 100
+      empty: No renewals in the next 90 days.
+    - type: data
+      title: Churn risk
+      source: collection:accounts
+      display: chart
+      chart: bar
+      fields:
+      - key: company_name
+        label: Company
+      - key: risk_score
+        label: Risk
+      sort:
+        field: risk_score
+        dir: desc
+      limit: 15
+    - type: data
+      title: Latest signals
+      source: collection:signals
+      display: cards
+      fields:
+      - key: account
+        label: Account
+      - key: date
+        label: Date
+        format: date
+      - key: kind
+        label: Kind
+        format: badge
+      - key: summary
+        label: Signal
+      sort:
+        field: date
+        dir: desc
+      limit: 12
+  - key: accounts
+    type: table
+    title: Accounts
+    source: collection:accounts
+    export: true
+    data:
+      display: table
+      fields:
+      - key: company_name
+        label: Company
+      - key: plan
+        label: Plan
+      - key: contract_value
+        label: Value
+        format: money
+      - key: renewal_date
+        label: Renews
+        format: date
+      - key: risk_score
+        label: Risk
+        format: number
+      - key: expansion_score
+        label: Expansion
+        format: number
+      - key: am_email
+        label: Manager
+      - key: last_signal
+        label: Latest signal
+      sort:
+        field: risk_score
+        dir: desc
+      limit: 200
+    roles:
+    - admin
+    - team_lead
+    - account_manager
+  - key: signals
+    type: table
+    title: Signals
+    source: collection:signals
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: account
+        label: Account
+      - key: kind
+        label: Kind
+        format: badge
+      - key: risk_score
+        label: Risk
+        format: number
+      - key: expansion_score
+        label: Expansion
+        format: number
+      - key: summary
+        label: Signal
+      - key: sources
+        label: Sources
+      sort:
+        field: date
+        dir: desc
+      limit: 200
+    roles:
+    - admin
+    - team_lead
+    - account_manager
+  - key: actions
+    type: table
+    title: Next actions
+    source: collection:next_actions
+    data:
+      display: table
+      fields:
+      - key: account
+        label: Account
+      - key: kind
+        label: Action
+        format: badge
+      - key: subject
+        label: Subject
+      - key: status
+        label: Status
+        format: badge
+      limit: 200
+    roles:
+    - admin
+    - team_lead
+    - account_manager
+  - key: review_action
+    type: form
+    title: Review action
+    collection: next_actions
+    fields:
+    - subject
+    - body
+    - contact_email
+    - status
+    edit: true
+    submit:
+      label: Save
+      message: Saved. Set the status to Approved to send it and log it in the CRM.
+      redirect: actions
+    nav: false
+    roles:
+    - admin
+    - account_manager
+  - key: digest
+    type: instances
+    template: weekly_digest
+    title: My weekly digest
+    roles:
+    - admin
+    - team_lead
+    - account_manager
+  - key: account
+    type: account
+    title: Plan and connections
+    roles:
+    - admin
+    - team_lead
+    - account_manager
+  templates:
+  - key: weekly_digest
+    title: Weekly digest
+    description: An email every Monday with the top risks and opportunities among the accounts you can see.
+    agent: digester
+    params:
+    - name: focus
+      type: select
+      required: true
+      label: Focus
+      options:
+      - value: both
+        label: Risks and opportunities
+      - value: risks
+        label: Risks
+      - value: opportunities
+        label: Opportunities
+    goal: 'Write the weekly digest for {user}, focus: {focus}. Today is {date}. Write in English.'
+    schedule:
+      cron: 0 7 * * 1
+      userCanChange: true
+    maxPerUser: 1
+    deliver:
+      to: owner
+      onlyIfNew: true
+  schedules:
+  - agent: monitor
+    action: run
+    cron: 0 5 * * *
+    owner: app
+    goal: Run the daily check of every customer account. Today is {date}.
+  triggers:
+  - key: risk_alert
+    description: Tell the account manager when a risk signal is saved
+    'on':
+      collection: signals
+      op: insert
+      where:
+        kind: risk
+    notify:
+      to: record.am_email
+      subject: 'Renewlo: risk signal on {record.account}'
+      body: '{record.summary}
+
+
+        Risk score: {record.risk_score}
+
+
+        Sources:
+
+        {record.sources}'
+      link: actions
+  - key: send_approved
+    description: Send the approved message to the customer contact
+    'on':
+      collection: next_actions
+      op: update
+      where:
+        status: approved
+    notify:
+      to: record.contact_email
+      subject: '{record.subject}'
+      body: '{record.body}'
+  - key: log_approved
+    description: Log the approved action in the CRM
+    'on':
+      collection: next_actions
+      op: update
+      where:
+        status: approved
+    start:
+      agent: crm_logger
+    goal: 'Log this approved action in HubSpot. Event: {event}. Account: {record.account}. Kind: {record.kind}. Subject: {record.subject}.
+      Body: {record.body}. crm_id: {record.crm_id}.'
+    asUser: false
+  egress:
+    hosts:
+    - api.company-information.service.gov.uk
+    - api.hubapi.com
+    notes: Companies House public API (Open Government Licence v3.0, key required); HubSpot API with the company's own private
+      app token.
+  notifications:
+    emailOnRunDone: false
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: seat
+      price: 59
+      interval: month
+      label: Account manager seat
+      includes:
+      - Daily signals on every account
+      - Drafted next actions
+      - Weekly digest
+      - Dashboard
+  extensions:
+  - key: oauth_crm_mailbox_calendar
+    description: 'Not available yet: OAuth sign-in to Salesforce, Gmail, Outlook and calendars. Today the CRM is HubSpot through
+      a private app token (read and log notes) and accounts come from CSV. Salesforce live sync, reading each manager''s mailbox
+      and calendar, and sending approved emails from the manager''s own mailbox need OAuth.'
+  - key: seat_quantity_billing
+    description: The subscription is one plan priced per account manager seat. Counting seats and charging per seat quantity
+      through Stripe is not expressed in the manifest; to be configured by the owner.
+  - key: single_company_deployment
+    description: 'One deployment serves one company: the head of customer success is the admin, team leads and account managers
+      get their roles from the team_lead_email and am_email columns of the CSV. Several companies in one deployment is not
+      supported.'

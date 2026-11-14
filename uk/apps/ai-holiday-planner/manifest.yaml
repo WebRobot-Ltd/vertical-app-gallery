@@ -1,0 +1,914 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: wandelle
+  displayName: Wandelle
+  tagline:
+    en: Premium holidays planned by an AI travel agent and finished by a human concierge.
+  description:
+    en: Tell Wandelle how you like to travel. An AI agent suggests destinations, hotels and day plans from official tourism
+      sources, builds a quote, and your concierge checks and approves it before you see it.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#0f3d3e'
+      accent: '#c8873a'
+      background: '#fbf8f3'
+      foreground: '#1d2428'
+    fonts:
+      body: Inter
+      display: Cormorant Garamond
+    wordmark:
+    - text: Wan
+      color: primary
+    - text: delle
+      color: accent
+    buttonShape: pill
+  header:
+    links:
+    - label: How it works
+      href: '#how-it-works'
+    - label: ATOL protection
+      href: '#atol'
+    cta:
+      label: Plan my trip
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: Traveller
+      assignedBy: signup
+    - key: concierge
+      label: Concierge
+      assignedBy: derived
+      from: collection:trips.concierge_email
+  limits:
+  - action: chat
+    per: user
+    max: 60
+    window: day
+    roles:
+    - user
+  agents:
+  - key: planner
+    role: main
+    description: 'The travel agent the traveller chats with: suggests destinations, hotels and day plans, saves ideas and
+      trips, hands over to the quote builder.'
+    memory: user
+    delegates:
+    - quoter
+    awaits:
+    - accept_quote
+    context:
+    - key: profile
+      from: collection:profiles
+    - key: email
+      from: user.email
+    goalTemplate: 'Traveller email: {email}
+
+      Traveller profile (JSON lines, may be empty): {profile}
+
+      Conversation so far:
+
+      {history}
+
+      New message: {message}
+
+      Today is {date}. Reply in English.'
+    appTools:
+    - name: save_trip
+      description: Save a trip the traveller is considering
+      action: append
+      collection: trips
+      scope: user
+    - name: save_idea
+      description: Save a destination, hotel or day plan idea for the traveller
+      action: append
+      collection: ideas
+      scope: user
+    - name: my_trips
+      description: List the traveller's trips
+      action: read
+      collection: trips
+      scope: user
+    - name: my_quotes
+      description: List the traveller's quotes and their status
+      action: read
+      collection: quotes
+      scope: user
+    profile:
+      inline:
+        display_name: Wandelle travel agent
+        crews:
+        - id: planner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are Wandelle''s travel agent for premium holidays. A human concierge works behind you and checks
+            every quote before the traveller sees it. Use the traveller''s profile (home airport, budget band, dates, party
+            size, interests, accessibility needs) and respect it; ask one or two short questions if something essential is
+            missing. Research with web search and the official pages of tourism boards, and cite the source URL of every suggestion.
+            Never invent prices, availability, opening times or accessibility facts: say what is unverified. You have no live
+            hotel or flight inventory; any price you mention is indicative and must be confirmed by the concierge. Save each
+            idea the traveller likes with save_idea (kind destination, hotel or day_plan) and each trip being considered with
+            save_trip (status idea, include the traveller email). Before creating a new trip, check my_trips. When the traveller
+            likes a trip and wants a price, call ask_quoter with the trip title, dates, party size, hotel and extras, and
+            say that a concierge will review it before it is sent. When my_quotes shows a quote the concierge has approved
+            and the traveller says yes, call request_accept_quote. Packages with flights are ATOL protected; never promise
+            protection for anything else. Keep replies short, warm and concrete.'
+  - key: quoter
+    role: helper
+    description: Builds a priced quote for a trip and asks the concierge to approve it.
+    awaits:
+    - quote_review
+    appTools:
+    - name: get_trip
+      description: Read the traveller's trips
+      action: read
+      collection: trips
+      scope: user
+    - name: get_ideas
+      description: Read the traveller's saved ideas
+      action: read
+      collection: ideas
+      scope: user
+    - name: create_quote
+      description: Save a draft quote for the traveller
+      action: append
+      collection: quotes
+      scope: user
+    profile:
+      inline:
+        display_name: Wandelle quote builder
+        crews:
+        - id: quoter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You build a quote for one trip. Read the trip with get_trip and the ideas with get_ideas. Save the
+            quote with create_quote: title, trip_title, items (one line per hotel night block, flight, transfer, experience,
+            with an indicative price), total_price in GBP, deposit_amount (20% of the total unless told otherwise), depart_date,
+            balance_due_date (8 weeks before departure), includes_flights (true only if flights are part of the package),
+            traveller_email and concierge_email copied from the trip, status in_review, and notes stating that prices are
+            indicative estimates from public sources, not live inventory. Never invent a hotel or a price you cannot justify;
+            write ''to be confirmed'' instead. Then call request_quote_review so the concierge can check, edit and approve
+            it. Do not tell the traveller the quote is final.'
+  - key: booker
+    role: helper
+    description: After the traveller accepts a quote, records the booking with its payment dates.
+    appTools:
+    - name: find_quote
+      description: Read the traveller's quotes
+      action: read
+      collection: quotes
+      scope: user
+    - name: update_quote
+      description: Update the status of a quote
+      action: write
+      collection: quotes
+      scope: user
+    - name: create_booking
+      description: Record a booking for the traveller
+      action: append
+      collection: bookings
+      scope: user
+    profile:
+      inline:
+        display_name: Wandelle booking clerk
+        crews:
+        - id: booker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You record a booking once a traveller has accepted a concierge-approved quote. Find the quote with
+            find_quote (status in_review or approved, matching the title in the event), set its status to accepted with update_quote,
+            then create the booking with create_booking: title, depart_date, deposit_amount and balance_amount (total minus
+            deposit) copied from the quote, balance_due_date = 8 weeks before departure, deposit_status pending, balance_status
+            pending, includes_flights, traveller_email, concierge_email, status requested, atol_certificate_ref empty. Never
+            invent amounts or dates; if the quote is missing or ambiguous, do nothing and say why.'
+  data:
+    collections:
+    - name: profiles
+      ownedBy: user
+      description: Each traveller's preferences
+      fields:
+      - name: home_airport
+        type: text
+        label: Home airport
+        required: true
+      - name: budget_band
+        type: select
+        label: Budget band
+        required: true
+        options:
+        - value: comfort
+          label: Comfort
+        - value: premium
+          label: Premium
+        - value: luxury
+          label: Luxury
+      - name: travel_from
+        type: date
+        label: Earliest departure
+      - name: travel_to
+        type: date
+        label: Latest return
+      - name: party_size
+        type: number
+        label: Party size
+        required: true
+      - name: interests
+        type: multiselect
+        label: Interests
+        options:
+        - Beaches
+        - Food and wine
+        - Culture
+        - Wellness
+        - Adventure
+        - Wildlife
+        - Skiing
+        - Cities
+      - name: accessibility_needs
+        type: textarea
+        label: Accessibility needs
+        maxLength: 600
+    - name: trips
+      ownedBy: user
+      description: Trips the traveller is considering or has booked
+      fields:
+      - name: title
+        type: text
+        label: Trip
+        required: true
+      - name: destination
+        type: text
+        label: Destination
+      - name: status
+        type: select
+        label: Status
+        options:
+        - idea
+        - quoting
+        - quoted
+        - booked
+        - cancelled
+      - name: depart_date
+        type: date
+        label: Departure
+      - name: return_date
+        type: date
+        label: Return
+      - name: party_size
+        type: number
+        label: Travellers
+      - name: summary
+        type: textarea
+        label: Summary
+      - name: traveller_email
+        type: email
+        label: Traveller email
+      - name: concierge_email
+        type: email
+        label: Concierge email
+      access:
+      - role: concierge
+        where:
+          concierge_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: ideas
+      ownedBy: user
+      description: Destinations, hotels and day plans saved by the agent
+      fields:
+      - name: kind
+        type: select
+        label: Type
+        options:
+        - destination
+        - hotel
+        - day_plan
+      - name: title
+        type: text
+        label: Idea
+        required: true
+      - name: destination
+        type: text
+        label: Destination
+      - name: details
+        type: textarea
+        label: Details
+      - name: source_url
+        type: url
+        label: Source
+      - name: trip_title
+        type: text
+        label: Trip
+    - name: quotes
+      ownedBy: user
+      description: Quotes built by the agent and checked by the concierge
+      fields:
+      - name: title
+        type: text
+        label: Quote
+        required: true
+      - name: trip_title
+        type: text
+        label: Trip
+      - name: items
+        type: textarea
+        label: What is included
+      - name: total_price
+        type: number
+        label: Total (GBP)
+      - name: deposit_amount
+        type: number
+        label: Deposit (GBP)
+      - name: depart_date
+        type: date
+        label: Departure
+      - name: balance_due_date
+        type: date
+        label: Balance due
+      - name: includes_flights
+        type: boolean
+        label: Includes flights (ATOL)
+      - name: status
+        type: select
+        label: Status
+        options:
+        - draft
+        - in_review
+        - approved
+        - accepted
+        - declined
+      - name: notes
+        type: textarea
+        label: Notes
+      - name: traveller_email
+        type: email
+        label: Traveller email
+      - name: concierge_email
+        type: email
+        label: Concierge email
+      access:
+      - role: concierge
+        where:
+          concierge_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: bookings
+      ownedBy: user
+      description: Accepted quotes with payment dates and ATOL certificate reference
+      fields:
+      - name: title
+        type: text
+        label: Booking
+        required: true
+      - name: depart_date
+        type: date
+        label: Departure
+      - name: deposit_amount
+        type: number
+        label: Deposit (GBP)
+      - name: balance_amount
+        type: number
+        label: Balance (GBP)
+      - name: balance_due_date
+        type: date
+        label: Balance due
+      - name: deposit_status
+        type: select
+        label: Deposit
+        options:
+        - pending
+        - paid
+      - name: balance_status
+        type: select
+        label: Balance
+        options:
+        - pending
+        - paid
+      - name: includes_flights
+        type: boolean
+        label: Includes flights (ATOL)
+      - name: atol_certificate_ref
+        type: text
+        label: ATOL certificate
+      - name: status
+        type: select
+        label: Status
+        options:
+        - requested
+        - confirmed
+        - cancelled
+      - name: traveller_email
+        type: email
+        label: Traveller email
+      - name: concierge_email
+        type: email
+        label: Concierge email
+      access:
+      - role: concierge
+        where:
+          concierge_email: '{user.email}'
+        can:
+        - read
+        - write
+  approvals:
+  - key: quote_review
+    title: Review quote
+    description: A concierge checks prices and hotels, edits the quote if needed, then approves it before the traveller sees
+      it.
+    role: concierge
+    fields:
+    - title
+    - trip_title
+    - total_price
+    - deposit_amount
+    - includes_flights
+  - key: accept_quote
+    title: Accept your quote
+    description: Confirm you want to book this approved quote.
+    decidedBy: requester
+    fields:
+    - title
+    - total_price
+    - deposit_amount
+  triggers:
+  - key: new_trip
+    'on':
+      collection: trips
+      op: insert
+    notify:
+      to: admins
+      subject: 'New Wandelle trip: {record.title}'
+      body: A traveller saved a new trip ({record.title}). Assign a concierge by setting concierge_email on the trip.
+      link: trips
+  - key: quote_ready
+    'on':
+      approval: quote_review
+      decision: approved
+    notify:
+      to: owner
+      subject: Your Wandelle quote is ready
+      body: Your concierge has reviewed and approved your quote. Open the app to read it and tell the agent if you would like
+        to book.
+      link: quotes
+  - key: quote_accepted
+    'on':
+      approval: accept_quote
+      decision: approved
+    start:
+      agent: booker
+    goal: 'The traveller accepted a concierge-approved quote. Event: {event}. Record the booking as instructed.'
+  - key: booking_created
+    'on':
+      collection: bookings
+      op: insert
+    notify:
+      to:
+      - record.concierge_email
+      - admins
+      subject: 'New booking: {record.title}'
+      body: 'A booking was requested: {record.title}. Collect the deposit and, if it includes flights ({record.includes_flights}),
+        issue the ATOL certificate and record its reference on the booking.'
+      link: bookings
+  - key: balance_10_weeks
+    'on':
+      date:
+        collection: bookings
+        field: depart_date
+        offsetDays: -70
+        hour: 8
+      where:
+        balance_status: pending
+    notify:
+      to: record.traveller_email
+      subject: Your Wandelle balance is due in 2 weeks
+      body: Your holiday ({record.title}) departs in 10 weeks. The balance of {record.balance_amount} GBP is due 8 weeks before
+        departure, on {record.balance_due_date}.
+      link: bookings
+  - key: balance_8_weeks
+    'on':
+      date:
+        collection: bookings
+        field: depart_date
+        offsetDays: -56
+        hour: 8
+      where:
+        balance_status: pending
+    notify:
+      to:
+      - record.traveller_email
+      - record.concierge_email
+      subject: Your Wandelle balance is due today
+      body: Your holiday ({record.title}) departs in 8 weeks. The balance of {record.balance_amount} GBP is due today.
+      link: bookings
+  views:
+  - key: home
+    type: page
+    title: Wandelle
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: Premium holidays, planned for you
+      title: Your **AI travel agent**, with a human concierge behind it.
+      text: Tell Wandelle how you like to travel. The agent suggests destinations, hotels and day plans from official tourism
+        sources. A concierge checks every quote before it reaches you. Planning is free.
+      actions:
+      - label: Plan my trip
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how-it-works'
+        style: ghost
+    - type: steps
+      id: how-it-works
+      title: How it works
+      items:
+      - title: Set your profile
+        text: Home airport, budget band, dates, party size, interests and accessibility needs.
+        badge: '1'
+      - title: Chat with the agent
+        text: It suggests destinations, hotels and day plans and saves your favourites into your trips.
+        badge: '2'
+      - title: Get a checked quote
+        text: When you like a trip, the agent builds a quote and your concierge reviews, adjusts and approves it.
+        badge: '3'
+      - title: Book with a deposit
+        text: Pay a deposit by card, then the balance 8 weeks before departure. We remind you at 10 and 8 weeks.
+        badge: '4'
+    - type: text
+      id: atol
+      title: ATOL protection
+      content: 'Packages that include flights are financially protected under the ATOL scheme of the UK Civil Aviation Authority.
+        We issue an ATOL certificate with every package booking.
+
+
+        **ATOL licence number: to be added by Wandelle before launch.**'
+    - type: note
+      content: Prices shown while planning are indicative. Live availability and final prices are confirmed by your concierge.
+        Wandelle earns commission from suppliers and a concierge fee.
+  - key: profile
+    type: form
+    title: My travel profile
+    collection: profiles
+    submit:
+      label: Save profile
+      message: Profile saved. Your agent will use it.
+      redirect: chat
+    roles:
+    - user
+    - admin
+  - key: chat
+    type: chat
+    title: Travel agent
+    source: agent:planner
+    examples:
+    - Suggest a wellness week in Europe in May
+    - Find a family-friendly hotel in Puglia
+    - Build a quote for my Kyoto trip
+    placeholder: Where would you like to go?
+    roles:
+    - user
+    - admin
+  - key: ideas
+    type: cards
+    title: Saved ideas
+    source: collection:ideas
+    data:
+      display: cards
+      fields:
+      - key: title
+        label: Idea
+      - key: kind
+        label: Type
+        format: badge
+      - key: destination
+        label: Destination
+      - key: details
+        label: Details
+      - key: source_url
+        label: Source
+        format: link
+      limit: 100
+      empty: No ideas saved yet. Chat with the agent.
+    roles:
+    - user
+    - admin
+  - key: trips
+    type: table
+    title: Trips
+    source: collection:trips
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Trip
+      - key: destination
+        label: Destination
+      - key: status
+        label: Status
+        format: badge
+      - key: depart_date
+        label: Departure
+        format: date
+      - key: party_size
+        label: Travellers
+        format: number
+      - key: traveller_email
+        label: Traveller
+      - key: concierge_email
+        label: Concierge
+      sort:
+        field: depart_date
+        dir: asc
+      limit: 200
+    export: true
+    roles:
+    - user
+    - concierge
+    - admin
+  - key: quotes
+    type: table
+    title: Quotes
+    source: collection:quotes
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Quote
+      - key: status
+        label: Status
+        format: badge
+      - key: total_price
+        label: Total
+        format: money
+      - key: deposit_amount
+        label: Deposit
+        format: money
+      - key: depart_date
+        label: Departure
+        format: date
+      - key: includes_flights
+        label: Flights
+      - key: items
+        label: Included
+      limit: 200
+      empty: No quotes yet.
+    roles:
+    - user
+    - concierge
+    - admin
+  - key: quote_edit
+    type: form
+    title: Edit quote
+    collection: quotes
+    edit: true
+    nav: false
+    fields:
+    - title
+    - trip_title
+    - items
+    - total_price
+    - deposit_amount
+    - depart_date
+    - balance_due_date
+    - includes_flights
+    - status
+    - notes
+    submit:
+      label: Save quote
+      message: Quote updated.
+      redirect: quotes
+    roles:
+    - concierge
+    - admin
+  - key: approvals
+    type: approvals
+    title: Approvals
+    approvals:
+    - quote_review
+    - accept_quote
+    roles:
+    - user
+    - concierge
+    - admin
+  - key: bookings
+    type: table
+    title: Bookings
+    source: collection:bookings
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Booking
+      - key: status
+        label: Status
+        format: badge
+      - key: depart_date
+        label: Departure
+        format: date
+      - key: deposit_amount
+        label: Deposit
+        format: money
+      - key: deposit_status
+        label: Deposit status
+        format: badge
+      - key: balance_amount
+        label: Balance
+        format: money
+      - key: balance_due_date
+        label: Balance due
+        format: date
+      - key: balance_status
+        label: Balance status
+        format: badge
+      - key: atol_certificate_ref
+        label: ATOL certificate
+      limit: 200
+      empty: No bookings yet.
+    export: true
+    roles:
+    - user
+    - concierge
+    - admin
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - admin
+    sections:
+    - type: data
+      id: quote-kpis
+      title: Quotes
+      source: collection:quotes
+      display: kpi
+      kpis:
+      - label: Quotes
+        agg: count
+      - label: Quoted value
+        agg: sum
+        field: total_price
+        format: money
+    - type: data
+      id: quote-funnel
+      title: Quote conversion by status
+      source: collection:quotes
+      display: bar
+      fields:
+      - key: status
+        label: Status
+      - key: count
+        label: Quotes
+      - key: value
+        label: Value
+      groupBy:
+        field: status
+        aggs:
+        - key: value
+          agg: sum
+          field: total_price
+    - type: data
+      id: accepted-kpis
+      title: Accepted quotes
+      source: collection:quotes
+      display: kpi
+      filters:
+      - field: status
+        op: '='
+        value: accepted
+      kpis:
+      - label: Accepted quotes
+        agg: count
+      - label: Accepted value
+        agg: sum
+        field: total_price
+        format: money
+    - type: data
+      id: deposit-kpis
+      title: Deposits collected
+      source: collection:bookings
+      display: kpi
+      filters:
+      - field: deposit_status
+        op: '='
+        value: paid
+      kpis:
+      - label: Deposits paid
+        agg: count
+      - label: Deposit total
+        agg: sum
+        field: deposit_amount
+        format: money
+    - type: data
+      id: balances-due
+      title: Balances awaiting payment
+      source: collection:bookings
+      display: table
+      filters:
+      - field: balance_status
+        op: '='
+        value: pending
+      fields:
+      - key: title
+        label: Booking
+      - key: balance_amount
+        label: Balance
+        format: money
+      - key: balance_due_date
+        label: Due
+        format: date
+      - key: concierge_email
+        label: Concierge
+      sort:
+        field: balance_due_date
+        dir: asc
+      limit: 50
+  mobile:
+    appId: com.wandelle.travel
+    appName: Wandelle
+    capabilities:
+    - name: push
+    - name: microphone
+      reason:
+        en: To talk to your travel agent by voice
+  billing:
+    modes:
+    - free
+  extensions:
+  - key: partner_inventory
+    description: 'Live hotel and flight availability and booking through bed-bank (HBX-type) and GDS (Amadeus-type) APIs.
+      Not included: it needs a signed partner contract and credentials. Until then the agent gives indicative prices from
+      public sources and the concierge confirms them.'
+  - key: card_payments
+    description: Collecting the card deposit and the balance 8 weeks before departure is not expressible yet. Deposit and
+      balance status are recorded on each booking by the concierge or admin; the 10 and 8 week email reminders are already
+      automatic.
+  - key: atol_certificate
+    description: Issuing the ATOL certificate itself needs the owner's CAA licence and the CAA certificate system. The concierge
+      is notified on each booking, issues the certificate and records its reference. The owner must enter the real ATOL licence
+      number on the home page before launch.
+  - key: commission_and_fees
+    description: Supplier commission and the concierge fee are not charged through the app; they are handled in the owner's
+      own accounts. The app is free to plan with.

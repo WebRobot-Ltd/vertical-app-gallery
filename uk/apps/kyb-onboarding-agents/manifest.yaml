@@ -1,0 +1,914 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: verakin
+  displayName: Verakin
+  tagline:
+    en: AI agents for KYB, onboarding and financial-crime workflows.
+  description:
+    en: Verakin onboards business customers, builds the ownership tree from Companies House, screens every entity and person
+      against the OFSI and UN sanctions lists, searches for adverse media, scores the risk and opens a case. Analysts work
+      the queue, high-risk cases need a second MLRO approval, and every step is kept in an audit trail.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0f2a43'
+      accent: '#1d7a6e'
+      background: '#f6f8fa'
+      foreground: '#14202e'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Vera
+      color: primary
+    - text: kin
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Controls
+      href: '#controls'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      label: Compliance analyst
+      assignedBy: signup
+    - key: mlro
+      label: MLRO
+      assignedBy: derived
+      from: collection:cases.mlro_email
+  limits:
+  - action: agent:screener
+    per: user
+    max: 50
+    window: day
+    roles:
+    - user
+  agents:
+  - key: screener
+    role: main
+    description: Retrieves the Companies House profile, officers and PSCs, builds the ownership tree, screens against OFSI
+      and UN lists, searches adverse media, scores the risk and opens a case.
+    profile:
+      inline:
+        display_name: Verakin KYB screener
+        crews:
+        - id: screener
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are a KYB and financial-crime screening analyst for a UK fintech or payment firm. For each business
+            customer: (1) call ch_get with path /company/{number} for the profile, /company/{number}/officers for officers
+            and /company/{number}/persons-with-significant-control for PSCs; if a PSC is a corporate entity, follow it up
+            the chain (its own company number) to build the ownership tree, to a maximum of 4 levels, and flag any opaque
+            or non-UK owner you cannot resolve. (2) Screen EVERY entity and individual in the tree against the OFSI Consolidated
+            List of Financial Sanctions Targets and the UN Security Council consolidated list, using the WebRobot MCP to fetch
+            and search the official published lists (name, aliases, date of birth, country). Record the list version or date
+            you used. (3) Run web searches through the MCP for adverse media on each entity and key individual (fraud, money
+            laundering, bribery, sanctions evasion, regulatory action) and summarise only relevant hits with the source URL;
+            discard namesakes. (4) PEP screening and commercial adverse-media databases ONLY when the goal says the customer
+            holds a licence; otherwise state clearly that PEP screening was not performed. (5) Identity verification of directors
+            is done by the certified ID&V partner, never by you: list which directors still need ID&V. (6) Compute a risk
+            score 0-100 with reasons (jurisdiction, ownership opacity, sector, expected volumes, sanctions or media hits,
+            dormant or new company, website consistency) and a level low, medium or high. Never invent data; never declare
+            a person cleared on a weak match: possible matches become alerts for a human. Then act: call write_case once to
+            open the case (status open, include members = the analyst email and MLRO email), call append_alert for each potential
+            match, and append_audit for every step you took (retrieval, each screening, scoring) with the source and time.
+            For a high risk level, call request_mlro_signoff before finishing and set status pending_mlro. Set next_review_date
+            by risk: high 6 months, medium 12 months, low 36 months from today. Report structure: start with a level-1 title
+            "# KYB report — <company name> (<number>)", then ## Summary and risk score, ## Company profile, ## Ownership tree
+            (a nested list), ## Sanctions screening, ## Adverse media, ## PEP screening, ## ID&V status, ## Risk reasons,
+            ## Recommended next steps. Decision support only: the final decision is always made by a human analyst or the
+            MLRO.'
+    goalTemplate: 'Onboard and screen this business customer. Today is {date}.
+
+      Company number: {company_number}
+
+      {?trading_name}Trading name: {trading_name}{/trading_name}
+
+      {?website}Website: {website}{/website}
+
+      {?ownership}Declared ownership structure: {ownership}{/ownership}
+
+      {?expected_volumes}Expected volumes: {expected_volumes}{/expected_volumes}
+
+      {?countries}Countries of operation: {countries}{/countries}
+
+      {?contact_email}Customer contact: {contact_email}{/contact_email}
+
+      Analyst email: {analyst}
+
+      MLRO email: {mlro_email}
+
+      {?pep_licensed}The firm holds a PEP and adverse-media database licence: PEP screening is allowed.{/pep_licensed}{!pep_licensed}No
+      PEP licence: do not perform PEP screening.{/pep_licensed}
+
+      Write the report in the language with ISO code {lang}.'
+    context:
+    - key: analyst
+      from: user.email
+    appTools:
+    - name: ch_get
+      description: 'Companies House API GET: pass path such as /company/12345678, /company/12345678/officers or /company/12345678/persons-with-significant-control'
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk
+        allowPath: true
+        attribution: Companies House, Open Government Licence v3.0
+        credential:
+          provider: companies_house
+          header: Authorization
+          format: Basic {secret}
+    - name: write_case
+      description: Open a case for the customer
+      action: write
+      collection: cases
+      scope: user
+    - name: append_alert
+      description: Add a screening alert to a case
+      action: append
+      collection: alerts
+      scope: user
+    - name: append_audit
+      description: Add a step to the audit trail
+      action: append
+      collection: audit_log
+      scope: user
+    awaits:
+    - mlro_signoff
+    output: markdown
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+  - key: rescreener
+    role: scheduled
+    description: Re-screens one customer against the current sanctions lists and checks for changes at Companies House.
+    profile:
+      inline:
+        display_name: Verakin re-screener
+        crews:
+        - id: rescreener
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You re-screen ONE business customer. Call ch_get for the company profile, officers and PSCs and
+            compare with your memory of the last run. Screen the company and every officer and PSC against the current OFSI
+            Consolidated List and UN consolidated list using the WebRobot MCP, and record the list dates. Report only what
+            changed. Start with "# Re-screen — <company> — <date>", then ## Result (CLEAR or ALERT), ## Changes in ownership
+            or officers, ## Sanctions matches (with the matched list entry), ## Action required. Never invent matches; possible
+            matches are for a human to review. At the end call remember with the current officers and PSCs and the list dates.'
+    memory: instance
+    appTools:
+    - name: ch_get
+      description: 'Companies House API GET: pass path such as /company/12345678, /company/12345678/officers or /company/12345678/persons-with-significant-control'
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk
+        allowPath: true
+        attribution: Companies House, Open Government Licence v3.0
+        credential:
+          provider: companies_house
+          header: Authorization
+          format: Basic {secret}
+    writesTo:
+      collection: screening_results
+      parse: whole
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 0.6
+  templates:
+  - key: rescreen
+    title: Daily re-screening
+    description: Re-screens a customer every day against the OFSI and UN lists and watches Companies House for changes.
+    agent: rescreener
+    params:
+    - name: company_number
+      type: text
+      required: true
+      label: Company number
+    - name: trading_name
+      type: text
+      required: true
+      label: Trading name
+    goal: 'Re-screen "{instance}": company number {company_number}, trading name {trading_name}. Today is {date}. Write in
+      the language with ISO code {lang}.'
+    schedule:
+      cron: 0 6 * * *
+      userCanChange: false
+    maxPerUser: 200
+    cost:
+      perRun: 2
+    deliver:
+      to: owner
+      subject: 'Verakin re-screen: {title}'
+      onlyIfNew: true
+  inputForm:
+    title: New customer check
+    fields:
+    - name: company_number
+      type: text
+      required: true
+      label: Companies House number
+      help: e.g. 01234567
+    - name: trading_name
+      type: text
+      label: Trading name
+    - name: website
+      type: url
+      label: Website
+    - name: ownership
+      type: textarea
+      maxLength: 1500
+      label: Declared ownership structure
+    - name: expected_volumes
+      type: text
+      label: Expected monthly volumes
+      help: e.g. 300 payments, £250,000
+    - name: countries
+      type: textarea
+      maxLength: 500
+      label: Countries of operation
+    - name: contact_email
+      type: email
+      label: Customer contact email
+    - name: mlro_email
+      type: email
+      required: true
+      label: MLRO email
+      help: Approves high-risk cases
+    - name: pep_licensed
+      type: boolean
+      label: My firm holds a PEP / adverse-media database licence
+  data:
+    collections:
+    - name: customers
+      ownedBy: user
+      description: Business customers onboarded through the form or the API
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      fields:
+      - name: company_number
+        type: text
+        required: true
+      - name: trading_name
+        type: text
+      - name: website
+        type: url
+      - name: ownership_structure
+        type: textarea
+      - name: expected_volumes
+        type: text
+      - name: countries
+        type: text
+      - name: contact_email
+        type: email
+      - name: members
+        type: multiselect
+    - name: cases
+      ownedBy: user
+      description: Compliance cases opened by the screening agent
+      retentionDays: 2555
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: mlro
+        where:
+          mlro_email: '{user.email}'
+        can:
+        - read
+        - write
+      fields:
+      - name: company_number
+        type: text
+        required: true
+      - name: company_name
+        type: text
+      - name: risk_score
+        type: number
+      - name: risk_level
+        type: select
+        options:
+        - low
+        - medium
+        - high
+      - name: status
+        type: select
+        options:
+        - open
+        - in_review
+        - awaiting_documents
+        - escalated
+        - pending_mlro
+        - approved
+        - rejected
+      - name: summary
+        type: textarea
+      - name: alerts_count
+        type: number
+      - name: analyst_email
+        type: email
+      - name: mlro_email
+        type: email
+      - name: customer_email
+        type: email
+      - name: opened_date
+        type: date
+      - name: due_date
+        type: date
+      - name: sla_status
+        type: select
+        options:
+        - on_track
+        - at_risk
+        - breached
+      - name: next_review_date
+        type: date
+      - name: resolution_note
+        type: textarea
+      - name: members
+        type: multiselect
+    - name: alerts
+      ownedBy: user
+      description: Screening alerts to review (sanctions, adverse media)
+      retentionDays: 2555
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      fields:
+      - name: case_id
+        type: text
+      - name: subject
+        type: text
+      - name: source_list
+        type: select
+        options:
+        - OFSI
+        - UN
+        - adverse_media
+        - PEP
+      - name: match_detail
+        type: textarea
+      - name: source_url
+        type: url
+      - name: disposition
+        type: select
+        options:
+        - open
+        - false_positive
+        - confirmed
+      - name: note
+        type: textarea
+      - name: members
+        type: multiselect
+    - name: audit_log
+      ownedBy: user
+      description: Audit trail of every step on a case
+      retentionDays: 2555
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: case_id
+        type: text
+      - name: actor
+        type: text
+      - name: action
+        type: text
+      - name: detail
+        type: textarea
+      - name: at
+        type: date
+      - name: members
+        type: multiselect
+    - name: doc_requests
+      ownedBy: user
+      description: Document requests sent to customers by email
+      retentionDays: 2555
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      fields:
+      - name: case_id
+        type: text
+        required: true
+      - name: customer_email
+        type: email
+        required: true
+      - name: subject
+        type: text
+        required: true
+      - name: message
+        type: textarea
+        required: true
+      - name: members
+        type: multiselect
+    - name: screening_results
+      ownedBy: instance
+      description: Daily re-screening reports of each monitored customer
+    credentials:
+    - provider: companies_house
+      kind: api_key
+      scope: org
+      label: Companies House API key
+      help: Admins paste the base64 of "<API key>:" (the key as username, empty password), from developer.company-information.service.gov.uk.
+  approvals:
+  - key: mlro_signoff
+    title: MLRO second approval (high risk)
+    role: mlro
+    fields:
+    - company_number
+    - risk_score
+    - summary
+    timeoutMinutes: 4320
+    onTimeout: reject
+  triggers:
+  - key: api_onboard
+    description: Business customers onboarded through the API
+    'on':
+      webhook: true
+    write:
+      collection: customers
+      fields:
+        company_number: company_number
+        trading_name: trading_name
+        website: website
+        ownership_structure: ownership_structure
+        expected_volumes: expected_volumes
+        countries: countries
+        contact_email: contact_email
+      keyBy: company_number
+  - key: doc_request_email
+    'on':
+      collection: doc_requests
+      op: insert
+    notify:
+      to:
+      - record.customer_email
+      subject: 'Documents needed: {record.subject}'
+      body: 'Hello,
+
+
+        To complete our due-diligence review we need the following from you:
+
+
+        {record.message}
+
+
+        Please reply to this email with the documents.
+
+
+        Thank you.'
+  - key: mlro_needed
+    'on':
+      collection: cases
+      op: update
+      where:
+        status: pending_mlro
+    notify:
+      to:
+      - role:mlro
+      subject: 'High-risk case awaiting your approval: {record.company_name}'
+      body: Case {record.company_name} ({record.company_number}) is high risk and needs your second approval.
+      link: approvals
+  - key: mlro_decided
+    'on':
+      approval: mlro_signoff
+      decision: any
+    notify:
+      to:
+      - owner
+      subject: MLRO decision on a high-risk case
+      body: The MLRO has decided on a case you escalated. Open the case queue to see the outcome.
+      link: queue
+  - key: review_due
+    'on':
+      date:
+        collection: cases
+        field: next_review_date
+        offsetDays: -7
+        hour: 7
+    notify:
+      to:
+      - owner
+      subject: 'Periodic review due: {record.company_name}'
+      body: The periodic review of {record.company_name} ({record.company_number}, risk {record.risk_level}) is due in 7 days.
+        Start a new check to refresh it.
+      link: new_check
+  views:
+  - key: home
+    type: page
+    title: Verakin
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: KYB · Onboarding · Financial crime
+      title: Know your business customer, **with evidence**.
+      text: Verakin retrieves the company, its officers and owners from Companies House, screens every entity and person against
+        the OFSI and UN sanctions lists, searches adverse media and hands your analysts a scored case, with a full audit trail.
+      actions:
+      - label: Start a check
+        href: /v/new_check
+        style: primary
+      - label: Sign in
+        href: /login
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Onboard
+        text: Your business customer is added through the form or the API.
+      - title: Screen
+        text: The agent builds the ownership tree, screens everyone against OFSI and UN lists and searches adverse media.
+      - title: Score
+        text: A risk score with reasons, and a case in your queue.
+      - title: Decide
+        text: Analysts review alerts, request documents, approve or escalate. High-risk cases need the MLRO.
+    - type: cards
+      id: controls
+      title: Built for compliance
+      items:
+      - title: Audit trail
+        text: Every retrieval, screening and decision is logged and kept for 7 years.
+        badge: 🧾
+      - title: Four-eyes approval
+        text: High-risk cases wait for a second approval by the MLRO.
+        badge: ✅
+      - title: Daily re-screening
+        text: Sanctions lists are re-checked every day; periodic reviews follow the risk level.
+        badge: 🔁
+      - title: Licensed data only when licensed
+        text: PEP and commercial media databases are used only if your firm holds the licence.
+        badge: 🔐
+    - type: note
+      content: 'Verakin supports compliance decisions; it does not replace the judgement of your analysts and MLRO. Sources:
+        Companies House (OGL v3.0), OFSI Consolidated List, UN Security Council consolidated list.'
+  - key: new_check
+    type: new_run
+    title: New customer check
+    roles:
+    - user
+    - admin
+  - key: checks
+    type: history
+    title: My checks
+    source: run
+    roles:
+    - user
+    - admin
+  - key: check
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: queue
+    type: table
+    title: Case queue
+    source: collection:cases
+    roles:
+    - user
+    - mlro
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: company_name
+        label: Company
+      - key: company_number
+        label: Number
+      - key: risk_level
+        label: Risk
+        format: badge
+      - key: risk_score
+        label: Score
+        format: number
+      - key: status
+        label: Status
+        format: badge
+      - key: sla_status
+        label: SLA
+        format: badge
+      - key: due_date
+        label: Due
+        format: date
+      sort:
+        field: due_date
+        dir: asc
+      limit: 100
+      empty: No cases yet.
+  - key: review_case
+    type: form
+    title: Review case
+    collection: cases
+    fields:
+    - status
+    - analyst_email
+    - resolution_note
+    edit: true
+    submit:
+      label: Save decision
+      message: Case updated.
+      redirect: queue
+    nav: false
+    roles:
+    - user
+    - mlro
+    - admin
+  - key: alert_queue
+    type: table
+    title: Alerts
+    source: collection:alerts
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: subject
+        label: Subject
+      - key: source_list
+        label: Source
+        format: badge
+      - key: match_detail
+        label: Match
+      - key: source_url
+        label: Link
+        format: link
+      - key: disposition
+        label: Disposition
+        format: badge
+      filters:
+      - field: disposition
+        op: '='
+        value: open
+      limit: 100
+      empty: No open alerts.
+  - key: review_alert
+    type: form
+    title: Review alert
+    collection: alerts
+    fields:
+    - disposition
+    - note
+    edit: true
+    submit:
+      label: Save
+      message: Alert updated.
+      redirect: alert_queue
+    nav: false
+    roles:
+    - user
+    - admin
+  - key: request_docs
+    type: form
+    title: Request documents
+    collection: doc_requests
+    submit:
+      label: Send request
+      message: The customer has been emailed.
+    roles:
+    - user
+    - admin
+  - key: signoffs
+    type: approvals
+    title: MLRO approvals
+    approvals:
+    - mlro_signoff
+    roles:
+    - mlro
+    - admin
+  - key: audit
+    type: table
+    title: Audit trail
+    source: collection:audit_log
+    roles:
+    - user
+    - mlro
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: at
+        label: When
+        format: date
+      - key: case_id
+        label: Case
+      - key: actor
+        label: Actor
+      - key: action
+        label: Action
+      - key: detail
+        label: Detail
+      sort:
+        field: at
+        dir: desc
+      limit: 200
+      empty: No audit entries.
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - user
+    - mlro
+    - admin
+    sections:
+    - type: data
+      title: Case volumes
+      source: collection:cases
+      display: kpi
+      kpis:
+      - label: Cases
+        agg: count
+      - label: Average risk score
+        agg: avg
+        field: risk_score
+        format: number
+    - type: data
+      title: Cases by status
+      source: collection:cases
+      display: chart
+      chart: bar
+      fields:
+      - key: status
+      - key: count
+      groupBy:
+        field: status
+        aggs: []
+    - type: data
+      title: Cases by risk level
+      source: collection:cases
+      display: chart
+      chart: pie
+      fields:
+      - key: risk_level
+      - key: count
+      groupBy:
+        field: risk_level
+        aggs: []
+    - type: data
+      title: SLA
+      source: collection:cases
+      display: chart
+      chart: bar
+      fields:
+      - key: sla_status
+      - key: count
+      groupBy:
+        field: sla_status
+        aggs: []
+    - type: data
+      title: Cases opened per month
+      source: collection:cases
+      display: chart
+      chart: line
+      fields:
+      - key: opened_date
+      - key: count
+      groupBy:
+        field: opened_date
+        bucket: month
+        aggs: []
+  - key: monitoring
+    type: instances
+    template: rescreen
+    title: Daily re-screening
+    roles:
+    - user
+    - admin
+  - key: account
+    type: account
+    title: Credits and keys
+    roles:
+    - user
+    - admin
+  billing:
+    modes:
+    - credits
+    - subscription
+    currency: eur
+    signupCredits: 50
+    metering:
+      creditEur: 0.01
+      markupPct: 50
+      drivers:
+      - llm_tokens
+      - compute
+    costs:
+      agent:screener:
+        estimate: 150
+        metered: true
+    packs:
+    - key: checks_100
+      credits: 10000
+      price: 100
+      label: 10,000 credits
+    - key: checks_500
+      credits: 50000
+      price: 450
+      label: 50,000 credits
+    plans:
+    - key: platform
+      price: 299
+      interval: month
+      label: Platform fee
+      includes:
+      - case management
+      - audit trail
+      - dashboards
+      - daily re-screening
+      credits: 0
+  notifications:
+    emailOnRunDone: true
+  egress:
+    hosts:
+    - api.company-information.service.gov.uk
+    notes: Companies House public data API, Open Government Licence v3.0, reuse allowed. OFSI and UN lists are read through
+      the WebRobot MCP.
+  extensions:
+  - key: idv_partner
+    description: Director identity verification through a certified ID&V partner (OAuth or partner webhook flow) is not available
+      yet; the agent only lists which directors still need ID&V.
+  - key: pep_media_licence
+    description: PEP and commercial adverse-media databases need the customer's own licence and an API integration; for now
+      they are only used when the customer states it holds a licence and has an API key.
+  - key: sms_push
+    description: Customer reminders by SMS or WhatsApp are not available; document requests go by email.

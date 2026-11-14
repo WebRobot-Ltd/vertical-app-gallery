@@ -1,0 +1,1464 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: limpidia
+  displayName: Limpidia
+  tagline:
+    en: The intelligence layer for limited partners in private markets.
+  description:
+    en: Limpidia turns fund reports, capital calls and distribution notices into reviewed, structured figures, with IRR, TVPI
+      and DPI per fund and for the whole portfolio. It also gives you a cited document assistant and monitors of Companies
+      House and the FCA Register.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0f2b46'
+      accent: '#b8893b'
+      background: '#f7f6f2'
+      foreground: '#17212b'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Limp
+      color: primary
+    - text: idia
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Who it is for
+      href: '#roles'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: LP account holder
+      assignedBy: signup
+    - key: analyst
+      label: Investment analyst
+      assignedBy: invite
+    - key: cio
+      label: CIO
+      assignedBy: invite
+    - key: auditor
+      label: Auditor (read-only)
+      assignedBy: invite
+  limits:
+  - action: create:funds
+    max: 3
+    window: total
+    plans:
+      plan_10: 10
+      plan_30: 30
+      plan_100: 100
+  - action: chat
+    per: user
+    max: 200
+    window: day
+  agents:
+  - key: extractor
+    role: main
+    description: Reads an uploaded report or notice, extracts figures into structured records, flags inconsistencies and asks
+      the analyst to review.
+    awaits:
+    - figures_review
+    profile:
+      inline:
+        display_name: Limpidia extractor
+        crews:
+        - id: extractor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a private-markets fund accountant working for a limited partner. You receive one uploaded
+            document (quarterly report, capital call notice or distribution notice) for one fund commitment.
+
+            Steps: 1) call list_funds and find the fund; copy its members list into every record you write. 2) Open each file
+            with read_upload, using the file id. 3) Extract only what the document states: period end date, NAV, capital called,
+            capital distributed, fees and expenses, currency, and for quarterly reports the portfolio companies (name, company
+            number if shown, country, sector, stake, fair value). Write one figure record with add_figure (status pending),
+            one company record per portfolio company with add_company, and 3-10 short passages with add_passage (page number
+            and the text, so the chat assistant can cite them). 4) Compare with earlier figures from list_figures for the
+            same fund: a notice that does not match the report (called or distributed amounts, NAV roll-forward, fees, currency,
+            dates) is an inconsistency; record each with flag_issue (severity high or low, what differs, both values and sources).
+            5) Call request_figures_review once for the fund and period so the analyst reviews before anything reaches the
+            dashboard. Never invent a figure: leave a field empty when the document does not state it and say so. Never convert
+            currencies. Finish with a Markdown report starting with a level-1 title ''# Extraction: <fund> <period>'' with
+            a table of extracted figures, the companies found and the issues flagged.'
+          mcp_servers: []
+    appTools:
+    - name: read_upload
+      description: Read a file the user uploaded (PDF, Word, Excel, scans with OCR) by file id
+      action: read_file
+    - name: list_funds
+      description: The user's fund commitments
+      action: read
+      collection: funds
+      scope: user
+    - name: list_figures
+      description: Figures already extracted
+      action: read
+      collection: figures
+      scope: user
+    - name: add_figure
+      description: Save one extracted figure record (status pending)
+      action: append
+      collection: figures
+      scope: user
+    - name: add_company
+      description: Save one portfolio company record
+      action: append
+      collection: company_data
+      scope: user
+    - name: add_passage
+      description: Save a citable passage of the document with its page
+      action: append
+      collection: passages
+      scope: user
+    - name: flag_issue
+      description: Record an inconsistency between a notice and a report
+      action: append
+      collection: issues
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+  - key: calculator
+    role: helper
+    description: After analyst approval, publishes the figures, computes IRR, TVPI, DPI per fund and portfolio, and a cash-flow
+      forecast.
+    profile:
+      inline:
+        display_name: Limpidia calculator
+        crews:
+        - id: calculator
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 30
+          max_budget_usd: 1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You publish approved fund figures and compute returns. 1) From the approval event, find the fund
+            and period; with list_figures find its pending figure records and set status approved with set_figure_status.
+            2) With list_funds and list_figures take ALL approved figures of every fund. For each fund build the cash flows:
+            capital called as negative amounts, distributions as positive amounts, each on its period_end date; nav and nav_date
+            from the latest approved quarterly report. Call compute_returns with args {flows:[{date,amount}],nav,nav_date};
+            never compute IRR, TVPI or DPI yourself. 3) Save one record per fund with save_metrics (scope fund, fund name,
+            strategy and geography copied from the fund, currency, nav, paid_in, distributions, irr, tvpi, dpi, as_of, members
+            copied from the fund). Then one portfolio record per currency (scope portfolio, fund ''PORTFOLIO <currency>'')
+            pooling the flows of funds in that currency; do not mix currencies and do not invent exchange rates. 4) Write
+            a cash-flow forecast for the next 4 quarters per fund with save_forecast: expected calls from the unfunded commitment
+            (commitment minus paid_in) and the pace of past calls, expected distributions from the pattern of past distributions;
+            set basis to a one-line assumption. These are estimates: say so. Finish with a short Markdown report starting
+            with ''# Returns update <date>'' listing the figures per fund and the assumptions.'
+          mcp_servers: []
+    appTools:
+    - name: list_funds
+      description: The user's fund commitments
+      action: read
+      collection: funds
+      scope: user
+    - name: list_figures
+      description: Figures already extracted
+      action: read
+      collection: figures
+      scope: user
+    - name: set_figure_status
+      description: Update a figure record (set its status)
+      action: write
+      collection: figures
+      scope: user
+    - name: compute_returns
+      description: 'Compute IRR, TVPI, DPI, RVPI from cash flows. args: flows [{date YYYY-MM-DD, amount (negative = called,
+        positive = distributed)}], nav, nav_date'
+      action: call
+      slot: returns
+    - name: save_metrics
+      description: Save the metrics record of a fund or of the portfolio
+      action: write
+      collection: fund_metrics
+      scope: user
+    - name: save_forecast
+      description: Save one forecast row
+      action: append
+      collection: forecasts
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 30
+      maxBudgetUsd: 1
+  - key: assistant
+    role: main
+    description: Answers questions across the user's documents with citations.
+    profile:
+      inline:
+        display_name: Limpidia assistant
+        chat_mode: true
+        crews:
+        - id: assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Limpidia''s assistant for a limited partner. Answer only from the user''s own data: search_passages
+            (document passages with fund, document and page), read_metrics, list_funds, read_forecasts, read_issues, read_companies,
+            read_figures. Cite every statement as [fund, document type and period, page]. Use only approved figures (status
+            approved) for numbers and say when a figure is still pending review. If the data does not contain the answer,
+            say so; never guess or use outside knowledge for fund figures. You do not give investment advice. Be concise;
+            use tables for comparisons.'
+          mcp_servers: []
+    appTools:
+    - name: search_passages
+      description: Search the document passages (text, fund, page)
+      action: search
+      collection: passages
+      scope: user
+    - name: read_metrics
+      description: Approved IRR, TVPI, DPI per fund and portfolio
+      action: read
+      collection: fund_metrics
+      scope: user
+    - name: list_funds
+      description: The user's fund commitments
+      action: read
+      collection: funds
+      scope: user
+    - name: read_forecasts
+      description: Cash-flow forecasts
+      action: read
+      collection: forecasts
+      scope: user
+    - name: read_issues
+      description: Inconsistencies flagged between notices and reports
+      action: read
+      collection: issues
+      scope: user
+    - name: read_companies
+      description: Portfolio companies extracted from reports
+      action: read
+      collection: company_data
+      scope: user
+    - name: read_figures
+      description: Extracted figures with their review status
+      action: read
+      collection: figures
+      scope: user
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New question: {message}
+
+      Answer in English with citations.'
+    output: markdown
+  - key: watcher
+    role: scheduled
+    description: Checks one manager or portfolio company on Companies House and the FCA Register and reports what changed.
+    memory: instance
+    writesTo:
+      collection: alerts
+      parse: whole
+    profile:
+      inline:
+        display_name: Limpidia register watcher
+        crews:
+        - id: watcher
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You watch one entity (a fund manager or a portfolio company) on public registers. With companies_house
+            (GET, add path /company/<number> for the profile, /company/<number>/filing-history for filings, /company/<number>/officers,
+            /company/<number>/charges) check status, registered address, accounts and confirmation statement due dates, new
+            filings, officer changes, new charges, insolvency. With fca_register (GET, path /Firm/<FRN> and /Firm/<FRN>/Permissions,
+            /Firm/<FRN>/Individuals, /Firm/<FRN>/Disciplinary) check authorisation status, permissions, controlled functions
+            and disciplinary history. Skip the register the user gave no number for. Your memory holds what you saw last time:
+            report only differences. Start with ''# <entity> - register check <date>''. If nothing changed write ''NO CHANGES''
+            as the first line after the title and stop. Otherwise list each change with date, register and why it may matter
+            for an investor, severity high or low. Do not speculate beyond the records. Finally call remember once with the
+            key facts of today''s state (they replace the old ones).'
+          mcp_servers: []
+    appTools:
+    - name: companies_house
+      description: One GET to the Companies House API; append a path such as /company/<number>/filing-history
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk
+        allowPath: true
+        attribution: Companies House, Open Government Licence v3.0
+        credential:
+          provider: companies_house
+          header: Authorization
+          format: Basic {secret}
+    - name: fca_register
+      description: One GET to the FCA Register API; append a path such as /Firm/<FRN>
+      action: http
+      http:
+        method: GET
+        url: https://register.fca.org.uk/services/V0.1
+        allowPath: true
+        attribution: Financial Conduct Authority Register
+        credential:
+          provider: fca
+          header: X-Auth-Key
+          format: '{secret}'
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.5
+  - key: summarizer
+    role: scheduled
+    description: Writes the monthly portfolio summary for the CIO.
+    writesTo:
+      collection: summaries
+      parse: whole
+    profile:
+      inline:
+        display_name: Limpidia monthly summary
+        crews:
+        - id: summarizer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the monthly summary for the CIO of a limited partner, from approved data only (read_metrics,
+            list_funds, read_forecasts, read_issues). Start with ''# Portfolio summary <month year>''. Sections: ## Headline
+            (portfolio IRR, TVPI, DPI per currency), ## Fund by fund (table), ## Exposure by strategy and geography (table,
+            and a chart block when useful), ## Cash flows expected next 4 quarters, ## Open issues needing attention, ## Actions.
+            Use only real figures from the data; say when something is missing or pending review. No investment advice. A
+            chart block looks like ```chart {"type":"bar","title":"...","labels":["A"],"series":[{"name":"NAV","values":[1]}]}
+            ```.'
+          mcp_servers: []
+    appTools:
+    - name: list_funds
+      description: The user's fund commitments
+      action: read
+      collection: funds
+      scope: user
+    - name: read_metrics
+      description: Approved IRR, TVPI, DPI per fund and portfolio
+      action: read
+      collection: fund_metrics
+      scope: user
+    - name: read_forecasts
+      description: Cash-flow forecasts
+      action: read
+      collection: forecasts
+      scope: user
+    - name: read_issues
+      description: Inconsistencies flagged between notices and reports
+      action: read
+      collection: issues
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.6
+  data:
+    credentials:
+    - provider: companies_house
+      kind: api_key
+      scope: org
+      label: Companies House API
+      help: Free key from developer.company-information.service.gov.uk. Paste the base64 encoding of 'YOUR_KEY:' (key, colon,
+        empty password).
+    - provider: fca
+      kind: api_key
+      scope: org
+      label: FCA Register API key
+      help: Key from the FCA Register API developer portal.
+    collections:
+    - name: funds
+      ownedBy: user
+      description: Fund commitments of the LP
+      fields:
+      - name: fund_name
+        type: text
+        required: true
+        label: Fund name
+      - name: manager
+        type: text
+        required: true
+        label: Manager (GP)
+      - name: vintage
+        type: number
+        required: true
+        label: Vintage year
+      - name: strategy
+        type: select
+        required: true
+        label: Strategy
+        options:
+        - Buyout
+        - Growth
+        - Venture
+        - Private credit
+        - Real estate
+        - Infrastructure
+        - Secondaries
+        - Fund of funds
+        - Other
+      - name: geography
+        type: select
+        label: Main geography
+        options:
+        - Europe
+        - UK
+        - North America
+        - Asia-Pacific
+        - Emerging markets
+        - Global
+      - name: commitment
+        type: number
+        required: true
+        label: Commitment
+      - name: currency
+        type: select
+        required: true
+        label: Currency
+        options:
+        - EUR
+        - GBP
+        - USD
+        - CHF
+      - name: manager_crn
+        type: text
+        label: Manager Companies House number
+      - name: manager_frn
+        type: text
+        label: Manager FCA reference (FRN)
+      - name: members
+        type: array
+        label: Team emails who may see this fund (analysts, CIO, auditors)
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: cio
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: auditor
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: documents
+      ownedBy: user
+      description: Uploaded reports and notices
+      fields:
+      - name: fund
+        type: select
+        required: true
+        label: Fund
+        optionsFrom: collection:funds
+      - name: doc_type
+        type: select
+        required: true
+        label: Document type
+        options:
+        - value: report
+          label: Quarterly report
+        - value: capital_call
+          label: Capital call notice
+        - value: distribution
+          label: Distribution notice
+      - name: period
+        type: text
+        label: Period (e.g. 2026-Q3)
+      - name: file
+        type: file
+        required: true
+        label: Document
+        accept:
+        - pdf
+        - docx
+        - xlsx
+        - csv
+        - jpg
+        - png
+        maxMb: 15
+        multiple: true
+      - name: members
+        type: array
+        label: Team emails who may see this document
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: cio
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: auditor
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      retentionDays: 3650
+    - name: figures
+      ownedBy: user
+      description: Figures extracted from documents; only approved ones reach the dashboard
+      fields:
+      - name: fund
+        type: text
+      - name: period_end
+        type: date
+      - name: doc_type
+        type: text
+      - name: nav
+        type: number
+      - name: called
+        type: number
+      - name: distributed
+        type: number
+      - name: fees
+        type: number
+      - name: currency
+        type: text
+      - name: source_file
+        type: text
+      - name: source_page
+        type: text
+      - name: quote
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - pending
+        - approved
+        - rejected
+        default: pending
+      - name: members
+        type: array
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: cio
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: auditor
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: company_data
+      ownedBy: user
+      description: Portfolio companies from reports
+      fields:
+      - name: fund
+        type: text
+      - name: company
+        type: text
+      - name: company_number
+        type: text
+      - name: country
+        type: text
+      - name: sector
+        type: text
+      - name: stake_pct
+        type: number
+      - name: fair_value
+        type: number
+      - name: currency
+        type: text
+      - name: period_end
+        type: date
+      - name: members
+        type: array
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: cio
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: auditor
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: passages
+      ownedBy: user
+      searchable: true
+      description: Citable passages of the documents
+      fields:
+      - name: fund
+        type: text
+      - name: document
+        type: text
+      - name: page
+        type: text
+      - name: text
+        type: textarea
+      - name: members
+        type: array
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: cio
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: auditor
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: issues
+      ownedBy: user
+      description: Inconsistencies between notices and reports
+      fields:
+      - name: fund
+        type: text
+      - name: severity
+        type: select
+        options:
+        - high
+        - low
+      - name: description
+        type: textarea
+      - name: value_a
+        type: text
+      - name: value_b
+        type: text
+      - name: sources
+        type: text
+      - name: status
+        type: select
+        options:
+        - open
+        - resolved
+        default: open
+      - name: members
+        type: array
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: cio
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: auditor
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: fund_metrics
+      ownedBy: user
+      description: Approved NAV and returns per fund and portfolio
+      fields:
+      - name: scope
+        type: select
+        options:
+        - fund
+        - portfolio
+      - name: fund
+        type: text
+      - name: strategy
+        type: text
+      - name: geography
+        type: text
+      - name: currency
+        type: text
+      - name: nav
+        type: number
+      - name: paid_in
+        type: number
+      - name: distributions
+        type: number
+      - name: irr
+        type: number
+      - name: tvpi
+        type: number
+      - name: dpi
+        type: number
+      - name: as_of
+        type: date
+      - name: members
+        type: array
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: cio
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: auditor
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: forecasts
+      ownedBy: user
+      description: Cash-flow forecasts per fund and quarter
+      fields:
+      - name: fund
+        type: text
+      - name: quarter
+        type: text
+      - name: expected_calls
+        type: number
+      - name: expected_distributions
+        type: number
+      - name: currency
+        type: text
+      - name: basis
+        type: text
+      - name: members
+        type: array
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: cio
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: auditor
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: benchmarks
+      ownedBy: user
+      description: Benchmark data the customer imports from a commercial dataset it is licensed to use
+      fields:
+      - name: licence_confirmed
+        type: boolean
+        required: true
+        label: I confirm my organisation holds a licence to use this data
+      - name: provider
+        type: text
+        required: true
+        label: Data provider
+      - name: strategy
+        type: text
+        required: true
+        label: Strategy
+      - name: vintage
+        type: number
+        required: true
+        label: Vintage year
+      - name: median_irr
+        type: number
+        label: Median IRR
+      - name: top_quartile_irr
+        type: number
+        label: Top quartile IRR
+      - name: median_tvpi
+        type: number
+        label: Median TVPI
+      - name: members
+        type: array
+        label: Team emails who may see this
+      access:
+      - role: cio
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: auditor
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: alerts
+      ownedBy: instance
+      description: Register check reports of each watch
+      fields:
+      - name: title
+        type: text
+      - name: content
+        type: textarea
+    - name: summaries
+      ownedBy: instance
+      description: Monthly CIO summaries
+      fields:
+      - name: title
+        type: text
+      - name: content
+        type: textarea
+  slots:
+  - key: returns
+    description: IRR, TVPI, DPI and RVPI from dated cash flows and a final NAV
+    timeoutMs: 3000
+    example:
+      args:
+        flows:
+        - date: '2022-03-31'
+          amount: -100
+        - date: '2025-03-31'
+          amount: 30
+        nav: 110
+        nav_date: '2026-06-30'
+    code: "from datetime import date\n\ndef _d(s):\n    y, m, d = map(int, str(s)[:10].split('-'))\n    return date(y, m,\
+      \ d)\n\ndef main(input):\n    a = input.get('args') or {}\n    flows = [(_d(f['date']), float(f['amount'])) for f in\
+      \ a.get('flows', [])]\n    nav = float(a.get('nav') or 0)\n    nd = a.get('nav_date')\n    paid = -sum(x for _, x in\
+      \ flows if x < 0)\n    dist = sum(x for _, x in flows if x > 0)\n    out = {'paid_in': paid, 'distributions': dist,\
+      \ 'nav': nav}\n    out['dpi'] = round(dist / paid, 4) if paid else None\n    out['rvpi'] = round(nav / paid, 4) if paid\
+      \ else None\n    out['tvpi'] = round((dist + nav) / paid, 4) if paid else None\n    allf = list(flows)\n    if nav and\
+      \ nd:\n        allf.append((_d(nd), nav))\n    irr = None\n    if any(x < 0 for _, x in allf) and any(x > 0 for _, x\
+      \ in allf):\n        t0 = min(d for d, _ in allf)\n        def npv(r):\n            return sum(x / ((1 + r) ** ((d -\
+      \ t0).days / 365.0)) for d, x in allf)\n        lo, hi = -0.99, 10.0\n        if npv(lo) * npv(hi) < 0:\n          \
+      \  for _ in range(200):\n                mid = (lo + hi) / 2\n                if npv(lo) * npv(mid) <= 0:\n        \
+      \            hi = mid\n                else:\n                    lo = mid\n            irr = round((lo + hi) / 2, 4)\n\
+      \    out['irr'] = irr\n    return out\n"
+  egress:
+    hosts:
+    - api.company-information.service.gov.uk
+    - register.fca.org.uk
+    notes: 'Companies House API (Open Government Licence v3.0) and FCA Register API: public registers whose terms allow reuse,
+      called with the app''s own keys.'
+  approvals:
+  - key: figures_review
+    title: Review extracted figures
+    description: The investment analyst checks the figures against the source document before they reach the dashboard.
+    role: analyst
+    decidedBy: role
+    fields:
+    - fund
+    - period_end
+    - nav
+    - called
+    - distributed
+    - fees
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: doc_uploaded
+    'on':
+      collection: documents
+      op: insert
+    start:
+      agent: extractor
+    goal: 'A document was uploaded. Fund: {record.fund}. Type: {record.doc_type}. Period: {record.period}. File ids: {record.file}.
+      Extract it as instructed.'
+  - key: figures_approved
+    'on':
+      approval: figures_review
+      decision: approved
+    start:
+      agent: calculator
+    goal: 'The analyst approved a figures review: {event}. Publish the approved figures and recompute returns and forecasts
+      for the whole portfolio.'
+  - key: figures_rejected
+    'on':
+      approval: figures_review
+      decision: rejected
+    notify:
+      to: owner
+      subject: Extracted figures rejected by the analyst
+      body: The analyst rejected a set of extracted figures. Open the figures list to see the status, correct the source or
+        upload the document again.
+      link: figures
+  - key: issue_high
+    'on':
+      collection: issues
+      op: insert
+      where:
+        severity: high
+    notify:
+      to: owner
+      subject: 'Inconsistency flagged: {record.fund}'
+      body: '{record.description}
+
+        Values: {record.value_a} vs {record.value_b}. Sources: {record.sources}'
+      link: issues
+  templates:
+  - key: register_watch
+    title: Register watch
+    description: Weekly check of Companies House and the FCA Register for a manager or portfolio company, with an alert on
+      changes.
+    agent: watcher
+    params:
+    - name: entity_name
+      type: text
+      required: true
+      label: Manager or company name
+    - name: entity_kind
+      type: select
+      required: true
+      label: Kind
+      options:
+      - value: manager
+        label: Fund manager
+      - value: company
+        label: Portfolio company
+    - name: crn
+      type: text
+      label: Companies House number
+    - name: frn
+      type: text
+      label: FCA reference number (FRN)
+    goal: 'Check {entity_name} ({entity_kind_label}) as instructed. {?crn}Companies House number: {crn}.{/crn} {?frn}FCA reference:
+      {frn}.{/frn} Today is {date}.'
+    schedule:
+      cron: 0 6 * * 1
+      userCanChange: true
+    maxPerUser: 50
+    roles:
+    - user
+    - analyst
+    - cio
+    - admin
+    deliver:
+      to: owner
+      subject: 'Register alert: {title}'
+      onlyIfNew: true
+  - key: monthly_summary
+    title: Monthly CIO summary
+    description: A summary of the approved portfolio figures by email on the first of each month.
+    agent: summarizer
+    params:
+    - name: focus
+      type: select
+      label: Focus
+      options:
+      - value: all
+        label: Whole portfolio
+      - value: liquidity
+        label: Liquidity and cash flows
+      - value: risk
+        label: Risks and issues
+    goal: 'Write the monthly summary for {date}. {?focus}Focus: {focus_label}.{/focus}'
+    schedule:
+      cron: 0 7 1 * *
+      userCanChange: false
+    maxPerUser: 2
+    roles:
+    - cio
+    - user
+    - admin
+    deliver:
+      to: owner
+      subject: Limpidia monthly portfolio summary - {date}
+      onlyIfNew: true
+  views:
+  - key: home
+    type: page
+    title: Limpidia
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: For family offices, pension funds and endowments
+      title: Know what your **private-markets portfolio** is really worth.
+      text: Limpidia reads your fund reports and capital notices, extracts the figures, flags what does not add up, and gives
+        your analyst and CIO reviewed IRR, TVPI and DPI for every fund and the whole portfolio.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      aside: <div style="padding:16px"><b>Portfolio</b><br>IRR, TVPI, DPI per fund<br>Exposure by strategy and geography<br>Cash-flow
+        forecast, next 4 quarters<br><small>Only analyst-approved figures</small></div>
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Add your commitments
+        text: Fund, manager, vintage, strategy, commitment and currency.
+      - title: Upload documents
+        text: Quarterly reports, capital calls and distribution notices. An agent extracts NAV, called and distributed capital,
+          fees and portfolio companies, and flags inconsistencies.
+      - title: Analyst review
+        text: Nothing reaches the dashboard until your investment analyst approves it.
+      - title: Decide
+        text: CIO dashboard, a cited document assistant, register monitors and a monthly email.
+    - type: cards
+      id: roles
+      title: Who it is for
+      items:
+      - title: Investment analyst
+        text: Reviews extracted figures against the source and resolves flagged issues.
+      - title: CIO
+        text: Sees approved figures, forecasts and exposure, and receives a monthly summary.
+      - title: Auditor
+        text: Read-only access to figures, sources and issues.
+      - title: Administrator
+        text: Manages the account and the team.
+    - type: note
+      content: Decision support, not investment advice. Extracted figures are shown on the dashboard only after human review.
+        Benchmarks appear only if you import data you are licensed to use.
+  - key: fund_add
+    type: form
+    title: Add a commitment
+    collection: funds
+    submit:
+      label: Save commitment
+      message: Commitment saved.
+      redirect: funds
+    roles:
+    - user
+    - admin
+  - key: funds
+    type: table
+    title: Commitments
+    source: collection:funds
+    columns:
+    - fund_name
+    - manager
+    - vintage
+    - strategy
+    - geography
+    - commitment
+    - currency
+    export: true
+    roles:
+    - user
+    - admin
+    - analyst
+    - cio
+    - auditor
+  - key: upload
+    type: form
+    title: Upload a document
+    collection: documents
+    submit:
+      label: Upload and extract
+      message: Uploaded. The extraction runs now and the figures will wait for analyst review.
+      redirect: documents
+    roles:
+    - user
+    - admin
+  - key: documents
+    type: table
+    title: Documents
+    source: collection:documents
+    columns:
+    - fund
+    - doc_type
+    - period
+    roles:
+    - user
+    - admin
+    - analyst
+    - cio
+    - auditor
+  - key: review
+    type: approvals
+    title: Figures to review
+    approvals:
+    - figures_review
+    roles:
+    - analyst
+    - admin
+  - key: figures
+    type: table
+    title: Extracted figures
+    source: collection:figures
+    columns:
+    - fund
+    - period_end
+    - doc_type
+    - nav
+    - called
+    - distributed
+    - fees
+    - currency
+    - source_file
+    - source_page
+    - status
+    export: true
+    roles:
+    - analyst
+    - cio
+    - auditor
+    - user
+    - admin
+  - key: issues
+    type: table
+    title: Flagged inconsistencies
+    source: collection:issues
+    columns:
+    - fund
+    - severity
+    - description
+    - value_a
+    - value_b
+    - sources
+    - status
+    roles:
+    - analyst
+    - cio
+    - auditor
+    - user
+    - admin
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - user
+    - analyst
+    - cio
+    - auditor
+    - admin
+    sections:
+    - type: data
+      id: portfolio
+      title: Portfolio
+      source: collection:fund_metrics
+      display: kpi
+      filters:
+      - field: scope
+        op: '='
+        value: portfolio
+      kpis:
+      - label: IRR
+        agg: last
+        field: irr
+        format: percent
+      - label: TVPI
+        agg: last
+        field: tvpi
+        format: ratio
+      - label: DPI
+        agg: last
+        field: dpi
+        format: ratio
+      - label: NAV
+        agg: last
+        field: nav
+        format: money
+      empty: No approved figures yet.
+    - type: data
+      title: Funds
+      source: collection:fund_metrics
+      display: table
+      filters:
+      - field: scope
+        op: '='
+        value: fund
+      fields:
+      - key: fund
+        label: Fund
+      - key: strategy
+        label: Strategy
+      - key: currency
+        label: Ccy
+      - key: nav
+        label: NAV
+        format: money
+      - key: irr
+        label: IRR
+        format: percent
+      - key: tvpi
+        label: TVPI
+        format: ratio
+      - key: dpi
+        label: DPI
+        format: ratio
+      - key: as_of
+        label: As of
+        format: date
+      empty: No approved figures yet.
+    - type: data
+      title: Exposure by strategy
+      source: collection:fund_metrics
+      display: chart
+      chart: pie
+      filters:
+      - field: scope
+        op: '='
+        value: fund
+      groupBy:
+        field: strategy
+        aggs:
+        - key: nav_total
+          agg: sum
+          field: nav
+      fields:
+      - key: strategy
+      - key: nav_total
+    - type: data
+      title: Exposure by geography
+      source: collection:fund_metrics
+      display: chart
+      chart: bar
+      filters:
+      - field: scope
+        op: '='
+        value: fund
+      groupBy:
+        field: geography
+        aggs:
+        - key: nav_total
+          agg: sum
+          field: nav
+      fields:
+      - key: geography
+      - key: nav_total
+    - type: data
+      title: Expected cash flows
+      source: collection:forecasts
+      display: chart
+      chart: stacked
+      groupBy:
+        field: quarter
+        aggs:
+        - key: calls
+          agg: sum
+          field: expected_calls
+        - key: distributions
+          agg: sum
+          field: expected_distributions
+      fields:
+      - key: quarter
+      - key: calls
+      - key: distributions
+      empty: No forecast yet.
+    - type: data
+      title: Benchmarks (your licensed data)
+      source: collection:benchmarks
+      display: table
+      fields:
+      - key: provider
+        label: Provider
+      - key: strategy
+        label: Strategy
+      - key: vintage
+        label: Vintage
+      - key: median_irr
+        label: Median IRR
+        format: percent
+      - key: top_quartile_irr
+        label: Top quartile IRR
+        format: percent
+      - key: median_tvpi
+        label: Median TVPI
+        format: ratio
+      empty: Benchmarks are shown only if you import data from a dataset you are licensed to use.
+  - key: companies
+    type: table
+    title: Portfolio companies
+    source: collection:company_data
+    columns:
+    - company
+    - fund
+    - country
+    - sector
+    - stake_pct
+    - fair_value
+    - currency
+    - company_number
+    export: true
+    roles:
+    - user
+    - analyst
+    - cio
+    - auditor
+    - admin
+  - key: ask
+    type: chat
+    title: Ask your documents
+    source: agent:assistant
+    examples:
+    - What was the last reported NAV of each fund?
+    - Which notices disagree with the quarterly reports?
+    - What fees did we pay across the portfolio last year?
+    placeholder: Ask about your funds, documents and figures
+    roles:
+    - user
+    - analyst
+    - cio
+    - auditor
+    - admin
+  - key: benchmark_import
+    type: form
+    title: Import licensed benchmarks
+    collection: benchmarks
+    submit:
+      label: Save benchmark
+      message: Saved. It now shows on the dashboard.
+    roles:
+    - user
+    - admin
+  - key: watches
+    type: instances
+    title: Register watches
+    template: register_watch
+    roles:
+    - user
+    - analyst
+    - cio
+    - admin
+  - key: alerts
+    type: table
+    title: Register alerts
+    source: collection:alerts
+    columns:
+    - title
+    - content
+    roles:
+    - user
+    - analyst
+    - cio
+    - admin
+  - key: summaries
+    type: instances
+    title: Monthly summary
+    template: monthly_summary
+    roles:
+    - cio
+    - user
+    - admin
+  - key: account
+    type: account
+    title: Subscription
+    roles:
+    - user
+    - admin
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: plan_10
+      price: 2400
+      interval: year
+      label: Up to 10 fund commitments
+      includes:
+      - Up to 10 fund commitments
+      - Extraction, review, dashboard, assistant, monitors, monthly summary
+    - key: plan_30
+      price: 5400
+      interval: year
+      label: Up to 30 fund commitments
+      includes:
+      - Up to 30 fund commitments
+      - Everything in the smaller plan
+    - key: plan_100
+      price: 12000
+      interval: year
+      label: Up to 100 fund commitments
+      includes:
+      - Up to 100 fund commitments
+      - Everything in the smaller plan
+  extensions:
+  - key: gp_portal_pull
+    description: Pulling documents from GP investor portals with the LP's own logins or OAuth is not available yet (no OAuth,
+      no username/password logins, and every portal has its own API). For now documents are uploaded; portals that issue an
+      API key can be added later through an account credential and an http tool.
+  - key: fca_email_header
+    description: The FCA Register API also needs an X-Auth-Email header besides the key. The app supports one credential header,
+      so the admin must confirm with WebRobot how this header is set for the app.
+  - key: commercial_benchmark_feeds
+    description: Live feeds from commercial fund datasets are not connected. Benchmarks are shown only from data the customer
+      imports and confirms it is licensed to use.
+  - key: lp_team_separation
+    description: Analyst, CIO and auditor access works through the member emails stored on each record. The approvals list
+      for analysts is not yet limited by LP organisation and needs checking before many LPs share one app.

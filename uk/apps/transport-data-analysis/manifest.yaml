@@ -1,0 +1,648 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: transitly
+  displayName: Transitly
+  tagline:
+    en: Transport data analysis for local authorities, with the working shown.
+  description:
+    en: Analysts ask questions in chat; agents query DfT statistics, the Bus Open Data Service and NaPTAN, and return charts,
+      maps and scheduled chart packs. Managers approve packs before they reach councillors.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#12355b'
+      accent: '#d9480f'
+      background: '#f6f8fa'
+      foreground: '#16202a'
+    fonts:
+      body: Inter
+      display: IBM Plex Sans
+    wordmark:
+    - text: Transit
+      color: primary
+    - text: ly
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Data sources
+      href: '#sources'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Administrator
+      assignedBy: admin_emails
+    - key: analyst
+      label: Analyst
+      assignedBy: invite
+    - key: manager
+      label: Manager
+      assignedBy: invite
+  egress:
+    hosts:
+    - naptan.api.dft.gov.uk
+    - data.bus-data.dft.gov.uk
+    notes: NaPTAN API (DfT, Open Government Licence v3.0). Bus Open Data Service API (DfT, Open Government Licence v3.0; requires
+      the authority's free BODS API key). DfT statistics are fetched as published files through the WebRobot MCP.
+  agents:
+  - key: analyst
+    role: main
+    description: 'Chat analyst: answers transport questions from DfT statistics, BODS and NaPTAN, and shows its working.'
+    memory: user
+    profile:
+      inline:
+        display_name: Transitly analyst
+        chat_mode: true
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 2.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are a senior transport data analyst working for a UK local authority. You answer analysts''
+            questions about bus punctuality, service changes, stop coverage and journey times versus car, using: DfT statistics
+            (published tables, collected through the WebRobot MCP: build and run a pipeline when files must be fetched or
+            parsed), the Bus Open Data Service (bods_datasets tool) and NaPTAN (naptan_stops tool), plus the authority''s
+            own uploaded data (local_data collection, files opened with read_upload). ALWAYS end each answer with a section
+            ''## Working'' listing: (1) datasets used with source, publication date and licence, (2) the queries or API calls
+            made and their filters, (3) assumptions and known limitations (coverage gaps, definitions of punctuality, time
+            windows), (4) checks the analyst should do before sharing. Never invent figures: if data is unavailable say so
+            and propose an alternative. For comparisons add a chart as a fenced block ```chart {"type":"bar|line|stacked|pie","title":"...","labels":[...],"series":[{"name":"...","values":[...]}],"unit":"%"}```
+            with real figures only. For stop-level results write rows to map_points (title, lat, lon, detail) so they appear
+            on the map. When the analyst asks to save, store the analysis in analyses with the question, answer, datasets,
+            queries and assumptions; set members to the signed-in user''s email plus any colleagues they name. Scheduled recurring
+            analyses are set up on the ''Scheduled analyses'' page: point analysts there. Reports reach councillors only after
+            a manager approves them. Write in English, concise and professional.'
+    context:
+    - key: email
+      from: user.email
+    goalTemplate: '{?history}Conversation so far:
+
+      {history}
+
+      {/history}Signed-in user: {email}. Today is {date}.
+
+      New message: {message}
+
+      Reply in English.'
+    output: markdown
+    appTools:
+    - name: naptan_stops
+      description: Query NaPTAN stop access nodes (DfT). Fill query with the API filter parameters (e.g. atcoAreaCode, localityName,
+        stopType).
+      action: http
+      http:
+        method: GET
+        url: https://naptan.api.dft.gov.uk/v1/access-nodes
+        attribution: NaPTAN, Department for Transport, OGL v3.0
+    - name: bods_datasets
+      description: 'Search Bus Open Data Service timetable datasets (query: adminArea, noc, status, search, limit).'
+      action: http
+      http:
+        method: GET
+        url: https://data.bus-data.dft.gov.uk/api/v1/dataset/
+        attribution: Bus Open Data Service, DfT, OGL v3.0
+        credential:
+          provider: bods
+          query: api_key
+    - name: read_upload
+      description: Read an uploaded local data file (traffic counts, surveys) by file id
+      action: read_file
+    - name: list_local_data
+      description: List the authority's uploaded local datasets
+      action: read
+      collection: local_data
+      scope: all
+    - name: list_analyses
+      description: Search the authority's saved analyses
+      action: search
+      collection: analyses
+      scope: all
+    - name: save_analysis
+      description: Save an analysis to the workspace
+      action: write
+      collection: analyses
+      scope: user
+    - name: add_map_point
+      description: Add a point to the map
+      action: append
+      collection: map_points
+      scope: user
+  - key: scheduler
+    role: scheduled
+    description: Runs a recurring analysis and drafts a chart pack for manager approval.
+    profile:
+      inline:
+        display_name: Transitly scheduled analyst
+        crews:
+        - id: scheduler
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 2.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You run a recurring transport analysis for a UK local authority and prepare a chart pack. Use DfT
+            statistics (via the WebRobot MCP), BODS (bods_datasets_sched) and NaPTAN (naptan_stops_sched). Compare with the
+            previous period where data allows. Produce the pack as Markdown starting with a level-1 title ''# <title> — <period>'',
+            then ## Summary (5 bullet points for councillors, plain language), ## Charts (one or more ```chart {"type":"bar|line|stacked|pie","title":"...","labels":[...],"series":[{"name":"...","values":[...]}],"unit":"%"}```
+            blocks, real figures only), ## Working (datasets with dates and licences, queries, assumptions, caveats). Never
+            invent figures; if data is missing say so in the Summary. At the end call save_pack once with: title, summary,
+            body (the full pack), working, recipient_email, recipient_email_2, recipient_email_3 (as given), status ''draft'',
+            members (the owner''s email). Never send anything: a manager must approve the pack first.'
+    context:
+    - key: email
+      from: user.email
+    goalTemplate: 'Recurring analysis "{instance}" for {email}, run on {date}.
+
+      Question: {question}
+
+      Distribution (after manager approval): {recipient_email} {recipient_email_2} {recipient_email_3}
+
+      Write the pack in English.'
+    output: markdown
+    appTools:
+    - name: naptan_stops_sched
+      description: Query NaPTAN stop access nodes (DfT).
+      action: http
+      http:
+        method: GET
+        url: https://naptan.api.dft.gov.uk/v1/access-nodes
+        attribution: NaPTAN, Department for Transport, OGL v3.0
+    - name: bods_datasets_sched
+      description: Search Bus Open Data Service timetable datasets.
+      action: http
+      http:
+        method: GET
+        url: https://data.bus-data.dft.gov.uk/api/v1/dataset/
+        attribution: Bus Open Data Service, DfT, OGL v3.0
+        credential:
+          provider: bods
+          query: api_key
+    - name: save_pack
+      description: Save the drafted chart pack for approval
+      action: append
+      collection: report_packs
+      scope: user
+  templates:
+  - key: recurring_analysis
+    title: Scheduled analysis
+    description: An analysis that runs automatically and drafts a chart pack for manager approval, then emails it to the distribution
+      list.
+    agent: scheduler
+    params:
+    - name: question
+      type: textarea
+      required: true
+      label: Analysis to run
+      help: e.g. Monthly bus punctuality by operator on the A38 corridor
+    - name: recipient_email
+      type: email
+      required: true
+      label: Distribution email 1
+    - name: recipient_email_2
+      type: email
+      label: Distribution email 2
+    - name: recipient_email_3
+      type: email
+      label: Distribution email 3
+    goal: 'Run the recurring analysis "{instance}" on {date}: {question}. Distribution: {recipient_email} {recipient_email_2}
+      {recipient_email_3}. Write in English.'
+    schedule:
+      cron: 0 6 1 * *
+      userCanChange: true
+    maxPerUser: 10
+    roles:
+    - analyst
+    - manager
+  data:
+    credentials:
+    - provider: bods
+      kind: api_key
+      scope: org
+      label: Bus Open Data Service API key
+      help: Free key from your BODS account settings (data.bus-data.dft.gov.uk).
+    collections:
+    - name: analyses
+      description: Saved analyses with datasets, queries and assumptions
+      ownedBy: user
+      fields:
+      - name: title
+        type: text
+        required: true
+      - name: question
+        type: textarea
+      - name: answer
+        type: textarea
+      - name: datasets
+        type: textarea
+      - name: queries
+        type: textarea
+      - name: assumptions
+        type: textarea
+      - name: members
+        type: array
+        help: Emails of colleagues in the authority who can see this
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: manager
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: local_data
+      description: Local data uploaded by the authority (traffic counts, surveys)
+      ownedBy: user
+      fields:
+      - name: title
+        type: text
+        required: true
+      - name: kind
+        type: select
+        options:
+        - traffic_counts
+        - passenger_counts
+        - survey
+        - other
+      - name: file
+        type: file
+        accept:
+        - csv
+        - xlsx
+        - pdf
+        maxMb: 15
+      - name: notes
+        type: textarea
+      - name: members
+        type: array
+        help: Emails of colleagues who can use this data
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: manager
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: report_packs
+      description: Chart packs drafted by scheduled analyses, awaiting manager approval
+      ownedBy: user
+      fields:
+      - name: title
+        type: text
+        required: true
+      - name: summary
+        type: textarea
+      - name: body
+        type: textarea
+      - name: working
+        type: textarea
+      - name: recipient_email
+        type: email
+      - name: recipient_email_2
+        type: email
+      - name: recipient_email_3
+        type: email
+      - name: status
+        type: select
+        default: draft
+        options:
+        - draft
+        - approved
+        - rejected
+      - name: members
+        type: array
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: manager
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: map_points
+      description: Stops and locations plotted from analyses
+      ownedBy: user
+      fields:
+      - name: title
+        type: text
+      - name: lat
+        type: number
+      - name: lon
+        type: number
+      - name: detail
+        type: text
+      - name: analysis_title
+        type: text
+      - name: members
+        type: array
+      access:
+      - role: analyst
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: manager
+        where:
+          members: '{user.email}'
+        can:
+        - read
+  triggers:
+  - key: pack_for_approval
+    description: Tell managers a pack needs approval
+    'on':
+      collection: report_packs
+      op: insert
+    notify:
+      to: role:manager
+      subject: 'Chart pack awaiting approval: {record.title}'
+      body: A scheduled analysis has produced a chart pack that needs your approval before it is sent to councillors.
+      link: review_pack
+  - key: pack_approved
+    description: Email the approved pack to the distribution list
+    'on':
+      collection: report_packs
+      op: update
+      where:
+        status: approved
+    notify:
+      to:
+      - owner
+      - record.recipient_email
+      - record.recipient_email_2
+      - record.recipient_email_3
+      subject: '{record.title}'
+      body: '{record.summary}
+
+
+        Full pack with charts and working:
+
+        {record.body}'
+      link: packs
+  views:
+  - key: home
+    type: page
+    title: Transitly
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: For local authorities and planners
+      title: Ask your transport data a question. See the **working**.
+      text: Transitly agents query DfT statistics, the Bus Open Data Service and NaPTAN, run the analysis and return charts,
+        maps and scheduled chart packs, with datasets, queries and assumptions listed so you can check before sharing.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+      aside: <div style="padding:16px"><strong>Example</strong><p>How has bus punctuality changed on the A38 corridor since
+        last year?</p><p>Answer, chart, map and a Working section with datasets, queries and assumptions.</p></div>
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Ask in chat
+        text: Punctuality on a corridor, stops that lost services, journey times against car.
+        badge: 💬
+      - title: Check the working
+        text: Every answer lists datasets, queries and assumptions.
+        badge: 🔍
+      - title: Schedule it
+        text: Monthly packs run automatically and are drafted for approval.
+        badge: 🗓
+      - title: Manager approves
+        text: Nothing reaches councillors until a manager signs it off.
+        badge: ✅
+    - type: cards
+      id: sources
+      title: Data sources
+      items:
+      - title: DfT statistics
+        text: Published tables on bus punctuality, reliability and journey times.
+      - title: Bus Open Data Service
+        text: Timetables and operator data for England.
+      - title: NaPTAN
+        text: The national register of stops and access nodes.
+      - title: Your own data
+        text: Traffic counts and local surveys, private to your authority.
+    - type: note
+      content: 'Transitly is decision support. Each authority''s workspace is private to its members. Annual licence per authority.
+        Data: Open Government Licence v3.0.'
+  - key: assistant
+    type: chat
+    title: Ask Transitly
+    source: agent:analyst
+    placeholder: e.g. How did bus punctuality change on the A38 corridor this year?
+    examples:
+    - How did bus punctuality change on the A38 corridor over the last 12 months?
+    - Which stops in our area lost services since last autumn?
+    - How do bus journey times compare with car on the city centre routes?
+    roles:
+    - analyst
+    - manager
+    - admin
+  - key: saved
+    type: table
+    title: Saved analyses
+    source: collection:analyses
+    export: true
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Title
+      - key: question
+        label: Question
+      - key: datasets
+        label: Datasets
+      - key: assumptions
+        label: Assumptions
+    roles:
+    - analyst
+    - manager
+    - admin
+  - key: map
+    type: map
+    title: Map
+    source: collection:map_points
+    map:
+      lat: lat
+      lon: lon
+      title: title
+      popup:
+      - detail
+      - analysis_title
+    roles:
+    - analyst
+    - manager
+    - admin
+  - key: upload_data
+    type: form
+    title: Upload local data
+    collection: local_data
+    submit:
+      label: Save data
+      message: Data saved to your workspace.
+    roles:
+    - analyst
+    - manager
+  - key: my_data
+    type: table
+    title: Local data
+    source: collection:local_data
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Title
+      - key: kind
+        label: Type
+        format: badge
+      - key: notes
+        label: Notes
+    roles:
+    - analyst
+    - manager
+    - admin
+  - key: schedules
+    type: instances
+    title: Scheduled analyses
+    template: recurring_analysis
+    roles:
+    - analyst
+    - manager
+  - key: packs
+    type: table
+    title: Chart packs
+    source: collection:report_packs
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Pack
+      - key: status
+        label: Status
+        format: badge
+      - key: summary
+        label: Summary
+      - key: recipient_email
+        label: Sent to
+    roles:
+    - analyst
+    - manager
+    - admin
+  - key: review_pack
+    type: form
+    title: Approve a pack
+    collection: report_packs
+    edit: true
+    fields:
+    - title
+    - summary
+    - body
+    - working
+    - status
+    submit:
+      label: Save decision
+      message: Decision saved. Approved packs are emailed to the distribution list.
+      redirect: packs
+    roles:
+    - manager
+  - key: account
+    type: account
+    title: Licence
+    roles:
+    - manager
+    - admin
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: authority_annual
+      price: 20000
+      interval: year
+      label: Authority licence (annual)
+      includes:
+      - Unlimited analysts and managers of one authority
+      - Private workspace with saved analyses and uploaded data
+      - Scheduled chart packs with manager approval
+      roles:
+      - manager
+      - admin
+  extensions:
+  - key: share_by_link
+    description: Sharing dashboards and maps by public link is not available yet; for now they are viewable by signed-in members
+      of the authority workspace.
+  - key: distribution_lists
+    description: Email distribution lists are not available; each scheduled analysis takes up to three recipient emails, who
+      receive the pack only after a manager approves it.
+  - key: workspace_membership
+    description: Authority workspaces are modelled as the members list on each record; there is no dedicated multi-authority
+      tenant admin yet. Deploy one app per authority or maintain members per record.

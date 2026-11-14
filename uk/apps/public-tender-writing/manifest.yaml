@@ -1,0 +1,1424 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: tendwright
+  displayName: Tendwright
+  tagline:
+    en: Win UK public-sector contracts without the bid-writing grind.
+  description:
+    en: Tendwright finds UK tenders that fit your company, reads the tender documents, builds a bid plan and drafts every
+      answer from your own past bids and case studies. Your writers edit, your reviewer approves, and you export.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12304a'
+      accent: '#0f8b78'
+      background: '#f6f8fa'
+      foreground: '#16222e'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Tend
+      color: primary
+    - text: wright
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Start
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      assignedBy: signup
+    - key: reviewer
+      label: Reviewer
+      assignedBy: derived
+      from: collection:bids.reviewer_email
+  limits:
+  - action: agent:planner
+    per: user
+    max: 10
+    window: day
+    roles:
+    - user
+  egress:
+    hosts:
+    - www.find-tender.service.gov.uk
+    - www.contractsfinder.service.gov.uk
+    notes: Find a Tender and Contracts Finder publish UK public procurement notices as open data (OCDS) under the Open Government
+      Licence v3.0, which allows reuse including commercial use.
+  agents:
+  - key: planner
+    role: main
+    description: Reads a tender, extracts questions, word limits, weightings and deadlines, builds the bid plan and compliance
+      checklist, then hands the drafting to the drafter.
+    delegates:
+    - drafter
+    profile:
+      inline:
+        display_name: Tendwright bid planner
+        crews:
+        - id: planner
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a senior UK public-sector bid manager. You turn a tender into a bid plan.
+
+            Steps:
+
+            1. Call read_profile to get the company profile (sectors, CPV codes, regions, value range, certifications, members,
+            owner_email).
+
+            2. Get the notice: for source Find a Tender call ft_notice with the notice id as path; for Contracts Finder call
+            cf_notice with the notice id as path. From the notice take the buyer, title, value, deadlines and the document
+            links. Try to download each document link on contractsfinder.service.gov.uk with cf_attachment (path = the rest
+            of the link). Also use the uploaded files: {tender_docs_text} holds their text; for scans or images call read_upload
+            with the file id. If documents cannot be downloaded, say so in the report and work from what you have; never invent
+            questions.
+
+            3. Extract: every question (reference, text, word or character limit, weighting or scoring), pass/fail criteria,
+            clarification deadline, submission deadline, mandatory documents and forms, contract term, evaluation method (price/quality
+            split).
+
+            4. Call save_bid once with: title, notice_id, buyer, value, notice_url, clarification_deadline and submission_deadline
+            (YYYY-MM-DD), status "drafting", plan (a short markdown plan), reviewer_email (from the form if given), members
+            (the profile''s members plus the profile owner_email, as a list of email addresses).
+
+            5. For each question call add_question with bid = the notice id, ref, question, word_limit, weighting, status
+            "draft", and the same members and reviewer_email as the bid.
+
+            6. For each mandatory document or declaration (ESPD/Selection Questionnaire, insurance certificates, policies,
+            accounts, certifications such as ISO or Cyber Essentials) call add_check with bid, item, mandatory true/false,
+            status "missing" or "provided" (provided only when the library or profile clearly shows it, using search_library),
+            same members and reviewer_email.
+
+            7. Call ask_drafter once, giving the notice id, to draft all the answers from the company''s library.
+
+            8. Write the final report in Markdown, starting with "# Bid plan — <tender title>". Sections (##): Summary (buyer,
+            value, fit with the company profile), Key dates (table), Questions and weightings (table with ref, limit, weight,
+            effort), Compliance checklist (table), Evidence gaps (including social value commitments, case studies, certifications
+            missing), Recommended timeline working back from the submission deadline, Bid / no-bid view with reasons. Add
+            a ```chart bar of the weightings if there are 3 or more.
+
+            Never invent figures, dates or requirements. Say plainly when something is unclear. Write in language {lang}.'
+          mcp_servers: []
+    goalTemplate: 'Tender notice: {notice_id} on {source_label}.
+
+      {?bid_title}Bid title: {bid_title}{/bid_title}
+
+      {?tender_url}Tender link: {tender_url}{/tender_url}
+
+      {?reviewer_email}Reviewer: {reviewer_email}{/reviewer_email}
+
+      {?tender_docs}Uploaded documents: {tender_docs}
+
+      {tender_docs_text}{/tender_docs}
+
+      {?notes}Notes from the user: {notes}{/notes}
+
+      Signed-in user: {email}. Today is {date}. Write the report in the language with ISO code {lang}.'
+    context:
+    - key: email
+      from: user.email
+    appTools:
+    - name: read_profile
+      description: Read the company profile
+      action: read
+      collection: company_profile
+      scope: user
+    - name: search_library
+      description: Search the company library of past bids, case studies, policies and CVs
+      action: search
+      collection: library
+      scope: user
+    - name: read_upload
+      description: Read a file the user uploaded (OCR for images)
+      action: read_file
+    - name: ft_notice
+      description: Fetch one Find a Tender notice (OCDS); path = the notice or release id
+      action: http
+      http:
+        method: GET
+        url: https://www.find-tender.service.gov.uk/api/1.0/ocdsReleasePackages
+        allowPath: true
+        attribution: Find a Tender, UK Government, OGL v3.0
+    - name: cf_notice
+      description: Fetch one Contracts Finder notice (OCDS); path = the notice id
+      action: http
+      http:
+        method: GET
+        url: https://www.contractsfinder.service.gov.uk/Published/Notice/OCDS
+        allowPath: true
+        attribution: Contracts Finder, UK Government, OGL v3.0
+    - name: cf_attachment
+      description: Download a tender document attached to a Contracts Finder notice; path = the rest of the document link
+      action: http
+      http:
+        method: GET
+        url: https://www.contractsfinder.service.gov.uk/Notice/Attachment
+        allowPath: true
+        attribution: Contracts Finder, UK Government, OGL v3.0
+    - name: save_bid
+      description: Create or update the bid record
+      action: write
+      collection: bids
+      scope: user
+    - name: add_question
+      description: Add one tender question to the bid
+      action: append
+      collection: bid_questions
+      scope: user
+    - name: add_check
+      description: Add one compliance checklist item to the bid
+      action: append
+      collection: compliance
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 60
+      maxBudgetUsd: 3
+  - key: drafter
+    role: helper
+    description: Drafts each answer from the company's own library, citing sources and flagging missing evidence.
+    profile:
+      inline:
+        display_name: Tendwright answer drafter
+        crews:
+        - id: drafter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You draft tender answers for a UK SME. You are given a notice id.
+
+            1. Call read_profile, then list_questions and take the questions of that bid (bid = notice id).
+
+            2. For each question call search_library with the key themes (service, sector, outcomes, policy, CV role, social
+            value). Open files with read_upload when a library record only has a file.
+
+            3. Write the answer in UK English, persuasive but factual, within the word limit (stay about 5% under) and aimed
+            at the weighting: more depth for high-weighted questions. Use only evidence found in the library or profile. Structure
+            with short paragraphs; use the buyer''s own wording from the question.
+
+            4. Call update_question for that question with: draft (the answer), sources (a line per item used: title and type
+            of the past bid, case study, policy or CV, e.g. "Case study: NHS Trust rollout 2024"), gaps (what evidence is
+            missing, e.g. no quantified outcomes, no social value commitments with measurable targets, no named CV, missing
+            policy or certification, otherwise "none"), and status "draft".
+
+            Never invent clients, figures, dates, awards, certifications or commitments. If there is no evidence, write the
+            best honest skeleton, mark the missing parts in [square brackets], and list them under gaps. Social value: when
+            the tender asks for it and the library has no commitments, say so in gaps and propose measurable commitments for
+            the company to confirm, clearly labelled as proposals.
+
+            Finish with a short summary: how many answers drafted and the top evidence gaps.'
+          mcp_servers: []
+    goalTemplate: Draft the answers of the bid with notice id {message}.
+    appTools:
+    - name: read_profile
+      description: Read the company profile
+      action: read
+      collection: company_profile
+      scope: user
+    - name: search_library
+      description: Search the company library of past bids, case studies, policies and CVs
+      action: search
+      collection: library
+      scope: user
+    - name: read_upload
+      description: Read a file the user uploaded (OCR for images)
+      action: read_file
+    - name: list_questions
+      description: List the questions of the user's bids
+      action: read
+      collection: bid_questions
+      scope: user
+    - name: update_question
+      description: Update a question record with the draft, sources and gaps
+      action: write
+      collection: bid_questions
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 60
+      maxBudgetUsd: 3
+  - key: compiler
+    role: helper
+    description: Compiles the approved answers of a bid into one submission-ready document.
+    profile:
+      inline:
+        display_name: Tendwright bid compiler
+        crews:
+        - id: compiler
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You assemble a finished bid document. Call list_questions and list_checks, keep the records of the
+            given bid (bid = notice id). Start with "# <bid title> — bid response". Then a short cover section (buyer, notice
+            id, date), then each question in tender order as "## <ref> <question text>" followed by the approved answer text
+            exactly as approved (do not rewrite it), with its word count. Only include answers whose status is approved; list
+            any that are not approved under "## Not yet approved". End with "## Compliance checklist" as a table of item,
+            mandatory, status. Do not add content of your own.
+          mcp_servers: []
+    goalTemplate: 'Compile the bid with notice id {record.notice_id} (title: {record.title}).'
+    appTools:
+    - name: list_questions
+      description: List the questions of the user's bids
+      action: read
+      collection: bid_questions
+      scope: user
+    - name: list_checks
+      description: List the compliance checklist items of the user's bids
+      action: read
+      collection: compliance
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.5
+  - key: scout
+    role: scheduled
+    description: Searches Find a Tender and Contracts Finder every day for one company, scores new opportunities for fit and
+      writes the digest.
+    profile:
+      inline:
+        display_name: Tendwright opportunity scout
+        crews:
+        - id: scout
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 1
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You find new UK public tenders for one SME and score them for fit.
+
+            1. Call read_profile and list_opportunities (the ones already stored: skip those notice ids).
+
+            2. Search notices published in the last 2 days (publishedFrom = two days ago, publishedTo = today, YYYY-MM-DD...,
+            stage tender, limit 100): call ft_search (Find a Tender, query publishedFrom, publishedTo, stages=tender, limit)
+            and cf_search (Contracts Finder, query publishedFrom, publishedTo, stages=tender, size). Page through if there
+            are more results. Keep notices whose CPV codes, keywords, region or value match the search criteria.
+
+            3. Score each new one 0-100 for fit: sector and CPV match (35), value within the company''s range (20), region
+            (15), certifications the buyer requires versus those held (15), experience visible in the profile (15). Write
+            a one-line fit_reason, including any blocker (for example a certification the company lacks).
+
+            4. For every notice scoring 40 or more call add_opportunity with notice_id, source (find_a_tender or contracts_finder),
+            title, buyer, region, cpv, value, deadline (YYYY-MM-DD), url, published, fit_score, fit_reason.
+
+            5. Reply with the digest in Markdown, starting "# New tenders — <date>": a table sorted by fit (score, title,
+            buyer, value, deadline, link), then 2-3 lines on the best ones. If nothing new fits, write a short "# New tenders
+            — <date>" note saying so.
+
+            Never invent notices or figures; use only what the APIs return.'
+          mcp_servers: []
+    appTools:
+    - name: read_profile
+      description: Read the company profile
+      action: read
+      collection: company_profile
+      scope: user
+    - name: list_opportunities
+      description: List the opportunities already stored for this watch
+      action: read
+      collection: opportunities
+      scope: user
+    - name: add_opportunity
+      description: Store one scored opportunity
+      action: append
+      collection: opportunities
+      scope: user
+    - name: ft_search
+      description: 'Search Find a Tender notices (OCDS). Query: publishedFrom, publishedTo (ISO dates), stages (planning|tender|award),
+        limit'
+      action: http
+      http:
+        method: GET
+        url: https://www.find-tender.service.gov.uk/api/1.0/ocdsReleasePackages
+        allowPath: false
+        attribution: Find a Tender, UK Government, OGL v3.0
+    - name: cf_search
+      description: 'Search Contracts Finder notices (OCDS). Query: publishedFrom, publishedTo (ISO dates), stages (tender|award),
+        size'
+      action: http
+      http:
+        method: GET
+        url: https://www.contractsfinder.service.gov.uk/Published/Notices/OCDS/Search
+        allowPath: false
+        attribution: Contracts Finder, UK Government, OGL v3.0
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 1
+  - key: awards_analyst
+    role: scheduled
+    description: Summarises award notices where a named competitor won a contract.
+    profile:
+      inline:
+        display_name: Tendwright awards analyst
+        crews:
+        - id: awards
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 20
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You summarise contract award notices for one competitor. Search award notices of the last 14 days
+            with ft_search (stages=award) and cf_search (stages=award), both with publishedFrom and publishedTo. Keep notices
+            where the awarded supplier name matches the competitor (allow company-suffix differences like Ltd/Limited). Skip
+            those already stored (list_wins). For each new win call add_win with competitor, buyer, title, value, award_date
+            (YYYY-MM-DD), summary (two lines: what was bought, contract term, any price or evaluation detail in the notice),
+            url. Reply in Markdown starting "# Competitor wins — <competitor> — <date>" with a table of the wins and 2-3 lines
+            of insight (buyers, values, patterns). If none, say so. Never invent awards or figures.'
+          mcp_servers: []
+    appTools:
+    - name: list_wins
+      description: List the competitor wins already stored for this watch
+      action: read
+      collection: competitor_wins
+      scope: user
+    - name: add_win
+      description: Store one competitor win
+      action: append
+      collection: competitor_wins
+      scope: user
+    - name: ft_search
+      description: 'Search Find a Tender notices (OCDS). Query: publishedFrom, publishedTo (ISO dates), stages (planning|tender|award),
+        limit'
+      action: http
+      http:
+        method: GET
+        url: https://www.find-tender.service.gov.uk/api/1.0/ocdsReleasePackages
+        allowPath: false
+        attribution: Find a Tender, UK Government, OGL v3.0
+    - name: cf_search
+      description: 'Search Contracts Finder notices (OCDS). Query: publishedFrom, publishedTo (ISO dates), stages (tender|award),
+        size'
+      action: http
+      http:
+        method: GET
+        url: https://www.contractsfinder.service.gov.uk/Published/Notices/OCDS/Search
+        allowPath: false
+        attribution: Contracts Finder, UK Government, OGL v3.0
+    output: markdown
+    limits:
+      maxTurns: 20
+      maxBudgetUsd: 0.8
+  templates:
+  - key: tender_watch
+    title: Tender watch
+    description: 'Every morning: new UK tenders that fit your company, scored and emailed as a digest.'
+    agent: scout
+    params:
+    - name: keywords
+      type: text
+      label: Keywords
+    - name: cpv_codes
+      type: text
+      label: CPV codes
+      help: Comma separated, e.g. 72000000, 79411000
+    - name: regions
+      type: text
+      label: Regions
+    - name: min_value
+      type: number
+      label: Minimum contract value (GBP)
+    - name: max_value
+      type: number
+      label: Maximum contract value (GBP)
+    goal: 'Watch "{instance}". Search criteria: {?keywords}keywords {keywords}; {/keywords}{?cpv_codes}CPV {cpv_codes}; {/cpv_codes}{?regions}regions
+      {regions}; {/regions}{?min_value}min value {min_value}; {/min_value}{?max_value}max value {max_value}.{/max_value} Also
+      use the company profile. Today is {date}. Write in the language with ISO code {lang}.'
+    schedule:
+      cron: 0 6 * * *
+      userCanChange: true
+    maxPerUser: 3
+    cost:
+      perRun: 1
+    deliver:
+      to: owner
+      subject: Tendwright digest — {date}
+      onlyIfNew: true
+  - key: competitor_watch
+    title: Competitor watch
+    description: 'Every week: contract awards won by a competitor, summarised.'
+    agent: awards_analyst
+    params:
+    - name: competitor
+      type: text
+      required: true
+      label: Competitor name
+    goal: 'Watch "{instance}": award notices won by {competitor}. Today is {date}. Write in the language with ISO code {lang}.'
+    schedule:
+      cron: 0 7 * * 1
+      userCanChange: true
+    maxPerUser: 10
+    cost:
+      perRun: 2
+    deliver:
+      to: owner
+      subject: Competitor wins — {date}
+      onlyIfNew: true
+  inputForm:
+    title: Open a tender
+    fields:
+    - name: source
+      type: select
+      required: true
+      label: Where is the notice published?
+      options:
+      - value: find_a_tender
+        label: Find a Tender
+      - value: contracts_finder
+        label: Contracts Finder
+    - name: notice_id
+      type: text
+      required: true
+      label: Notice ID
+      help: For example 2026/S 000-012345 or the Contracts Finder notice id
+    - name: bid_title
+      type: text
+      label: Bid title (optional)
+    - name: tender_url
+      type: url
+      label: Link to the tender (optional)
+    - name: tender_docs
+      type: file
+      accept:
+      - pdf
+      - docx
+      - xlsx
+      - txt
+      maxMb: 15
+      multiple: true
+      label: Tender documents (if you already have them)
+    - name: reviewer_email
+      type: email
+      label: Reviewer's email
+      help: The person who approves every answer
+    - name: notes
+      type: textarea
+      maxLength: 500
+      label: Notes for the planner (optional)
+  data:
+    collections:
+    - name: company_profile
+      description: The company's onboarding profile
+      ownedBy: user
+      fields:
+      - name: company_name
+        type: text
+        required: true
+        label: Company name
+      - name: owner_email
+        type: email
+        required: true
+        label: Your email
+      - name: members
+        type: array
+        label: Team members (bid writers and reviewers)
+        help: Email addresses of the people you invite
+      - name: sectors
+        type: multiselect
+        label: Sectors
+        options:
+        - IT and digital
+        - Construction
+        - Facilities management
+        - Health and social care
+        - Consultancy
+        - Education and training
+        - Transport
+        - Marketing and communications
+        - Environmental services
+        - Other
+      - name: cpv_codes
+        type: text
+        label: CPV codes
+      - name: regions
+        type: multiselect
+        label: Regions
+        options:
+        - London
+        - South East
+        - South West
+        - East of England
+        - East Midlands
+        - West Midlands
+        - Yorkshire and the Humber
+        - North West
+        - North East
+        - Wales
+        - Scotland
+        - Northern Ireland
+        - UK-wide
+      - name: min_value
+        type: number
+        label: Minimum contract value (GBP)
+      - name: max_value
+        type: number
+        label: Maximum contract value (GBP)
+      - name: certifications
+        type: multiselect
+        label: Certifications held
+        options:
+        - ISO 9001
+        - ISO 14001
+        - ISO 27001
+        - ISO 45001
+        - Cyber Essentials
+        - Cyber Essentials Plus
+        - Real Living Wage
+        - B Corp
+        - Other
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: library
+      description: Past bids, case studies, policies and CVs written as roles
+      ownedBy: user
+      fields:
+      - name: kind
+        type: select
+        required: true
+        label: Type
+        options:
+        - past_bid
+        - case_study
+        - policy
+        - cv_role
+        - other
+      - name: title
+        type: text
+        required: true
+        label: Title
+      - name: outcome
+        type: text
+        label: Outcome (won, lost, results achieved)
+      - name: text
+        type: textarea
+        label: Text
+      - name: document
+        type: file
+        accept:
+        - pdf
+        - docx
+        - txt
+        - md
+        maxMb: 15
+        multiple: true
+        label: Document
+      - name: members
+        type: array
+        label: Shared with
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: opportunities
+      description: Scored tender opportunities found by the daily watch
+      ownedBy: instance
+      fields:
+      - name: notice_id
+        type: text
+        label: Notice ID
+      - name: source
+        type: text
+        label: Source
+      - name: title
+        type: text
+        label: Title
+      - name: buyer
+        type: text
+        label: Buyer
+      - name: region
+        type: text
+        label: Region
+      - name: cpv
+        type: text
+        label: CPV
+      - name: value
+        type: number
+        label: Value (GBP)
+      - name: deadline
+        type: date
+        label: Deadline
+      - name: published
+        type: date
+        label: Published
+      - name: fit_score
+        type: number
+        label: Fit
+      - name: fit_reason
+        type: text
+        label: Why
+      - name: url
+        type: url
+        label: Link
+    - name: bids
+      description: One record per bid
+      ownedBy: user
+      fields:
+      - name: title
+        type: text
+        required: true
+        label: Title
+      - name: notice_id
+        type: text
+        label: Notice ID
+      - name: buyer
+        type: text
+        label: Buyer
+      - name: value
+        type: number
+        label: Value (GBP)
+      - name: notice_url
+        type: url
+        label: Notice link
+      - name: clarification_deadline
+        type: date
+        label: Clarification deadline
+      - name: submission_deadline
+        type: date
+        label: Submission deadline
+      - name: status
+        type: select
+        label: Status
+        options:
+        - drafting
+        - review
+        - approved
+        - submitted
+        - won
+        - lost
+        - no_bid
+      - name: win
+        type: number
+        label: Result (1 won, 0 lost)
+      - name: outcome_value
+        type: number
+        label: Value won (GBP)
+      - name: reviewer_email
+        type: email
+        label: Reviewer
+      - name: members
+        type: array
+        label: Team
+      - name: plan
+        type: textarea
+        label: Bid plan
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: reviewer
+        where:
+          reviewer_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: bid_questions
+      description: Tender questions with drafts, sources and evidence gaps
+      ownedBy: user
+      fields:
+      - name: bid
+        type: text
+        label: Bid (notice ID)
+      - name: ref
+        type: text
+        label: Ref
+      - name: question
+        type: textarea
+        label: Question
+      - name: word_limit
+        type: number
+        label: Word limit
+      - name: weighting
+        type: number
+        label: Weighting
+      - name: draft
+        type: textarea
+        label: Answer
+      - name: sources
+        type: textarea
+        label: Sources used
+      - name: gaps
+        type: textarea
+        label: Missing evidence
+      - name: status
+        type: select
+        label: Status
+        options:
+        - draft
+        - edited
+        - in_review
+        - changes_requested
+        - approved
+      - name: reviewer_comment
+        type: textarea
+        label: Reviewer comment
+      - name: reviewer_email
+        type: email
+        label: Reviewer
+      - name: members
+        type: array
+        label: Team
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: reviewer
+        where:
+          reviewer_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: compliance
+      description: Mandatory documents checklist per bid
+      ownedBy: user
+      fields:
+      - name: bid
+        type: text
+        label: Bid (notice ID)
+      - name: item
+        type: text
+        label: Document or declaration
+      - name: mandatory
+        type: boolean
+        label: Mandatory
+      - name: status
+        type: select
+        label: Status
+        options:
+        - missing
+        - provided
+        - not_applicable
+      - name: reviewer_email
+        type: email
+        label: Reviewer
+      - name: members
+        type: array
+        label: Team
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: reviewer
+        where:
+          reviewer_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: competitor_wins
+      description: Award notices won by watched competitors
+      ownedBy: instance
+      fields:
+      - name: competitor
+        type: text
+        label: Competitor
+      - name: buyer
+        type: text
+        label: Buyer
+      - name: title
+        type: text
+        label: Contract
+      - name: value
+        type: number
+        label: Value (GBP)
+      - name: award_date
+        type: date
+        label: Awarded
+      - name: summary
+        type: textarea
+        label: Summary
+      - name: url
+        type: url
+        label: Notice
+  views:
+  - key: home
+    type: page
+    title: Tendwright
+    nav: false
+    sections:
+    - type: hero
+      title: Win UK public-sector contracts with a **bid team that never sleeps**.
+      text: Tendwright finds the tenders that fit your company, reads the documents, plans the bid and drafts every answer
+        from your own past bids and case studies. Your writers edit, your reviewer approves, you submit.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Tell us about your company
+        text: Sectors, CPV codes, regions, contract size and certifications. Upload past bids, case studies, policies and
+          CVs.
+        badge: '1'
+      - title: Get a daily digest
+        text: Every morning we search Find a Tender and Contracts Finder and email the new tenders that fit, scored.
+        badge: '2'
+      - title: Open a tender
+        text: We extract questions, word limits, weightings and deadlines, build the plan and a compliance checklist.
+        badge: '3'
+      - title: Draft, review, export
+        text: Answers are drafted from your library with sources cited and missing evidence flagged. A reviewer approves each
+          one.
+        badge: '4'
+    - type: cards
+      id: pricing
+      title: Pricing
+      intro: Monthly plans with bids included. Need more? Buy extra bids as credits.
+      items:
+      - title: Starter
+        text: 3 bids a month, daily digest, competitor watch.
+      - title: Growth
+        text: 10 bids a month, unlimited team members.
+      - title: Scale
+        text: 30 bids a month, priority support.
+    - type: note
+      content: 'Tendwright drafts bids from your own evidence and does not give legal advice. Always check drafts against
+        the tender documents before you submit. Notice data: Find a Tender and Contracts Finder, Open Government Licence v3.0.'
+  - key: onboarding
+    type: form
+    title: Company profile
+    collection: company_profile
+    edit: true
+    submit:
+      label: Save profile
+      message: Profile saved. Now add your library and set up a tender watch.
+      redirect: library
+  - key: library_add
+    type: form
+    title: Add to library
+    collection: library
+    submit:
+      label: Add
+      message: Added to your library.
+      redirect: library
+  - key: library
+    type: table
+    title: Library
+    source: collection:library
+    data:
+      display: table
+      fields:
+      - key: kind
+        label: Type
+        format: badge
+      - key: title
+        label: Title
+      - key: outcome
+        label: Outcome
+  - key: watches
+    type: instances
+    title: Tender watch
+    template: tender_watch
+  - key: opportunities
+    type: table
+    title: Opportunities
+    source: collection:opportunities
+    export: true
+    data:
+      display: table
+      fields:
+      - key: fit_score
+        label: Fit
+        format: number
+      - key: title
+        label: Title
+      - key: buyer
+        label: Buyer
+      - key: value
+        label: Value
+        format: money
+      - key: deadline
+        label: Deadline
+        format: date
+      - key: fit_reason
+        label: Why
+      - key: url
+        label: Notice
+        format: link
+      sort:
+        field: fit_score
+        dir: desc
+      limit: 100
+      empty: No opportunities yet. Create a tender watch.
+  - key: new_bid
+    type: new_run
+    title: Open a tender
+  - key: bid_runs
+    type: history
+    title: Bid plans
+    source: run
+  - key: bid_plan
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: bids
+    type: table
+    title: Bids
+    source: collection:bids
+    export: true
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Bid
+      - key: buyer
+        label: Buyer
+      - key: status
+        label: Status
+        format: badge
+      - key: clarification_deadline
+        label: Clarifications
+        format: date
+      - key: submission_deadline
+        label: Submission
+        format: date
+      - key: value
+        label: Value
+        format: money
+      sort:
+        field: submission_deadline
+        dir: asc
+  - key: bid_edit
+    type: form
+    title: Update bid
+    collection: bids
+    edit: true
+    nav: false
+    fields:
+    - title
+    - status
+    - clarification_deadline
+    - submission_deadline
+    - reviewer_email
+    - members
+    - win
+    - outcome_value
+    - plan
+    submit:
+      label: Save
+      message: Bid updated.
+      redirect: bids
+  - key: answers
+    type: table
+    title: Answers
+    source: collection:bid_questions
+    data:
+      display: table
+      fields:
+      - key: bid
+        label: Bid
+      - key: ref
+        label: Ref
+      - key: question
+        label: Question
+      - key: word_limit
+        label: Limit
+        format: number
+      - key: weighting
+        label: Weight
+        format: number
+      - key: status
+        label: Status
+        format: badge
+      - key: gaps
+        label: Missing evidence
+      limit: 200
+  - key: answer_edit
+    type: form
+    title: Edit or review answer
+    collection: bid_questions
+    edit: true
+    nav: false
+    fields:
+    - draft
+    - status
+    - reviewer_comment
+    submit:
+      label: Save
+      message: Answer saved.
+      redirect: answers
+  - key: checklist
+    type: table
+    title: Compliance
+    source: collection:compliance
+    data:
+      display: table
+      fields:
+      - key: bid
+        label: Bid
+      - key: item
+        label: Document
+      - key: mandatory
+        label: Mandatory
+      - key: status
+        label: Status
+        format: badge
+      limit: 200
+  - key: check_edit
+    type: form
+    title: Update checklist item
+    collection: compliance
+    edit: true
+    nav: false
+    fields:
+    - status
+    submit:
+      label: Save
+      message: Saved.
+      redirect: checklist
+  - key: dashboard
+    type: page
+    title: Dashboard
+    sections:
+    - type: data
+      title: Pipeline
+      source: collection:bids
+      display: kpi
+      filters:
+      - field: status
+        op: '!='
+        value: won
+      - field: status
+        op: '!='
+        value: lost
+      - field: status
+        op: '!='
+        value: no_bid
+      kpis:
+      - label: Bids in pipeline
+        agg: count
+      - label: Pipeline value
+        agg: sum
+        field: value
+        format: money
+    - type: data
+      title: Results
+      source: collection:bids
+      display: kpi
+      filters:
+      - field: win
+        op: '>='
+        value: 0
+      kpis:
+      - label: Bids decided
+        agg: count
+      - label: Win rate
+        agg: avg
+        field: win
+        format: percent
+      - label: Value won
+        agg: sum
+        field: outcome_value
+        format: money
+    - type: data
+      title: Bids by status
+      source: collection:bids
+      display: chart
+      chart: bar
+      fields:
+      - key: status
+      - key: count
+      groupBy:
+        field: status
+        aggs:
+        - key: total
+          agg: sum
+          field: value
+    - type: data
+      title: Next deadlines
+      source: collection:bids
+      display: table
+      fields:
+      - key: title
+        label: Bid
+      - key: status
+        label: Status
+        format: badge
+      - key: submission_deadline
+        label: Submission
+        format: date
+      sort:
+        field: submission_deadline
+        dir: asc
+      limit: 10
+  - key: competitors
+    type: instances
+    title: Competitor watch
+    template: competitor_watch
+  - key: competitor_wins
+    type: table
+    title: Competitor wins
+    source: collection:competitor_wins
+    data:
+      display: table
+      fields:
+      - key: competitor
+        label: Competitor
+      - key: award_date
+        label: Awarded
+        format: date
+      - key: buyer
+        label: Buyer
+      - key: title
+        label: Contract
+      - key: value
+        label: Value
+        format: money
+      - key: summary
+        label: Summary
+      - key: url
+        label: Notice
+        format: link
+      sort:
+        field: award_date
+        dir: desc
+      limit: 100
+  - key: account
+    type: account
+    title: Plan and credits
+    roles:
+    - user
+    - admin
+  triggers:
+  - key: clarification_reminder
+    'on':
+      date:
+        collection: bids
+        field: clarification_deadline
+        offsetDays: -2
+        hour: 8
+      where:
+        status: drafting
+    notify:
+      to:
+      - owner
+      - record.reviewer_email
+      subject: 'Clarification deadline in 2 days: {record.title}'
+      body: The clarification deadline for {record.title} ({record.buyer}) is {record.clarification_deadline}. Send any questions
+        to the buyer before then.
+      link: bids
+  - key: submission_reminder_3d
+    'on':
+      date:
+        collection: bids
+        field: submission_deadline
+        offsetDays: -3
+        hour: 8
+      where:
+        status: drafting
+    notify:
+      to:
+      - owner
+      - record.reviewer_email
+      subject: 'Submission in 3 days: {record.title}'
+      body: '{record.title} is due on {record.submission_deadline} and is still in drafting. Check answers and the compliance
+        checklist.'
+      link: answers
+  - key: submission_reminder_1d
+    'on':
+      date:
+        collection: bids
+        field: submission_deadline
+        offsetDays: -1
+        hour: 8
+      where:
+        status: review
+    notify:
+      to:
+      - owner
+      - record.reviewer_email
+      subject: 'Submission tomorrow: {record.title}'
+      body: '{record.title} is due on {record.submission_deadline}. Approve the remaining answers and submit.'
+      link: answers
+  - key: submission_reminder_1d_drafting
+    'on':
+      date:
+        collection: bids
+        field: submission_deadline
+        offsetDays: -1
+        hour: 8
+      where:
+        status: drafting
+    notify:
+      to:
+      - owner
+      - record.reviewer_email
+      subject: 'Submission tomorrow: {record.title}'
+      body: '{record.title} is due on {record.submission_deadline} and is still in drafting.'
+      link: answers
+  - key: review_requested
+    'on':
+      collection: bid_questions
+      op: update
+      where:
+        status: in_review
+    notify:
+      to: record.reviewer_email
+      subject: 'Answer ready for review: {record.ref}'
+      body: An answer to question {record.ref} is ready for your review.
+      link: answers
+  - key: compile_approved
+    'on':
+      collection: bids
+      op: update
+      where:
+        status: approved
+    start:
+      agent: compiler
+    goal: 'Compile the bid with notice id {record.notice_id} (title: {record.title}) into one document.'
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: gbp
+    signupCredits: 100
+    costs:
+      agent:planner: 100
+    packs:
+    - key: extra_bid
+      credits: 100
+      price: 39
+      label: 1 extra bid
+    - key: extra_5
+      credits: 500
+      price: 175
+      label: 5 extra bids
+    plans:
+    - key: starter
+      price: 79
+      interval: month
+      label: Starter — 3 bids a month
+      credits: 300
+      creditsReset: monthly
+      includes:
+      - 3 bids a month
+      - daily tender digest
+      - competitor watch
+    - key: growth
+      price: 199
+      interval: month
+      label: Growth — 10 bids a month
+      credits: 1000
+      creditsReset: monthly
+      includes:
+      - 10 bids a month
+      - unlimited team members
+    - key: scale
+      price: 449
+      interval: month
+      label: Scale — 30 bids a month
+      credits: 3000
+      creditsReset: monthly
+      includes:
+      - 30 bids a month
+      - priority support
+  extensions:
+  - key: word_export
+    description: Export to Word (.docx) is not available yet. The compiled bid is a printable report you can save as PDF or
+      copy into Word.
+  - key: reviewer_only_approval
+    description: Approving an answer is a status change on the answer. The designated reviewer can set it, but the runtime
+      cannot yet forbid writers from setting it too.
+  - key: find_a_tender_documents
+    description: Find a Tender documents may need a login to download. When the agent cannot fetch them, the user uploads
+      the documents in the Open a tender form.

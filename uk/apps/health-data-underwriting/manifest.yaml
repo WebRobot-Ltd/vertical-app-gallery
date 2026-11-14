@@ -1,0 +1,895 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: vitalrisk
+  displayName: Vitalrisk
+  tagline: Underwrite on health data, not long questionnaires.
+  description: Vitalrisk lets life and health insurers assess applicants from consented wearable data and a short questionnaire.
+    It returns accept, rate, refer or decline with reasons, routes referrals to underwriters with an agent-written summary,
+    and keeps audit trails, dashboards and data-subject rights in one place.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0b3b4a'
+      accent: '#e4572e'
+      background: '#f6f9fa'
+      foreground: '#13222a'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Vital
+      color: primary
+    - text: risk
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Trust and privacy
+      href: '#trust'
+    cta:
+      label: Start an application
+      href: /v/apply
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Insurer admin
+      assignedBy: admin_emails
+    - key: underwriter
+      label: Underwriter
+      assignedBy: invite
+    - key: auditor
+      label: Auditor
+      assignedBy: invite
+    - key: applicant
+      label: Applicant
+      assignedBy: signup
+  limits:
+  - action: login
+    per: ip
+    max: 20
+    window: hour
+  agents:
+  - key: assessor
+    role: main
+    description: Reads the applicant's consented data, runs the insurer's risk model, records the decision and writes a referral
+      summary when needed.
+    context:
+    - key: email
+      from: user.email
+    goalTemplate: 'Assess application {record.id} for {record.full_name} ({record.email}).
+
+      Age {record.age}; smoker: {record.smoker}; height {record.height_cm} cm; weight {record.weight_kg} kg.
+
+      Declared conditions: {record.conditions}
+
+      Wearable or health-app export file ids: {record.wearable_export}
+
+      Today is {date}. Write the report in English.'
+    profile:
+      inline:
+        display_name: Vitalrisk assessor
+        crews:
+        - id: assessor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the underwriting assessment agent of an insurer using Vitalrisk. Never decide by yourself:
+            the decision comes only from the tool run_risk_model.
+
+            Steps:
+
+            1. If file ids are given, call read_upload for each and extract averages over the last 90 days: resting heart
+            rate (bpm), daily steps, sleep hours. Use only values present in the file; if absent leave them out and say so.
+
+            2. Count the declared medical conditions that are chronic or serious (conditions_flag) honestly from the text;
+            do not infer diagnoses.
+
+            3. Call run_risk_model with args: age, smoker (yes/no), height_cm, weight_kg, conditions_flag, resting_hr, daily_steps,
+            sleep_hours (omit missing ones). It returns score, outcome (accept|rate|refer|decline), reasons and model_version.
+
+            4. Call write_decision once with: application_ref (the application id), applicant_email, applicant_name, decision_date
+            (YYYY-MM-DD today), model_version, score, outcome, reasons (one per line), age_band (e.g. 30-39), status. status
+            is ''referred'' when outcome is refer, otherwise ''final''. When outcome is refer also fill summary: a neutral
+            underwriter brief under 200 words (key facts, the data used, what is missing, which reasons triggered the referral,
+            suggested questions). Never include free-text medical details beyond what the applicant declared.
+
+            5. Final answer, addressed to the applicant, starts with a level-1 title ''# Your application assessment'' then:
+            Outcome (accept = approved, rate = approved with a higher premium, refer = being reviewed by an underwriter, decline
+            = not approved), Reasons in plain language, What happens next, and your rights (request your data or withdraw
+            consent in the app). Do not show the raw score. Never give medical advice and never invent figures.'
+    appTools:
+    - name: read_upload
+      description: Read a file the applicant uploaded (health export, text or image)
+      action: read_file
+    - name: run_risk_model
+      description: Run the insurer's configured risk model on the applicant features
+      action: call
+      slot: risk_model
+    - name: write_decision
+      description: Record the decision of an application
+      action: write
+      collection: decisions
+      scope: all
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+  - key: monitor
+    role: scheduled
+    description: 'Daily metrics for the insurer dashboards: volumes, decision mix, straight-through rate and drift against
+      the baseline.'
+    goalTemplate: Today is {date}. Compute yesterday's and the last 30 days' metrics from the decisions collection and write
+      the summary.
+    profile:
+      inline:
+        display_name: Vitalrisk model monitor
+        crews:
+        - id: monitor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You monitor a risk model. Call read_decisions, then compute for the last 30 days: applications (count),
+            accept, rate, refer, decline (counts), straight_through_rate (share of decisions with status final, 0-100), mean_score,
+            and drift_psi: an approximate population stability index of the score distribution (bands 0-20,20-40,40-60,60-80,80+)
+            of the last 30 days versus the 30 days before; use 0 if there is not enough data (under 30 decisions in either
+            window) and say so. Start with ''# Model monitor <date>'', add a short table and one sentence on whether drift_psi
+            above 0.25 needs attention. Never invent figures. End with a fenced json block exactly: {"date":"YYYY-MM-DD","model_version":"latest
+            seen","applications":0,"accept":0,"rate":0,"refer":0,"decline":0,"straight_through_rate":0,"mean_score":0,"drift_psi":0}'
+    appTools:
+    - name: read_decisions
+      description: Read the decisions recorded by the insurer
+      action: read
+      collection: decisions
+      scope: all
+    output: markdown+json
+    writesTo:
+      collection: model_metrics
+      parse: json_last
+      keyBy: date
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.3
+  slots:
+  - key: risk_model
+    description: Placeholder rules model; the insurer's actuarial model replaces this code.
+    timeoutMs: 2000
+    example:
+      args:
+        age: 42
+        smoker: 'no'
+        height_cm: 175
+        weight_kg: 80
+        conditions_flag: 0
+        resting_hr: 62
+        daily_steps: 8000
+        sleep_hours: 7
+    code: "def main(input):\n    a = input.get('args') or input\n    def num(k, d=None):\n        try:\n            return\
+      \ float(a.get(k))\n        except Exception:\n            return d\n    age = num('age', 40)\n    h = num('height_cm',\
+      \ 170)\n    w = num('weight_kg', 70)\n    bmi = w / ((h / 100) ** 2) if h else 0\n    s = 0\n    r = []\n    if age\
+      \ >= 65:\n        s += 30; r.append('Age band 65 or over')\n    elif age >= 50:\n        s += 15; r.append('Age band\
+      \ 50-64')\n    if str(a.get('smoker', 'no')).lower() in ('yes', 'true', 'smoker'):\n        s += 25; r.append('Current\
+      \ smoker')\n    if bmi >= 35 or (bmi and bmi < 17):\n        s += 25; r.append('Body mass index well outside the typical\
+      \ range')\n    elif bmi >= 30:\n        s += 12; r.append('Body mass index in the obese range')\n    c = num('conditions_flag',\
+      \ 0)\n    if c >= 2:\n        s += 30; r.append('Two or more declared chronic conditions')\n    elif c >= 1:\n     \
+      \   s += 15; r.append('A declared chronic condition')\n    hr = num('resting_hr')\n    if hr is not None and hr > 85:\n\
+      \        s += 12; r.append('High average resting heart rate')\n    steps = num('daily_steps')\n    if steps is not None\
+      \ and steps < 3000:\n        s += 8; r.append('Low daily activity')\n    sl = num('sleep_hours')\n    if sl is not None\
+      \ and (sl < 5 or sl > 10):\n        s += 6; r.append('Sleep duration outside the typical range')\n    missing = [k for\
+      \ k in ('resting_hr', 'daily_steps', 'sleep_hours') if num(k) is None]\n    if len(missing) == 3 and s >= 15:\n    \
+      \    r.append('No wearable data available')\n        out = 'refer'\n    elif s >= 75:\n        out = 'decline'\n   \
+      \ elif s >= 50:\n        out = 'refer'\n    elif s >= 25:\n        out = 'rate'\n    else:\n        out = 'accept'\n\
+      \    if not r:\n        r.append('No risk factors found')\n    return {'score': s, 'outcome': out, 'reasons': r, 'model_version':\
+      \ 'rules-0.1'}\n"
+  schedules:
+  - agent: monitor
+    action: run
+    cron: 0 5 * * *
+    owner: app
+  data:
+    collections:
+    - name: applications
+      description: 'An applicant''s consented application: questionnaire answers and health-data export'
+      ownedBy: user
+      retentionDays: 1825
+      access:
+      - role: auditor
+      fields:
+      - name: full_name
+        type: text
+        required: true
+        label: Full name
+      - name: email
+        type: email
+        required: true
+        label: Email for updates
+      - name: insurer_ref
+        type: text
+        label: Insurer application reference
+      - name: age
+        type: number
+        required: true
+        label: Age
+      - name: smoker
+        type: select
+        required: true
+        label: Do you smoke?
+        options:
+        - value: 'no'
+          label: 'No'
+        - value: former
+          label: Former smoker
+        - value: 'yes'
+          label: 'Yes'
+      - name: height_cm
+        type: number
+        required: true
+        label: Height (cm)
+      - name: weight_kg
+        type: number
+        required: true
+        label: Weight (kg)
+      - name: conditions
+        type: textarea
+        maxLength: 1000
+        label: Medical conditions (or 'none')
+      - name: wearable_export
+        type: file
+        accept:
+        - csv
+        - json
+        - xlsx
+        - xml
+        - pdf
+        - txt
+        maxMb: 15
+        multiple: true
+        label: Health data export (wearable or phone health app)
+        help: Export from your health app or wearable account. Direct connection through official APIs is coming.
+      - name: consent
+        type: boolean
+        required: true
+        label: I explicitly consent to the processing of my health data for this insurance assessment
+        help: You can withdraw consent at any time in the app.
+    - name: decisions
+      description: Decision per application, with reasons and the underwriter outcome for referrals
+      ownedBy: org
+      retentionDays: 3650
+      access:
+      - role: underwriter
+        where:
+          status: referred
+        can:
+        - read
+        - write
+      - role: auditor
+      fields:
+      - name: application_ref
+        type: text
+        label: Application
+      - name: applicant_email
+        type: email
+        label: Applicant email
+      - name: applicant_name
+        type: text
+        label: Applicant
+      - name: decision_date
+        type: date
+        label: Date
+      - name: model_version
+        type: text
+        label: Model version
+      - name: score
+        type: number
+        label: Risk score
+      - name: outcome
+        type: select
+        label: Model outcome
+        options:
+        - accept
+        - rate
+        - refer
+        - decline
+      - name: reasons
+        type: textarea
+        label: Reasons
+      - name: age_band
+        type: text
+        label: Age band
+      - name: summary
+        type: textarea
+        label: Underwriter summary
+      - name: status
+        type: select
+        label: Status
+        options:
+        - final
+        - referred
+        - decided
+      - name: final_outcome
+        type: select
+        label: Underwriter decision
+        options:
+        - accept
+        - rate
+        - decline
+      - name: underwriter_note
+        type: textarea
+        label: Underwriter note
+    - name: model_metrics
+      description: Daily model and volume metrics written by the monitor agent
+      ownedBy: app
+      fields:
+      - name: date
+        type: date
+      - name: model_version
+        type: text
+      - name: applications
+        type: number
+      - name: accept
+        type: number
+      - name: rate
+        type: number
+      - name: refer
+        type: number
+      - name: decline
+        type: number
+      - name: straight_through_rate
+        type: number
+      - name: mean_score
+        type: number
+      - name: drift_psi
+        type: number
+    - name: data_requests
+      description: Applicants' requests to access or delete their data or to withdraw consent
+      ownedBy: user
+      fields:
+      - name: kind
+        type: select
+        required: true
+        label: Request
+        options:
+        - value: access
+          label: Send me a copy of my data
+        - value: erasure
+          label: Delete my data
+        - value: withdraw_consent
+          label: Withdraw my consent
+      - name: email
+        type: email
+        required: true
+        label: Contact email
+      - name: details
+        type: textarea
+        maxLength: 600
+        label: Details (optional)
+      - name: status
+        type: select
+        label: Status
+        options:
+        - open
+        - done
+    - name: audit_log
+      description: Immutable trail of applications, decisions and data requests
+      ownedBy: org
+      retentionDays: 3650
+      access:
+      - role: auditor
+      fields:
+      - name: kind
+        type: text
+        label: Collection
+      - name: ref
+        type: text
+        label: Record
+      - name: status
+        type: text
+        label: Status
+  triggers:
+  - key: assess_application
+    description: Every consented application is assessed
+    'on':
+      collection: applications
+      op: insert
+      where:
+        consent: true
+    start:
+      agent: assessor
+    asUser: true
+    goal: 'Assess application {record.id} for {record.full_name} ({record.email}).
+
+      Age {record.age}; smoker: {record.smoker}; height {record.height_cm} cm; weight {record.weight_kg} kg.
+
+      Declared conditions: {record.conditions}
+
+      Wearable or health-app export file ids: {record.wearable_export}
+
+      Today is {date}. Write the report in English.'
+  - key: decision_final_email
+    'on':
+      collection: decisions
+      op: insert
+      where:
+        status: final
+    notify:
+      to:
+      - record.applicant_email
+      subject: Your insurance application has a decision
+      body: 'Hello {record.applicant_name},
+
+
+        Your application has been assessed. Sign in to see the outcome and the reasons.'
+      link: results
+  - key: decision_referred_email
+    'on':
+      collection: decisions
+      op: insert
+      where:
+        status: referred
+    notify:
+      to:
+      - record.applicant_email
+      subject: Your application is being reviewed by an underwriter
+      body: 'Hello {record.applicant_name},
+
+
+        Your application needs a review by an underwriter. We will email you when a decision is made.'
+      link: results
+  - key: referral_queue_email
+    'on':
+      collection: decisions
+      op: insert
+      where:
+        status: referred
+    notify:
+      to:
+      - role:underwriter
+      subject: New referred case in your queue
+      body: A new case has been referred. Open the queue to review the summary and decide.
+      link: queue
+  - key: underwriter_decided_email
+    'on':
+      collection: decisions
+      op: update
+      where:
+        status: decided
+    notify:
+      to:
+      - record.applicant_email
+      subject: An underwriter has decided on your application
+      body: 'Hello {record.applicant_name},
+
+
+        An underwriter has reviewed your application. Sign in for the result.'
+      link: results
+  - key: request_received_email
+    'on':
+      collection: data_requests
+      op: insert
+    notify:
+      to:
+      - owner
+      subject: We received your data request
+      body: We received your request ({record.kind}). The insurer's data protection team will handle it and write to you.
+      link: my_requests
+  - key: request_admin_email
+    'on':
+      collection: data_requests
+      op: insert
+    notify:
+      to:
+      - admins
+      subject: New data subject request
+      body: An applicant sent a request ({record.kind}). Open the requests page to handle it.
+      link: requests_admin
+  - key: audit_application
+    'on':
+      collection: applications
+      op: insert
+    write:
+      collection: audit_log
+      fields:
+        kind: collection
+        ref: id
+        status: status
+  - key: audit_decision
+    'on':
+      collection: decisions
+      op: any
+    write:
+      collection: audit_log
+      fields:
+        kind: collection
+        ref: id
+        status: status
+  - key: audit_request
+    'on':
+      collection: data_requests
+      op: any
+    write:
+      collection: audit_log
+      fields:
+        kind: collection
+        ref: id
+        status: status
+  views:
+  - key: home
+    type: page
+    title: Vitalrisk
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: For applicants of partner insurers
+      title: Get a decision from your **health data**, not a long questionnaire.
+      text: Share a few answers and, if you wish, your wearable or health app data. You consent explicitly, you see the reasons
+        for every decision, and you can withdraw at any time.
+      actions:
+      - label: Start your application
+        href: /v/apply
+        style: primary
+      - label: Sign in
+        href: /login
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Consent and share
+        text: Answer a short questionnaire and add your health data export. Nothing is processed without your explicit consent.
+      - title: Assessment
+        text: Your insurer's chosen risk model returns accept, rate, refer or decline, with reasons.
+      - title: Human review when needed
+        text: Referred cases go to an underwriter with a written summary. You get email updates.
+    - type: cards
+      id: trust
+      title: Trust and privacy
+      items:
+      - title: Separated and audited
+        text: Records are kept per insurer, with role-based access and an audit trail.
+      - title: Your rights
+        text: Request a copy of your data, ask for deletion or withdraw consent from the app.
+      - title: Insurers
+        text: Admins, underwriters and auditors sign in with their own roles to work the queue, dashboards and logs.
+    - type: note
+      content: Vitalrisk supports underwriting decisions of your insurer. It is not medical advice.
+  - key: apply
+    type: form
+    title: New application
+    collection: applications
+    roles:
+    - applicant
+    - admin
+    submit:
+      label: Submit application
+      message: 'Thank you. Your application is being assessed: you will receive an email.'
+      redirect: results
+  - key: results
+    type: history
+    title: My applications
+    source: run
+    columns:
+    - createdAt
+    - status
+    roles:
+    - applicant
+  - key: assessment
+    type: report
+    title: Assessment
+    source: run
+    printable: true
+    nav: false
+  - key: my_data
+    type: table
+    title: My submitted data
+    source: collection:applications
+    roles:
+    - applicant
+    data:
+      display: table
+      fields:
+      - key: full_name
+        label: Name
+      - key: age
+        label: Age
+      - key: smoker
+        label: Smoker
+      - key: consent
+        label: Consent
+  - key: data_request
+    type: form
+    title: Data and consent
+    collection: data_requests
+    roles:
+    - applicant
+    fields:
+    - kind
+    - email
+    - details
+    submit:
+      label: Send request
+      message: Request sent. You will receive an email confirmation.
+      redirect: my_requests
+  - key: my_requests
+    type: table
+    title: My requests
+    source: collection:data_requests
+    roles:
+    - applicant
+    nav: false
+    data:
+      display: table
+      fields:
+      - key: kind
+        label: Request
+      - key: status
+        label: Status
+        format: badge
+      - key: details
+        label: Details
+  - key: queue
+    type: table
+    title: Underwriter queue
+    source: collection:decisions
+    roles:
+    - underwriter
+    - admin
+    data:
+      display: table
+      fields:
+      - key: decision_date
+        label: Date
+        format: date
+      - key: applicant_name
+        label: Applicant
+      - key: age_band
+        label: Age band
+      - key: reasons
+        label: Reasons
+      - key: summary
+        label: Summary
+      - key: status
+        label: Status
+        format: badge
+      filters:
+      - field: status
+        op: '='
+        value: referred
+      sort:
+        field: decision_date
+        dir: asc
+      limit: 100
+      empty: No referred cases waiting.
+  - key: decide
+    type: form
+    title: Underwriter decision
+    collection: decisions
+    fields:
+    - final_outcome
+    - underwriter_note
+    - status
+    edit: true
+    roles:
+    - underwriter
+    - admin
+    nav: false
+    submit:
+      label: Save decision
+      message: Decision saved. Set status to 'decided' to notify the applicant.
+      redirect: queue
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - admin
+    - auditor
+    sections:
+    - type: data
+      title: Key figures
+      source: collection:model_metrics
+      display: kpi
+      kpis:
+      - label: Straight-through rate (%)
+        agg: last
+        field: straight_through_rate
+        format: number
+      - label: Model drift (PSI)
+        agg: last
+        field: drift_psi
+        format: number
+      - label: Mean score
+        agg: last
+        field: mean_score
+        format: number
+    - type: data
+      title: Decision mix
+      source: collection:decisions
+      display: chart
+      chart: pie
+      groupBy:
+        field: outcome
+        aggs: []
+      fields:
+      - key: outcome
+      - key: count
+    - type: data
+      title: Volumes per month
+      source: collection:decisions
+      display: chart
+      chart: bar
+      groupBy:
+        field: decision_date
+        bucket: month
+        aggs: []
+      fields:
+      - key: decision_date
+      - key: count
+    - type: data
+      title: Straight-through rate and drift
+      source: collection:model_metrics
+      display: chart
+      chart: line
+      fields:
+      - key: date
+      - key: straight_through_rate
+      - key: drift_psi
+      sort:
+        field: date
+        dir: asc
+      limit: 90
+    - type: data
+      title: Daily metrics
+      source: collection:model_metrics
+      display: table
+      fields:
+      - key: date
+        format: date
+      - key: applications
+      - key: accept
+      - key: rate
+      - key: refer
+      - key: decline
+      - key: model_version
+      sort:
+        field: date
+        dir: desc
+      limit: 30
+  - key: all_decisions
+    type: table
+    title: Decisions
+    source: collection:decisions
+    roles:
+    - admin
+    - auditor
+    export: true
+    data:
+      display: table
+      fields:
+      - key: decision_date
+        format: date
+      - key: application_ref
+      - key: outcome
+        format: badge
+      - key: status
+        format: badge
+      - key: final_outcome
+        format: badge
+      - key: model_version
+      - key: reasons
+      sort:
+        field: decision_date
+        dir: desc
+      limit: 200
+  - key: audit
+    type: table
+    title: Audit log
+    source: collection:audit_log
+    roles:
+    - auditor
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: kind
+      - key: ref
+      - key: status
+      limit: 200
+  - key: requests_admin
+    type: table
+    title: Data requests
+    source: collection:data_requests
+    roles:
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: kind
+        label: Request
+      - key: email
+      - key: details
+      - key: status
+        format: badge
+      limit: 200
+  - key: account
+    type: account
+    title: Licence and credits
+    roles:
+    - admin
+    - applicant
+  billing:
+    modes:
+    - subscription
+    - credits
+    currency: eur
+    signupCredits: 5
+    costs:
+      agent:assessor: 1
+    packs:
+    - key: assessments_1000
+      credits: 1000
+      price: 2500
+      label: 1,000 assessments
+    plans:
+    - key: annual_licence
+      price: 24000
+      interval: year
+      label: Annual platform licence
+      includes:
+      - Underwriter queue
+      - Dashboards
+      - Audit log
+      roles:
+      - admin
+  extensions:
+  - key: insurer_tenancy
+    description: Each insurer organisation is deployed as its own app instance so data, roles and audit logs stay separated
+      per insurer; a single instance serving several insurers is not expressible in the manifest.
+  - key: health_api_connections
+    description: Direct connection to wearables and phone health apps through official APIs (Apple Health, Health Connect,
+      Fitbit, Garmin) needs OAuth sign-in to other services, which is not available yet; applicants upload an export file
+      meanwhile.
+  - key: insurer_billed_per_application
+    description: Per-application fees are billed as credits; charging them to the insurer's account instead of the applicant,
+      and the actuarial and proprietary ML models behind the risk_model slot, are outside the manifest.
+  - key: data_request_fulfilment
+    description: Data export, erasure and consent withdrawal requests are tracked and notified; the actual deletion or export
+      is carried out by the insurer admin from /admin/data.

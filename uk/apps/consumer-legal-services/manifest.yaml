@@ -1,0 +1,983 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: solvara
+  displayName: Solvara
+  tagline:
+    en: Everyday legal problems, explained by AI and handled by qualified solicitors.
+  description:
+    en: Describe your problem in a chat. An AI assistant asks the right questions, explains the general position with links
+      to legislation.gov.uk and prepares your matter. A qualified solicitor from our regulated network quotes a fixed fee
+      and takes it from there.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#1f2a44'
+      accent: '#2f7d6d'
+      background: '#f7f6f2'
+      foreground: '#1c1f26'
+    fonts:
+      body: Inter
+      display: Source Serif 4
+    wordmark:
+    - text: Sol
+      color: primary
+    - text: vara
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how-it-works'
+    - label: Matters we help with
+      href: '#matters'
+    cta:
+      label: Get started
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: Client
+      assignedBy: signup
+    - key: solicitor
+      label: Solicitor
+      assignedBy: derived
+      from: collection:solicitors.email
+  limits:
+  - action: chat
+    per: user
+    max: 60
+    window: day
+    roles:
+    - user
+  agents:
+  - key: assistant
+    role: main
+    description: Talks to the client, asks follow-up questions, classifies the matter, explains the general position with
+      legislation.gov.uk references and records the intake.
+    context:
+    - key: my_matters
+      from: collection:matters
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New message from the client: {message}
+
+
+      The client''s existing matters (JSON lines): {my_matters}
+
+      Reply in English.'
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.5
+    appTools:
+    - name: legislation_lookup
+      description: Look up UK legislation on legislation.gov.uk
+      action: http
+      http:
+        method: GET
+        url: https://www.legislation.gov.uk
+        allowPath: true
+        attribution: Contains public sector information licensed under the Open Government Licence v3.0 (legislation.gov.uk)
+    - name: read_matters
+      description: Read the client's own matters
+      action: read
+      collection: matters
+      scope: user
+    - name: save_matter
+      description: Create or update the client's matter with the classification and intake details collected so far
+      action: write
+      collection: matters
+      scope: user
+    profile:
+      inline:
+        display_name: Solvara assistant
+        chat_mode: true
+        crews:
+        - id: assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Solvara''s intake assistant for consumers with everyday legal problems in England and Wales.
+            You are NOT a solicitor and you give general legal information only, never legal advice. In every substantive
+            answer state clearly: ''This is general information, not legal advice. A solicitor will advise you on your own
+            situation.''
+
+
+            What you do:
+
+            1. Listen, then ask short follow-up questions, a few at a time, until you understand the problem.
+
+            2. Classify the matter as one of: tenancy_deposit, employment, small_claim, will, divorce, other. If it is outside
+            these or urgent (risk of eviction, arrest, violence, a court deadline within days), say so plainly and suggest
+            the relevant emergency or free service.
+
+            3. Explain the general position in plain English and cite the legislation with legislation.gov.uk links. Use legislation_lookup:
+            GET with path ''/all/data.feed'' and query ''title=<words>'' to find an Act, or a path like ''/ukpga/2004/34/section/213/data.xml''
+            to read a section. Only cite what you actually retrieved or are sure exists; never invent sections, case law or
+            figures. Mention time limits only as ''a time limit may apply, the solicitor will check'', and say when a limitation
+            date matters.
+
+            4. Collect the intake: a short title, summary, the client''s role (tenant, landlord, employee, employer, claimant,
+            defendant, testator, spouse, other), the other party''s role and name, the incident date, any deadline or limitation
+            date (YYYY-MM-DD), the amount in dispute, and the client''s email. Save it with save_matter (status ''intake'')
+            as you learn it. Do not guess dates or amounts.
+
+            5. Tell the client to open ''Complete intake'' to check the details, upload documents and send the matter to solicitors.
+            You cannot send it yourself.
+
+
+            Never promise outcomes, never draft letters or court documents, never say a solicitor has agreed to act. Be warm,
+            brief and clear.'
+  - key: drafter
+    role: helper
+    description: Drafts a letter requested by the solicitor on a matter; nothing is final until the solicitor approves it.
+    awaits:
+    - letter_approval
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.6
+    appTools:
+    - name: read_matters
+      description: Read the client's own matters
+      action: read
+      collection: matters
+      scope: user
+    - name: read_upload
+      description: Read a document the client uploaded
+      action: read_file
+    - name: save_letter
+      description: Save or update a letter draft
+      action: write
+      collection: letters
+      scope: user
+    profile:
+      inline:
+        display_name: Solvara letter drafter
+        crews:
+        - id: drafter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You draft letters for a regulated law firm. A solicitor has asked for a letter on a matter and gave
+            instructions. Read the matter with read_matters (and uploaded documents with read_upload, using the file id) and
+            write a formal, factual letter in English following the solicitor's instructions, using only facts from the matter
+            and documents; mark anything missing as [TO CONFIRM]. Never invent facts, dates, sums or legal citations. Start
+            the output with a level-1 title '# Draft letter - <subject>'. Save the draft with save_letter (matter title, title,
+            body, status 'draft', client_email, solicitor_email copied from the matter). Then call request_letter_approval
+            so the solicitor reviews it. Never mark a letter approved or sent yourself before the approval decision. When
+            you are told the approval was granted, update the letter with status 'approved' and nothing else.
+  inputForm:
+    title: Unused
+    fields: []
+  data:
+    collections:
+    - name: matters
+      description: 'Each client''s legal matters: classification, intake, quote and status'
+      ownedBy: user
+      fields:
+      - name: title
+        type: text
+        required: true
+        label: Title
+      - name: category
+        type: select
+        label: Type of matter
+        options:
+        - value: tenancy_deposit
+          label: Tenancy deposit
+        - value: employment
+          label: Employment dispute
+        - value: small_claim
+          label: Small claim
+        - value: will
+          label: Will
+        - value: divorce
+          label: Divorce
+        - value: other
+          label: Other
+      - name: summary
+        type: textarea
+        label: What happened
+        maxLength: 4000
+      - name: client_role
+        type: select
+        label: Your role
+        options:
+        - tenant
+        - landlord
+        - employee
+        - employer
+        - claimant
+        - defendant
+        - testator
+        - spouse
+        - other
+      - name: other_party_role
+        type: text
+        label: Other party's role
+      - name: other_party_name
+        type: text
+        label: Other party's name
+      - name: incident_date
+        type: date
+        label: Date it happened
+      - name: deadline_date
+        type: date
+        label: Deadline you know of
+      - name: limitation_date
+        type: date
+        label: Limitation date (if known)
+      - name: amount
+        type: number
+        label: Amount in dispute (GBP)
+      - name: documents
+        type: file
+        label: Documents
+        accept:
+        - pdf
+        - docx
+        - jpg
+        - jpeg
+        - png
+        maxMb: 10
+        multiple: true
+        extract: text
+      - name: client_email
+        type: email
+        label: Your email
+      - name: ready
+        type: boolean
+        label: Send my matter to solicitors
+      - name: status
+        type: select
+        label: Status
+        options:
+        - intake
+        - submitted
+        - offered
+        - quoted
+        - accepted
+        - paid
+        - in_progress
+        - letter_requested
+        - closed
+        default: intake
+      - name: solicitor_email
+        type: email
+        label: Solicitor the matter is offered to
+      - name: quote_fee
+        type: number
+        label: Fixed fee quote (GBP)
+      - name: quote_scope
+        type: textarea
+        label: What the fee covers
+      - name: accept_quote
+        type: boolean
+        label: I accept the quote
+      - name: letter_instructions
+        type: textarea
+        label: Instructions for the letter
+      access:
+      - role: solicitor
+        where:
+          solicitor_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: letters
+      description: Letters drafted by the agent; they need the solicitor's approval
+      ownedBy: user
+      fields:
+      - name: matter
+        type: text
+        label: Matter
+      - name: title
+        type: text
+        label: Letter
+      - name: body
+        type: textarea
+        label: Text
+      - name: status
+        type: select
+        label: Status
+        options:
+        - draft
+        - approved
+        - sent
+        default: draft
+      - name: client_email
+        type: email
+      - name: solicitor_email
+        type: email
+      access:
+      - role: solicitor
+        where:
+          solicitor_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: user
+        where:
+          client_email: '{user.email}'
+        can:
+        - read
+    - name: case_messages
+      description: Messages and documents exchanged between client and solicitor in a matter
+      ownedBy: user
+      retentionDays: 2555
+      fields:
+      - name: matter
+        type: select
+        required: true
+        label: Matter
+        optionsFrom: collection:matters
+      - name: body
+        type: textarea
+        required: true
+        label: Message
+      - name: attachment
+        type: file
+        label: Document
+        accept:
+        - pdf
+        - docx
+        - jpg
+        - png
+        maxMb: 10
+        multiple: true
+      - name: client_email
+        type: email
+        required: true
+        label: Client's email
+      - name: solicitor_email
+        type: email
+        required: true
+        label: Solicitor's email
+      access:
+      - role: user
+        where:
+          client_email: '{user.email}'
+        can:
+        - read
+      - role: solicitor
+        where:
+          solicitor_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: solicitors
+      description: The network of solicitors, kept by the admins
+      ownedBy: org
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Name
+      - name: email
+        type: email
+        required: true
+        label: Email
+      - name: sra_number
+        type: text
+        label: SRA number
+      - name: specialities
+        type: multiselect
+        label: Specialities
+        options:
+        - tenancy_deposit
+        - employment
+        - small_claim
+        - will
+        - divorce
+        - other
+      - name: capacity
+        type: number
+        label: Open matters it can take
+  views:
+  - key: home
+    type: page
+    title: Solvara
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: Legal help for everyday problems
+      title: Understand your **legal problem** today. Get a solicitor at a fixed fee.
+      text: Tell our AI assistant what happened. It asks the right questions, explains the general position with links to
+        the law and prepares your case. A qualified solicitor then quotes a fixed fee, and you decide.
+      actions:
+      - label: Start now
+        href: /login
+        style: primary
+      note: The assistant gives general information, not legal advice. Legal services are provided by our regulated law firm
+        and its solicitors.
+      aside: '<div style="padding:16px"><strong>Example</strong><p>My landlord has not protected my deposit. What can I do?</p><p>Assistant:
+        Let me ask a few questions, then explain the general position under the Housing Act 2004.</p></div>'
+    - type: steps
+      id: how-it-works
+      title: How it works
+      items:
+      - title: Describe it
+        text: Chat with the assistant, any time.
+        badge: 💬
+      - title: Check your intake
+        text: Confirm dates, roles, amounts and upload documents.
+        badge: 📝
+      - title: Get a fixed fee
+        text: A solicitor offered your matter quotes a fixed fee. You accept and pay securely by card.
+        badge: 💷
+      - title: Your solicitor takes over
+        text: Message your solicitor, share documents and get email updates. Every letter is approved by your solicitor.
+        badge: ⚖️
+    - type: cards
+      id: matters
+      title: Matters we help with
+      items:
+      - title: Tenancy deposits
+        text: Unprotected or withheld deposits.
+      - title: Employment disputes
+        text: Dismissal, pay and contract problems.
+      - title: Small claims
+        text: Unpaid money and faulty goods or services.
+      - title: Wills
+        text: Writing or updating a will.
+      - title: Divorce
+        text: Starting or responding to a divorce.
+    - type: note
+      content: Solvara is the software platform. Legal services are provided by our own SRA-regulated law firm and network
+        of solicitors. Solvara's AI assistant is not a solicitor and gives general information only, not legal advice.
+  - key: assistant_chat
+    type: chat
+    title: Ask the assistant
+    source: agent:assistant
+    examples:
+    - My landlord has not returned my deposit
+    - I was dismissed without notice
+    - Someone owes me 3,000 pounds
+    - I want to make a will
+    placeholder: Describe your problem
+    roles:
+    - user
+  - key: my_matters
+    type: table
+    title: My matters
+    source: collection:matters
+    roles:
+    - user
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Matter
+      - key: category
+        label: Type
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+      - key: quote_fee
+        label: Quote
+        format: money
+      - key: limitation_date
+        label: Limitation date
+        format: date
+      sort:
+        field: status
+        dir: asc
+      empty: No matters yet. Start with the assistant.
+  - key: intake
+    type: form
+    title: Complete intake
+    collection: matters
+    edit: true
+    fields:
+    - title
+    - category
+    - summary
+    - client_role
+    - other_party_role
+    - other_party_name
+    - incident_date
+    - deadline_date
+    - limitation_date
+    - amount
+    - documents
+    - client_email
+    - ready
+    submit:
+      label: Save intake
+      message: Saved. If you ticked 'Send my matter to solicitors', we will offer it to a solicitor and email you.
+      redirect: my_matters
+    roles:
+    - user
+  - key: accept
+    type: form
+    title: Accept quote
+    collection: matters
+    edit: true
+    fields:
+    - accept_quote
+    submit:
+      label: Accept quote
+      message: Thank you. We will email you the payment link.
+      redirect: my_matters
+    roles:
+    - user
+    nav: false
+  - key: queue
+    type: table
+    title: My queue
+    source: collection:matters
+    roles:
+    - solicitor
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Matter
+      - key: category
+        label: Type
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+      - key: amount
+        label: Amount
+        format: money
+      - key: deadline_date
+        label: Deadline
+        format: date
+      - key: limitation_date
+        label: Limitation
+        format: date
+      - key: quote_fee
+        label: Quote
+        format: money
+      sort:
+        field: deadline_date
+        dir: asc
+      empty: No matters offered to you at the moment.
+  - key: quote
+    type: form
+    title: Quote and accept
+    collection: matters
+    edit: true
+    fields:
+    - quote_fee
+    - quote_scope
+    - status
+    submit:
+      label: Send quote
+      message: Quote saved. The client is notified.
+      redirect: queue
+    roles:
+    - solicitor
+    nav: false
+  - key: request_letter
+    type: form
+    title: Request a letter
+    collection: matters
+    edit: true
+    fields:
+    - letter_instructions
+    - status
+    submit:
+      label: Ask the assistant to draft
+      message: Set the status to 'letter_requested'. The draft will appear for your approval.
+      redirect: queue
+    roles:
+    - solicitor
+    nav: false
+  - key: letters_list
+    type: table
+    title: Letters
+    source: collection:letters
+    roles:
+    - solicitor
+    - user
+    data:
+      display: table
+      fields:
+      - key: matter
+        label: Matter
+      - key: title
+        label: Letter
+      - key: status
+        label: Status
+        format: badge
+      - key: body
+        label: Text
+      empty: No letters yet.
+  - key: approvals
+    type: approvals
+    title: Letters to approve
+    approvals:
+    - letter_approval
+    roles:
+    - solicitor
+  - key: messages
+    type: table
+    title: Messages
+    source: collection:case_messages
+    roles:
+    - user
+    - solicitor
+    data:
+      display: list
+      fields:
+      - key: matter
+        label: Matter
+      - key: body
+        label: Message
+      - key: attachment
+        label: Documents
+      empty: No messages yet.
+  - key: send_message
+    type: form
+    title: Write a message
+    collection: case_messages
+    submit:
+      label: Send
+      message: Message sent.
+      redirect: messages
+    roles:
+    - user
+    - solicitor
+  - key: all_matters
+    type: table
+    title: All matters
+    source: collection:matters
+    roles:
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Matter
+      - key: category
+        label: Type
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+      - key: solicitor_email
+        label: Solicitor
+      - key: quote_fee
+        label: Quote
+        format: money
+      - key: limitation_date
+        label: Limitation
+        format: date
+      sort:
+        field: status
+        dir: asc
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - admin
+    sections:
+    - type: data
+      title: Matters
+      source: collection:matters
+      display: kpi
+      kpis:
+      - label: Matters
+        agg: count
+      - label: Value of quotes
+        agg: sum
+        field: quote_fee
+        format: money
+      - label: Average quote
+        agg: avg
+        field: quote_fee
+        format: money
+    - type: data
+      title: Paid matters (conversion)
+      source: collection:matters
+      display: kpi
+      filters:
+      - field: status
+        op: '='
+        value: paid
+      kpis:
+      - label: Paid matters
+        agg: count
+      - label: Paid fees
+        agg: sum
+        field: quote_fee
+        format: money
+    - type: data
+      title: Matters by stage
+      source: collection:matters
+      display: chart
+      chart: bar
+      fields:
+      - key: status
+      - key: count
+      groupBy:
+        field: status
+        aggs:
+        - key: fees
+          agg: sum
+          field: quote_fee
+    - type: data
+      title: Matters by type
+      source: collection:matters
+      display: chart
+      chart: pie
+      fields:
+      - key: category
+      - key: count
+      groupBy:
+        field: category
+        aggs: []
+    - type: data
+      title: Solicitor workload
+      source: collection:matters
+      display: table
+      fields:
+      - key: solicitor_email
+        label: Solicitor
+      - key: count
+        label: Matters
+      - key: fees
+        label: Quoted fees
+        format: money
+      groupBy:
+        field: solicitor_email
+        aggs:
+        - key: fees
+          agg: sum
+          field: quote_fee
+  approvals:
+  - key: letter_approval
+    title: Approve letter before it is sent
+    description: A letter drafted by the agent must be approved by the solicitor
+    role: solicitor
+    decidedBy: role
+    fields:
+    - title
+    - body
+    timeoutMinutes: 10080
+    onTimeout: reject
+  triggers:
+  - key: matter_submitted
+    description: 'Client sent the matter to solicitors: tell the admins to offer it'
+    'on':
+      collection: matters
+      op: update
+      where:
+        ready: true
+    notify:
+      to: admins
+      subject: 'New matter to offer: {record.title}'
+      body: A client has completed the intake of '{record.title}' ({record.category}). Please offer it to a solicitor.
+      link: all_matters
+  - key: matter_offered
+    'on':
+      collection: matters
+      op: update
+      where:
+        status: offered
+    notify:
+      to:
+      - record.solicitor_email
+      subject: 'A matter was offered to you: {record.title}'
+      body: A new matter '{record.title}' is waiting in your queue. Please review it and send a fixed fee quote.
+      link: queue
+  - key: matter_quoted
+    'on':
+      collection: matters
+      op: update
+      where:
+        status: quoted
+    notify:
+      to:
+      - owner
+      subject: Your fixed fee quote for {record.title}
+      body: A solicitor has quoted a fixed fee for '{record.title}'. Open your matters to read what it covers and accept it.
+      link: my_matters
+  - key: matter_accepted
+    'on':
+      collection: matters
+      op: update
+      where:
+        status: accepted
+    notify:
+      to:
+      - owner
+      - record.solicitor_email
+      subject: 'Quote accepted: {record.title}'
+      body: The quote for '{record.title}' has been accepted. The client will pay securely by card, then work begins.
+      link: my_matters
+  - key: matter_paid
+    'on':
+      collection: matters
+      op: update
+      where:
+        status: paid
+    notify:
+      to:
+      - owner
+      - record.solicitor_email
+      subject: 'Payment received: {record.title}'
+      body: Payment for '{record.title}' has been received. Your solicitor will now start work. You can exchange messages
+        and documents in the case.
+      link: messages
+  - key: matter_closed
+    'on':
+      collection: matters
+      op: update
+      where:
+        status: closed
+    notify:
+      to:
+      - owner
+      subject: 'Your matter is closed: {record.title}'
+      body: Your matter '{record.title}' has been closed. Thank you for using Solvara.
+      link: my_matters
+  - key: payment_received
+    'on':
+      payment: '*'
+    notify:
+      to:
+      - owner
+      - admins
+      subject: Payment received
+      body: We have received a payment on Solvara. Thank you.
+      link: my_matters
+  - key: new_message
+    'on':
+      collection: case_messages
+      op: insert
+    notify:
+      to:
+      - record.client_email
+      - record.solicitor_email
+      subject: New message in your matter
+      body: There is a new message in your matter. Sign in to read it.
+      link: messages
+  - key: limitation_reminder
+    'on':
+      date:
+        collection: matters
+        field: limitation_date
+        offsetDays: -30
+        hour: 8
+    notify:
+      to:
+      - owner
+      - record.solicitor_email
+      subject: 'Limitation date in 30 days: {record.title}'
+      body: A limitation date for '{record.title}' falls in 30 days. Please make sure the necessary steps are taken in time.
+      link: my_matters
+  - key: deadline_reminder
+    'on':
+      date:
+        collection: matters
+        field: deadline_date
+        offsetDays: -3
+        hour: 8
+    notify:
+      to:
+      - owner
+      - record.solicitor_email
+      subject: 'Deadline in 3 days: {record.title}'
+      body: A deadline for '{record.title}' is in 3 days.
+      link: my_matters
+  - key: draft_letter
+    description: 'The solicitor asked for a letter: the agent drafts it for approval'
+    'on':
+      collection: matters
+      op: update
+      where:
+        status: letter_requested
+    start:
+      agent: drafter
+    goal: 'The solicitor asked for a letter on the matter ''{record.title}'' ({record.category}). Instructions: {record.letter_instructions}.
+      Matter summary: {record.summary}. Client email: {record.client_email}. Solicitor email: {record.solicitor_email}. Draft
+      the letter, save it as a draft and ask for approval.'
+  - key: letter_approved
+    'on':
+      approval: letter_approval
+      decision: approved
+    start:
+      agent: drafter
+    goal: The solicitor approved the letter ({event}). Update the letter's status to 'approved'.
+  - key: letter_rejected
+    'on':
+      approval: letter_approval
+      decision: rejected
+    notify:
+      to: admins
+      subject: A letter was rejected by the solicitor
+      body: A drafted letter was rejected. The solicitor may request a new draft.
+      link: all_matters
+  billing:
+    modes:
+    - per_transaction
+    currency: gbp
+    transactionFeePct: 15
+    sellers: collection:solicitors
+  egress:
+    hosts:
+    - www.legislation.gov.uk
+    notes: legislation.gov.uk, UK legislation published under the Open Government Licence v3.0, reuse allowed with attribution.
+  extensions:
+  - key: sra_regulation
+    description: Legal work and reserved activities are done by the owner's own SRA-authorised law firm and solicitors; the
+      app only provides software around it. Terms, engagement letters and complaints process to be supplied by the firm.
+  - key: quote_checkout
+    description: Paying the accepted fixed fee by Stripe (platform commission, remainder to the solicitor) and moving the
+      matter to 'paid' needs a checkout tied to the quote. The commission is set as the per-transaction fee; the exact checkout
+      flow may need custom work.
+  - key: matter_offer
+    description: Admins offer a matter by setting status 'offered' and the solicitor's email on the built-in data page. Automatic
+      matching by speciality and workload is not available; the participants' emails in messages are entered on the form.
+  - key: sms_notifications
+    description: SMS, WhatsApp and push messages are not available yet; updates go by email.

@@ -1,0 +1,1011 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: fundrift
+  displayName: Fundrift
+  tagline: Instant invoice finance and working capital for small businesses.
+  description: 'Fundrift is the software around a regulated lending partner: it builds the application file, checks each invoice
+    you want to fund, tracks the facility and reconciles repayments. The lending decision and the funding are made by the
+    partner and its funders.'
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0b2545'
+      accent: '#13a89e'
+      background: '#f6f8fb'
+      foreground: '#14202e'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Fund
+      color: primary
+    - text: rift
+      color: accent
+    buttonShape: rounded
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Get started
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: underwriter
+      label: Partner underwriter
+      assignedBy: invite
+    - key: user
+      label: Business
+      assignedBy: signup
+  agents:
+  - key: analyst
+    role: main
+    description: Pulls Companies House data, analyses the ledger and customer concentration, and builds the application file
+      for the partner's underwriting.
+    profile:
+      inline:
+        display_name: Fundrift application analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare an application file for a regulated UK invoice-finance partner''s underwriters. You
+            do NOT make or promise a lending decision, limit or price: the partner does. Steps: 1) Call companies_house with
+            path /company/<number> (and /company/<number>/officers, /company/<number>/charges, /company/<number>/filing-history)
+            to get status, incorporation date, SIC codes, accounts and filing status, directors, charges and insolvency flags.
+            2) Read the ledger: use the supplied text; if a file is an image or scan, call read_upload with the file id. For
+            every open or recent sales invoice call add_ledger_row (number, debtor, amount, issue_date, due_date, paid). 3)
+            Analyse the ledger and bank statement text: ageing buckets, average days to pay per debtor, customer concentration
+            (share of the top 1, top 3 debtors), disputes or credit notes, bank inflows versus ledger receipts, mismatches.
+            4) Call save_application once with company_number, company_name, sector, amount_requested, summary (5 lines),
+            risk_rating (low|medium|high, a screening opinion only), concentration_pct (top debtor share) and status submitted.
+            Report format: start with a level-1 title ''# Application file — <company name> (<number>)''. Then ## Company
+            (Companies House facts), ## Request, ## Ledger analysis (with a table of debtors: amount, share, average days
+            to pay, and one chart), ## Customer concentration, ## Bank cross-check, ## Red flags and data gaps, ## Questions
+            for underwriting. Add the chart as a fenced block: ```chart {"type":"bar","title":"Open invoices by debtor","labels":[...],"series":[{"name":"Open
+            amount","values":[...]}],"unit":"GBP"}```. Use only real figures from the data; write ''not available'' for anything
+            you could not verify; never invent numbers. State that the accounting software and bank were provided as uploaded
+            exports.'
+    goalTemplate: 'Company number: {company_number}
+
+      Sector: {sector_label}
+
+      Main customers: {main_customers}
+
+      Amount needed: {amount} GBP
+
+      Applicant: {user}
+
+      {?ledger}Ledger files (ids): {ledger}
+
+      Ledger text:
+
+      {ledger_text}{/ledger}
+
+      {?bank_statement}Bank statement files (ids): {bank_statement}
+
+      Bank text:
+
+      {bank_statement_text}{/bank_statement}
+
+      Today is {date}. Write the file in the language with ISO code {lang}.'
+    appTools:
+    - name: companies_house
+      description: 'Query the Companies House API: path like /company/<number>, /company/<number>/officers, /company/<number>/charges'
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk
+        allowPath: true
+        attribution: Companies House, Open Government Licence v3.0
+        credential:
+          provider: companies_house
+          header: Authorization
+          format: Basic {secret}
+    - name: read_upload
+      description: Read a file the user uploaded (OCR for images)
+      action: read_file
+    - name: add_ledger_row
+      description: Save one sales invoice from the user's ledger
+      action: append
+      collection: ledger_invoices
+      scope: user
+    - name: save_application
+      description: Save the application summary for the partner queue
+      action: append
+      collection: applications
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 0.6
+  - key: checker
+    role: helper
+    description: Checks each invoice submitted for funding against the ledger and the debtor's history, then asks the partner
+      to approve.
+    awaits:
+    - funding
+    profile:
+      inline:
+        display_name: Fundrift invoice checker
+        crews:
+        - id: checker
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You check one invoice submitted for funding. Use read_ledger and read_invoices. Verify: the invoice
+            number exists in the ledger with the same debtor, amount and dates; it is not already funded or duplicated; it
+            is not past due or paid; the debtor''s payment history (days to pay, earlier funded invoices, late or unpaid ones)
+            is acceptable; the debtor is not above the customer concentration shown in the application; amount is within the
+            available facility (read_invoices and the ledger only: if unsure, flag). If all checks pass, call update_invoice
+            with status checked and a short check_note, then call request_funding with the invoice number, debtor, amount
+            and your findings. If any check fails or is unclear, call update_invoice with status exception and the reasons
+            in check_note, and do not request funding. You never decide funding: the partner does. Never invent data. End
+            with a 3-line summary.'
+    goalTemplate: 'A new invoice was submitted for funding. Event: {event}
+
+      Check it and proceed as instructed. Today is {date}.'
+    appTools:
+    - name: read_ledger
+      description: Read the user's ledger invoices
+      action: read
+      collection: ledger_invoices
+      scope: user
+    - name: read_invoices
+      description: Read the user's invoices submitted for funding
+      action: read
+      collection: invoices
+      scope: user
+    - name: update_invoice
+      description: Update an invoice record (status, notes, amounts, dates)
+      action: write
+      collection: invoices
+      scope: user
+    output: markdown
+  - key: settler
+    role: helper
+    description: Opens the facility on approval, books approved advances and fees, and reconciles debtor payments.
+    profile:
+      inline:
+        display_name: Fundrift settlement agent
+        crews:
+        - id: settler
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You keep the facility books for one business, following the partner''s decisions exactly. Three
+            jobs, according to the event you receive. (1) Facility approved: with read_applications and update_application
+            set available equal to facility_limit. (2) Funding approved by the partner: find the invoice (read_invoices),
+            take advance_pct and fee_pct from the approved application (read_applications; if missing, stop and say so), then
+            call update_invoice with status funded, advance = amount x advance_pct/100, fee = amount x fee_pct/100, funded_date
+            = today, repayment_date = the invoice due_date; then update_application with available reduced by the advance.
+            (3) Debtor payment recorded (status paid, paid_date, paid_amount): compare paid_amount with the amount; if it
+            matches, call update_invoice with status settled and a check_note with the settlement (amount received, advance
+            repaid, fee, rebate due to the business = amount - advance - fee) and update_application with available increased
+            by the advance; if it does not match, set status exception with the difference in check_note. Round to pence.
+            Never invent figures. End with a 3-line summary.'
+    goalTemplate: 'Event: {event}
+
+      Today is {date}. Do the matching job.'
+    appTools:
+    - name: read_invoices
+      description: Read the user's invoices submitted for funding
+      action: read
+      collection: invoices
+      scope: user
+    - name: update_invoice
+      description: Update an invoice record (status, notes, amounts, dates)
+      action: write
+      collection: invoices
+      scope: user
+    - name: read_applications
+      description: Read the user's applications and facility
+      action: read
+      collection: applications
+      scope: user
+    - name: update_application
+      description: Update the user's application/facility record
+      action: write
+      collection: applications
+      scope: user
+    output: markdown
+  - key: statementer
+    role: scheduled
+    description: Writes each business's monthly statement.
+    writesTo:
+      collection: statements
+    profile:
+      inline:
+        display_name: Fundrift statement writer
+        crews:
+        - id: statementer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write a monthly account statement for one business. Use read_invoices and read_applications.
+            Start with ''# Statement — <month year>''. Sections: ## Facility (limit, available, utilisation), ## Funded invoices
+            (table: number, debtor, amount, advance, fee, repayment date), ## Settled this month, ## Upcoming repayments,
+            ## Exceptions needing attention. Use only recorded figures; never invent any. Plain, short.'
+    goalTemplate: Write the statement for {instance}, period {period_label}. Today is {date}. Language ISO code {lang}.
+    appTools:
+    - name: read_invoices
+      description: Read the user's invoices submitted for funding
+      action: read
+      collection: invoices
+      scope: user
+    - name: read_applications
+      description: Read the user's applications and facility
+      action: read
+      collection: applications
+      scope: user
+    output: markdown
+  templates:
+  - key: statement
+    title: Monthly statement
+    description: A statement of your facility and funded invoices, emailed on the 1st of each month.
+    agent: statementer
+    params:
+    - name: period
+      type: select
+      required: true
+      label: Period
+      options:
+      - value: previous_month
+        label: Previous month
+    goal: Write the statement for {instance}, period {period}. Today is {date}.
+    schedule:
+      cron: 0 7 1 * *
+      userCanChange: false
+    maxPerUser: 1
+    deliver:
+      to: owner
+      subject: Your Fundrift statement
+      onlyIfNew: true
+  approvals:
+  - key: funding
+    title: Approve funding of an invoice
+    description: The partner approves or rejects advancing against a checked invoice.
+    role: underwriter
+    fields:
+    - number
+    - debtor
+    - amount
+    timeoutMinutes: 1440
+    onTimeout: reject
+  triggers:
+  - key: application_in
+    description: Tell underwriters a new application is waiting
+    'on':
+      collection: applications
+      op: insert
+      where:
+        status: submitted
+    notify:
+      to: role:underwriter
+      subject: 'New application: {record.company_name}'
+      body: A new application file for {record.company_name} ({record.company_number}) is waiting in the queue.
+      link: queue
+  - key: application_approved
+    'on':
+      collection: applications
+      op: update
+      where:
+        status: approved
+    notify:
+      to: owner
+      subject: Your facility is approved
+      body: Your lending partner has approved a facility of {record.facility_limit} GBP at a fee of {record.fee_pct}% per
+        funded invoice. You can now select invoices to fund.
+      link: dashboard
+  - key: application_open
+    'on':
+      collection: applications
+      op: update
+      where:
+        status: approved
+    start:
+      agent: settler
+    goal: 'Facility approved for {record.company_name}: limit {record.facility_limit}, advance {record.advance_pct}%, fee
+      {record.fee_pct}%. Do job 1 (open the facility).'
+  - key: application_declined
+    'on':
+      collection: applications
+      op: update
+      where:
+        status: declined
+    notify:
+      to: owner
+      subject: Your application
+      body: 'Your lending partner could not offer a facility at this time. Note from the partner: {record.decision_note}'
+      link: dashboard
+  - key: invoice_submitted
+    'on':
+      collection: invoices
+      op: insert
+    start:
+      agent: checker
+    goal: 'Invoice submitted for funding: number {record.number}, debtor {record.debtor}, amount {record.amount}, due {record.due_date}.
+      Check it against the ledger and debtor history.'
+  - key: funding_approved
+    'on':
+      approval: funding
+      decision: approved
+    start:
+      agent: settler
+    goal: 'The partner approved funding. Event: {event}. Do job 2 (book the advance and fee).'
+  - key: invoice_funded
+    'on':
+      collection: invoices
+      op: update
+      where:
+        status: funded
+    notify:
+      to: owner
+      subject: Invoice {record.number} funded
+      body: The partner approved funding of invoice {record.number}. Advance {record.advance} GBP, fee {record.fee} GBP, repayment
+        expected {record.repayment_date}. Payout within hours.
+      link: dashboard
+  - key: invoice_paid
+    'on':
+      collection: invoices
+      op: update
+      where:
+        status: paid
+    start:
+      agent: settler
+    goal: 'A debtor payment was recorded for invoice {record.number}: amount {record.paid_amount} on {record.paid_date}. Do
+      job 3 (reconcile and settle).'
+  - key: invoice_exception
+    'on':
+      collection: invoices
+      op: update
+      where:
+        status: exception
+    notify:
+      to: role:underwriter
+      subject: 'Exception: invoice {record.number}'
+      body: 'Invoice {record.number} ({record.debtor}, {record.amount} GBP) needs a human look: {record.check_note}'
+      link: queue
+  - key: repayment_reminder
+    'on':
+      date:
+        collection: invoices
+        field: repayment_date
+        offsetDays: -2
+        hour: 8
+      where:
+        status: funded
+    notify:
+      to: owner
+      subject: 'Repayment due soon: invoice {record.number}'
+      body: Invoice {record.number} ({record.debtor}) is expected to be repaid on {record.repayment_date}. Make sure your
+        customer is ready to pay.
+      link: dashboard
+  inputForm:
+    title: New application
+    fields:
+    - name: company_number
+      type: text
+      required: true
+      maxLength: 10
+      label: Companies House number
+      help: e.g. 01234567
+    - name: sector
+      type: select
+      required: true
+      label: Sector
+      options:
+      - value: services
+        label: Professional services
+      - value: construction
+        label: Construction
+      - value: manufacturing
+        label: Manufacturing
+      - value: wholesale
+        label: Wholesale and distribution
+      - value: staffing
+        label: Recruitment and staffing
+      - value: tech
+        label: Technology
+      - value: other
+        label: Other
+    - name: main_customers
+      type: textarea
+      required: true
+      maxLength: 600
+      label: Main customers
+    - name: amount
+      type: number
+      required: true
+      label: Amount needed (GBP)
+    - name: ledger
+      type: file
+      required: true
+      accept:
+      - csv
+      - xlsx
+      - pdf
+      maxMb: 15
+      multiple: false
+      label: Sales invoice ledger export
+      help: Export from Xero, QuickBooks or Sage (direct connection is coming)
+    - name: bank_statement
+      type: file
+      accept:
+      - csv
+      - pdf
+      maxMb: 15
+      multiple: true
+      label: Bank statements, last 6 months
+      help: Open Banking connection is coming
+  data:
+    collections:
+    - name: applications
+      description: Application files and facility terms set by the lending partner
+      ownedBy: user
+      fields:
+      - name: company_number
+        type: text
+      - name: company_name
+        type: text
+      - name: sector
+        type: text
+      - name: amount_requested
+        type: number
+      - name: summary
+        type: textarea
+      - name: risk_rating
+        type: select
+        options:
+        - low
+        - medium
+        - high
+      - name: concentration_pct
+        type: number
+      - name: status
+        type: select
+        options:
+        - submitted
+        - in_review
+        - info_needed
+        - approved
+        - declined
+      - name: facility_limit
+        type: number
+      - name: available
+        type: number
+      - name: advance_pct
+        type: number
+      - name: fee_pct
+        type: number
+      - name: decision_note
+        type: textarea
+      access:
+      - role: underwriter
+        can:
+        - read
+        - write
+      retentionDays: 2555
+    - name: ledger_invoices
+      description: Sales invoices read from the business's ledger
+      ownedBy: user
+      fields:
+      - name: number
+        type: text
+      - name: debtor
+        type: text
+      - name: amount
+        type: number
+      - name: issue_date
+        type: date
+      - name: due_date
+        type: date
+      - name: paid
+        type: boolean
+      access:
+      - role: underwriter
+      retentionDays: 2555
+    - name: invoices
+      description: Invoices selected for funding, with checks, advance, fee and settlement
+      ownedBy: user
+      fields:
+      - name: number
+        type: text
+        required: true
+        label: Invoice number
+      - name: debtor
+        type: text
+        required: true
+        label: Customer (debtor)
+      - name: amount
+        type: number
+        required: true
+        label: Amount (GBP)
+      - name: issue_date
+        type: date
+        label: Issue date
+      - name: due_date
+        type: date
+        required: true
+        label: Due date
+      - name: status
+        type: select
+        options:
+        - submitted
+        - checked
+        - exception
+        - funded
+        - paid
+        - settled
+        - rejected
+      - name: check_note
+        type: textarea
+      - name: advance
+        type: number
+      - name: fee
+        type: number
+      - name: funded_date
+        type: date
+      - name: repayment_date
+        type: date
+      - name: paid_date
+        type: date
+      - name: paid_amount
+        type: number
+      access:
+      - role: underwriter
+        can:
+        - read
+        - write
+      retentionDays: 2555
+    - name: statements
+      description: Monthly statements of each business
+      ownedBy: instance
+    credentials:
+    - provider: companies_house
+      kind: api_key
+      scope: org
+      label: Companies House API key
+      help: Register at developer.company-information.service.gov.uk. Paste the base64 of '<api key>:' (key as username, empty
+        password).
+  egress:
+    hosts:
+    - api.company-information.service.gov.uk
+    notes: Companies House public API, Open Government Licence v3.0, reuse allowed with attribution.
+  views:
+  - key: home
+    type: page
+    title: Fundrift
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: Invoice finance for small businesses
+      title: Get paid for your invoices **in hours**, not months.
+      text: Send us your company number and ledger. Fundrift builds your application file for our regulated lending partner,
+        then checks every invoice you want to fund. The partner decides and funds.
+      actions:
+      - label: Apply now
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Apply
+        text: Company number, sector, customers, amount, plus your ledger and bank statements.
+      - title: Get a facility
+        text: We build the file from Companies House and your ledger; the partner returns a limit and pricing.
+      - title: Fund invoices
+        text: Select invoices; each one is checked against your ledger and debtor history, then approved by the partner.
+      - title: Repay when your customer pays
+        text: Payments are reconciled and the advance settled. You see everything on your dashboard.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: A fee per funded invoice
+        text: Set by the lending partner for your facility, shown before you fund. No fee for applying.
+    - type: note
+      content: Fundrift is software. Credit decisions, funding and regulated activity are provided by our lending partner
+        and its funders. Capital at risk of fees if invoices are paid late.
+  - key: new_application
+    type: new_run
+    title: New application
+    roles:
+    - user
+    - admin
+  - key: applications_history
+    type: history
+    title: My application files
+    source: run
+    roles:
+    - user
+    - admin
+  - key: application_file
+    type: report
+    title: Application file
+    source: run
+    printable: true
+    nav: false
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - user
+    - admin
+    sections:
+    - type: data
+      id: facility
+      title: Facility
+      source: collection:applications
+      display: kpi
+      kpis:
+      - label: Facility limit
+        agg: sum
+        field: facility_limit
+        format: money
+      - label: Available
+        agg: sum
+        field: available
+        format: money
+      - label: Fee per invoice (%)
+        agg: last
+        field: fee_pct
+        format: number
+      empty: No facility yet. Start with a new application.
+    - type: data
+      id: funded
+      title: Funded invoices
+      source: collection:invoices
+      display: table
+      fields:
+      - key: number
+        label: Invoice
+      - key: debtor
+        label: Customer
+      - key: amount
+        label: Amount
+        format: money
+      - key: advance
+        label: Advance
+        format: money
+      - key: fee
+        label: Fee
+        format: money
+      - key: repayment_date
+        label: Repayment date
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      filters:
+      - field: status
+        op: '='
+        value: funded
+      sort:
+        field: repayment_date
+        dir: asc
+      limit: 50
+      empty: No funded invoices yet.
+    - type: data
+      title: Fees by month
+      source: collection:invoices
+      display: chart
+      chart: bar
+      fields:
+      - key: funded_date
+        label: Month
+      - key: fees
+        label: Fees
+      groupBy:
+        field: funded_date
+        bucket: month
+        aggs:
+        - key: fees
+          agg: sum
+          field: fee
+    - type: view
+      title: All my invoices
+      view: my_invoices
+  - key: fund_invoice
+    type: form
+    title: Fund an invoice
+    collection: invoices
+    fields:
+    - number
+    - debtor
+    - amount
+    - issue_date
+    - due_date
+    submit:
+      label: Submit for funding
+      message: Submitted. We are checking it against your ledger now.
+      redirect: dashboard
+    edit: false
+    roles:
+    - user
+  - key: my_invoices
+    type: table
+    title: My invoices
+    source: collection:invoices
+    roles:
+    - user
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: number
+        label: Invoice
+      - key: debtor
+        label: Customer
+      - key: amount
+        label: Amount
+        format: money
+      - key: due_date
+        label: Due
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      - key: check_note
+        label: Note
+      sort:
+        field: due_date
+        dir: desc
+      limit: 100
+  - key: ledger
+    type: table
+    title: My ledger
+    source: collection:ledger_invoices
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: number
+        label: Invoice
+      - key: debtor
+        label: Customer
+      - key: amount
+        label: Amount
+        format: money
+      - key: due_date
+        label: Due
+        format: date
+      - key: paid
+        label: Paid
+        format: badge
+      limit: 200
+  - key: statements
+    type: table
+    title: Statements
+    source: collection:statements
+    roles:
+    - user
+    - admin
+  - key: watches
+    type: instances
+    title: Statement settings
+    template: statement
+    roles:
+    - user
+  - key: queue
+    type: page
+    title: Underwriting queue
+    roles:
+    - underwriter
+    - admin
+    sections:
+    - type: data
+      title: Applications to review
+      source: collection:applications
+      display: table
+      fields:
+      - key: company_name
+        label: Company
+      - key: company_number
+        label: Number
+      - key: amount_requested
+        label: Requested
+        format: money
+      - key: risk_rating
+        label: Screening
+        format: badge
+      - key: concentration_pct
+        label: Top debtor %
+        format: number
+      - key: status
+        label: Status
+        format: badge
+      - key: summary
+        label: Summary
+      filters:
+      - field: status
+        op: '='
+        value: submitted
+      limit: 50
+      empty: No applications waiting.
+    - type: data
+      title: Invoice exceptions
+      source: collection:invoices
+      display: table
+      fields:
+      - key: number
+        label: Invoice
+      - key: debtor
+        label: Debtor
+      - key: amount
+        label: Amount
+        format: money
+      - key: check_note
+        label: Reason
+      filters:
+      - field: status
+        op: '='
+        value: exception
+      limit: 50
+      empty: No exceptions.
+    - type: data
+      title: Funded, awaiting debtor payment
+      source: collection:invoices
+      display: table
+      fields:
+      - key: number
+        label: Invoice
+      - key: debtor
+        label: Debtor
+      - key: amount
+        label: Amount
+        format: money
+      - key: advance
+        label: Advance
+        format: money
+      - key: repayment_date
+        label: Expected
+        format: date
+      filters:
+      - field: status
+        op: '='
+        value: funded
+      sort:
+        field: repayment_date
+        dir: asc
+      limit: 100
+  - key: decide
+    type: form
+    title: Facility decision
+    collection: applications
+    fields:
+    - status
+    - facility_limit
+    - advance_pct
+    - fee_pct
+    - decision_note
+    submit:
+      label: Save decision
+      message: Decision saved.
+      redirect: queue
+    edit: true
+    roles:
+    - underwriter
+    - admin
+    nav: false
+  - key: reconcile
+    type: form
+    title: Record debtor payment
+    collection: invoices
+    fields:
+    - status
+    - paid_date
+    - paid_amount
+    submit:
+      label: Record payment
+      message: Payment recorded; reconciling.
+      redirect: queue
+    edit: true
+    roles:
+    - underwriter
+    - admin
+    nav: false
+  - key: funding_approvals
+    type: approvals
+    title: Funding approvals
+    approvals:
+    - funding
+    roles:
+    - underwriter
+    - admin
+  - key: admin
+    type: admin
+    title: Admin
+    roles:
+    - admin
+  notifications:
+    emailOnRunDone: true
+  extensions:
+  - key: accounting_oauth
+    description: Connecting Xero, QuickBooks or Sage via OAuth is not available yet. For now the business uploads a ledger
+      export (CSV/XLSX/PDF).
+  - key: open_banking
+    description: Open Banking (OAuth to bank accounts) is not available yet. For now the business uploads bank statements
+      (CSV/PDF).
+  - key: payout_and_collection
+    description: Payout of advances and collection of debtor payments happen on the partner's rails. The partner or admin
+      records debtor payments in the reconcile form; automatic bank matching needs Open Banking.
+  - key: platform_share
+    description: Platform share of the per-invoice fee is not computed by the app. Fees are set by the partner (fee_pct) and
+      the share is settled with the partner outside the app; the funded fee column supports the monthly statement.
+  - key: companies_house_key
+    description: The Companies House key is an org credential set by admins as the base64 of '<key>:' for Basic authentication.

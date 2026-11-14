@@ -1,0 +1,705 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: draftory
+  displayName: Draftory
+  tagline:
+    en: Draft and review contracts in plain English.
+  description:
+    en: Draftory helps small businesses and their advisers draft contracts from a template library, review third-party contracts
+      for risky clauses, and keep track of renewals. Draftory is decision support, not legal advice.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f2a44'
+      accent: '#2f6f73'
+      background: '#f8f7f4'
+      foreground: '#1b1f24'
+    fonts:
+      body: Inter
+      display: Source Serif 4
+    wordmark:
+    - text: Draft
+      color: primary
+    - text: ory
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how-it-works'
+    - label: Sources
+      href: '#sources'
+    cta:
+      label: Start free
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: user
+      label: User
+      assignedBy: signup
+  limits:
+  - action: run
+    per: user
+    max: 3
+    window: month
+    roles:
+    - user
+    plans:
+      solo: 40
+      team: -1
+  egress:
+    hosts:
+    - www.legislation.gov.uk
+    notes: Statute references come only from legislation.gov.uk, reused under the Open Government Licence v3.0.
+  agents:
+  - key: drafter
+    role: main
+    when: mode == 'draft'
+    description: Drafts a contract from the template library, explains each clause and flags missing information.
+    profile:
+      inline:
+        display_name: Draftory drafter
+        crews:
+        - id: drafter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Draftory, an assistant that drafts contracts for small businesses under the law of England
+            and Wales or of Scotland. You are not a law firm: your drafts are starting points for review, not legal advice.
+
+
+            Process: 1) call search_templates to fetch the template of the chosen contract type and jurisdiction from the
+            library and base the draft on it; never invent clauses that conflict with it. 2) Fill in the parties, dates, fees,
+            term, notice period and special terms from the goal. Where information is missing, put [TO CONFIRM: ...] in the
+            text and list it as a question. 3) Where a statute matters (for example the Late Payment of Commercial Debts (Interest)
+            Act 1998, the Employment Rights Act 1996, the Companies Act 2006), look it up with legislation_lookup and cite
+            only what you retrieved, with its legislation.gov.uk link. Use Scots law terms for Scotland (for example ''delivery'',
+            ''heritable'', ''interdict''). Never cite case law or any source other than legislation.gov.uk. Never invent figures.
+            4) Call save_contract once with title, kind, jurisdiction, status ''draft'', counterparty and renewal_date if
+            given. 5) Call request_accept_changes with the list of choices and open questions the user must confirm.
+
+
+            Output in plain English, with this structure: a level-1 title "# <Contract type> — <Party A> and <Party B>", then
+            ## Draft contract (numbered clauses), ## Clause explanations (one or two plain-English sentences for each clause),
+            ## Open questions (a bulleted list of the missing information), ## Statutes referred to (title, section, link).
+            End with one line saying this is not legal advice.'
+    goalTemplate: 'Mode: draft a contract.
+
+      Contract type: {contract_type_label}
+
+      Jurisdiction: {jurisdiction_label}
+
+      {?party_a}Party A: {party_a}{/party_a}
+
+      {?party_b}Party B: {party_b}{/party_b}
+
+      {?effective_date}Effective date: {effective_date}{/effective_date}
+
+      {?fees}Fees: {fees}{/fees}
+
+      {?term}Term: {term}{/term}
+
+      {?notice_period}Notice period: {notice_period}{/notice_period}
+
+      {?renewal_date}Renewal date: {renewal_date}{/renewal_date}
+
+      {?special_terms}Special terms: {special_terms}{/special_terms}
+
+      Write in English.'
+    appTools:
+    - name: search_templates
+      description: Search the contract template library (admin-managed)
+      action: search
+      collection: templates
+      scope: all
+    - name: legislation_lookup
+      description: Fetch legislation from legislation.gov.uk (for example /ukpga/1998/20/section/1/data.xml or /search?title=...)
+      action: http
+      http:
+        method: GET
+        url: https://www.legislation.gov.uk
+        allowPath: true
+        attribution: Contains public sector information licensed under the Open Government Licence v3.0, legislation.gov.uk
+    - name: save_contract
+      description: Save the contract in the user's dashboard
+      action: append
+      collection: contracts
+      scope: user
+    awaits:
+    - accept_changes
+    output: markdown
+    limits:
+      maxTurns: 14
+      maxBudgetUsd: 0.6
+  - key: reviewer
+    role: main
+    when: mode == 'review'
+    description: Reviews a third-party contract from one side's point of view.
+    profile:
+      inline:
+        display_name: Draftory reviewer
+        crews:
+        - id: reviewer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 16
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Draftory''s contract reviewer for small businesses, under the law of England and Wales or
+            of Scotland. You are not a law firm: your review is decision support, not legal advice.
+
+
+            You receive a third-party contract (as text in the goal, or as a file id you open with read_upload; for scans
+            and photos call read_upload) and the side the user is on. Review only from that side''s interest. Steps: read
+            the whole contract; compare key clauses with the template library (search_templates) as a market baseline; look
+            up any statute you mention with legislation_lookup and cite only what you retrieved, with its legislation.gov.uk
+            link. Never cite case law or other sources. Never invent figures or clauses that are not in the document. If the
+            text is missing or unreadable, say so.
+
+
+            Call save_contract once (status ''draft'', title, kind, counterparty). Then call request_accept_changes with the
+            numbered suggestions so the user can accept or reject them.
+
+
+            Output: a level-1 title "# Review — <contract title> (for <side>)", then ## Summary (3 to 5 sentences), ## Summary
+            table (a Markdown table: No., Clause, Risk level High/Medium/Low, Issue, Recommendation), ## Risky clauses (for
+            each numbered suggestion: the original wording quoted, why it is risky for this side in plain English, and the
+            suggested alternative wording), ## Missing or unclear information (questions), ## Statutes referred to. End with
+            a one-line not-legal-advice note.'
+    goalTemplate: 'Mode: review a third-party contract.
+
+      Jurisdiction: {jurisdiction_label}
+
+      The user is on this side: {side}
+
+      Uploaded file: {contract_file}
+
+      {?contract_file_text}Contract text:
+
+      {contract_file_text}{/contract_file_text}
+
+      {?notes}Extra context: {notes}{/notes}
+
+      Write in English.'
+    appTools:
+    - name: read_upload
+      description: Read a file the user uploaded (OCR included)
+      action: read_file
+    - name: search_templates
+      description: Search the contract template library (admin-managed)
+      action: search
+      collection: templates
+      scope: all
+    - name: legislation_lookup
+      description: Fetch legislation from legislation.gov.uk (for example /ukpga/1998/20/section/1/data.xml or /search?title=...)
+      action: http
+      http:
+        method: GET
+        url: https://www.legislation.gov.uk
+        allowPath: true
+        attribution: Contains public sector information licensed under the Open Government Licence v3.0, legislation.gov.uk
+    - name: save_contract
+      description: Save the contract in the user's dashboard
+      action: append
+      collection: contracts
+      scope: user
+    awaits:
+    - accept_changes
+    output: markdown
+    limits:
+      maxTurns: 16
+      maxBudgetUsd: 0.8
+  - key: finaliser
+    role: helper
+    description: After the user decides, produces the clean final contract text with only the accepted changes.
+    profile:
+      inline:
+        display_name: Draftory finaliser
+        crews:
+        - id: finaliser
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You produce the final clean text of a contract after the user has decided on the suggestions. Apply
+            only the changes the user accepted; leave rejected ones as in the original. Do not add new clauses or statute
+            references. Output a level-1 title "# Final contract — <title>", then the complete contract in numbered clauses
+            ready to be printed or saved as PDF, then ## Changes applied (a short list of accepted and rejected suggestions).
+            Note any [TO CONFIRM] items still open. End with a one-line not-legal-advice note.'
+    output: markdown
+    limits:
+      maxTurns: 4
+      maxBudgetUsd: 0.4
+  inputForm:
+    title: New document
+    fields:
+    - name: mode
+      type: select
+      required: true
+      label: What do you need?
+      default: draft
+      options:
+      - value: draft
+        label: Draft a contract
+      - value: review
+        label: Review a third-party contract
+    - name: contract_type
+      type: select
+      label: Template
+      visibleWhen: mode == 'draft'
+      options:
+      - value: nda
+        label: Non-disclosure agreement (NDA)
+      - value: employment
+        label: Employment contract
+      - value: supplier
+        label: Supplier agreement
+      - value: consultancy
+        label: Consultancy agreement
+      - value: shareholders
+        label: Shareholders' agreement
+    - name: jurisdiction
+      type: select
+      required: true
+      label: Jurisdiction
+      default: england_wales
+      options:
+      - value: england_wales
+        label: England and Wales
+      - value: scotland
+        label: Scotland
+    - name: party_a
+      type: text
+      label: Party A (name, and company number if any)
+      visibleWhen: mode == 'draft'
+    - name: party_b
+      type: text
+      label: Party B (name, and company number if any)
+      visibleWhen: mode == 'draft'
+    - name: effective_date
+      type: date
+      label: Effective date
+      visibleWhen: mode == 'draft'
+    - name: fees
+      type: text
+      label: Fees or salary
+      visibleWhen: mode == 'draft'
+    - name: term
+      type: text
+      label: Term
+      visibleWhen: mode == 'draft'
+    - name: notice_period
+      type: text
+      label: Notice period
+      visibleWhen: mode == 'draft'
+    - name: renewal_date
+      type: date
+      label: Renewal date (for the reminder email)
+      visibleWhen: mode == 'draft'
+    - name: special_terms
+      type: textarea
+      maxLength: 2000
+      label: Special terms
+      visibleWhen: mode == 'draft'
+    - name: contract_file
+      type: file
+      label: Contract to review
+      accept:
+      - pdf
+      - docx
+      - txt
+      - jpg
+      - png
+      maxMb: 15
+      visibleWhen: mode == 'review'
+    - name: side
+      type: text
+      label: 'Which side are you on? (for example: the supplier, the employee, the disclosing party)'
+      visibleWhen: mode == 'review'
+    - name: notes
+      type: textarea
+      maxLength: 1000
+      label: Anything else the reviewer should know
+      visibleWhen: mode == 'review'
+  data:
+    collections:
+    - name: templates
+      ownedBy: shared
+      description: The contract template library, kept by the admins on the data page
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: kind
+        type: select
+        required: true
+        options:
+        - nda
+        - employment
+        - supplier
+        - consultancy
+        - shareholders
+      - name: jurisdiction
+        type: select
+        required: true
+        options:
+        - england_wales
+        - scotland
+      - name: body
+        type: textarea
+        required: true
+      - name: guidance
+        type: textarea
+    - name: contracts
+      ownedBy: user
+      description: Drafts, signed contracts and renewals; colleagues listed in members share them
+      retentionDays: 2555
+      fields:
+      - name: title
+        type: text
+        required: true
+      - name: kind
+        type: select
+        options:
+        - nda
+        - employment
+        - supplier
+        - consultancy
+        - shareholders
+        - other
+      - name: status
+        type: select
+        required: true
+        default: draft
+        options:
+        - draft
+        - signed
+        - expired
+      - name: jurisdiction
+        type: select
+        options:
+        - england_wales
+        - scotland
+      - name: counterparty
+        type: text
+      - name: renewal_date
+        type: date
+        label: Renewal date
+      - name: notes
+        type: textarea
+      - name: members
+        type: array
+        label: Colleagues who share this document (emails)
+        help: Colleagues listed here see and edit this document.
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+  views:
+  - key: home
+    type: page
+    title: Draftory
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: For small businesses and their advisers
+      title: Contracts **drafted and reviewed** in plain English
+      text: Pick a template, fill in the details and get a draft with every clause explained. Or upload a contract from someone
+        else and see the risky clauses, with alternative wording. England and Wales, and Scotland.
+      actions:
+      - label: Start free
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how-it-works'
+        style: ghost
+      note: 'Free: three documents a month.'
+    - type: steps
+      id: how-it-works
+      title: How it works
+      items:
+      - title: Choose
+        text: Draft from NDA, employment, supplier, consultancy or shareholders' templates, or upload a contract to review.
+      - title: Check
+        text: Read the plain-English explanation of each clause and answer the questions about missing information.
+      - title: Decide
+        text: Accept or reject each suggestion, then print or save the final contract as PDF.
+      - title: Track
+        text: Enter the renewal date and get an email reminder before it.
+    - type: cards
+      id: sources
+      title: Sources
+      items:
+      - title: Template library
+        text: Maintained by our team for each jurisdiction.
+      - title: legislation.gov.uk
+        text: Every statute reference comes from legislation.gov.uk (Open Government Licence v3.0), never from anywhere else.
+    - type: note
+      content: Draftory is decision support, not legal advice. Have important contracts checked by a qualified solicitor.
+  - key: new
+    type: new_run
+    title: New document
+    roles:
+    - user
+    - admin
+  - key: documents
+    type: history
+    title: My runs
+    source: run
+    roles:
+    - user
+    - admin
+  - key: document
+    type: report
+    title: Document
+    source: run
+    printable: true
+    nav: false
+  - key: decisions
+    type: approvals
+    title: Accept or reject changes
+    approvals:
+    - accept_changes
+    roles:
+    - user
+    - admin
+  - key: add_contract
+    type: form
+    title: Add a signed contract
+    collection: contracts
+    fields:
+    - title
+    - kind
+    - status
+    - jurisdiction
+    - counterparty
+    - renewal_date
+    - notes
+    - members
+    submit:
+      label: Save
+      message: Saved.
+      redirect: dashboard
+    edit: true
+    roles:
+    - user
+    - admin
+  - key: dashboard
+    type: dashboard
+    title: Dashboard
+    children:
+    - by_status
+    - renewals
+    - all_contracts
+    roles:
+    - user
+    - admin
+  - key: by_status
+    type: chart
+    title: Documents by status
+    source: collection:contracts
+    nav: false
+    data:
+      display: chart
+      chart: pie
+      groupBy:
+        field: status
+        aggs: []
+      fields:
+      - key: status
+        label: Status
+      - key: count
+        label: Documents
+  - key: renewals
+    type: table
+    title: Upcoming renewals
+    source: collection:contracts
+    nav: false
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Contract
+      - key: counterparty
+        label: Counterparty
+      - key: renewal_date
+        label: Renews
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      filters:
+      - field: status
+        op: '='
+        value: signed
+      sort:
+        field: renewal_date
+        dir: asc
+      limit: 50
+      empty: No upcoming renewals.
+      actions:
+      - type: calendar
+        label: Add to calendar
+        title: title
+        start: renewal_date
+  - key: all_contracts
+    type: table
+    title: All documents
+    source: collection:contracts
+    nav: false
+    export: true
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Title
+      - key: kind
+        label: Type
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+      - key: counterparty
+        label: Counterparty
+      - key: renewal_date
+        label: Renewal
+        format: date
+      sort:
+        field: renewal_date
+        dir: asc
+      limit: 100
+      empty: No documents yet.
+  - key: account
+    type: account
+    title: Plan
+    roles:
+    - user
+  approvals:
+  - key: accept_changes
+    title: Accept or reject the suggestions
+    decidedBy: requester
+    fields:
+    - suggestions
+  triggers:
+  - key: final_after_decision
+    'on':
+      approval: accept_changes
+      decision: approved
+    start:
+      agent: finaliser
+    goal: 'The user has decided on the suggestions. Produce the final clean contract applying only the accepted changes. Decision
+      details: {event}'
+  - key: renewal_30
+    'on':
+      date:
+        collection: contracts
+        field: renewal_date
+        offsetDays: -30
+        hour: 8
+      where:
+        status: signed
+    notify:
+      to: owner
+      subject: 'Contract renewal in 30 days: {record.title}'
+      body: Your contract {record.title} with {record.counterparty} renews on {record.renewal_date}. Check whether to renew,
+        renegotiate or give notice.
+      link: dashboard
+  - key: renewal_7
+    'on':
+      date:
+        collection: contracts
+        field: renewal_date
+        offsetDays: -7
+        hour: 8
+      where:
+        status: signed
+    notify:
+      to: owner
+      subject: 'Contract renewal in 7 days: {record.title}'
+      body: Your contract {record.title} with {record.counterparty} renews on {record.renewal_date}. Check the notice period
+        now.
+      link: dashboard
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: solo
+      price: 19
+      interval: month
+      label: 'Solo: 40 documents a month'
+      includes:
+      - 40 documents a month
+    - key: team
+      price: 59
+      interval: month
+      label: 'Team: unlimited documents'
+      includes:
+      - Unlimited documents
+      - Shared with colleagues
+  extensions:
+  - key: word_addin
+    description: The optional Microsoft Word add-in needs sign-in with the user's own Microsoft account (OAuth), which is
+      not available yet. Reviews run from the web app for now.
+  - key: word_export
+    description: Download as a Word (.docx) file is not available yet. The final contract is a printable report that can be
+      saved as PDF; Word export needs custom code.
+  - key: per_suggestion_decisions
+    description: The approval is one accept or reject decision for the whole set of suggestions. Deciding each suggestion
+      separately needs custom code.
+  - key: account_invites
+    description: Colleagues share documents through the members list on each document. A single account-wide invite list with
+      automatic sharing of all documents is not available yet.

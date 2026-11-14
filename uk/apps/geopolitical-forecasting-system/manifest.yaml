@@ -1,0 +1,799 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: augury
+  displayName: Augury
+  tagline: Calibrated probability forecasts for geopolitical and economic questions.
+  description: Submit a precisely defined question and receive a daily-updated probability with rationale, key drivers and
+    what would change it. Resolved questions are scored with Brier scores and calibration charts, and you can compare our
+    forecasts with your own analysts.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#13233a'
+      accent: '#b8862b'
+      background: '#f6f4ef'
+      foreground: '#17202b'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Aug
+      color: primary
+    - text: ury
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin / reviewer
+      assignedBy: admin_emails
+    - key: analyst
+      label: Client analyst
+      assignedBy: signup
+    - key: viewer
+      label: Viewer
+      assignedBy: invite
+  limits:
+  - action: create:questions
+    max: 25
+    window: total
+    plans:
+      team: 25
+      pro: 100
+      enterprise: -1
+  agents:
+  - key: validator
+    role: helper
+    description: Checks that a submitted question is well defined and asks the client to fix ambiguity.
+    appTools:
+    - name: read_questions
+      description: Read the client's questions
+      action: read
+      collection: questions
+      scope: user
+    - name: update_question
+      description: Set status and clarification on a question record
+      action: write
+      collection: questions
+      scope: user
+    profile:
+      inline:
+        display_name: Augury question validator
+        crews:
+        - id: validator
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You check forecasting questions before they are accepted. A good question has: a single binary outcome,
+            an unambiguous resolution rule, a deadline with timezone, a named public resolution source, and no hidden conditions.
+            Read the question record with read_questions. If it is well defined, call update_question with status "active"
+            and an empty clarification. If not, call update_question with status "needs_clarification" and a clarification
+            listing each ambiguity and a concrete suggested rewording. Never guess missing details yourself and never forecast.
+            Reply with a short note starting with "# Question check".'
+  - key: forecaster
+    role: scheduled
+    description: Builds and updates the daily probability for one tracked question, with rationale, drivers and change triggers.
+    memory: instance
+    awaits:
+    - impact_review
+    output: markdown+json
+    resultSchema:
+      type: object
+      properties:
+        date:
+          type: string
+        question:
+          type: string
+        probability:
+          type: number
+        previous_probability:
+          type: number
+        delta:
+          type: number
+        big_move:
+          type: string
+          enum:
+          - 'yes'
+          - 'no'
+        status:
+          type: string
+          enum:
+          - released
+          - pending_review
+        rationale:
+          type: string
+        drivers:
+          type: string
+        change_triggers:
+          type: string
+        members:
+          type: array
+          items:
+            type: string
+    writesTo:
+      collection: forecasts
+      parse: json_last
+      keyBy: date
+    appTools:
+    - name: read_questions
+      description: Read the client's questions
+      action: read
+      collection: questions
+      scope: user
+    mcpServers:
+    - name: webrobot
+      url: https://mcp-full.webrobot.eu/mcp
+      allow: all
+    profile:
+      inline:
+        display_name: Augury forecaster
+        crews:
+        - id: forecaster
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are the Augury forecasting agent. You produce a calibrated probability that the question resolves
+            YES, following its resolution rule exactly. Steps: 1) read the question with read_questions (status must be active;
+            otherwise stop and say so). 2) Gather evidence with the WebRobot tools: news and official data (central bank statements,
+            statistics offices, government releases) only from pages whose terms allow automated reading; use prediction-market
+            prices only where their terms allow it, cite them as a reference, never copy them as your answer. 3) Apply the
+            Augury forecasting system''s methodology: base rates, then update on evidence; avoid extremes (stay within 1-99)
+            unless the outcome is effectively determined. 4) Compare with your memory (last probability and drivers); compute
+            delta in percentage points; set big_move to "yes" if |delta| >= 10 otherwise "no". 5) If the question''s impact
+            is "high", call request_impact_review with the question, probability and rationale and wait; set status "pending_review"
+            until approved, "released" once approved. Other impact levels are "released". Probability is a number 0-100. Never
+            invent figures or sources; say what you could not verify. Report structure: a level-1 title "# <question short
+            title> — forecast <date>", then ## Probability, ## Rationale, ## Key drivers, ## What would change this forecast,
+            ## Sources. End with one fenced json block containing the result fields (date YYYY-MM-DD, question, probability,
+            previous_probability, delta, big_move, status, rationale, drivers, change_triggers, members copied from the question).
+            Finally call remember with the probability, drivers and sources of this forecast. This is decision support, not
+            investment or legal advice.'
+  - key: scorer
+    role: helper
+    description: Scores resolved questions with Brier scores, for Augury and for the client's own analysts.
+    appTools:
+    - name: read_forecasts
+      description: Read the forecast history of the client's questions
+      action: read
+      collection: forecasts
+      scope: user
+    - name: read_own
+      description: Read the client's own analysts' forecasts
+      action: read
+      collection: own_forecasts
+      scope: user
+    - name: write_score
+      description: Save the score of a resolved question
+      action: write
+      collection: scores
+      scope: user
+    profile:
+      inline:
+        display_name: Augury scorer
+        crews:
+        - id: scorer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You score one resolved question. Read its forecasts with read_forecasts and the client''s own analysts''
+            forecasts with read_own. Use the last released forecast dated before or on the resolution. outcome_num is 1 for
+            YES, 0 for NO. Brier = (p/100 - outcome_num)^2, rounded to 4 decimals. Also compute analyst_brier from the client''s
+            latest own forecast if one exists, else leave it empty. bucket is the probability range of the Augury forecast
+            in tens, like "0-10", "10-20" ... "90-100". Call write_score once with: question, probability, outcome_num, brier,
+            analyst_probability, analyst_brier, bucket, resolved_on, members (copied from the forecasts). Compute carefully
+            and never invent forecasts. Reply with a short note starting with "# Score".'
+  templates:
+  - key: forecast_track
+    title: Tracked question
+    description: 'Pick an accepted question: Augury updates its forecast every morning and keeps the history.'
+    agent: forecaster
+    params:
+    - name: question_ref
+      type: select
+      required: true
+      label: Question
+      optionsFrom: collection:questions
+    goal: 'Update the forecast for the tracked question "{instance}" (selected question: {question_ref}). Today is {date}.
+      Write in English.'
+    schedule:
+      cron: 0 6 * * *
+      userCanChange: false
+    maxPerUser: 100
+  approvals:
+  - key: impact_review
+    title: High-impact forecast review
+    description: A reviewer checks forecasts above the impact threshold before they are released to the client.
+    role: admin
+    fields:
+    - question
+    - probability
+    - rationale
+    timeoutMinutes: 1440
+    onTimeout: reject
+  data:
+    collections:
+    - name: questions
+      ownedBy: user
+      description: Forecast questions submitted by clients
+      access:
+      - role: viewer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: title
+        type: text
+        required: true
+        label: Question
+      - name: resolution_rule
+        type: textarea
+        required: true
+        label: Resolution rule
+        help: Exactly what makes this YES or NO.
+      - name: deadline
+        type: date
+        required: true
+        label: Deadline
+      - name: source
+        type: text
+        required: true
+        label: Resolution source
+        help: Named public source, e.g. the central bank's website.
+      - name: category
+        type: select
+        label: Category
+        options:
+        - geopolitical
+        - monetary_policy
+        - macro_data
+        - commodities
+        - elections
+        - other
+      - name: impact
+        type: select
+        required: true
+        label: Impact level
+        options:
+        - low
+        - medium
+        - high
+      - name: members
+        type: array
+        label: Colleagues who can read (emails)
+      - name: status
+        type: select
+        label: Status
+        options:
+        - submitted
+        - needs_clarification
+        - active
+        - resolved
+        default: submitted
+      - name: clarification
+        type: textarea
+        label: Clarification needed
+      - name: outcome
+        type: select
+        label: Outcome
+        options:
+        - 'yes'
+        - 'no'
+    - name: forecasts
+      ownedBy: instance
+      description: Daily forecast history per tracked question
+      access:
+      - role: viewer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: date
+        type: date
+      - name: question
+        type: text
+      - name: probability
+        type: number
+      - name: previous_probability
+        type: number
+      - name: delta
+        type: number
+      - name: big_move
+        type: select
+        options:
+        - 'yes'
+        - 'no'
+      - name: status
+        type: select
+        options:
+        - pending_review
+        - released
+      - name: rationale
+        type: textarea
+      - name: drivers
+        type: textarea
+      - name: change_triggers
+        type: textarea
+      - name: members
+        type: array
+    - name: own_forecasts
+      ownedBy: user
+      description: The client's own analysts' probabilities, for comparison
+      access:
+      - role: viewer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: question
+        type: text
+        required: true
+        label: Question
+      - name: analyst_probability
+        type: number
+        required: true
+        label: Your analysts' probability (0-100)
+      - name: forecast_date
+        type: date
+        label: Date
+      - name: note
+        type: textarea
+        label: Note
+      - name: members
+        type: array
+        label: Colleagues who can read (emails)
+    - name: scores
+      ownedBy: user
+      description: Brier scores of resolved questions
+      retentionDays: 3650
+      access:
+      - role: viewer
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      fields:
+      - name: question
+        type: text
+      - name: probability
+        type: number
+      - name: outcome_num
+        type: number
+      - name: brier
+        type: number
+      - name: analyst_probability
+        type: number
+      - name: analyst_brier
+        type: number
+      - name: bucket
+        type: text
+      - name: resolved_on
+        type: date
+      - name: members
+        type: array
+  triggers:
+  - key: validate_question
+    'on':
+      collection: questions
+      op: insert
+      where:
+        status: submitted
+    start:
+      agent: validator
+    goal: 'Check the new question record: title "{record.title}", rule "{record.resolution_rule}", deadline {record.deadline},
+      source "{record.source}". Update its status.'
+  - key: clarify_notice
+    'on':
+      collection: questions
+      op: update
+      where:
+        status: needs_clarification
+    notify:
+      to: owner
+      subject: 'Augury: your question needs clarification'
+      body: 'Your question "{record.title}" is ambiguous and cannot be forecast yet:
+
+
+        {record.clarification}
+
+
+        Please edit it and resubmit.'
+      link: questions
+  - key: score_resolved
+    'on':
+      collection: questions
+      op: update
+      where:
+        status: resolved
+    start:
+      agent: scorer
+    goal: Score the resolved question "{record.title}" with outcome {record.outcome}. Save the score.
+  - key: big_move_alert
+    'on':
+      collection: forecasts
+      op: insert
+      where:
+        big_move: 'yes'
+        status: released
+    notify:
+      to: owner
+      subject: 'Augury alert: probability moved by more than 10 points'
+      body: 'The forecast for "{record.question}" moved from {record.previous_probability}% to {record.probability}% ({record.delta}
+        points).
+
+
+        Why: {record.rationale}'
+      link: forecasts
+  views:
+  - key: home
+    type: page
+    nav: false
+    sections:
+    - type: hero
+      title: Probabilities you can **score**.
+      text: Submit a precisely defined geopolitical or economic question. Augury returns a calibrated probability with rationale,
+        key drivers and what would change it, updated every day, then scores itself against the outcome.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+      note: Built for funds, insurers and government teams.
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Define
+        text: Submit the question, resolution rule, deadline and source. An agent flags ambiguity and asks you to fix it.
+      - title: Forecast
+        text: A daily forecast from news and official data (and market prices only where terms allow), with history kept.
+      - title: Review
+        text: High-impact forecasts are reviewed by an analyst before release.
+      - title: Score
+        text: Brier scores and calibration charts, side by side with your own analysts.
+    - type: cards
+      id: pricing
+      title: Pricing
+      intro: Subscription by number of active questions.
+      items:
+      - title: Team — £3,000 / month
+        text: Up to 25 questions.
+      - title: Pro — £6,000 / month
+        text: Up to 100 questions.
+      - title: Enterprise — £12,000 / month
+        text: Unlimited questions, priority review.
+    - type: note
+      content: Forecasts are probabilistic decision support, not investment, insurance or legal advice. Past accuracy does
+        not guarantee future accuracy.
+  - key: ask
+    type: form
+    title: Submit a question
+    collection: questions
+    fields:
+    - title
+    - resolution_rule
+    - deadline
+    - source
+    - category
+    - impact
+    - members
+    submit:
+      label: Submit for checking
+      message: Submitted. We will check it and email you if anything needs clarifying.
+      redirect: questions
+    roles:
+    - analyst
+    - admin
+  - key: questions
+    type: table
+    title: Questions
+    source: collection:questions
+    export: true
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Question
+      - key: deadline
+        label: Deadline
+        format: date
+      - key: impact
+        label: Impact
+        format: badge
+      - key: status
+        label: Status
+        format: badge
+      - key: clarification
+        label: Clarification
+      sort:
+        field: deadline
+        dir: asc
+    roles:
+    - analyst
+    - viewer
+    - admin
+  - key: fix_question
+    type: form
+    title: Edit question
+    collection: questions
+    edit: true
+    fields:
+    - title
+    - resolution_rule
+    - deadline
+    - source
+    - impact
+    submit:
+      label: Save changes
+      redirect: questions
+    nav: false
+    roles:
+    - analyst
+    - admin
+  - key: resolve
+    type: form
+    title: Record an outcome
+    collection: questions
+    edit: true
+    fields:
+    - outcome
+    - status
+    submit:
+      label: Resolve and score
+      message: Saved. Scoring runs now.
+      redirect: scorecard
+    nav: false
+    roles:
+    - analyst
+    - admin
+  - key: tracking
+    type: instances
+    template: forecast_track
+    title: Tracked questions
+    roles:
+    - analyst
+    - admin
+  - key: forecasts
+    type: page
+    title: Forecasts
+    sections:
+    - type: data
+      title: Probability history
+      source: collection:forecasts
+      display: chart
+      chart: line
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: probability
+        label: Probability %
+      filters:
+      - field: status
+        op: '='
+        value: released
+      sort:
+        field: date
+        dir: asc
+      limit: 200
+    - type: data
+      title: Latest forecasts
+      source: collection:forecasts
+      display: cards
+      fields:
+      - key: question
+        label: Question
+      - key: probability
+        label: Probability %
+        format: number
+      - key: delta
+        label: Change (pts)
+        format: number
+      - key: rationale
+        label: Rationale
+      - key: drivers
+        label: Key drivers
+      - key: change_triggers
+        label: What would change it
+      filters:
+      - field: status
+        op: '='
+        value: released
+      sort:
+        field: date
+        dir: desc
+      limit: 30
+    roles:
+    - analyst
+    - viewer
+    - admin
+  - key: own_forecast
+    type: form
+    title: Add your analysts' forecast
+    collection: own_forecasts
+    submit:
+      label: Save
+      message: Saved for comparison.
+      redirect: scorecard
+    roles:
+    - analyst
+    - admin
+  - key: scorecard
+    type: page
+    title: Accuracy
+    sections:
+    - type: data
+      title: Scores
+      source: collection:scores
+      display: kpi
+      kpis:
+      - label: Augury mean Brier (lower is better)
+        agg: avg
+        field: brier
+        format: number
+      - label: Your analysts' mean Brier
+        agg: avg
+        field: analyst_brier
+        format: number
+      - label: Resolved questions
+        agg: count
+    - type: data
+      title: Calibration
+      intro: Forecast probability against how often the event happened, by bucket.
+      source: collection:scores
+      display: chart
+      chart: line
+      groupBy:
+        field: bucket
+        aggs:
+        - key: forecast
+          agg: avg
+          field: probability
+        - key: observed_pct
+          agg: avg
+          field: outcome_num
+      fields:
+      - key: bucket
+        label: Bucket
+      - key: forecast
+        label: Mean forecast %
+      - key: observed_pct
+        label: Observed frequency (0-1)
+    - type: data
+      title: Augury vs your analysts
+      source: collection:scores
+      display: table
+      fields:
+      - key: question
+        label: Question
+      - key: probability
+        label: Augury %
+        format: number
+      - key: analyst_probability
+        label: Analysts %
+        format: number
+      - key: outcome_num
+        label: Outcome
+        format: number
+      - key: brier
+        label: Augury Brier
+        format: number
+      - key: analyst_brier
+        label: Analysts Brier
+        format: number
+      sort:
+        field: resolved_on
+        dir: desc
+      limit: 100
+    roles:
+    - analyst
+    - viewer
+    - admin
+  - key: review
+    type: approvals
+    title: Review queue
+    approvals:
+    - impact_review
+    roles:
+    - admin
+  - key: account
+    type: account
+    title: Subscription
+    roles:
+    - analyst
+    - admin
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: team
+      price: 3000
+      interval: month
+      label: Team — up to 25 questions
+      roles:
+      - analyst
+    - key: pro
+      price: 6000
+      interval: month
+      label: Pro — up to 100 questions
+      roles:
+      - analyst
+    - key: enterprise
+      price: 12000
+      interval: month
+      label: Enterprise — unlimited questions
+      roles:
+      - analyst
+  extensions:
+  - key: proprietary_model
+    description: The proprietary ML forecasting model is outside this app. Today the forecaster agent produces the probability
+      from evidence it gathers; connecting the real model needs an HTTPS API the app can call as an http tool (add its host
+      to egress), or a webhook that writes forecasts.
+  - key: reviewer_role
+    description: Release reviews are decided by admins (Augury's own analysts). A separate reviewer role or per-client reviewers
+      is not modelled; plan prices are indicative and the £3,000 floor should be confirmed.

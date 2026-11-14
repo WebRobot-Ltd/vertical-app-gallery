@@ -1,0 +1,975 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: vellora
+  displayName: Vellora
+  tagline:
+    en: Support between clinic visits, with your care team in the loop.
+    cy: Cymorth rhwng ymweliadau â'r clinig, gyda'ch tîm gofal yn y ddolen.
+    pl: Wsparcie między wizytami w klinice, z zespołem opieki w pętli.
+  description:
+    en: Vellora helps people with long-term conditions complete scheduled check-ins, ask general health questions by voice
+      or text, and lets the care team see flags and trends. It never gives a diagnosis.
+  langs:
+  - en
+  - cy
+  - pl
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: chat
+  branding:
+    theme: light
+    palette:
+      primary: '#0f5f66'
+      accent: '#d9822b'
+      background: '#f6fafa'
+      foreground: '#12262a'
+    fonts:
+      body: Inter
+      display: Source Serif 4
+    wordmark:
+    - text: Vel
+      color: primary
+    - text: lora
+      color: accent
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Clinic admin
+      assignedBy: admin_emails
+    - key: clinician
+      label:
+        en: Care team (nurse / doctor)
+        cy: Tîm gofal
+        pl: Zespół opieki
+      assignedBy: invite
+    - key: patient
+      label:
+        en: Patient
+        cy: Claf
+        pl: Pacjent
+      assignedBy: invite
+  limits:
+  - action: chat
+    per: user
+    max: 60
+    window: day
+    roles:
+    - patient
+  agents:
+  - key: assistant
+    role: main
+    description: 'Voice/text assistant: general information from NHS.uk and the clinic''s leaflets. Never diagnoses.'
+    profile:
+      inline:
+        display_name: Vellora assistant
+        chat_mode: true
+        crews:
+        - id: assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are Vellora, a warm, plain-spoken assistant for people living with long-term conditions. Replies
+            are short (they may be read aloud): no tables, few bullet points.
+
+            You give GENERAL information only, taken from (1) the clinic''s own leaflets (tool search_leaflets) and (2) NHS.uk
+            content (tool nhs_content, GET, path like /<condition-slug>, e.g. /type-2-diabetes). Use these tools before answering
+            a health question and say where the information comes from. Content from the NHS website is used under the NHS
+            syndication licence: attribute it as ''Information from the NHS website (nhs.uk)''. If neither source covers the
+            question, say so; do not invent facts or figures.
+
+            You NEVER diagnose, interpret a person''s own readings as a diagnosis, recommend starting, stopping or changing
+            a medicine or dose, or tell someone their symptoms are nothing to worry about. For those, tell them to contact
+            their care team or GP.
+
+            Safety: if someone describes an emergency (chest pain, difficulty breathing, stroke signs, severe allergic reaction,
+            thoughts of self-harm, very low or very high glucose with confusion), tell them at once to call 999; for urgent
+            non-emergency worries, call NHS 111 or their care team. Do this before anything else.
+
+            You may call read_my_profile to know the person''s conditions and name. Reply in the language the person writes
+            in (English, Welsh or Polish).'
+          mcp_servers: []
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New message from {user}: {message}
+
+      Today is {date}. Reply in the language with ISO code {lang} unless the person writes in another.'
+    output: markdown
+    appTools:
+    - name: nhs_content
+      description: Read NHS.uk condition content (NHS website content API). Put the condition slug in path, e.g. /asthma
+      action: http
+      http:
+        method: GET
+        url: https://api.service.nhs.uk/nhs-website-content/conditions
+        allowPath: true
+        headers:
+          Accept: application/json
+        attribution: Information from the NHS website (nhs.uk), used under the NHS syndication licence
+        credential:
+          provider: nhs_content
+          header: subscription-key
+          format: '{secret}'
+    - name: search_leaflets
+      description: Search the clinic's own patient leaflets
+      action: search
+      collection: leaflets
+      scope: all
+    - name: read_my_profile
+      description: Read the signed-in patient's own profile
+      action: read
+      collection: patients
+      scope: user
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.3
+  - key: monitor
+    role: helper
+    description: 'Daily per-patient monitor: compares check-ins with the clinician''s thresholds and escalates to the care
+      team.'
+    profile:
+      inline:
+        display_name: Vellora monitor
+        crews:
+        - id: monitor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.4
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are the monitoring step of a clinical companion app. For ONE patient you compare their recent
+            check-ins with the thresholds the clinician set. You apply rules; you do not diagnose, interpret or advise the
+            patient, and you never contact the patient.
+
+            Steps: 1) call read_checkins and read_flags. 2) For each check-in of the last 3 days not yet in observations,
+            call log_observation with date, patient_name, patient_email (the user''s email), systolic, diastolic, glucose,
+            mood (number), medication_taken, flag_level (ok|amber|red), care_team, lead_clinician_email copied from your context.
+            3) A check-in crosses a threshold when systolic > sys_max, diastolic > dia_max, glucose < glu_min or > glu_max,
+            mood <= mood_min, medication_taken is ''no'' on two days running, or the free text reports a worrying symptom
+            or side effect (chest pain, breathlessness, fainting, confusion, severe side effect, self-harm). Blank thresholds
+            are not checked. amber = a threshold crossed once; red = far beyond it, repeated for 2+ days, or worrying symptoms.
+            4) For amber or red, and only if no open flag for the same reason exists, call raise_flag with patient_name, patient_email,
+            lead_clinician_email, care_team, severity, reason (what crossed which threshold, factual), readings (the figures),
+            status ''open'', created (today''s date). Never invent figures. If no check-in was submitted when one was due,
+            raise an amber flag ''missed check-in'' only after 2 missed days.
+
+            Finish with a report: a level-1 title ''# Monitor — <patient name> — <date>'', then ## Checked, ## Flags raised
+            (or ''None''). Under 120 words.'
+          mcp_servers: []
+    context:
+    - key: patient_name
+      from: collection:patients.full_name
+    - key: lead
+      from: collection:patients.lead_clinician_email
+    - key: care_team
+      from: collection:patients.care_team
+    - key: sys_max
+      from: collection:patients.sys_max
+    - key: dia_max
+      from: collection:patients.dia_max
+    - key: glu_min
+      from: collection:patients.glucose_min
+    - key: glu_max
+      from: collection:patients.glucose_max
+    - key: mood_min
+      from: collection:patients.mood_min
+    - key: email
+      from: user.email
+    goalTemplate: 'Monitor patient {patient_name} ({email}). Today is {date}.
+
+      Lead clinician: {lead}. Care team: {care_team}.
+
+      Thresholds — systolic max: {sys_max}; diastolic max: {dia_max}; glucose min: {glu_min}; glucose max: {glu_max}; mood
+      min: {mood_min}.
+
+      {?notes}Clinician note: {notes}{/notes}'
+    output: markdown
+    appTools:
+    - name: read_checkins
+      description: Read the patient's own check-ins
+      action: read
+      collection: checkins
+      scope: user
+    - name: read_flags
+      description: Read the flags already raised for this patient
+      action: read
+      collection: flags
+      scope: user
+    - name: log_observation
+      description: Record one analysed check-in so the care team can see trends
+      action: append
+      collection: observations
+      scope: user
+    - name: raise_flag
+      description: Escalate to the care team
+      action: append
+      collection: flags
+      scope: user
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.4
+  templates:
+  - key: patient_monitor
+    title:
+      en: My monitoring
+      cy: Fy monitro
+      pl: Moje monitorowanie
+    description:
+      en: Checks your check-ins against the limits your clinician set and alerts your care team.
+      cy: Yn gwirio eich cofnodion yn erbyn y terfynau a osodwyd gan eich clinigwr.
+      pl: Sprawdza Twoje odpowiedzi względem limitów ustalonych przez klinicystę.
+    agent: monitor
+    params:
+    - name: notes
+      type: textarea
+      maxLength: 300
+      label:
+        en: Note for the monitor (optional)
+    schedule:
+      cron: 0 18 * * *
+      userCanChange: false
+    maxPerUser: 1
+    roles:
+    - patient
+    - admin
+    goal: 'Monitor this patient. Today is {date}.{?notes} Note: {notes}{/notes}'
+  inputForm:
+    title: Check-in
+    fields: []
+  data:
+    collections:
+    - name: patients
+      description: Each patient's profile, care team and clinician-set thresholds
+      ownedBy: user
+      fields:
+      - name: full_name
+        type: text
+        required: true
+        label:
+          en: Full name
+          cy: Enw llawn
+          pl: Imię i nazwisko
+      - name: phone
+        type: text
+        label:
+          en: Phone
+      - name: conditions
+        type: textarea
+        label:
+          en: My conditions
+          cy: Fy nghyflyrau
+          pl: Moje schorzenia
+      - name: medications
+        type: textarea
+        label:
+          en: My medicines
+      - name: next_checkin_date
+        type: date
+        label:
+          en: Next check-in due
+        roles:
+        - admin
+        - clinician
+      - name: lead_clinician_email
+        type: email
+        label:
+          en: Lead clinician email
+        roles:
+        - admin
+        - clinician
+      - name: care_team
+        type: multiselect
+        label:
+          en: Care team (emails)
+        help:
+          en: Emails of the nurses and doctors who see this patient
+        roles:
+        - admin
+        - clinician
+      - name: sys_max
+        type: number
+        label:
+          en: Systolic max (mmHg)
+        roles:
+        - admin
+        - clinician
+      - name: dia_max
+        type: number
+        label:
+          en: Diastolic max (mmHg)
+        roles:
+        - admin
+        - clinician
+      - name: glucose_min
+        type: number
+        label:
+          en: Glucose min (mmol/L)
+        roles:
+        - admin
+        - clinician
+      - name: glucose_max
+        type: number
+        label:
+          en: Glucose max (mmol/L)
+        roles:
+        - admin
+        - clinician
+      - name: mood_min
+        type: number
+        label:
+          en: Mood alert at or below (1-5)
+        roles:
+        - admin
+        - clinician
+      access:
+      - role: clinician
+        where:
+          care_team: '{user.email}'
+        can:
+        - read
+        - write
+    - name: checkins
+      description: A patient's own check-ins; private to the patient
+      ownedBy: user
+      retentionDays: 1095
+      fields:
+      - name: date
+        type: date
+        required: true
+        label:
+          en: Date
+          cy: Dyddiad
+          pl: Data
+      - name: symptoms
+        type: textarea
+        label:
+          en: How are your symptoms today?
+          cy: Sut mae eich symptomau heddiw?
+          pl: Jak się dziś czują Twoje objawy?
+      - name: medication_taken
+        type: select
+        required: true
+        label:
+          en: Did you take your medicines?
+          cy: A gymeroch eich meddyginiaethau?
+          pl: Czy zażyłeś(-aś) leki?
+        options:
+        - value: 'yes'
+          label:
+            en: 'Yes'
+            cy: Do
+            pl: Tak
+        - value: partly
+          label:
+            en: Some
+            cy: Rhai
+            pl: Częściowo
+        - value: 'no'
+          label:
+            en: 'No'
+            cy: Naddo
+            pl: Nie
+      - name: systolic
+        type: number
+        label:
+          en: Blood pressure — top number (systolic)
+      - name: diastolic
+        type: number
+        label:
+          en: Blood pressure — bottom number (diastolic)
+      - name: glucose
+        type: number
+        label:
+          en: Blood glucose (mmol/L)
+      - name: mood
+        type: select
+        label:
+          en: Mood
+          cy: Hwyliau
+          pl: Nastrój
+        options:
+        - value: '1'
+          label: 1 — very low
+        - value: '2'
+          label: '2'
+        - value: '3'
+          label: '3'
+        - value: '4'
+          label: '4'
+        - value: '5'
+          label: 5 — very good
+      - name: side_effects
+        type: textarea
+        label:
+          en: Any side effects?
+      - name: source
+        type: select
+        default: manual
+        label:
+          en: Source
+        options:
+        - manual
+        - wearable
+        roles:
+        - admin
+    - name: observations
+      description: Analysed check-ins written by the monitor, shared with the patient's care team for trends
+      ownedBy: user
+      retentionDays: 1095
+      fields:
+      - name: date
+        type: date
+      - name: patient_name
+        type: text
+      - name: patient_email
+        type: email
+      - name: systolic
+        type: number
+      - name: diastolic
+        type: number
+      - name: glucose
+        type: number
+      - name: mood
+        type: number
+      - name: medication_taken
+        type: text
+      - name: flag_level
+        type: select
+        options:
+        - ok
+        - amber
+        - red
+      - name: care_team
+        type: multiselect
+      - name: lead_clinician_email
+        type: email
+      access:
+      - role: clinician
+        where:
+          care_team: '{user.email}'
+        can:
+        - read
+    - name: flags
+      description: Escalations from the monitor; the care team decides what to do
+      ownedBy: user
+      fields:
+      - name: created
+        type: date
+        label:
+          en: Raised
+      - name: patient_name
+        type: text
+        label:
+          en: Patient
+      - name: patient_email
+        type: email
+      - name: lead_clinician_email
+        type: email
+      - name: care_team
+        type: multiselect
+      - name: severity
+        type: select
+        label:
+          en: Severity
+        options:
+        - amber
+        - red
+      - name: reason
+        type: textarea
+        label:
+          en: Reason
+      - name: readings
+        type: textarea
+        label:
+          en: Readings
+      - name: status
+        type: select
+        label:
+          en: Status
+        options:
+        - open
+        - acknowledged
+        - actioned
+        - closed
+        default: open
+      - name: decision
+        type: textarea
+        label:
+          en: Decision / action taken by the care team
+      access:
+      - role: clinician
+        where:
+          care_team: '{user.email}'
+        can:
+        - read
+        - write
+    - name: leaflets
+      description: The clinic's own patient leaflets, kept by the admins (/admin/data)
+      ownedBy: shared
+      searchable: true
+      fields:
+      - name: title
+        type: text
+        required: true
+      - name: condition
+        type: text
+      - name: language
+        type: select
+        options:
+        - en
+        - cy
+        - pl
+      - name: content
+        type: textarea
+        required: true
+    credentials:
+    - provider: nhs_content
+      kind: api_key
+      scope: org
+      label:
+        en: NHS website content API key
+      help:
+        en: The subscription key from your NHS API Platform syndication agreement; set once by the clinic admins.
+  views:
+  - key: home
+    type: page
+    title: Vellora
+    nav: false
+    sections:
+    - type: hero
+      band: true
+      title:
+        en: Support between clinic visits, **with your care team** in the loop.
+        cy: Cymorth rhwng ymweliadau, **gyda'ch tîm gofal** yn y ddolen.
+        pl: Wsparcie między wizytami, **z Twoim zespołem opieki** w pętli.
+      text:
+        en: Short scheduled check-ins, a voice assistant for general questions, and a care team that is alerted when your
+          readings need a look.
+        cy: Cofnodion byr wedi'u hamserlennu, cynorthwyydd llais, a thîm gofal sy'n cael gwybod pan fydd angen.
+        pl: Krótkie zaplanowane odpowiedzi, asystent głosowy i zespół opieki, który dostaje alert, gdy to potrzebne.
+      actions:
+      - label:
+          en: Sign in
+          cy: Mewngofnodi
+          pl: Zaloguj się
+        href: /login
+        style: primary
+    - type: steps
+      id: how
+      title:
+        en: How it works
+        cy: Sut mae'n gweithio
+        pl: Jak to działa
+      items:
+      - title:
+          en: Check in
+          cy: Cofnodi
+          pl: Odpowiedz
+        text:
+          en: Symptoms, medicines, blood pressure or glucose, mood and side effects. You get a reminder on your phone.
+          cy: Symptomau, meddyginiaethau, pwysedd gwaed neu glwcos, hwyliau.
+          pl: Objawy, leki, ciśnienie lub glukoza, nastrój. Dostajesz przypomnienie.
+      - title:
+          en: Ask
+          cy: Gofyn
+          pl: Zapytaj
+        text:
+          en: Ask the assistant by voice or text. Answers come from NHS.uk and your clinic's leaflets.
+          cy: Gofynnwch i'r cynorthwyydd. Daw atebion o GIG.uk a thaflenni eich clinig.
+          pl: Zapytaj asystenta. Odpowiedzi pochodzą z NHS.uk i ulotek kliniki.
+      - title:
+          en: Care team decides
+          cy: Y tîm gofal sy'n penderfynu
+          pl: Zespół decyduje
+        text:
+          en: If readings cross the limits your clinician set, your care team is alerted and decides what to do.
+          cy: Os yw darlleniadau'n croesi'r terfynau, caiff eich tîm gofal wybod.
+          pl: Jeśli odczyty przekroczą limity, zespół opieki dostaje alert i decyduje.
+    - type: note
+      content:
+        en: Vellora gives general information and never a diagnosis. In an emergency call 999; for urgent advice call NHS
+          111. Health information from the NHS website (nhs.uk) is used under the NHS syndication licence. Only you and your
+          care team see your record.
+        cy: Mae Vellora yn rhoi gwybodaeth gyffredinol, byth ddiagnosis. Mewn argyfwng ffoniwch 999; am gyngor brys ffoniwch
+          GIG 111.
+        pl: Vellora podaje ogólne informacje, nigdy diagnozy. W nagłym wypadku zadzwoń pod 999; po pilną poradę pod NHS 111.
+  - key: profile
+    type: form
+    title:
+      en: My profile
+      cy: Fy mhroffil
+      pl: Mój profil
+    collection: patients
+    fields:
+    - full_name
+    - phone
+    - conditions
+    - medications
+    submit:
+      label:
+        en: Save
+      message:
+        en: Profile saved.
+    roles:
+    - patient
+  - key: checkin
+    type: form
+    title:
+      en: Check-in
+      cy: Cofnodi
+      pl: Odpowiedzi
+    collection: checkins
+    fields:
+    - date
+    - symptoms
+    - medication_taken
+    - systolic
+    - diastolic
+    - glucose
+    - mood
+    - side_effects
+    submit:
+      label:
+        en: Send check-in
+      message:
+        en: Thank you. Your check-in is saved. If you feel very unwell, call NHS 111, or 999 in an emergency.
+      redirect: my_checkins
+    roles:
+    - patient
+  - key: my_checkins
+    type: table
+    title:
+      en: My check-ins
+      cy: Fy nghofnodion
+      pl: Moje odpowiedzi
+    source: collection:checkins
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: medication_taken
+        label: Medicines
+      - key: systolic
+        label: Sys
+      - key: diastolic
+        label: Dia
+      - key: glucose
+        label: Glucose
+      - key: mood
+        label: Mood
+      sort:
+        field: date
+        dir: desc
+      limit: 60
+      empty:
+        en: No check-ins yet.
+    roles:
+    - patient
+  - key: assistant_chat
+    type: chat
+    title:
+      en: Ask Vellora
+      cy: Gofynnwch i Vellora
+      pl: Zapytaj Vellorę
+    source: agent:assistant
+    examples:
+    - What is a normal blood pressure range?
+    - How should I store my insulin?
+    - What are common side effects of statins?
+    placeholder:
+      en: Ask a general health question (no diagnosis)
+      cy: Gofynnwch gwestiwn iechyd cyffredinol
+      pl: Zadaj ogólne pytanie zdrowotne
+    roles:
+    - patient
+  - key: my_monitor
+    type: instances
+    title:
+      en: My monitoring
+      cy: Fy monitro
+      pl: Moje monitorowanie
+    template: patient_monitor
+    roles:
+    - patient
+    - admin
+  - key: care
+    type: dashboard
+    title:
+      en: Care team dashboard
+      cy: Dangosfwrdd y tîm gofal
+      pl: Panel zespołu opieki
+    children:
+    - flags_table
+    - trends_chart
+    - patients_table
+    roles:
+    - clinician
+    - admin
+  - key: flags_table
+    type: table
+    title:
+      en: Flags
+      cy: Baneri
+      pl: Flagi
+    source: collection:flags
+    nav: false
+    export: true
+    data:
+      display: table
+      fields:
+      - key: created
+        label: Raised
+        format: date
+      - key: patient_name
+        label: Patient
+      - key: severity
+        label: Severity
+        format: badge
+      - key: reason
+        label: Reason
+      - key: readings
+        label: Readings
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: created
+        dir: desc
+      limit: 100
+      empty:
+        en: No flags.
+  - key: trends_chart
+    type: chart
+    title:
+      en: Trends (average of my patients)
+      cy: Tueddiadau
+      pl: Trendy
+    source: collection:observations
+    nav: false
+    data:
+      display: chart
+      chart: line
+      fields:
+      - key: date
+      - key: systolic_avg
+        label: Systolic
+      - key: diastolic_avg
+        label: Diastolic
+      - key: glucose_avg
+        label: Glucose
+      groupBy:
+        field: date
+        bucket: day
+        aggs:
+        - key: systolic_avg
+          agg: avg
+          field: systolic
+        - key: diastolic_avg
+          agg: avg
+          field: diastolic
+        - key: glucose_avg
+          agg: avg
+          field: glucose
+      limit: 60
+  - key: patients_table
+    type: table
+    title:
+      en: My patients
+      cy: Fy nghleifion
+      pl: Moi pacjenci
+    source: collection:patients
+    nav: false
+    data:
+      display: table
+      fields:
+      - key: full_name
+        label: Patient
+      - key: conditions
+        label: Conditions
+      - key: next_checkin_date
+        label: Next check-in
+        format: date
+      - key: lead_clinician_email
+        label: Lead
+      actions:
+      - type: call
+        field: phone
+        label: Call
+      limit: 200
+  - key: flag_review
+    type: form
+    title:
+      en: Decide on a flag
+      cy: Penderfynu ar faner
+      pl: Decyzja o fladze
+    collection: flags
+    fields:
+    - status
+    - decision
+    edit: true
+    submit:
+      label:
+        en: Save decision
+      message:
+        en: Saved.
+      redirect: care
+    nav: false
+    roles:
+    - clinician
+    - admin
+  - key: patient_edit
+    type: form
+    title:
+      en: Patient care plan
+      cy: Cynllun gofal
+      pl: Plan opieki
+    collection: patients
+    fields:
+    - next_checkin_date
+    - lead_clinician_email
+    - care_team
+    - sys_max
+    - dia_max
+    - glucose_min
+    - glucose_max
+    - mood_min
+    edit: true
+    submit:
+      label:
+        en: Save
+      message:
+        en: Care plan saved.
+      redirect: care
+    nav: false
+    roles:
+    - clinician
+    - admin
+  - key: account
+    type: account
+    title:
+      en: Plan
+      cy: Cynllun
+      pl: Plan
+    roles:
+    - admin
+  triggers:
+  - key: checkin_reminder
+    description: Push/email reminder on the day a check-in is due
+    'on':
+      date:
+        collection: patients
+        field: next_checkin_date
+        offsetDays: 0
+        hour: 8
+    notify:
+      to: owner
+      subject:
+        en: Your Vellora check-in is due
+        cy: Mae eich cofnod Vellora yn ddyledus
+        pl: Czas na odpowiedzi w Vellora
+      body:
+        en: Hello {record.full_name}, your check-in is due today. It takes a few minutes.
+        cy: Helo {record.full_name}, mae eich cofnod yn ddyledus heddiw.
+        pl: Dzień dobry {record.full_name}, dziś czas na Twoje odpowiedzi.
+      link: checkin
+  - key: flag_raised
+    description: Alert the lead clinician when the monitor raises a flag
+    'on':
+      collection: flags
+      op: insert
+    notify:
+      to:
+      - record.lead_clinician_email
+      subject:
+        en: 'Vellora flag: {record.patient_name} ({record.severity})'
+      body:
+        en: 'The monitor raised a {record.severity} flag for {record.patient_name}.
+
+          Reason: {record.reason}
+
+          Readings: {record.readings}
+
+          Please review and decide what to do.'
+      link: care
+  mobile:
+    appId: uk.vellora.companion
+    appName: Vellora
+    lock: biometric
+    capabilities:
+    - name: push
+    - name: microphone
+      reason:
+        en: To talk to the assistant by voice
+    - name: biometrics
+      reason:
+        en: To keep your health record private with Face ID or fingerprint
+  egress:
+    hosts:
+    - api.service.nhs.uk
+    notes: NHS website content API (NHS.uk syndication), used under the NHS syndication licence with attribution; the clinic's
+      admins hold the subscription key.
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: clinic
+      price: 6
+      interval: month
+      label:
+        en: Clinic — per active patient per month
+      includes:
+      - Check-ins, assistant, monitoring and care-team dashboard
+      roles:
+      - admin
+  extensions:
+  - key: wearable_oauth
+    description: OAuth connections to wearables and health apps (Apple Health, Google Fit, Withings, Dexcom, etc.) are not
+      available yet. For now patients type blood pressure and glucose readings in the check-in; the 'source' field is ready
+      for imported readings.
+  - key: per_patient_billing
+    description: Pricing is per active patient per month; the manifest only holds a flat monthly plan. Seat counting and invoicing
+      per patient must be done on the Stripe side.
+  - key: clinic_tenancy
+    description: One app instance serves one clinic (its admins, invited clinicians and patients). A multi-clinic organisation
+      would run one instance per clinic.
+  - key: recurring_schedule
+    description: The check-in reminder fires on each patient's next_checkin_date; the care team moves the date forward after
+      each check-in. The monitor runs daily at 18:00 for all patients (the clinic cannot yet set a per-patient cron).
+  - key: monitor_setup
+    description: Each patient starts their own monitoring from 'My monitoring'; clinics should include this in onboarding.
+  - key: nhs_compliance
+    description: DCB0129 clinical safety case, DTAC and DSPT are the vendor's own deliverables and are not expressed in the
+      manifest. Welsh and Polish text should be reviewed by clinical translators before go-live.

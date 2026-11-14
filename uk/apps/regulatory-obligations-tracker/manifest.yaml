@@ -1,0 +1,1325 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: regulith
+  displayName: Regulith
+  tagline:
+    en: Compliance workspace for small regulated firms.
+  description:
+    en: Regulith builds your obligations register from UK legislation and FCA/PRA rules, tracks controls and evidence, watches
+      regulatory change and prepares your monthly board report.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#16273b'
+      accent: '#1f7a6d'
+      background: '#f6f8fa'
+      foreground: '#16202b'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Regu
+      color: primary
+    - text: lith
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Sources
+      href: '#sources'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: officer
+      label: Compliance officer
+      assignedBy: signup
+    - key: control_owner
+      label: Control owner
+      assignedBy: derived
+      from: collection:controls.owner_email
+    - key: senior_manager
+      label: Senior manager
+      assignedBy: derived
+      from: collection:controls.senior_manager_email
+  limits:
+  - action: agent:register_builder
+    per: user
+    max: 5
+    window: day
+  - action: agent:evidence_reviewer
+    per: user
+    max: 30
+    window: day
+  egress:
+    hosts:
+    - www.legislation.gov.uk
+    - www.gov.uk
+    notes: legislation.gov.uk and GOV.UK content/search APIs are reusable under the Open Government Licence v3.0. FCA Handbook
+      and PRA pages are read as web pages through the WebRobot MCP, with attribution.
+  agents:
+  - key: register_builder
+    role: main
+    description: Builds the firm's obligations register from its profile, linking each obligation to its source text.
+    profile:
+      inline:
+        display_name: Regulith register builder
+        crews:
+        - id: register_builder
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 60
+          max_budget_usd: 3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are a UK financial regulation analyst building an obligations register for a small regulated
+            firm. From the firm profile (permissions, products, customer types, size) work out which obligations apply. Sources:
+            legislation.gov.uk (use the legislation tool: e.g. Payment Services Regulations 2017, Electronic Money Regulations
+            2011, Money Laundering Regulations 2017, FSMA 2000, Consumer Credit Act 1974, UK GDPR/Data Protection Act 2018,
+            sanctions regulations), the FCA Handbook (SYSC, PRIN incl. Consumer Duty, COBS, CONC, CASS, SUP, DISP, FCG, read
+            through the WebRobot MCP), PRA publications only where the firm is PRA-regulated or the profile suggests it, and
+            gov.uk guidance (govuk_search / govuk_content: OFSI, ICO, HMRC). For each obligation call add_obligation with:
+            ref (short code), title, summary (2-3 plain-English sentences), source (legislation_gov_uk | fca_handbook | pra
+            | gov_uk), citation (e.g. ''SYSC 6.3.1R''), source_url (a real URL you actually opened or received from a tool;
+            NEVER invent URLs; leave empty if unsure and say so), applies_because (one sentence linking it to the profile),
+            status ''unmapped''. Aim for 30-60 focused obligations, proportionate to the firm''s size; do not duplicate ones
+            already returned by read_obligations. Never present this as legal advice. Finish with a report starting ''# Obligations
+            register — <firm name>'' with counts by source, notable gaps you could not verify, and next steps (map obligations
+            to controls).'
+    context:
+    - key: firm_name
+      from: collection:firm_profile.firm_name
+    - key: permissions
+      from: collection:firm_profile.permissions
+    - key: products
+      from: collection:firm_profile.products
+    - key: customer_types
+      from: collection:firm_profile.customer_types
+    - key: size
+      from: collection:firm_profile.size
+    goalTemplate: 'Build or extend the obligations register for {firm_name}. Permissions: {permissions}. Products: {products}.
+      Customer types: {customer_types}. Size: {size}.
+
+      {?focus}Focus: {focus}{/focus}
+
+      Today is {date}. Write in English.'
+    appTools:
+    - name: legislation
+      description: Fetch legislation.gov.uk (path e.g. /all/data.feed with query title=..., or /uksi/2017/692/contents)
+      action: http
+      http:
+        method: GET
+        url: https://www.legislation.gov.uk
+        allowPath: true
+        attribution: legislation.gov.uk, Open Government Licence v3.0
+    - name: govuk_search
+      description: Search GOV.UK content (query q=..., count, order, filter_format)
+      action: http
+      http:
+        method: GET
+        url: https://www.gov.uk/api/search.json
+        attribution: GOV.UK, Open Government Licence v3.0
+    - name: govuk_content
+      description: Read a GOV.UK page by path
+      action: http
+      http:
+        method: GET
+        url: https://www.gov.uk/api/content
+        allowPath: true
+        attribution: GOV.UK, Open Government Licence v3.0
+    - name: read_obligations
+      description: Read the obligations already in the register
+      action: read
+      collection: obligations
+      scope: user
+    - name: add_obligation
+      description: Add one obligation to the register
+      action: append
+      collection: obligations
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 60
+      maxBudgetUsd: 3
+  - key: evidence_reviewer
+    role: helper
+    description: Reads an uploaded piece of evidence and judges whether it seems to meet the control.
+    profile:
+      inline:
+        display_name: Regulith evidence reviewer
+        crews:
+        - id: evidence_reviewer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You review compliance evidence. Given an evidence record, call read_controls to get the control
+            it belongs to (description, frequency, officer_email), and read every uploaded file with read_upload (use the
+            file ids; it reads PDF, Word, Excel and images with OCR). Judge whether the evidence seems to meet the control:
+            is it the right document, current (dated within the control period), complete, approved/signed where needed, and
+            does it show the control actually operated. Then call update_evidence on the record (id from the event) with:
+            ai_assessment (meets | partially | does_not_meet | unreadable), ai_rationale (3-6 sentences quoting what you saw,
+            listing gaps), officer_email (from the control), control_title, status ''pending_confirmation''. You only recommend:
+            the compliance officer decides. Never invent content you did not read. End with a short markdown summary starting
+            ''# Evidence review — <control title>''.'
+    goalTemplate: Review evidence.
+    appTools:
+    - name: read_upload
+      description: Read a file the user uploaded
+      action: read_file
+    - name: read_controls
+      description: Read the controls the user can see
+      action: read
+      collection: controls
+      scope: user
+    - name: update_evidence
+      description: Update an evidence record
+      action: write
+      collection: evidence
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.6
+  - key: control_roller
+    role: helper
+    description: After confirmed evidence, records completion and sets the next due date from the control frequency.
+    profile:
+      inline:
+        display_name: Regulith control scheduler
+        crews:
+        - id: control_roller
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.15
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: Evidence for a control has been confirmed. Call read_controls, find the control by id, then call
+            update_control with last_completed = today and next_due = today plus the control's frequency (monthly +1 month,
+            quarterly +3, semiannual +6, annual +12), as YYYY-MM-DD. Change nothing else. Reply with one line '# Control <code>
+            next due <date>'.
+    goalTemplate: Roll the control forward.
+    appTools:
+    - name: read_controls
+      description: Read the controls the user can see
+      action: read
+      collection: controls
+      scope: user
+    - name: update_control
+      description: Update a control record
+      action: write
+      collection: controls
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.15
+  - key: monitor_agent
+    role: scheduled
+    description: Daily reads new publications and consultations on a topic and proposes affected obligations and controls.
+    memory: instance
+    writesTo:
+      collection: reg_changes
+      parse: json_last
+    profile:
+      inline:
+        display_name: Regulith regulatory monitor
+        crews:
+        - id: monitor_agent
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 25
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You monitor UK regulatory change on one topic for one firm. Each run: check what is new since your
+            last run (your memory holds what you already reported) in: gov.uk (govuk_search ordered by -public_timestamp),
+            legislation.gov.uk new legislation feed (legislation: /new/data.feed), and FCA/PRA publications, policy statements
+            and consultation papers (open the FCA ''news and publications'' and PRA ''publications'' pages through the WebRobot
+            MCP). Keep only items relevant to the topic. If nothing is new, say so in one line and output the JSON with summary
+            ''No relevant changes'' and empty lists. Otherwise write ''# <topic> — changes on <date>'' with, per item: what
+            changed, deadline or consultation closing date, link (real URLs only), and the effect. Then call read_obligations
+            and read_controls and propose which obligations (by ref) and controls (by code) are likely affected and why; say
+            plainly when unsure. Never invent publications or dates. Finish with a fenced json block: {"date":"YYYY-MM-DD","topic":"...","summary":"...","sources":"urls,
+            one per line","affected_obligations":"...","affected_controls":"...","status":"proposed"}. Then call remember
+            with the titles of the items you reported.'
+    goalTemplate: 'Topic: {topic}. Scope: {scope_label}. Today is {date}. Write in English.'
+    output: markdown+json
+    resultSchema:
+      type: object
+      properties:
+        date:
+          type: string
+        topic:
+          type: string
+        summary:
+          type: string
+        sources:
+          type: string
+        affected_obligations:
+          type: string
+        affected_controls:
+          type: string
+        status:
+          type: string
+    appTools:
+    - name: legislation
+      description: Fetch legislation.gov.uk (path e.g. /all/data.feed with query title=..., or /uksi/2017/692/contents)
+      action: http
+      http:
+        method: GET
+        url: https://www.legislation.gov.uk
+        allowPath: true
+        attribution: legislation.gov.uk, Open Government Licence v3.0
+    - name: govuk_search
+      description: Search GOV.UK content (query q=..., count, order, filter_format)
+      action: http
+      http:
+        method: GET
+        url: https://www.gov.uk/api/search.json
+        attribution: GOV.UK, Open Government Licence v3.0
+    - name: read_obligations
+      description: Read the obligations already in the register
+      action: read
+      collection: obligations
+      scope: user
+    - name: read_controls
+      description: Read the controls the user can see
+      action: read
+      collection: controls
+      scope: user
+    limits:
+      maxTurns: 25
+      maxBudgetUsd: 0.8
+  - key: board_reporter
+    role: scheduled
+    description: Writes the monthly board compliance report.
+    writesTo:
+      collection: board_reports
+      parse: whole
+    profile:
+      inline:
+        display_name: Regulith board reporter
+        crews:
+        - id: board_reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 15
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the monthly compliance report for a small regulated firm''s board. Use read_obligations,
+            read_controls, read_evidence and read_changes to get real data; never invent figures. Start with ''# Board compliance
+            report — <month year>''. Sections (## headings): Executive summary (3-5 lines, RAG status), Coverage (obligations
+            mapped / unmapped / not applicable, percentages), Control performance (controls due, completed, overdue with owners
+            and days overdue; evidence assessed and awaiting confirmation), Regulatory change (open and approved changes,
+            decisions needed), Risks and decisions for the board, Next month. Add one chart as a fenced block: ```chart
+
+            {"type":"bar","title":"Controls by status","labels":[...],"series":[{"name":"Controls","values":[...]}]}```. Under
+            700 words, plain language, flag data gaps.'
+    goalTemplate: 'Prepare the board report for the month ending {date}. {?notes}Officer''s notes: {notes}{/notes} Write in
+      English.'
+    appTools:
+    - name: read_obligations
+      description: Read the obligations already in the register
+      action: read
+      collection: obligations
+      scope: user
+    - name: read_controls
+      description: Read the controls the user can see
+      action: read
+      collection: controls
+      scope: user
+    - name: read_evidence
+      description: Read evidence records
+      action: read
+      collection: evidence
+      scope: user
+    - name: read_changes
+      description: Read regulatory change proposals
+      action: read
+      collection: reg_changes
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 15
+      maxBudgetUsd: 0.8
+  inputForm:
+    title: Refresh the register
+    fields:
+    - name: focus
+      type: textarea
+      maxLength: 500
+      label: Focus (optional)
+      help: e.g. only safeguarding rules, or a new product
+  templates:
+  - key: monitor
+    title: Regulatory monitor
+    description: A daily agent reads new publications and consultations on a topic and proposes the obligations and controls
+      affected.
+    agent: monitor_agent
+    params:
+    - name: topic
+      type: text
+      required: true
+      label: Topic
+      help: e.g. safeguarding, Consumer Duty, financial promotions, sanctions
+    - name: scope
+      type: select
+      required: true
+      label: Sources
+      options:
+      - value: all
+        label: All sources
+      - value: fca
+        label: FCA only
+      - value: pra
+        label: PRA only
+      - value: law
+        label: Legislation and gov.uk
+    goal: 'Topic: {topic}. Scope: {scope}. Today is {date}. Write in English.'
+    schedule:
+      cron: 0 6 * * *
+      userCanChange: true
+    maxPerUser: 6
+    deliver:
+      to: owner
+      onlyIfNew: true
+      subject: 'Regulith monitor: {title}'
+  - key: board_report
+    title: Monthly board report
+    description: A board compliance report on the first of each month, as a printable PDF.
+    agent: board_reporter
+    params:
+    - name: notes
+      type: textarea
+      label: Notes for the board (optional)
+    goal: 'Prepare the board report for the month ending {date}. Officer''s notes: {notes}. Write in English.'
+    schedule:
+      cron: 0 7 1 * *
+      userCanChange: false
+    maxPerUser: 1
+    deliver:
+      to: owner
+      subject: Your monthly board report
+  data:
+    collections:
+    - name: firm_profile
+      description: The firm's onboarding profile
+      ownedBy: user
+      fields:
+      - name: firm_name
+        type: text
+        required: true
+        label: Firm name
+      - name: permissions
+        type: multiselect
+        required: true
+        label: Permissions held
+        options:
+        - value: authorised_payment_institution
+          label: Authorised payment institution
+        - value: small_payment_institution
+          label: Small payment institution
+        - value: e_money_institution
+          label: E-money institution
+        - value: account_information_payment_initiation
+          label: Account information / payment initiation
+        - value: broker_dealer
+          label: Broker / dealing
+        - value: investment_advice
+          label: Investment advice and management
+        - value: consumer_credit_lending
+          label: Consumer credit lending
+        - value: debt_collection
+          label: Debt administration / collection
+        - value: mortgage_intermediation
+          label: Mortgage intermediation
+        - value: insurance_distribution
+          label: Insurance distribution
+      - name: products
+        type: textarea
+        required: true
+        label: Products and services
+        maxLength: 1000
+      - name: customer_types
+        type: multiselect
+        required: true
+        label: Customer types
+        options:
+        - value: retail
+          label: Retail consumers
+        - value: sme
+          label: SMEs
+        - value: professional
+          label: Professional clients
+        - value: vulnerable
+          label: Customers in vulnerable circumstances
+      - name: size
+        type: select
+        required: true
+        label: Size
+        options:
+        - value: micro
+          label: Micro (under 10 staff)
+        - value: small
+          label: Small (10-49)
+        - value: medium
+          label: Medium (50-249)
+      - name: pra_regulated
+        type: boolean
+        label: Also PRA-regulated
+    - name: obligations
+      description: The obligations register, each linked to its source
+      ownedBy: user
+      fields:
+      - name: ref
+        type: text
+        label: Ref
+      - name: title
+        type: text
+        label: Obligation
+      - name: summary
+        type: textarea
+        label: Summary
+      - name: source
+        type: select
+        label: Source
+        options:
+        - value: legislation_gov_uk
+          label: legislation.gov.uk
+        - value: fca_handbook
+          label: FCA Handbook
+        - value: pra
+          label: PRA
+        - value: gov_uk
+          label: gov.uk
+      - name: citation
+        type: text
+        label: Citation
+      - name: source_url
+        type: url
+        label: Source text
+      - name: applies_because
+        type: textarea
+        label: Why it applies
+      - name: status
+        type: select
+        label: Status
+        default: unmapped
+        options:
+        - value: unmapped
+          label: Unmapped
+        - value: mapped
+          label: Mapped
+        - value: not_applicable
+          label: Not applicable
+      - name: control
+        type: select
+        label: Mapped control
+        optionsFrom: collection:controls
+    - name: controls
+      description: Controls with owner, frequency and due date
+      ownedBy: user
+      fields:
+      - name: code
+        type: text
+        required: true
+        label: Code
+      - name: title
+        type: text
+        required: true
+        label: Control
+      - name: description
+        type: textarea
+        label: What is done and what evidence is expected
+      - name: frequency
+        type: select
+        required: true
+        label: Frequency
+        options:
+        - value: monthly
+          label: Monthly
+        - value: quarterly
+          label: Quarterly
+        - value: semiannual
+          label: Every 6 months
+        - value: annual
+          label: Annual
+      - name: owner_email
+        type: email
+        required: true
+        label: Control owner email
+      - name: senior_manager_email
+        type: email
+        required: true
+        label: Senior manager email (escalation)
+      - name: officer_email
+        type: email
+        required: true
+        label: Compliance officer email
+      - name: next_due
+        type: date
+        required: true
+        label: Next due
+      - name: last_completed
+        type: date
+        label: Last completed
+      - name: status
+        type: select
+        label: Status
+        default: open
+        options:
+        - value: open
+          label: Open
+        - value: suspended
+          label: Suspended
+      access:
+      - role: control_owner
+        where:
+          owner_email: '{user.email}'
+        can:
+        - read
+        - write
+      - role: senior_manager
+        where:
+          senior_manager_email: '{user.email}'
+        can:
+        - read
+    - name: evidence
+      description: Evidence uploaded by control owners
+      ownedBy: user
+      fields:
+      - name: control
+        type: select
+        required: true
+        label: Control
+        optionsFrom: collection:controls
+      - name: control_title
+        type: text
+        label: Control title
+      - name: file
+        type: file
+        required: true
+        label: Evidence files
+        accept:
+        - pdf
+        - docx
+        - xlsx
+        - csv
+        - txt
+        - jpg
+        - png
+        maxMb: 15
+        multiple: true
+      - name: notes
+        type: textarea
+        label: Notes
+      - name: status
+        type: select
+        label: Status
+        default: submitted
+        options:
+        - value: submitted
+          label: Submitted
+        - value: pending_confirmation
+          label: Awaiting officer
+        - value: confirmed
+          label: Confirmed
+        - value: rejected
+          label: Rejected
+      - name: ai_assessment
+        type: select
+        label: AI assessment
+        options:
+        - value: meets
+          label: Seems to meet
+        - value: partially
+          label: Partially
+        - value: does_not_meet
+          label: Does not meet
+        - value: unreadable
+          label: Unreadable
+      - name: ai_rationale
+        type: textarea
+        label: AI rationale
+      - name: officer_email
+        type: email
+        label: Officer
+      - name: officer_notes
+        type: textarea
+        label: Officer notes
+      access:
+      - role: officer
+        where:
+          officer_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: reg_changes
+      description: Regulatory changes found by monitors, with proposed impact
+      ownedBy: user
+      fields:
+      - name: date
+        type: date
+        label: Date
+      - name: topic
+        type: text
+        label: Topic
+      - name: summary
+        type: textarea
+        label: Summary
+      - name: sources
+        type: textarea
+        label: Sources
+      - name: affected_obligations
+        type: textarea
+        label: Obligations affected
+      - name: affected_controls
+        type: textarea
+        label: Controls affected
+      - name: status
+        type: select
+        label: Status
+        default: proposed
+        options:
+        - value: proposed
+          label: Proposed
+        - value: approved
+          label: Approved
+        - value: dismissed
+          label: Dismissed
+      - name: officer_notes
+        type: textarea
+        label: Officer notes
+    - name: board_reports
+      description: Monthly board reports
+      ownedBy: user
+      fields:
+      - name: title
+        type: text
+        label: Report
+      - name: content
+        type: textarea
+        label: Content
+  views:
+  - key: home
+    type: page
+    title: Regulith
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: For payment firms, brokers and consumer credit lenders
+      title: Your **compliance workspace**, built from the rules that apply to you.
+      text: Tell Regulith what you do. An agent builds your obligations register from legislation.gov.uk, the FCA Handbook,
+        PRA publications and gov.uk, every obligation linked to its source text. Then you run controls, evidence, regulatory
+        change and the board report in one place.
+      actions:
+      - label: Start your register
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+      aside: <div style="padding:16px"><strong>Dashboard</strong><br>Coverage 87% · 3 controls overdue · 2 regulatory changes
+        awaiting approval</div>
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Onboard
+        text: Permissions, products, customer types and size.
+      - title: Register
+        text: An agent drafts your obligations with links to the source.
+      - title: Controls
+        text: Map obligations to controls, owners and frequencies.
+      - title: Evidence
+        text: Owners upload; an agent reviews; you confirm.
+      - title: Monitor
+        text: Daily watch on topics; you approve the impact.
+      - title: Report
+        text: Reminders, escalations and a monthly board PDF.
+    - type: cards
+      id: sources
+      title: Sources
+      items:
+      - title: legislation.gov.uk
+        text: Acts and statutory instruments.
+      - title: FCA Handbook
+        text: SYSC, PRIN, COBS, CONC, CASS, DISP and more.
+      - title: PRA publications
+        text: For PRA-regulated firms.
+      - title: gov.uk
+        text: OFSI, ICO, HMRC and other guidance.
+    - type: cards
+      id: pricing
+      title: Pricing per firm
+      items:
+      - title: Starter
+        text: Up to 5 users
+        badge: €149/mo
+      - title: Growth
+        text: Up to 15 users
+        badge: €349/mo
+      - title: Scale
+        text: Up to 40 users
+        badge: €749/mo
+    - type: note
+      content: Regulith supports compliance work; it is not legal advice. AI output is always confirmed by your compliance
+        officer. Contains public sector information licensed under the Open Government Licence v3.0.
+  - key: onboarding
+    type: form
+    title: Onboarding
+    collection: firm_profile
+    submit:
+      label: Build my register
+      message: Profile saved. The agent is building your obligations register.
+      redirect: obligations
+    roles:
+    - officer
+    - admin
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - officer
+    - control_owner
+    - senior_manager
+    - admin
+    sections:
+    - type: data
+      title: Controls
+      source: collection:controls
+      display: kpi
+      kpis:
+      - label: Controls
+        agg: count
+    - type: data
+      title: Obligation coverage
+      source: collection:obligations
+      display: chart
+      chart: pie
+      fields:
+      - key: status
+        label: Status
+      - key: n
+        label: Obligations
+      groupBy:
+        field: status
+        aggs:
+        - key: n
+          agg: count
+    - type: data
+      title: 'Controls by due date (earliest first: overdue at the top)'
+      source: collection:controls
+      display: table
+      fields:
+      - key: code
+        label: Code
+      - key: title
+        label: Control
+      - key: owner_email
+        label: Owner
+      - key: frequency
+        label: Frequency
+      - key: next_due
+        label: Next due
+        format: date
+      - key: last_completed
+        label: Last done
+        format: date
+      filters:
+      - field: status
+        op: '='
+        value: open
+      sort:
+        field: next_due
+        dir: asc
+      limit: 25
+      empty: No controls yet.
+    - type: data
+      title: Open regulatory changes
+      source: collection:reg_changes
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: topic
+        label: Topic
+      - key: summary
+        label: Summary
+      - key: status
+        label: Status
+        format: badge
+      filters:
+      - field: status
+        op: '='
+        value: proposed
+      sort:
+        field: date
+        dir: desc
+      limit: 20
+      empty: Nothing awaiting approval.
+  - key: refresh_register
+    type: new_run
+    title: Refresh register
+    roles:
+    - officer
+    - admin
+  - key: runs
+    type: history
+    title: Register runs
+    source: run
+    roles:
+    - officer
+    - admin
+  - key: run_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: obligations
+    type: table
+    title: Obligations register
+    source: collection:obligations
+    export: true
+    roles:
+    - officer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: ref
+        label: Ref
+      - key: title
+        label: Obligation
+      - key: source
+        label: Source
+        format: badge
+      - key: citation
+        label: Citation
+      - key: source_url
+        label: Source text
+        format: link
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: ref
+        dir: asc
+      limit: 200
+  - key: obligation_edit
+    type: form
+    title: Map obligation to a control
+    collection: obligations
+    fields:
+    - status
+    - control
+    edit: true
+    submit:
+      label: Save
+      message: Saved
+      redirect: obligations
+    roles:
+    - officer
+    - admin
+    nav: false
+  - key: controls
+    type: table
+    title: Controls
+    source: collection:controls
+    export: true
+    roles:
+    - officer
+    - control_owner
+    - senior_manager
+    - admin
+    data:
+      display: table
+      fields:
+      - key: code
+        label: Code
+      - key: title
+        label: Control
+      - key: frequency
+        label: Frequency
+      - key: owner_email
+        label: Owner
+      - key: next_due
+        label: Next due
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: next_due
+        dir: asc
+      limit: 200
+  - key: control_form
+    type: form
+    title: New or edit control
+    collection: controls
+    edit: true
+    submit:
+      label: Save control
+      message: Control saved
+      redirect: controls
+    roles:
+    - officer
+    - admin
+  - key: evidence_submit
+    type: form
+    title: Upload evidence
+    collection: evidence
+    fields:
+    - control
+    - file
+    - notes
+    submit:
+      label: Submit evidence
+      message: Uploaded. The agent will review it and the compliance officer will be asked to confirm.
+      redirect: evidence
+    roles:
+    - control_owner
+    - officer
+    - admin
+  - key: evidence
+    type: table
+    title: Evidence
+    source: collection:evidence
+    roles:
+    - control_owner
+    - officer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: control_title
+        label: Control
+      - key: status
+        label: Status
+        format: badge
+      - key: ai_assessment
+        label: AI assessment
+        format: badge
+      - key: ai_rationale
+        label: Rationale
+      - key: officer_notes
+        label: Officer notes
+      limit: 100
+  - key: evidence_review
+    type: form
+    title: Confirm evidence
+    collection: evidence
+    fields:
+    - status
+    - officer_notes
+    edit: true
+    submit:
+      label: Save decision
+      message: Decision saved
+      redirect: evidence
+    roles:
+    - officer
+    - admin
+    nav: false
+  - key: changes
+    type: table
+    title: Regulatory changes
+    source: collection:reg_changes
+    roles:
+    - officer
+    - admin
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: topic
+        label: Topic
+      - key: summary
+        label: Summary
+      - key: affected_obligations
+        label: Obligations affected
+      - key: affected_controls
+        label: Controls affected
+      - key: sources
+        label: Sources
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: date
+        dir: desc
+      limit: 100
+  - key: change_review
+    type: form
+    title: Approve or dismiss change
+    collection: reg_changes
+    fields:
+    - status
+    - officer_notes
+    edit: true
+    submit:
+      label: Save decision
+      message: Decision saved
+      redirect: changes
+    roles:
+    - officer
+    - admin
+    nav: false
+  - key: monitors
+    type: instances
+    template: monitor
+    title: Monitors
+    roles:
+    - officer
+    - control_owner
+    - senior_manager
+    - admin
+  - key: board
+    type: instances
+    template: board_report
+    title: Board report schedule
+    roles:
+    - officer
+    - admin
+  - key: board_reports
+    type: list
+    title: Board reports
+    source: collection:board_reports
+    roles:
+    - officer
+    - senior_manager
+    - admin
+    data:
+      display: list
+      fields:
+      - key: title
+        label: Report
+      - key: content
+        label: Content
+      limit: 24
+  - key: account
+    type: account
+    title: Subscription
+    roles:
+    - officer
+  billing:
+    modes:
+    - subscription
+    currency: eur
+    plans:
+    - key: starter
+      price: 149
+      interval: month
+      label: Starter
+      includes:
+      - Up to 5 users
+      - Obligations register
+      - Controls, evidence, monitors, board report
+      roles:
+      - officer
+    - key: growth
+      price: 349
+      interval: month
+      label: Growth
+      includes:
+      - Up to 15 users
+      - Everything in Starter
+      roles:
+      - officer
+    - key: scale
+      price: 749
+      interval: month
+      label: Scale
+      includes:
+      - Up to 40 users
+      - Everything in Growth
+      roles:
+      - officer
+  notifications:
+    emailOnRunDone: true
+  triggers:
+  - key: build_register
+    'on':
+      collection: firm_profile
+      op: insert
+    start:
+      agent: register_builder
+    goal: 'Build the obligations register for {record.firm_name}. Permissions: {record.permissions}. Products: {record.products}.
+      Customer types: {record.customer_types}. Size: {record.size}. PRA-regulated: {record.pra_regulated}. Today is {date}.
+      Write in English.'
+  - key: review_evidence
+    'on':
+      collection: evidence
+      op: insert
+    start:
+      agent: evidence_reviewer
+    goal: 'Review the newly uploaded evidence. Event: {event}. Control id: {record.control}. Files: {record.file}. Notes:
+      {record.notes}.'
+  - key: ask_officer_confirm
+    'on':
+      collection: evidence
+      op: update
+      where:
+        status: pending_confirmation
+    notify:
+      to:
+      - record.officer_email
+      subject: 'Evidence to confirm: {record.control_title}'
+      body: 'The AI review of evidence for {record.control_title} says: {record.ai_assessment}. Please confirm or reject it.'
+      link: evidence
+  - key: evidence_rejected
+    'on':
+      collection: evidence
+      op: update
+      where:
+        status: rejected
+    notify:
+      to:
+      - owner
+      subject: 'Evidence rejected: {record.control_title}'
+      body: 'Your evidence for {record.control_title} was not accepted. Officer notes: {record.officer_notes}'
+      link: evidence_submit
+  - key: evidence_confirmed
+    'on':
+      collection: evidence
+      op: update
+      where:
+        status: confirmed
+    start:
+      agent: control_roller
+    goal: 'Evidence for control id {record.control} was confirmed today ({date}). Update that control: last_completed and
+      next_due.'
+  - key: control_reminder
+    'on':
+      date:
+        collection: controls
+        field: next_due
+        offsetDays: -3
+        hour: 7
+      where:
+        status: open
+    notify:
+      to:
+      - record.owner_email
+      subject: 'Control due in 3 days: {record.title}'
+      body: Control {record.code} ({record.title}) is due on {record.next_due}. Please upload the evidence.
+      link: evidence_submit
+  - key: control_overdue
+    'on':
+      date:
+        collection: controls
+        field: next_due
+        offsetDays: 1
+        hour: 7
+      where:
+        status: open
+    notify:
+      to:
+      - record.senior_manager_email
+      - record.owner_email
+      - owner
+      subject: 'OVERDUE control: {record.title}'
+      body: Control {record.code} ({record.title}) was due on {record.next_due} and has not been completed. Escalated to the
+        senior manager.
+      link: dashboard
+  - key: change_proposed
+    'on':
+      collection: reg_changes
+      op: insert
+    notify:
+      to:
+      - owner
+      subject: 'Regulatory change to review: {record.topic}'
+      body: 'A monitor found changes on {record.topic}: {record.summary}. Please approve or dismiss the proposed impact.'
+      link: changes
+  extensions:
+  - key: overdue_flag
+    description: Overdue controls are shown by sorting on next due date and by the daily escalation email; a 'today'-relative
+      filter is not available in data blocks.
+  - key: firm_teams
+    description: Users of one firm are linked through the control records (owner, senior manager and officer emails). A control
+      owner who signs up directly also gets the signup role, but only sees records assigned to them.

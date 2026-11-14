@@ -1,0 +1,641 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: freightloom
+  displayName: Freightloom
+  tagline: 'AI agents for freight forwarders: quotes, bookings and documents.'
+  description: Freightloom reads quote requests from an inbound mailbox or a web form, builds a quote with margin from your
+    contracted rates, waits for a forwarder's approval, then prepares shipping documents and customs data drafts and keeps
+    customers updated by email.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0f2a43'
+      accent: '#e07a1f'
+      background: '#f6f8fa'
+      foreground: '#14202e'
+    fonts:
+      body: Inter
+      display: Manrope
+    wordmark:
+    - text: Freight
+      color: primary
+    - text: loom
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: forwarder
+      label: Forwarder staff
+      assignedBy: invite
+    - key: customer
+      label: Customer
+      assignedBy: invite
+  agents:
+  - key: docs
+    role: main
+    description: Prepares booking and shipping documents (bill of lading, commercial invoice) from uploaded files, plus a
+      customs data draft for UK CDS and ICS2.
+    profile:
+      inline:
+        display_name: Freightloom documents
+        crews:
+        - id: docs
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a freight documentation clerk for a UK freight forwarder. You receive uploaded files (supplier
+            invoices, packing lists, booking confirmations, scans). Text of PDF/Word/Excel files is in the goal; for photos
+            and scans call read_upload with the file id. Start with a level-1 title "# Documents — <shipment reference>".
+            Sections: ## Extracted data (table: shipper, consignee, notify party, goods description, HS codes if stated, packages,
+            gross weight, volume, container/vessel/flight, incoterms, invoice values and currency), ## Draft bill of lading,
+            ## Draft commercial invoice, ## Customs data draft (fields needed for a UK CDS declaration or an ICS2 entry summary
+            declaration, as a checklist with values found and values MISSING), ## Missing or inconsistent. Never invent values,
+            HS codes, duties or weights: mark them MISSING and say what to ask. Everything is a DRAFT for a forwarder to check;
+            you do not submit anything to HMRC. Use the shipments tool to record the document status when asked.'
+          mcp_servers: []
+    goalTemplate: 'Shipment reference: {shipment_ref}
+
+      Customer email: {customer_email}
+
+      {?notes}Notes: {notes}{/notes}
+
+      Uploaded documents: {documents}
+
+      {?documents_text}Text of the documents:
+
+      {documents_text}{/documents_text}
+
+      Today is {date}. Write in English.'
+    appTools:
+    - name: read_upload
+      description: Read a file the user uploaded (images and scans, OCR included)
+      action: read_file
+    - name: shipment_read
+      description: Read shipments
+      action: read
+      collection: shipments
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 1.0
+  - key: quoter
+    role: helper
+    description: Extracts quote details from an email or request, asks for missing fields, prices from contracted rates, adds
+      margin, asks a forwarder to approve.
+    awaits:
+    - quote_approval
+    profile:
+      inline:
+        display_name: Freightloom quoter
+        crews:
+        - id: quoter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a quoting agent for a UK freight forwarder. Input is a customer''s quote request (from the
+            web form or an email). Steps: 1) Extract origin, destination, cargo type, weight, volume, incoterms, ready date.
+            2) If something essential is missing, do not guess: reply listing exactly what to ask the customer (when the request
+            came by email, your reply is sent back to the customer) and stop. 3) Use rates_search to find contracted carrier
+            and partner rates for the lane and mode; never invent a rate; if none match, say so and ask the forwarder to supply
+            one. 4) Build the quote: cost, margin percentage (default 15% unless the forwarder''s note says otherwise), selling
+            price in GBP, transit time, validity, exclusions. 5) Save it with quote_write with status pending_approval, then
+            call request_quote_approval. Never send a quote to a customer before approval. When told a quote was approved,
+            set its status to sent. Start the report with "# Quote — <origin> to <destination>" and include a table of cost,
+            margin and price.'
+          mcp_servers: []
+    goalTemplate: 'Message from the customer: {message}
+
+      Conversation so far: {history}
+
+      Today is {date}.'
+    appTools:
+    - name: rates_search
+      description: Search contracted carrier and partner rates
+      action: search
+      collection: rates
+      scope: all
+    - name: quote_write
+      description: Create or update a quote record
+      action: write
+      collection: quotes
+      scope: user
+    - name: quote_read
+      description: Read quotes
+      action: read
+      collection: quotes
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 14
+      maxBudgetUsd: 1.0
+  inputForm:
+    title: Prepare documents
+    fields:
+    - name: shipment_ref
+      type: text
+      required: true
+      label: Shipment reference
+    - name: customer_email
+      type: email
+      label: Customer email
+    - name: documents
+      type: file
+      required: true
+      label: Shipping files
+      accept:
+      - pdf
+      - docx
+      - xlsx
+      - csv
+      - jpg
+      - png
+      maxMb: 15
+      multiple: true
+    - name: notes
+      type: textarea
+      maxLength: 600
+      label: Notes (optional)
+  data:
+    collections:
+    - name: quote_requests
+      ownedBy: user
+      description: Quote requests from customers
+      fields:
+      - name: customer_email
+        type: email
+        required: true
+        label: Your email
+      - name: origin
+        type: text
+        required: true
+        label: Origin
+      - name: destination
+        type: text
+        required: true
+        label: Destination
+      - name: cargo_type
+        type: select
+        required: true
+        label: Cargo type
+        options:
+        - general
+        - palletised
+        - container FCL
+        - container LCL
+        - dangerous goods
+        - refrigerated
+        - oversize
+      - name: weight_kg
+        type: number
+        required: true
+        label: Weight (kg)
+      - name: volume_cbm
+        type: number
+        required: true
+        label: Volume (m³)
+      - name: incoterms
+        type: select
+        required: true
+        label: Incoterms
+        options:
+        - EXW
+        - FCA
+        - FOB
+        - CIF
+        - CPT
+        - DAP
+        - DDP
+      - name: ready_date
+        type: date
+        required: true
+        label: Ready date
+      - name: notes
+        type: textarea
+        label: Notes
+      access:
+      - role: forwarder
+        can:
+        - read
+        - write
+    - name: quotes
+      ownedBy: user
+      description: Quotes built by the agent
+      fields:
+      - name: customer_email
+        type: email
+      - name: origin
+        type: text
+      - name: destination
+        type: text
+      - name: carrier
+        type: text
+      - name: cost_gbp
+        type: number
+      - name: margin_pct
+        type: number
+      - name: price_gbp
+        type: number
+      - name: margin_gbp
+        type: number
+      - name: quote_date
+        type: date
+      - name: status
+        type: select
+        options:
+        - pending_approval
+        - approved
+        - sent
+        - accepted
+        - rejected
+      access:
+      - role: forwarder
+        can:
+        - read
+        - write
+    - name: shipments
+      ownedBy: user
+      description: Booked shipments and their milestones
+      fields:
+      - name: shipment_ref
+        type: text
+      - name: customer_email
+        type: email
+      - name: origin
+        type: text
+      - name: destination
+        type: text
+      - name: status
+        type: select
+        options:
+        - booked
+        - collected
+        - in_transit
+        - customs
+        - delivered
+      - name: eta
+        type: date
+      access:
+      - role: forwarder
+        can:
+        - read
+        - write
+    - name: rates
+      ownedBy: shared
+      description: Contracted carrier and partner rates, kept by admins (CSV)
+      searchable: true
+      fields:
+      - name: carrier
+        type: text
+      - name: mode
+        type: select
+        options:
+        - sea
+        - air
+        - road
+        - rail
+      - name: origin
+        type: text
+      - name: destination
+        type: text
+      - name: unit
+        type: text
+      - name: rate_gbp
+        type: number
+      - name: transit_days
+        type: number
+      - name: valid_until
+        type: date
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Freightloom
+    sections:
+    - type: hero
+      title: Quotes, bookings and documents, **handled by AI agents**.
+      text: Freightloom reads quote requests, prices them from your contracted rates, waits for your approval, drafts the
+        shipping documents and keeps customers updated.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Request
+        text: Customers email the inbound mailbox or fill in the web form.
+      - title: Quote
+        text: The agent extracts the details, asks for what is missing and builds a quote with margin.
+      - title: Approve
+        text: A forwarder approves every quote before it is sent.
+      - title: Ship
+        text: Documents and customs data drafts are prepared; customers get an email at each milestone.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: £400 per seat per month
+        text: Forwarder staff, customers and carrier partners are added by invitation.
+    - type: note
+      content: Customs data are drafts for a person to check; Freightloom does not file declarations.
+  - key: request_quote
+    type: form
+    title: Request a quote
+    collection: quote_requests
+    submit:
+      label: Send request
+      message: Request received. You will get your quote by email once approved.
+      redirect: my_quotes
+    roles:
+    - customer
+    - forwarder
+    - admin
+  - key: my_quotes
+    type: table
+    title: Quotes
+    source: collection:quotes
+    export: true
+    data:
+      display: table
+      fields:
+      - key: origin
+        label: Origin
+      - key: destination
+        label: Destination
+      - key: price_gbp
+        label: Price £
+        format: money
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: quote_date
+        dir: desc
+    roles:
+    - customer
+    - forwarder
+    - admin
+  - key: my_shipments
+    type: table
+    title: Shipments
+    source: collection:shipments
+    data:
+      display: table
+      fields:
+      - key: shipment_ref
+        label: Reference
+      - key: origin
+        label: Origin
+      - key: destination
+        label: Destination
+      - key: status
+        label: Status
+        format: badge
+      - key: eta
+        label: ETA
+        format: date
+    roles:
+    - customer
+    - forwarder
+    - admin
+  - key: new_docs
+    type: new_run
+    title: Prepare documents
+    roles:
+    - forwarder
+    - admin
+  - key: doc_history
+    type: history
+    title: Document runs
+    source: run
+    roles:
+    - forwarder
+    - admin
+  - key: doc_report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: approve
+    type: approvals
+    title: Quote approvals
+    roles:
+    - forwarder
+    - admin
+  - key: dashboard
+    type: dashboard
+    title: Dashboard
+    children:
+    - quote_volume
+    - margins
+    - shipment_status
+    roles:
+    - forwarder
+    - admin
+  - key: quote_volume
+    type: chart
+    title: Quotes by status (volume and win rate)
+    source: collection:quotes
+    nav: false
+    data:
+      display: chart
+      chart: pie
+      fields:
+      - key: status
+      - key: count
+      groupBy:
+        field: status
+        aggs: []
+  - key: margins
+    type: chart
+    title: Margin by month
+    source: collection:quotes
+    nav: false
+    data:
+      display: chart
+      chart: bar
+      fields:
+      - key: quote_date
+      - key: margin_gbp
+      groupBy:
+        field: quote_date
+        bucket: month
+        aggs:
+        - key: margin_gbp
+          agg: sum
+          field: margin_gbp
+  - key: shipment_status
+    type: chart
+    title: Shipments by status
+    source: collection:shipments
+    nav: false
+    data:
+      display: chart
+      chart: bar
+      fields:
+      - key: status
+      - key: count
+      groupBy:
+        field: status
+        aggs: []
+  - key: account
+    type: account
+    title: Plan
+    roles:
+    - admin
+    - forwarder
+  approvals:
+  - key: quote_approval
+    title: Approve quote before sending
+    description: A forwarder checks cost, margin and price
+    role: forwarder
+    fields:
+    - origin
+    - destination
+    - cost_gbp
+    - margin_pct
+    - price_gbp
+    timeoutMinutes: 4320
+    onTimeout: reject
+  triggers:
+  - key: new_request
+    'on':
+      collection: quote_requests
+      op: insert
+    start:
+      agent: quoter
+    goal: 'New quote request from {record.customer_email}: origin {record.origin}, destination {record.destination}, cargo
+      {record.cargo_type}, weight {record.weight_kg} kg, volume {record.volume_cbm} m3, incoterms {record.incoterms}, ready
+      {record.ready_date}. Notes: {record.notes}. Build the quote and ask for approval.'
+  - key: quote_approved
+    'on':
+      approval: quote_approval
+      decision: approved
+    start:
+      agent: quoter
+    goal: 'The forwarder approved the quote. Event: {event}. Set the quote status to sent.'
+  - key: quote_sent_email
+    'on':
+      collection: quotes
+      op: update
+      where:
+        status: sent
+    notify:
+      to:
+      - record.customer_email
+      subject: 'Your quote: {record.origin} to {record.destination}'
+      body: 'Your quote is ready: £{record.price_gbp} for {record.origin} to {record.destination}. Please sign in to review
+        and accept it.'
+      link: my_quotes
+  - key: quote_accepted
+    'on':
+      collection: quotes
+      op: update
+      where:
+        status: accepted
+    notify:
+      to:
+      - admins
+      - role:forwarder
+      subject: 'Quote accepted: {record.origin} to {record.destination}'
+      body: The customer accepted the quote. Create the booking and upload the shipping files to prepare documents.
+      link: new_docs
+  - key: milestone
+    'on':
+      collection: shipments
+      op: update
+    notify:
+      to:
+      - record.customer_email
+      subject: 'Shipment {record.shipment_ref}: {record.status}'
+      body: 'Your shipment {record.shipment_ref} from {record.origin} to {record.destination} is now: {record.status}. ETA:
+        {record.eta}.'
+      link: my_shipments
+  channels:
+  - key: quote_mailbox
+    type: email
+    agent: quoter
+    greeting: Thanks for your request. We are preparing your quote.
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: seat
+      price: 400
+      interval: month
+      label: Freightloom seat
+      includes:
+      - one forwarder seat
+      - quotes, bookings, documents and dashboards
+      roles:
+      - admin
+      - forwarder
+  extensions:
+  - key: carrier_rate_apis
+    description: 'Live rates from carrier and partner APIs under contract are not available yet: each carrier needs its own
+      host and key. For now admins keep contracted rates in the rates collection (CSV on /admin/data) and the quoter searches
+      it. Carrier hosts can be added later as credentialed http tools.'
+  - key: tms_integration
+    description: 'Transport management system integration is not included: it needs the TMS vendor''s API host and API key
+      (credential plus http tools), which were not specified. Shipments are managed in the app meanwhile.'
+  - key: hmrc_cds_ics2
+    description: HMRC CDS and ICS2 submission needs HMRC developer registration and OAuth, which is not available yet. The
+      documents agent prepares customs data drafts only; a person files them.
+  - key: per_seat_billing
+    description: Billing is a flat £400 per month plan; per-seat quantity and a multi-forwarder tenant (a forwarder adding
+      their own staff, customers and partners as separate workspace) are not modelled. Admins invite users to the roles forwarder
+      and customer.
+  - key: carrier_partner_role
+    description: Carrier partners are records in the rates collection, not a login role.

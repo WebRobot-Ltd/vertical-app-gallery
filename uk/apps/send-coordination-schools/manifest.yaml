@@ -1,0 +1,914 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: sendwise
+  displayName: Sendwise
+  tagline:
+    en: 'SEND coordination for English schools: plans, reviews and EHCP summaries in one place.'
+  description:
+    en: Sendwise helps SENCos keep pupil support plans, provision maps, interventions and annual reviews in order. An AI agent
+      turns EHCPs into one-page teacher summaries and drafts annual review paperwork that the SENCo approves before it is
+      shared. Teachers see only the pupils they teach; parents see their child's plan and give their views before reviews.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f3a5f'
+      accent: '#2a9d8f'
+      background: '#f7f9fb'
+      foreground: '#16202c'
+    fonts:
+      body: Inter
+      display: Lora
+    wordmark:
+    - text: Send
+      color: primary
+    - text: wise
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Privacy
+      href: '#privacy'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Sendwise admin
+      assignedBy: admin_emails
+    - key: senco
+      label: SENCo (school account)
+      assignedBy: signup
+    - key: teacher
+      label: Teacher
+      assignedBy: derived
+      from: collection:pupils.teacher_emails
+    - key: ta
+      label: Teaching assistant
+      assignedBy: derived
+      from: collection:pupils.ta_emails
+    - key: head
+      label: Head teacher
+      assignedBy: derived
+      from: collection:pupils.head_email
+    - key: governor
+      label: Governor
+      assignedBy: derived
+      from: collection:pupils.governor_emails
+    - key: parent
+      label: Parent or carer
+      assignedBy: derived
+      from: collection:pupils.parent_email
+  limits:
+  - action: run
+    per: user
+    max: 20
+    window: day
+    roles:
+    - senco
+  agents:
+  - key: summariser
+    role: main
+    when: task == 'summary'
+    description: Reads an uploaded EHCP and writes a one-page teacher summary with classroom strategies.
+    profile:
+      inline:
+        display_name: Sendwise EHCP summariser
+        crews:
+        - id: summariser
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.6
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You support a SENCo in an English school. You read an EHCP or specialist report and write a one-page
+            summary for classroom teachers. Use the text given in the goal; if it is empty or the file is a scan, call read_upload
+            with the file id. Start with a level-1 title "# <Pupil> — classroom summary". Sections with ## headings: Key needs,
+            What helps in class (6-8 concrete strategies tied to the stated needs), What to avoid, Communication and sensory
+            notes, Outcomes being worked towards, Who to ask. Use only what the document says; never invent diagnoses, provision
+            hours or outcomes, and mark anything unclear as ''check with SENCo''. Plain English, under 400 words, no pupil
+            identifiers beyond the first name and year group. Data is special category data under UK GDPR: do not repeat it
+            outside the summary. Finally call save_summary once with pupil_name, summary (the report text) and the teacher_emails
+            and ta_emails given in the goal.'
+    goalTemplate: 'Pupil: {pupil_name}, {year_group}. Needs category: {needs_category}.
+
+      Teacher emails: {teacher_emails}
+
+      TA emails: {ta_emails}
+
+      {?ehcp}EHCP file: {ehcp}
+
+      Text:
+
+      {ehcp_text}{/ehcp}
+
+      Write the summary in English.'
+    context:
+    - key: pupil_name
+      from: collection:pupils.name
+    - key: year_group
+      from: collection:pupils.year_group
+    - key: needs_category
+      from: collection:pupils.needs_category
+    - key: teacher_emails
+      from: collection:pupils.teacher_emails
+    - key: ta_emails
+      from: collection:pupils.ta_emails
+    appTools:
+    - name: read_upload
+      description: Read a file the user uploaded (scans and photos included)
+      action: read_file
+    - name: save_summary
+      description: Save the teacher summary for a pupil
+      action: write
+      collection: summaries
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.6
+  - key: review_drafter
+    role: main
+    when: task == 'review'
+    description: Drafts annual review paperwork from the pupil's record, interventions and parent views, then asks the SENCo
+      to approve.
+    profile:
+      inline:
+        display_name: Sendwise review drafter
+        crews:
+        - id: review_drafter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 12
+          max_budget_usd: 0.8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You draft annual review paperwork for a SENCo in an English school. Use read_pupil, find_interventions
+            and find_parent_views to gather the pupil''s support plan, provision map, interventions and parent views; read
+            uploaded reports with read_upload when file ids are given. Start with "# Annual review draft — <Pupil>". Sections
+            with ## headings: Pupil and context, Progress against outcomes, Provision delivered and impact, Parent/carer views
+            (quote faithfully), Pupil voice (leave a prompt if none), Proposed outcomes and provision for next year, Questions
+            for the review meeting. Use only recorded facts; never invent attainment data, dates or provision; mark gaps as
+            ''SENCo to complete''. Do not recommend changing legal provision as fact — frame it as a proposal. Save the draft
+            with save_draft (status ''draft''), then call request_share_review so the SENCo approves before anything is shared.
+            Special category data: keep it within the draft.'
+    goalTemplate: 'Draft the annual review for pupil record {pupil}. Review date: {?review_date}{review_date}{/review_date}{!review_date}not
+      set{/review_date}. {?ehcp}Reports: {ehcp} {ehcp_text}{/ehcp} Write in English.'
+    awaits:
+    - share_review
+    appTools:
+    - name: read_pupil
+      description: Read the SENCo's pupil records
+      action: read
+      collection: pupils
+      scope: user
+    - name: find_interventions
+      description: Search interventions
+      action: search
+      collection: interventions
+      scope: user
+    - name: find_parent_views
+      description: Search views given by parents before reviews
+      action: search
+      collection: parent_views
+      scope: user
+    - name: read_upload
+      description: Read a file the user uploaded (scans and photos included)
+      action: read_file
+    - name: save_draft
+      description: Save the review draft
+      action: append
+      collection: review_drafts
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 12
+      maxBudgetUsd: 0.8
+  inputForm:
+    title: Pupil assistant
+    fields:
+    - name: task
+      type: select
+      required: true
+      label: What do you need?
+      options:
+      - value: summary
+        label: One-page teacher summary from an EHCP
+      - value: review
+        label: Draft annual review paperwork
+    - name: pupil
+      type: select
+      required: true
+      label: Pupil
+      optionsFrom: collection:pupils
+    - name: review_date
+      type: date
+      label: Review date
+      visibleWhen: task == 'review'
+    - name: ehcp
+      type: file
+      label: EHCP or specialist report
+      accept:
+      - pdf
+      - docx
+      - txt
+      - jpg
+      - png
+      maxMb: 15
+      multiple: true
+      help: Required for a summary; optional extra evidence for a review.
+  data:
+    collections:
+    - name: pupils
+      description: Pupils with SEN, created by the SENCo
+      ownedBy: user
+      retentionDays: 3650
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Pupil name
+      - name: year_group
+        type: select
+        required: true
+        label: Year group
+        options:
+        - Reception
+        - Year 1
+        - Year 2
+        - Year 3
+        - Year 4
+        - Year 5
+        - Year 6
+        - Year 7
+        - Year 8
+        - Year 9
+        - Year 10
+        - Year 11
+        - Year 12
+        - Year 13
+      - name: needs_category
+        type: select
+        required: true
+        label: Primary need (SEN Code of Practice)
+        options:
+        - Communication and interaction
+        - Cognition and learning
+        - Social, emotional and mental health
+        - Sensory and/or physical
+      - name: plan_type
+        type: select
+        label: Plan
+        options:
+        - SEN support
+        - EHCP
+      - name: support_plan
+        type: textarea
+        label: Support plan
+      - name: provision_map
+        type: textarea
+        label: Provision map
+      - name: senco_email
+        type: email
+        required: true
+        label: SENCo email
+      - name: teacher_emails
+        type: array
+        label: Teachers who teach this pupil (emails)
+      - name: ta_emails
+        type: array
+        label: Teaching assistants (emails)
+      - name: head_email
+        type: email
+        label: Head teacher email
+      - name: governor_emails
+        type: array
+        label: Link governors (emails)
+      - name: parent_email
+        type: email
+        label: Parent or carer email
+      access:
+      - role: teacher
+        where:
+          teacher_emails: '{user.email}'
+        can:
+        - read
+      - role: ta
+        where:
+          ta_emails: '{user.email}'
+        can:
+        - read
+      - role: head
+        where:
+          head_email: '{user.email}'
+        can:
+        - read
+      - role: parent
+        where:
+          parent_email: '{user.email}'
+        can:
+        - read
+    - name: interventions
+      ownedBy: user
+      retentionDays: 3650
+      fields:
+      - name: pupil
+        type: select
+        required: true
+        label: Pupil
+        optionsFrom: collection:pupils
+      - name: title
+        type: text
+        required: true
+        label: Intervention
+      - name: lead
+        type: text
+        label: Delivered by
+      - name: start_date
+        type: date
+        label: Start
+      - name: checkin_date
+        type: date
+        required: true
+        label: Next check-in
+      - name: impact
+        type: textarea
+        label: Impact so far
+    - name: reviews
+      ownedBy: user
+      retentionDays: 3650
+      fields:
+      - name: pupil
+        type: select
+        required: true
+        label: Pupil
+        optionsFrom: collection:pupils
+      - name: review_date
+        type: date
+        required: true
+        label: Review date
+      - name: review_type
+        type: select
+        label: Type
+        options:
+        - Termly SEN support review
+        - EHCP annual review
+      - name: status
+        type: select
+        label: Status
+        options:
+        - planned
+        - draft
+        - approved
+        - shared
+        - held
+        default: planned
+      - name: parent_email
+        type: email
+        label: Parent email (for invitation)
+      - name: notes
+        type: textarea
+        label: Outcome notes
+    - name: documents
+      description: Uploaded EHCPs and specialist reports; SENCo only
+      ownedBy: user
+      retentionDays: 3650
+      fields:
+      - name: pupil
+        type: select
+        required: true
+        label: Pupil
+        optionsFrom: collection:pupils
+      - name: kind
+        type: select
+        label: Document
+        options:
+        - EHCP
+        - Educational psychologist report
+        - Speech and language report
+        - Other specialist report
+      - name: file
+        type: file
+        required: true
+        label: File
+        accept:
+        - pdf
+        - docx
+        - jpg
+        - png
+        maxMb: 15
+    - name: summaries
+      description: One-page teacher summaries written by the agent
+      ownedBy: user
+      fields:
+      - name: pupil_name
+        type: text
+        label: Pupil
+      - name: summary
+        type: textarea
+        label: Summary
+      - name: teacher_emails
+        type: array
+        label: Teachers
+      - name: ta_emails
+        type: array
+        label: Teaching assistants
+      access:
+      - role: teacher
+        where:
+          teacher_emails: '{user.email}'
+        can:
+        - read
+      - role: ta
+        where:
+          ta_emails: '{user.email}'
+        can:
+        - read
+    - name: review_drafts
+      description: Annual review drafts awaiting SENCo approval
+      ownedBy: user
+      retentionDays: 3650
+      fields:
+      - name: pupil_name
+        type: text
+        label: Pupil
+      - name: draft
+        type: textarea
+        label: Draft
+      - name: status
+        type: select
+        label: Status
+        options:
+        - draft
+        - approved
+        - shared
+        default: draft
+    - name: parent_views
+      description: Views parents give before a review
+      ownedBy: user
+      retentionDays: 1095
+      fields:
+      - name: pupil
+        type: select
+        required: true
+        label: Your child
+        optionsFrom: collection:pupils
+      - name: senco_email
+        type: email
+        required: true
+        label: School SENCo email
+        help: Shown on your child's plan.
+      - name: going_well
+        type: textarea
+        required: true
+        label: What is going well?
+      - name: concerns
+        type: textarea
+        label: What concerns you?
+      - name: hopes
+        type: textarea
+        label: What do you hope for next year?
+      access:
+      - role: senco
+        where:
+          senco_email: '{user.email}'
+        can:
+        - read
+    - name: dfe_benchmarks
+      description: DfE SEN statistics (England), loaded by admins from the published CSV (Open Government Licence)
+      ownedBy: shared
+      fields:
+      - name: need
+        type: text
+        label: Primary need
+      - name: national_pct
+        type: number
+        label: National % of SEN pupils
+      - name: year
+        type: text
+        label: Release year
+  templates: []
+  approvals:
+  - key: share_review
+    title: Approve review paperwork before sharing
+    decidedBy: requester
+    fields:
+    - pupil_name
+    - draft
+  triggers:
+  - key: review_deadline
+    'on':
+      date:
+        collection: reviews
+        field: review_date
+        offsetDays: -14
+        hour: 8
+    notify:
+      to:
+      - owner
+      - record.parent_email
+      subject: Annual review coming up on {record.review_date}
+      body: 'A SEN review is due on {record.review_date}. Parents: please give your views before the meeting in Sendwise.'
+      link: parent_form
+  - key: intervention_checkin
+    'on':
+      date:
+        collection: interventions
+        field: checkin_date
+        offsetDays: 0
+        hour: 8
+    notify:
+      to: owner
+      subject: 'Intervention check-in today: {record.title}'
+      body: Today is the check-in for {record.title}. Please record its impact so far.
+      link: interventions
+  - key: review_shared
+    'on':
+      collection: reviews
+      op: update
+      where:
+        status: shared
+    notify:
+      to: record.parent_email
+      subject: Review paperwork is ready to read
+      body: The school has shared the paperwork for the review on {record.review_date}. Sign in to Sendwise to read your child's
+        plan.
+      link: my_child
+  - key: parent_view_in
+    'on':
+      collection: parent_views
+      op: insert
+    notify:
+      to: record.senco_email
+      subject: A parent has given views before a review
+      body: New parent views were submitted in Sendwise.
+      link: parent_views_list
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Sendwise
+    sections:
+    - type: hero
+      band: true
+      eyebrow: For SENCos in England
+      title: Keep every pupil's **SEND plan** and review on track.
+      text: Pupil plans, provision maps, interventions and reviews in one place. An AI agent turns EHCPs into one-page teacher
+        summaries and drafts annual review paperwork. You approve before anything is shared.
+      actions:
+      - label: Get started
+        href: /login
+        style: primary
+      note: £1,500 per school per year.
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Record
+        text: Add each pupil with their needs, support plan, provision map and uploaded reports.
+        badge: 📝
+      - title: Summarise
+        text: The agent reads the EHCP and writes strategies teachers can use tomorrow.
+        badge: 📄
+      - title: Review
+        text: Reminders, parent views and a drafted annual review, approved by you first.
+        badge: ✅
+    - type: cards
+      title: Who sees what
+      items:
+      - title: Teachers and TAs
+        text: Only the pupils they teach, and only the one-page summary.
+      - title: Parents
+        text: Their own child's plan, and a form to give views before reviews.
+      - title: Head
+        text: Pupils they are named on, plus the school dashboard.
+    - type: text
+      id: privacy
+      title: Privacy
+      content: Pupil data is special category data under UK GDPR. Access follows named roles per pupil, uploads are private,
+        and records are deleted after their retention period.
+    - type: note
+      content: Sendwise supports professional judgement; it does not replace the SEND Code of Practice or statutory processes.
+  - key: assistant
+    type: new_run
+    title: Pupil assistant
+    roles:
+    - senco
+    - admin
+  - key: runs
+    type: history
+    title: Past runs
+    source: run
+    roles:
+    - senco
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: add_pupil
+    type: form
+    title: Add or edit a pupil
+    collection: pupils
+    edit: true
+    submit:
+      label: Save pupil
+      message: Pupil saved.
+      redirect: pupils_list
+    roles:
+    - senco
+  - key: pupils_list
+    type: table
+    title: Pupils
+    source: collection:pupils
+    export: true
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Pupil
+      - key: year_group
+        label: Year
+      - key: needs_category
+        label: Primary need
+        format: badge
+      - key: plan_type
+        label: Plan
+        format: badge
+      - key: parent_email
+        label: Parent
+      actions:
+      - type: share
+        label: Share
+        field: name
+    roles:
+    - senco
+    - head
+    - teacher
+    - ta
+  - key: add_document
+    type: form
+    title: Upload EHCP or report
+    collection: documents
+    submit:
+      label: Upload
+      message: Document stored privately.
+    roles:
+    - senco
+  - key: add_intervention
+    type: form
+    title: Add intervention
+    collection: interventions
+    edit: true
+    submit:
+      label: Save
+      message: Intervention saved.
+      redirect: interventions
+    roles:
+    - senco
+  - key: interventions
+    type: table
+    title: Interventions
+    source: collection:interventions
+    data:
+      display: table
+      fields:
+      - key: title
+        label: Intervention
+      - key: lead
+        label: Delivered by
+      - key: checkin_date
+        label: Next check-in
+        format: date
+      - key: impact
+        label: Impact
+      sort:
+        field: checkin_date
+        dir: asc
+      actions:
+      - type: calendar
+        label: Add to calendar
+        title: title
+        start: checkin_date
+    roles:
+    - senco
+  - key: add_review
+    type: form
+    title: Schedule a review
+    collection: reviews
+    edit: true
+    submit:
+      label: Save review
+      message: Review saved.
+      redirect: reviews
+    roles:
+    - senco
+  - key: reviews
+    type: table
+    title: Reviews
+    source: collection:reviews
+    data:
+      display: table
+      fields:
+      - key: review_date
+        label: Date
+        format: date
+      - key: review_type
+        label: Type
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: review_date
+        dir: asc
+      actions:
+      - type: calendar
+        label: Add to calendar
+        title: review_type
+        start: review_date
+    roles:
+    - senco
+  - key: approvals
+    type: approvals
+    title: Approvals
+    approvals:
+    - share_review
+    roles:
+    - senco
+  - key: drafts
+    type: table
+    title: Review drafts
+    source: collection:review_drafts
+    data:
+      display: list
+      fields:
+      - key: pupil_name
+        label: Pupil
+      - key: status
+        label: Status
+        format: badge
+      - key: draft
+        label: Draft
+    roles:
+    - senco
+  - key: summaries
+    type: cards
+    title: Classroom summaries
+    source: collection:summaries
+    data:
+      display: cards
+      fields:
+      - key: pupil_name
+        label: Pupil
+      - key: summary
+        label: Summary
+      empty: No summaries yet.
+    roles:
+    - senco
+    - teacher
+    - ta
+  - key: my_child
+    type: cards
+    title: My child's plan
+    source: collection:pupils
+    data:
+      display: cards
+      fields:
+      - key: name
+        label: Pupil
+      - key: needs_category
+        label: Primary need
+      - key: support_plan
+        label: Support plan
+      - key: provision_map
+        label: Provision
+      - key: senco_email
+        label: SENCo contact
+      empty: No plan is shared with you yet.
+    roles:
+    - parent
+  - key: parent_form
+    type: form
+    title: Give your views before the review
+    collection: parent_views
+    submit:
+      label: Send my views
+      message: Thank you. The SENCo will see your views before the review.
+    roles:
+    - parent
+  - key: parent_views_list
+    type: table
+    title: Parent views
+    source: collection:parent_views
+    data:
+      display: list
+      fields:
+      - key: going_well
+        label: Going well
+      - key: concerns
+        label: Concerns
+      - key: hopes
+        label: Hopes
+    roles:
+    - senco
+  - key: dashboard
+    type: page
+    title: School dashboard
+    roles:
+    - senco
+    - head
+    - admin
+    sections:
+    - type: data
+      title: Pupils by primary need (this school)
+      source: collection:pupils
+      display: chart
+      chart: bar
+      fields:
+      - key: needs_category
+        label: Primary need
+      - key: count
+        label: Pupils
+      groupBy:
+        field: needs_category
+        aggs: []
+    - type: data
+      title: 'DfE national picture: % of SEN pupils by primary need'
+      source: collection:dfe_benchmarks
+      display: chart
+      chart: bar
+      fields:
+      - key: need
+        label: Primary need
+      - key: national_pct
+        label: National %
+      empty: Benchmarks not loaded yet.
+    - type: note
+      content: 'National figures: DfE ''Special educational needs in England'' statistics, Open Government Licence v3.0.'
+  - key: account
+    type: account
+    title: Subscription
+    roles:
+    - senco
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: school
+      price: 1500
+      interval: year
+      label: Sendwise — school licence
+      includes:
+      - Unlimited staff and pupils
+      - EHCP summaries and review drafts
+      - Reminders and dashboards
+      roles:
+      - senco
+  notifications:
+    emailOnRunDone: true
+  extensions:
+  - key: mis_sync
+    description: Pupil sync from SIMS or Arbor through an OAuth integration provider is not available yet (OAuth to other
+      services is not supported). Until then the SENCo adds pupils with the form.
+  - key: governor_view
+    description: Governors are named on pupils but have no record access, by design under UK GDPR. A separate aggregate-only
+      board report is not available yet.
+  - key: parent_signup_role
+    description: A parent who signs in also receives the SENCo signup role; their views are restricted by role, but a stricter
+      separate signup path for parents is needed.
+  - key: school_isolation
+    description: Schools are separated by the SENCo who owns the records; a shared school workspace across several SENCos
+      needs a school entity not yet available.

@@ -1,0 +1,1137 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: solvanta
+  displayName: Solvanta
+  tagline: Assess, install and monetise rooftop solar on your commercial buildings.
+  description: Solvanta helps commercial property owners assess rooftop solar with PVGIS and Smart Export Guarantee income,
+    approve a proposal, collect quotes from vetted installers, and monitor production, faults and savings after installation.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#0b3d5c'
+      accent: '#f2a900'
+      background: '#fbfaf6'
+      foreground: '#17222b'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Solv
+      color: primary
+    - text: anta
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how-it-works'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: owner
+      label: Building owner
+      assignedBy: signup
+    - key: asset_manager
+      label: Asset manager
+      assignedBy: invite
+    - key: installer
+      label: Installer
+      assignedBy: invite
+  limits:
+  - action: agent:assessor
+    per: user
+    max: 10
+    window: day
+    roles:
+    - owner
+  - action: chat
+    per: user
+    max: 60
+    window: day
+  agents:
+  - key: assessor
+    role: main
+    description: Estimates generation with PVGIS, sizes the system, computes payback including SEG export income, and writes
+      the proposal.
+    awaits:
+    - owner_approval
+    writesTo:
+      collection: proposals
+      parse: whole
+    context:
+    - key: address
+      from: collection:buildings.address
+    - key: roof_area
+      from: collection:buildings.roof_area_m2
+    - key: orientation
+      from: collection:buildings.orientation
+    - key: tilt
+      from: collection:buildings.tilt
+    - key: position
+      from: collection:buildings.location
+    appTools:
+    - name: pvgis
+      description: 'PVGIS PVcalc: yearly and monthly PV energy for a location, peak power, tilt (angle) and azimuth (aspect)'
+      action: http
+      http:
+        method: GET
+        url: https://re.jrc.ec.europa.eu/api/v5_3/PVcalc
+        attribution: PVGIS, European Commission JRC
+    - name: read_seg_tariffs
+      description: Published Smart Export Guarantee tariffs kept by the admins
+      action: read
+      collection: seg_tariffs
+      scope: all
+    - name: read_upload
+      description: Read a file the user uploaded (bill scan, meter file)
+      action: read_file
+    goalTemplate: 'Building: {building}
+
+      Address: {address}
+
+      Usable roof area: {roof_area} m2
+
+      Orientation: {orientation}
+
+      Tilt: {tilt} degrees
+
+      Position (lat,lng): {position}
+
+      {?tariff_p}Current import price: {tariff_p} p/kWh.{/tariff_p}
+
+      {?bills}Bill files: {bills}
+
+      Bill text: {bills_text}{/bills}
+
+      {?meter_data}Half-hourly meter file: {meter_data}
+
+      Meter text: {meter_data_text}{/meter_data}
+
+      {?notes}Notes: {notes}{/notes}
+
+      Today is {date}. Write the proposal in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 14
+      maxBudgetUsd: 1.0
+    profile:
+      inline:
+        display_name: Solvanta assessor
+        crews:
+        - id: assessor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 14
+          max_budget_usd: 1.0
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a rooftop solar analyst for UK commercial buildings. Produce a proposal for one building.
+
+            Method: 1) Parse the position into lat and lon. Size the array from the roof area (about 5-6 m2 per kWp, leave
+            15% margin). Convert orientation to PVGIS aspect (south=0, east=-90, west=90) and use the given tilt. 2) Call
+            pvgis with query: lat, lon, peakpower, loss=14, angle, aspect, outputformat=json; use outputs.totals.fixed.E_y
+            and the monthly E_m values. Never invent generation figures. 3) Estimate consumption from the bill text or half-hourly
+            data (call read_upload with the file id for scans or images). If there is no consumption data, say so and state
+            the assumption. Estimate self-consumed versus exported energy (match daytime half-hourly load to generation when
+            the data exists). 4) Call read_seg_tariffs and use the best published SEG rate for the export income; cite the
+            supplier and the date. 5) Compute capex range (state the assumed £/kWp as an assumption), annual savings, export
+            income, simple payback and 25-year net benefit.
+
+            Report structure: a level-1 title ''# <Building> — Rooftop solar proposal'', then ## Summary (key numbers in a
+            table), ## System and generation, ## Consumption and self-use, ## Export income (SEG), ## Payback and returns,
+            ## Assumptions and risks (shading, roof condition, DNO grid connection, planning), ## Next step. Add one chart
+            block of monthly generation: ```chart {"type":"bar","title":"Monthly generation (kWh)","labels":[...],"series":[{"name":"kWh","values":[...]}],"unit":"kWh"}
+            ```. Figures are estimates, not financial advice. When the report is ready, call request_owner_approval with the
+            proposal title and the headline numbers: installers are only invited after the owner approves.'
+  - key: tender
+    role: helper
+    description: After the owner approves a proposal, invites vetted installers to quote.
+    appTools:
+    - name: read_installers
+      description: Vetted installers on the platform
+      action: read
+      collection: installers
+      scope: all
+    - name: read_proposals
+      description: The owner's proposals
+      action: read
+      collection: proposals
+      scope: user
+    - name: create_quote_request
+      description: Create a quote request that lists the invited installer emails
+      action: append
+      collection: quote_requests
+      scope: user
+    goalTemplate: 'The owner approved a proposal. Event: {event}. Today is {date}. Read the proposals, pick the latest approved
+      one, choose up to 5 vetted installers whose region fits the building, and create one quote request.'
+    output: markdown
+    limits:
+      maxTurns: 10
+      maxBudgetUsd: 0.5
+    profile:
+      inline:
+        display_name: Solvanta tender desk
+        crews:
+        - id: tender
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 10
+          max_budget_usd: 0.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You prepare the tender for an approved solar proposal. Use read_installers (only records with vetted=true)
+            and read_proposals. Call create_quote_request once with: proposal_title, building_name, owner_email (the owner''s
+            email from the event), invited (the list of chosen installer emails), spec (system size kWp, roof, address, key
+            numbers copied from the proposal, no invented data), deadline (YYYY-MM-DD, 21 days from today), status ''open''.
+            Start your answer with ''# Tender sent'' and list who was invited.'
+  - key: monitor
+    role: scheduled
+    description: Daily production check of one site through the manufacturer API.
+    memory: instance
+    writesTo:
+      collection: readings
+      parse: json_last
+      keyBy: date
+    appTools:
+    - name: inverter_site
+      description: 'SolarEdge monitoring API: path like /<siteId>/energy or /<siteId>/overview or /<siteId>/alerts; query
+        startDate, endDate, timeUnit'
+      action: http
+      http:
+        method: GET
+        url: https://monitoringapi.solaredge.com/site
+        allowPath: true
+        attribution: SolarEdge monitoring API
+        credential:
+          provider: solaredge
+          query: api_key
+    goalTemplate: Site {site_id} of building {building}. Import price {tariff_p} p/kWh. Check yesterday (today is {date}).
+    output: markdown+json
+    limits:
+      maxTurns: 8
+      maxBudgetUsd: 0.3
+    profile:
+      inline:
+        display_name: Solvanta monitor
+        crews:
+        - id: monitor
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 8
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You monitor one rooftop PV site. Call inverter_site for yesterday''s energy (/<site_id>/energy with
+            timeUnit=DAY) and for alerts (/<site_id>/alerts). If the user has not connected their key, say so and stop. Compare
+            production with the expected value for the date (use your memory of previous days and the season; be honest about
+            uncertainty). Write a short ''# Site check <date>'' note, then end with ONE JSON object: {"date":"YYYY-MM-DD","kwh":number,"expected_kwh":number,"saving_gbp":number,"fault":string,"status":"ok"|"alert"}.
+            status is alert when output is below 70% of expected on a clear day or the API reports a fault. Never invent readings.
+            Call remember once with the last 7 days'' figures.'
+  - key: reporter
+    role: scheduled
+    description: Monthly report for one monitored building.
+    memory: instance
+    writesTo:
+      collection: monthly_reports
+      parse: whole
+      keyBy: month
+    appTools:
+    - name: read_readings
+      description: Daily readings of this site
+      action: read
+      collection: readings
+      scope: user
+    goalTemplate: Monthly report for {building}. Today is {date}; cover the previous calendar month.
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.3
+    profile:
+      inline:
+        display_name: Solvanta monthly reporter
+        crews:
+        - id: reporter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write the monthly performance report of a solar site from the daily readings (read_readings).
+            Start with ''# <Building> — <Month> performance''. Sections: ## Production vs expected, ## Savings and export
+            income, ## Faults and alerts, ## What to do. Add a ```chart``` block of daily kWh. Use only the readings; if data
+            is missing say so. Under 300 words.'
+  - key: assistant
+    role: helper
+    description: Answers the owner's questions about their proposal.
+    appTools:
+    - name: read_proposals
+      description: The owner's proposals
+      action: read
+      collection: proposals
+      scope: user
+    - name: read_buildings
+      description: The user's buildings
+      action: read
+      collection: buildings
+      scope: user
+    goalTemplate: 'Conversation so far:
+
+      {history}
+
+
+      New question from {user}: {message}
+
+      Answer in the language with ISO code {lang}.'
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.2
+    profile:
+      inline:
+        display_name: Solvanta assistant
+        chat_mode: true
+        crews:
+        - id: assistant
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: You explain a rooftop solar proposal to a commercial property owner. Read the proposals and buildings
+            with your tools and answer only from them. Explain terms such as kWp, self-consumption, SEG export, payback in
+            plain words. If a figure is not in the proposal, say so; never invent numbers and never give financial or legal
+            advice as fact. Be concise.
+  inputForm:
+    title: New solar assessment
+    fields:
+    - name: building
+      type: select
+      required: true
+      label: Building
+      optionsFrom: collection:buildings
+    - name: tariff_p
+      type: number
+      label: Current electricity price (p/kWh)
+      help: From your bill, if you know it
+    - name: bills
+      type: file
+      label: Electricity bills
+      accept:
+      - pdf
+      - jpg
+      - png
+      - csv
+      - xlsx
+      maxMb: 15
+      multiple: true
+    - name: meter_data
+      type: file
+      label: Half-hourly meter data (CSV from your supplier or DCC provider)
+      accept:
+      - csv
+      - xlsx
+      maxMb: 15
+    - name: notes
+      type: textarea
+      maxLength: 600
+      label: Notes (optional)
+  data:
+    collections:
+    - name: buildings
+      ownedBy: user
+      description: A commercial building with its roof
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Name
+      - name: address
+        type: text
+        required: true
+        label: Address
+      - name: location
+        type: location
+        label: Position
+      - name: roof_area_m2
+        type: number
+        required: true
+        label: Usable roof area (m2)
+      - name: orientation
+        type: select
+        required: true
+        label: Roof orientation
+        options:
+        - south
+        - south-east
+        - south-west
+        - east
+        - west
+        - east-west
+        - flat
+      - name: tilt
+        type: number
+        label: Roof tilt (degrees)
+        default: 15
+      - name: managers
+        type: array
+        label: Asset manager emails
+        help: Asset managers who may see this building
+      access:
+      - role: asset_manager
+        where:
+          managers: '{user.email}'
+        can:
+        - read
+    - name: bills
+      ownedBy: user
+      description: Uploaded electricity bills and meter data files
+      fields:
+      - name: building
+        type: relation
+        relation: buildings
+        required: true
+        label: Building
+      - name: kind
+        type: select
+        required: true
+        label: Type
+        options:
+        - value: bill
+          label: Electricity bill
+        - value: half_hourly
+          label: Half-hourly meter data
+      - name: period
+        type: date
+        label: Period start
+      - name: file
+        type: file
+        required: true
+        label: File
+        accept:
+        - pdf
+        - csv
+        - xlsx
+        - jpg
+        - png
+        maxMb: 15
+      - name: kwh
+        type: number
+        label: Total kWh (optional)
+    - name: seg_tariffs
+      ownedBy: shared
+      description: Published Smart Export Guarantee tariffs, kept by the admins
+      fields:
+      - name: supplier
+        type: text
+        label: Supplier
+      - name: tariff
+        type: text
+        label: Tariff
+      - name: rate_p_per_kwh
+        type: number
+        label: Rate (p/kWh)
+      - name: valid_from
+        type: date
+        label: Valid from
+      - name: url
+        type: url
+        label: Source
+    - name: installers
+      ownedBy: shared
+      description: Vetted installers (maintained by the admins)
+      fields:
+      - name: company
+        type: text
+        label: Company
+      - name: email
+        type: email
+        label: Email
+      - name: region
+        type: text
+        label: Regions covered
+      - name: accreditation
+        type: text
+        label: MCS / NICEIC number
+      - name: vetted
+        type: boolean
+        label: Vetted
+    - name: proposals
+      ownedBy: user
+      description: Proposals written by the assessor
+      fields:
+      - name: title
+        type: text
+        label: Title
+      - name: report
+        type: textarea
+        label: Proposal
+      - name: status
+        type: text
+        label: Status
+    - name: quote_requests
+      ownedBy: user
+      description: A tender for an approved proposal; invited installers see it
+      fields:
+      - name: proposal_title
+        type: text
+        label: Proposal
+      - name: building_name
+        type: text
+        label: Building
+      - name: owner_email
+        type: email
+        label: Owner
+      - name: invited
+        type: array
+        label: Invited installer emails
+      - name: spec
+        type: textarea
+        label: Specification
+      - name: deadline
+        type: date
+        label: Quote by
+      - name: status
+        type: text
+        label: Status
+      access:
+      - role: installer
+        where:
+          invited: '{user.email}'
+        can:
+        - read
+    - name: quotes
+      ownedBy: user
+      description: Quotes submitted by installers; the owner reads and chooses
+      fields:
+      - name: quote_request
+        type: relation
+        relation: quote_requests
+        required: true
+        label: Quote request
+        optionsFrom: collection:quote_requests
+      - name: owner_email
+        type: email
+        required: true
+        label: Owner email (from the request)
+      - name: installer_company
+        type: text
+        required: true
+        label: Company
+      - name: installer_email
+        type: email
+        required: true
+        label: Your email
+      - name: price_gbp
+        type: number
+        required: true
+        label: Total price (GBP, ex VAT)
+      - name: kwp
+        type: number
+        required: true
+        label: System size (kWp)
+      - name: warranty_years
+        type: number
+        label: Warranty (years)
+      - name: install_weeks
+        type: number
+        label: Weeks to install
+      - name: notes
+        type: textarea
+        label: Notes
+      - name: status
+        type: select
+        label: Status
+        default: submitted
+        options:
+        - submitted
+        - chosen
+        - rejected
+      access:
+      - role: owner
+        where:
+          owner_email: '{user.email}'
+        can:
+        - read
+        - write
+    - name: readings
+      ownedBy: instance
+      description: Daily production readings of a monitored site
+      fields:
+      - name: date
+        type: date
+        label: Date
+      - name: kwh
+        type: number
+        label: Produced (kWh)
+      - name: expected_kwh
+        type: number
+        label: Expected (kWh)
+      - name: saving_gbp
+        type: number
+        label: Saving (GBP)
+      - name: fault
+        type: text
+        label: Fault
+      - name: status
+        type: text
+        label: Status
+    - name: monthly_reports
+      ownedBy: instance
+      description: Monthly performance reports
+      fields:
+      - name: month
+        type: text
+        label: Month
+      - name: report
+        type: textarea
+        label: Report
+    credentials:
+    - provider: solaredge
+      kind: api_key
+      scope: user
+      label: SolarEdge monitoring API key
+      help: 'In the SolarEdge monitoring portal: Admin, Site Access, API Access, generate an API key.'
+  egress:
+    hosts:
+    - re.jrc.ec.europa.eu
+    - monitoringapi.solaredge.com
+    notes: PVGIS (EU JRC) is free to reuse with attribution. SolarEdge monitoring API is called with each owner's own API
+      key.
+  templates:
+  - key: site_monitor
+    title: Site monitoring
+    description: Daily production and fault check of one installed system.
+    agent: monitor
+    params:
+    - name: building
+      type: select
+      required: true
+      label: Building
+      optionsFrom: collection:buildings
+    - name: site_id
+      type: text
+      required: true
+      label: Inverter site ID
+    - name: tariff_p
+      type: number
+      label: Import price (p/kWh)
+    goal: Site {site_id} of building {building}. Import price {tariff_p} p/kWh. Check yesterday (today is {date}).
+    schedule:
+      cron: 0 6 * * *
+      userCanChange: false
+    maxPerUser: 20
+    roles:
+    - owner
+    - asset_manager
+  - key: monthly_report
+    title: Monthly report
+    description: A performance report by email on the 1st of each month.
+    agent: reporter
+    params:
+    - name: building
+      type: select
+      required: true
+      label: Building
+      optionsFrom: collection:buildings
+    goal: Monthly report for {building}. Today is {date}; cover the previous calendar month.
+    schedule:
+      cron: 0 7 1 * *
+      userCanChange: false
+    maxPerUser: 20
+    roles:
+    - owner
+    - asset_manager
+    deliver:
+      to: owner
+      subject: Your Solvanta monthly report
+      onlyIfNew: true
+  approvals:
+  - key: owner_approval
+    title: Approve this proposal
+    description: Installers are invited to quote only after you approve.
+    decidedBy: requester
+    fields:
+    - title
+    - summary
+  triggers:
+  - key: proposal_approved
+    'on':
+      approval: owner_approval
+      decision: approved
+    start:
+      agent: tender
+    goal: 'The owner approved a proposal. Event: {event}. Read the proposals and send the tender.'
+  - key: output_alert
+    'on':
+      collection: readings
+      op: insert
+      where:
+        status: alert
+    notify:
+      to: owner
+      subject: 'Solar alert: output is down on {record.date}'
+      body: 'Your system produced {record.kwh} kWh against {record.expected_kwh} expected. Fault reported: {record.fault}.
+        Please check the dashboard.'
+      link: readings
+  - key: new_quote
+    'on':
+      collection: quotes
+      op: insert
+    notify:
+      to: record.owner_email
+      subject: New quote from {record.installer_company}
+      body: '{record.installer_company} quoted GBP {record.price_gbp} for {record.kwp} kWp. Compare the quotes and choose
+        one.'
+      link: quotes
+  - key: quote_chosen
+    'on':
+      collection: quotes
+      op: update
+      where:
+        status: chosen
+    notify:
+      to: record.installer_email
+      subject: Your quote was chosen
+      body: The owner chose your quote of GBP {record.price_gbp}. They will contact you to arrange the installation.
+  views:
+  - key: home
+    type: page
+    nav: false
+    sections:
+    - type: hero
+      layout: split
+      band: true
+      eyebrow: Rooftop solar for commercial property
+      title: From **empty roof** to monitored savings.
+      text: Add your buildings, upload your bills and get a PVGIS-based proposal with sizing, payback and Smart Export Guarantee
+        income. Approve it, compare quotes from vetted installers, then track production and savings.
+      actions:
+      - label: Start a free assessment
+        href: /login
+        style: primary
+      aside: <div style="padding:16px"><strong>Example proposal</strong><br>420 kWp, 372 MWh a year<br>Payback 5.8 years<br>Export
+        income £21k a year</div>
+    - type: steps
+      id: how-it-works
+      title: How it works
+      items:
+      - title: Assess
+        text: Add buildings and upload bills or half-hourly meter data. An agent estimates generation with PVGIS and writes
+          the proposal.
+        badge: ☀️
+      - title: Approve and tender
+        text: You approve the proposal first. Only then are vetted installers invited to quote.
+        badge: ✅
+      - title: Choose
+        text: Compare the quotes side by side and choose.
+        badge: ⚖️
+      - title: Monitor
+        text: Track production, faults and savings, with alerts and a monthly report.
+        badge: 📈
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: 'Assessment: free'
+        text: Proposals, quotes and chat are free.
+      - title: 'Monitoring: 2% of energy value'
+        text: After installation, 2% of the value of the energy monitored, paid through Stripe.
+    - type: note
+      content: 'Estimates, not financial advice. Generation data: PVGIS, European Commission JRC.'
+  - key: new_assessment
+    type: new_run
+    title: New assessment
+    roles:
+    - owner
+    - asset_manager
+    - admin
+  - key: assessments
+    type: history
+    title: My assessments
+    source: run
+    roles:
+    - owner
+    - asset_manager
+    - admin
+  - key: proposal
+    type: report
+    title: Proposal
+    source: run
+    printable: true
+    nav: false
+  - key: approvals
+    type: approvals
+    title: Approvals
+    approvals:
+    - owner_approval
+    roles:
+    - owner
+    - admin
+  - key: add_building
+    type: form
+    title: Add a building
+    collection: buildings
+    submit:
+      label: Save building
+      message: Building saved.
+      redirect: buildings
+    edit: true
+    roles:
+    - owner
+    - admin
+  - key: buildings
+    type: table
+    title: Buildings
+    source: collection:buildings
+    export: true
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Name
+      - key: address
+        label: Address
+      - key: roof_area_m2
+        label: Roof m2
+        format: number
+      - key: orientation
+        label: Orientation
+      - key: location
+        label: Map
+        format: location
+      actions:
+      - type: directions
+        field: address
+        label: Directions
+    roles:
+    - owner
+    - asset_manager
+    - admin
+  - key: add_bill
+    type: form
+    title: Upload bills or meter data
+    collection: bills
+    submit:
+      label: Upload
+      message: File uploaded.
+    roles:
+    - owner
+    - admin
+  - key: portfolio
+    type: cards
+    title: Portfolio
+    source: collection:buildings
+    data:
+      display: cards
+      fields:
+      - key: name
+        label: Building
+      - key: address
+        label: Address
+      - key: roof_area_m2
+        label: Roof m2
+        format: number
+      - key: orientation
+        label: Orientation
+      kpis:
+      - label: Buildings
+        agg: count
+      - label: Total roof m2
+        agg: sum
+        field: roof_area_m2
+        format: number
+    roles:
+    - asset_manager
+    - admin
+  - key: quote_requests
+    type: cards
+    title: Quote requests
+    source: collection:quote_requests
+    data:
+      display: cards
+      fields:
+      - key: building_name
+        label: Building
+      - key: spec
+        label: Specification
+      - key: deadline
+        label: Quote by
+        format: date
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: deadline
+        dir: asc
+    roles:
+    - owner
+    - installer
+    - admin
+  - key: submit_quote
+    type: form
+    title: Submit a quote
+    collection: quotes
+    fields:
+    - quote_request
+    - owner_email
+    - installer_company
+    - installer_email
+    - price_gbp
+    - kwp
+    - warranty_years
+    - install_weeks
+    - notes
+    submit:
+      label: Send quote
+      message: Quote sent to the owner.
+    roles:
+    - installer
+  - key: quotes
+    type: table
+    title: Quotes received
+    source: collection:quotes
+    data:
+      display: table
+      fields:
+      - key: installer_company
+        label: Installer
+      - key: price_gbp
+        label: Price
+        format: money
+      - key: kwp
+        label: kWp
+        format: number
+      - key: warranty_years
+        label: Warranty (years)
+        format: number
+      - key: install_weeks
+        label: Weeks
+        format: number
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: price_gbp
+        dir: asc
+    roles:
+    - owner
+    - installer
+    - admin
+  - key: choose_quote
+    type: form
+    title: Choose a quote
+    collection: quotes
+    fields:
+    - status
+    submit:
+      label: Save choice
+      message: Choice saved. The installer has been told.
+      redirect: quotes
+    edit: true
+    nav: false
+    roles:
+    - owner
+  - key: watches
+    type: instances
+    title: Site monitoring
+    template: site_monitor
+    roles:
+    - owner
+    - asset_manager
+    - admin
+  - key: report_watches
+    type: instances
+    title: Monthly reports
+    template: monthly_report
+    roles:
+    - owner
+    - asset_manager
+    - admin
+  - key: readings
+    type: dashboard
+    title: Production dashboard
+    children:
+    - production_chart
+    - readings_table
+    roles:
+    - owner
+    - asset_manager
+    - admin
+  - key: production_chart
+    type: chart
+    source: collection:readings
+    nav: false
+    data:
+      display: chart
+      chart: line
+      fields:
+      - key: date
+        label: Date
+      - key: kwh
+        label: Produced kWh
+      - key: expected_kwh
+        label: Expected kWh
+      sort:
+        field: date
+        dir: asc
+      limit: 60
+  - key: readings_table
+    type: table
+    source: collection:readings
+    nav: false
+    export: true
+    data:
+      display: table
+      fields:
+      - key: date
+        label: Date
+        format: date
+      - key: kwh
+        label: kWh
+        format: number
+      - key: expected_kwh
+        label: Expected
+        format: number
+      - key: saving_gbp
+        label: Saving
+        format: money
+      - key: fault
+        label: Fault
+      - key: status
+        label: Status
+        format: badge
+      sort:
+        field: date
+        dir: desc
+      limit: 60
+  - key: monthly_reports
+    type: list
+    title: Past monthly reports
+    source: collection:monthly_reports
+    data:
+      display: list
+      fields:
+      - key: month
+        label: Month
+      - key: report
+        label: Report
+      sort:
+        field: month
+        dir: desc
+    roles:
+    - owner
+    - asset_manager
+    - admin
+  - key: ask
+    type: chat
+    title: Ask about your proposal
+    source: agent:assistant
+    examples:
+    - What is the payback period?
+    - How much export income do I get?
+    - What happens if my roof is shaded?
+    placeholder: Ask about your proposal
+    roles:
+    - owner
+    - admin
+  - key: account
+    type: account
+    title: Account and billing
+    roles:
+    - owner
+    - asset_manager
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - credits
+    currency: gbp
+    signupCredits: 100
+    costs:
+      agent:assessor: 0
+    packs:
+    - key: monitoring
+      credits: 2000
+      price: 20
+      label: Monitoring credits
+  extensions:
+  - key: dcc_meter_data
+    description: Direct half-hourly meter data from the DCC or suppliers needs a licensed DCC user and the owner's consent
+      flow; not available yet. For now owners upload the half-hourly CSV their supplier provides.
+  - key: monitoring_fee_2pct
+    description: The fee of 2% of the energy value monitored needs a usage-based charge computed from the readings; not expressible
+      yet. Free assessment is in place; the monitoring fee must be set up separately in Stripe.
+  - key: other_inverter_apis
+    description: Only SolarEdge (API key) is connected. Manufacturers that use OAuth (e.g. SMA, Huawei, Enphase) are not available
+      yet.
+  - key: portfolio_telemetry
+    description: Readings belong to each monitoring instance, so the asset manager's portfolio shows buildings and their own
+      sites, not other owners' telemetry.
+  - key: installer_vetting
+    description: Vetting is done by the admins, who maintain the installers list on the data page and invite installers by
+      email.

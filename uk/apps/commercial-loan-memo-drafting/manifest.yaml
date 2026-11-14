@@ -1,0 +1,788 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: lendscribe
+  displayName: Lendscribe
+  tagline: Commercial loan applications prepared in minutes.
+  description: Brokers and lenders upload a borrower's documents. AI agents extract the figures, check Companies House and
+    the FCA Register, analyse cash flow, calculate DSCR and leverage, and draft a credit memo. An underwriter reviews and
+    approves it before it goes to credit committee.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#12304a'
+      accent: '#1f7a6d'
+      background: '#f6f8fa'
+      foreground: '#16222e'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Lend
+      color: primary
+    - text: scribe
+      color: accent
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Roles
+      href: '#roles'
+    cta:
+      label: Start an application
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: broker
+      label: Broker / lender
+      assignedBy: signup
+    - key: underwriter
+      label: Underwriter
+      assignedBy: invite
+    - key: credit_committee
+      label: Credit committee
+      assignedBy: invite
+  limits:
+  - action: agent:analyst
+    per: user
+    max: 20
+    window: day
+    roles:
+    - broker
+  egress:
+    hosts:
+    - api.company-information.service.gov.uk
+    - document-api.company-information.service.gov.uk
+    notes: Companies House public data API (filed accounts, officers); Open Government Licence. Requires the app owner's free
+      API key.
+  slots:
+  - key: credit_ratios
+    description: Debt service cover and leverage from the figures the agent extracted.
+    timeoutMs: 2000
+    example:
+      args:
+        ebitda: 500000
+        annual_interest: 60000
+        annual_principal: 120000
+        total_debt: 800000
+        new_loan: 400000
+    code: "def main(input):\n    a = input.get('args') or {}\n    def f(k):\n        try:\n            return float(a.get(k)\
+      \ or 0)\n        except Exception:\n            return 0.0\n    ebitda = f('ebitda')\n    ds = f('annual_interest')\
+      \ + f('annual_principal')\n    debt = f('total_debt') + f('new_loan')\n    return {\n        'debt_service': round(ds,\
+      \ 2),\n        'dscr': round(ebitda / ds, 2) if ds else None,\n        'leverage': round(debt / ebitda, 2) if ebitda\
+      \ > 0 else None,\n    }\n"
+  agents:
+  - key: analyst
+    role: main
+    description: Extracts figures from the uploaded documents, checks Companies House and the FCA Register, analyses cash
+      flow, calculates ratios and drafts the credit memo.
+    profile:
+      inline:
+        display_name: Lendscribe credit analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are a commercial credit analyst preparing a loan application for an underwriter at a UK lender.
+            You never invent figures: every number must come from a document, from Companies House or from a calculation.
+            State plainly when something is missing or unclear and list it under ''Missing information''.
+
+
+            Steps:
+
+            1. Call read_settings to get the lender''s memo template and whether the lender holds a credit bureau licence.
+            Follow the template''s section order and wording; if none exists use the default structure below.
+
+            2. Read the uploaded documents. Text of PDF/Word/Excel/CSV is in the goal; for scans or images call read_upload
+            with the file id. Extract from statutory accounts (FRS 102 and FRS 105 small-company formats; note which framework
+            applies, and for FRS 105 micro-entity accounts that there is no cash flow statement or directors'' report detail):
+            turnover, gross profit, operating profit, depreciation and amortisation, interest, profit before tax, fixed assets,
+            debtors, cash, creditors due within and after one year, borrowings, net assets. Reconcile with management accounts
+            and flag differences over 10%.
+
+            3. Companies House: call ch_company with path /company/<number> (status, incorporation date, SIC codes, accounts
+            and confirmation statement due dates, charges flag), /company/<number>/officers (directors, appointments, resignations),
+            /company/<number>/charges (existing security) and /company/<number>/filing-history?category=accounts (latest filed
+            accounts). Use ch_document for filed iXBRL accounts when a document link is returned and compare with the uploaded
+            accounts. Flag overdue filings, insolvency history and recent director changes.
+
+            4. FCA Register: only when the sector or activity is regulated (financial services, consumer credit, insurance,
+            mortgage broking, payments), use the webrobot MCP to look the firm up on the public FCA Register (register.fca.org.uk)
+            and report status, permissions and any restrictions. Otherwise write ''Not applicable''.
+
+            5. Cash flow from bank statements (the upload, or any transactions the user''s bank feed provided): monthly inflows
+            and outflows, average and minimum balance, largest customers and suppliers, overdraft usage, returned items, gambling
+            or unusual payments, revenue concentration, consistency with reported turnover. Use the aged debtor list for debtor
+            concentration, days overdue and dilution.
+
+            6. Call calc_ratios with ebitda, annual_interest, annual_principal (derived from the amount and term requested,
+            say how you assumed repayment), total_debt and new_loan to get DSCR and leverage. Show the inputs. Never calculate
+            these by hand.
+
+            7. Credit bureau data: include a ''Credit bureau'' section only if the lender''s settings say bureau_licensed
+            is true AND bureau data was provided in the documents; otherwise omit it entirely and do not speculate about the
+            borrower''s credit score.
+
+
+            Output structure: start with a level-1 title ''# Credit memo — <company name> (<company number>)''. Then ## Summary
+            and request, ## Borrower and management, ## Financial analysis (with a table of 3 years of key figures), ## Cash
+            flow and banking, ## Debt service and leverage, ## Security, ## Regulatory checks, ## Strengths, ## Risks and
+            mitigants (a table: risk, severity, mitigant), ## Missing information, ## Recommendation (a proposal for the underwriter,
+            never a final decision). Add a ```chart block (bar or line) of monthly bank inflows vs outflows when you have
+            the data. This is decision support: the underwriter reviews, edits and approves every section.
+
+
+            After the memo, end your answer with ONE final fenced json block: {"case_ref":"<company number>-<date>","company":"<name>","amount":<number>,"broker_email":"<email
+            given>","title":"<memo title>","body":"<the full memo in Markdown>","to_committee":false}.'
+    appTools:
+    - name: read_upload
+      description: Read a file the user uploaded (OCR for scans and photos)
+      action: read_file
+    - name: read_settings
+      description: The lender's memo template and whether it holds a credit bureau licence
+      action: read
+      collection: lender_settings
+      scope: all
+    - name: calc_ratios
+      description: Debt service cover and leverage from extracted figures
+      action: call
+      slot: credit_ratios
+    - name: ch_company
+      description: 'Companies House API: company profile, officers, charges, filing history (append the path)'
+      action: http
+      http:
+        method: GET
+        url: https://api.company-information.service.gov.uk
+        allowPath: true
+        attribution: Companies House, Open Government Licence v3.0
+        credential:
+          provider: companies_house
+          header: Authorization
+          format: Basic {secret}
+    - name: ch_document
+      description: 'Companies House Document API: metadata and content of a filed accounts document (append the path)'
+      action: http
+      http:
+        method: GET
+        url: https://document-api.company-information.service.gov.uk
+        allowPath: true
+        attribution: Companies House, Open Government Licence v3.0
+        credential:
+          provider: companies_house
+          header: Authorization
+          format: Basic {secret}
+    context:
+    - key: broker_email
+      from: user.email
+    goalTemplate: 'Prepare a credit memo for a commercial loan application.
+
+      Borrower company number: {company_number}
+
+      {?borrower_name}Borrower name: {borrower_name}{/borrower_name}
+
+      Loan purpose: {purpose_label}
+
+      Amount requested (GBP): {amount}
+
+      Term (months): {term_months}
+
+      Security offered: {security}
+
+      Sector: {sector_label}
+
+      Broker email: {broker_email}
+
+      {?notes}Broker notes: {notes}{/notes}
+
+      Statutory accounts (file ids {statutory_accounts}):
+
+      {statutory_accounts_text}
+
+      {?management_accounts}Management accounts (file ids {management_accounts}):
+
+      {management_accounts_text}{/management_accounts}
+
+      {?bank_statements}Bank statements (file ids {bank_statements}):
+
+      {bank_statements_text}{/bank_statements}
+
+      {?aged_debtors}Aged debtor lists (file ids {aged_debtors}):
+
+      {aged_debtors_text}{/aged_debtors}
+
+      Today is {date}. Write in the language with ISO code {lang}.'
+    output: markdown+json
+    resultSchema:
+      type: object
+      properties:
+        case_ref:
+          type: string
+        company:
+          type: string
+        amount:
+          type: number
+        broker_email:
+          type: string
+        title:
+          type: string
+        body:
+          type: string
+        to_committee:
+          type: boolean
+    writesTo:
+      collection: memos
+      parse: json_last
+      keyBy: case_ref
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 2
+      timeoutSeconds: 1200
+  inputForm:
+    title: New loan application
+    fields:
+    - name: company_number
+      type: text
+      required: true
+      maxLength: 8
+      label: Borrower company number
+      help: Companies House number, e.g. 01234567
+    - name: borrower_name
+      type: text
+      label: Borrower name (optional)
+    - name: purpose
+      type: select
+      required: true
+      label: Loan purpose
+      options:
+      - value: working_capital
+        label: Working capital
+      - value: asset_finance
+        label: Asset finance
+      - value: acquisition
+        label: Acquisition / MBO
+      - value: property
+        label: Commercial property
+      - value: refinance
+        label: Refinance
+      - value: growth
+        label: Growth / expansion
+    - name: amount
+      type: number
+      required: true
+      label: Amount requested (GBP)
+    - name: term_months
+      type: number
+      required: true
+      label: Term (months)
+    - name: security
+      type: textarea
+      required: true
+      maxLength: 800
+      label: Security offered
+      help: e.g. first charge over freehold, personal guarantees, debenture
+    - name: sector
+      type: select
+      required: true
+      label: Sector
+      options:
+      - value: manufacturing
+        label: Manufacturing
+      - value: construction
+        label: Construction
+      - value: retail
+        label: Retail and hospitality
+      - value: services
+        label: Professional services
+      - value: transport
+        label: Transport and logistics
+      - value: technology
+        label: Technology
+      - value: healthcare
+        label: Healthcare
+      - value: financial
+        label: Financial services (FCA-regulated)
+      - value: property
+        label: Property
+      - value: other
+        label: Other
+    - name: statutory_accounts
+      type: file
+      required: true
+      accept:
+      - pdf
+      - xlsx
+      - csv
+      - docx
+      maxMb: 15
+      multiple: true
+      label: Statutory accounts (FRS 102 / FRS 105)
+    - name: management_accounts
+      type: file
+      accept:
+      - pdf
+      - xlsx
+      - csv
+      maxMb: 15
+      multiple: true
+      label: Management accounts
+    - name: bank_statements
+      type: file
+      accept:
+      - pdf
+      - csv
+      - xlsx
+      maxMb: 15
+      multiple: true
+      label: Bank statements (12 months)
+    - name: aged_debtors
+      type: file
+      accept:
+      - pdf
+      - xlsx
+      - csv
+      maxMb: 15
+      multiple: true
+      label: Aged debtor lists
+    - name: notes
+      type: textarea
+      maxLength: 600
+      label: Notes for the underwriter (optional)
+  data:
+    credentials:
+    - provider: companies_house
+      kind: api_key
+      scope: org
+      label: Companies House API key
+      help: Create a free key at developer.company-information.service.gov.uk, then paste base64("<key>:") (the key followed
+        by a colon, base64-encoded).
+    collections:
+    - name: memos
+      ownedBy: org
+      description: Credit memos drafted by the analyst, reviewed by underwriters, decided by credit committee
+      fields:
+      - name: case_ref
+        type: text
+      - name: company
+        type: text
+      - name: amount
+        type: number
+      - name: broker_email
+        type: email
+      - name: title
+        type: text
+        label: Title
+      - name: body
+        type: textarea
+        label: Credit memo
+      - name: underwriter_notes
+        type: textarea
+        label: Underwriter notes
+      - name: to_committee
+        type: boolean
+        label: Approved and submitted to credit committee
+      - name: decision
+        type: select
+        label: Committee decision
+        options:
+        - value: approved
+          label: Approved
+        - value: conditions
+          label: Approved with conditions
+        - value: declined
+          label: Declined
+      - name: decision_notes
+        type: textarea
+        label: Decision notes and conditions
+      access:
+      - role: underwriter
+        can:
+        - read
+        - write
+      - role: credit_committee
+        where:
+          to_committee: true
+        can:
+        - read
+        - write
+      retentionDays: 2555
+    - name: doc_requests
+      ownedBy: org
+      description: Requests from the underwriter to the broker for missing documents
+      fields:
+      - name: case_ref
+        type: text
+        required: true
+        label: Case reference
+      - name: broker_email
+        type: email
+        required: true
+        label: Broker email
+      - name: message
+        type: textarea
+        required: true
+        label: Documents needed
+      access:
+      - role: underwriter
+        can:
+        - read
+        - write
+      retentionDays: 730
+    - name: lender_settings
+      ownedBy: shared
+      description: 'Set by the admins on /admin/data: the lender''s memo template and bureau licence'
+      fields:
+      - name: lender_name
+        type: text
+      - name: memo_template
+        type: textarea
+        label: Credit memo template (sections and wording)
+      - name: bureau_licensed
+        type: boolean
+        label: Lender holds a credit bureau licence
+  views:
+  - key: home
+    type: page
+    title: Lendscribe
+    nav: false
+    sections:
+    - type: hero
+      layout: stack
+      band: true
+      eyebrow: For brokers and lenders
+      title: Commercial loan applications, **prepared in minutes**.
+      text: Upload the borrower's accounts and bank data. AI agents extract the figures, check Companies House, analyse cash
+        flow, calculate DSCR and leverage, and draft the credit memo in your template. Your underwriter reviews every section
+        before it reaches credit committee.
+      actions:
+      - label: Start an application
+        href: /v/new
+        style: primary
+      - label: Sign in
+        href: /login
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Submit the case
+        text: Company number, purpose, amount, term, security and sector, plus statutory and management accounts, bank statements
+          and aged debtors.
+        badge: '1'
+      - title: Agents do the analysis
+        text: FRS 102 / FRS 105 extraction, Companies House filings and officers, FCA Register where relevant, cash flow and
+          ratios.
+        badge: '2'
+      - title: Underwriter reviews
+        text: Edit every section, ask the broker for missing documents, then approve.
+        badge: '3'
+      - title: Credit committee decides
+        text: Approved memos reach committee, who read and record their decision. Everyone is notified by email.
+        badge: '4'
+    - type: cards
+      id: roles
+      title: Built for every role
+      items:
+      - title: Broker
+        text: Creates applications and sees only their own cases.
+      - title: Underwriter
+        text: Reviews, edits and approves memos, and requests missing documents.
+      - title: Credit committee
+        text: Reads approved memos and records the decision.
+      - title: Admin
+        text: Sets the memo template, credit bureau licence and the team.
+    - type: note
+      content: Lendscribe is decision support. The underwriter and credit committee remain responsible for every credit decision.
+        Credit bureau data is included only when the lender holds a licence.
+  - key: new
+    type: new_run
+    title: New application
+    roles:
+    - broker
+    - admin
+  - key: applications
+    type: history
+    title: My applications
+    source: run
+    columns:
+    - createdAt
+    - company_number
+    - amount
+    - status
+    roles:
+    - broker
+    - admin
+  - key: application
+    type: report
+    title: Credit memo
+    source: run
+    printable: true
+    nav: false
+  - key: queue
+    type: table
+    title: Review queue
+    source: collection:memos
+    roles:
+    - underwriter
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: case_ref
+        label: Case
+      - key: company
+        label: Borrower
+      - key: amount
+        label: Amount
+        format: money
+      - key: broker_email
+        label: Broker
+      - key: to_committee
+        label: With committee
+        format: badge
+      - key: decision
+        label: Decision
+        format: badge
+      sort:
+        field: case_ref
+        dir: desc
+      limit: 100
+      empty: No memos yet.
+  - key: review
+    type: form
+    title: Review memo
+    collection: memos
+    fields:
+    - title
+    - body
+    - underwriter_notes
+    - to_committee
+    edit: true
+    submit:
+      label: Save review
+      message: Saved. Tick the approval box to submit the memo to credit committee.
+      redirect: queue
+    roles:
+    - underwriter
+    - admin
+    nav: false
+  - key: request_docs
+    type: form
+    title: Request missing documents
+    collection: doc_requests
+    fields:
+    - case_ref
+    - broker_email
+    - message
+    submit:
+      label: Send request
+      message: The broker has been emailed.
+    roles:
+    - underwriter
+    - admin
+  - key: committee
+    type: table
+    title: Committee papers
+    source: collection:memos
+    roles:
+    - credit_committee
+    - admin
+    data:
+      display: table
+      fields:
+      - key: case_ref
+        label: Case
+      - key: company
+        label: Borrower
+      - key: amount
+        label: Amount
+        format: money
+      - key: decision
+        label: Decision
+        format: badge
+      filters:
+      - field: to_committee
+        op: '='
+        value: true
+      limit: 100
+      empty: No memos awaiting committee.
+  - key: decide
+    type: form
+    title: Record decision
+    collection: memos
+    fields:
+    - body
+    - decision
+    - decision_notes
+    edit: true
+    submit:
+      label: Record decision
+      message: Decision recorded and the broker notified.
+      redirect: committee
+    roles:
+    - credit_committee
+    - admin
+    nav: false
+  - key: account
+    type: account
+    title: Credits and bundles
+    roles:
+    - broker
+    - admin
+  triggers:
+  - key: memo_drafted
+    description: Tell the underwriters a new memo is ready for review
+    'on':
+      collection: memos
+      op: insert
+    notify:
+      to: role:underwriter
+      subject: 'New credit memo to review: {record.company}'
+      body: A draft credit memo for {record.company} ({record.case_ref}) is ready for your review.
+      link: queue
+  - key: memo_to_committee
+    description: Tell the committee a memo was approved by the underwriter
+    'on':
+      collection: memos
+      op: update
+      where:
+        to_committee: true
+    notify:
+      to: role:credit_committee
+      subject: 'Credit memo for committee: {record.company}'
+      body: The underwriter has approved the credit memo for {record.company} ({record.case_ref}), amount {record.amount}.
+        It is ready for your decision.
+      link: committee
+  - key: docs_requested
+    description: Email the broker when the underwriter asks for documents
+    'on':
+      collection: doc_requests
+      op: insert
+    notify:
+      to: record.broker_email
+      subject: Documents needed for case {record.case_ref}
+      body: 'The underwriter needs more information to continue:
+
+
+        {record.message}
+
+
+        Please send the documents by starting an updated application or replying to your underwriter.'
+  - key: decision_approved
+    description: Tell the broker and underwriters of a positive decision
+    'on':
+      collection: memos
+      op: update
+      where:
+        decision: approved
+    notify:
+      to:
+      - record.broker_email
+      - role:underwriter
+      subject: Credit committee approved {record.company}
+      body: Credit committee has approved case {record.case_ref} ({record.company}). Conditions, if any, are in the decision
+        notes.
+  - key: decision_conditions
+    'on':
+      collection: memos
+      op: update
+      where:
+        decision: conditions
+    notify:
+      to:
+      - record.broker_email
+      - role:underwriter
+      subject: Credit committee approved {record.company} with conditions
+      body: Credit committee has approved case {record.case_ref} ({record.company}) subject to conditions. Your underwriter
+        will contact you.
+  - key: decision_declined
+    'on':
+      collection: memos
+      op: update
+      where:
+        decision: declined
+    notify:
+      to:
+      - record.broker_email
+      - role:underwriter
+      subject: Credit committee decision on {record.company}
+      body: Credit committee has declined case {record.case_ref} ({record.company}). Your underwriter will contact you with
+        the reasons.
+  notifications:
+    emailOnRunDone: true
+  billing:
+    modes:
+    - credits
+    - subscription
+    currency: gbp
+    signupCredits: 1
+    costs:
+      agent:analyst: 1
+    packs:
+    - key: single
+      credits: 1
+      price: 90
+      label: Single application
+    - key: five
+      credits: 5
+      price: 400
+      label: 5 applications
+    plans:
+    - key: bundle_10
+      price: 750
+      interval: month
+      label: Monthly bundle, 10 applications
+      credits: 10
+      creditsReset: monthly
+      roles:
+      - broker
+    - key: bundle_30
+      price: 2000
+      interval: month
+      label: Monthly bundle, 30 applications
+      credits: 30
+      creditsReset: monthly
+      roles:
+      - broker
+  extensions:
+  - key: open_banking_aisp
+    description: Borrower consent flow and 12-month transaction feed from an authorised AISP partner needs OAuth/redirect
+      consent, which is not available yet. For now bank statements are uploaded as PDF or CSV; a partner export can be dropped
+      into the same field. A webhook trigger can later save the AISP's transactions as records.
+  - key: fca_register_api
+    description: The FCA Register API needs two auth headers, which a credential cannot carry yet. The agent checks the public
+      FCA Register through the WebRobot MCP instead.
+  - key: credit_bureau_api
+    description: Credit bureau data is not connected. The memo includes bureau data only when the admin sets bureau_licensed
+      in lender settings and the data is supplied; a licensed bureau API key tool can be added per lender.

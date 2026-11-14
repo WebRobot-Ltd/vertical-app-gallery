@@ -1,0 +1,700 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: tripwire
+  displayName: Tripwire
+  tagline:
+    en: Warning before the attack launches.
+  description:
+    en: Tripwire watches certificate transparency logs, public DNS, newly registered domains and public abuse feeds for lookalike
+      domains, phishing kits and servers built to impersonate your brands. Threats are clustered into campaigns, scored, reviewed
+      by an analyst and alerted to you.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: dashboard
+  branding:
+    theme: dark
+    palette:
+      primary: '#0b1220'
+      accent: '#ff5a36'
+      background: '#0b1220'
+      foreground: '#e6edf7'
+    paletteDark:
+      primary: '#0b1220'
+      accent: '#ff5a36'
+      background: '#0b1220'
+      foreground: '#e6edf7'
+    fonts:
+      body: Inter
+      display: Space Grotesk
+      mono: JetBrains Mono
+    wordmark:
+    - text: Trip
+      color: foreground
+    - text: wire
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Sources
+      href: '#sources'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: analyst
+      label: Analyst
+      assignedBy: invite
+    - key: readonly
+      label: Read-only
+      assignedBy: invite
+    - key: user
+      label: Customer
+      assignedBy: signup
+  limits:
+  - action: login
+    per: ip
+    max: 20
+    window: hour
+  agents:
+  - key: hunter
+    role: scheduled
+    description: Watches public sources for infrastructure impersonating one brand, clusters it into campaigns, scores threat
+      level and asks an analyst to review high-threat items.
+    memory: instance
+    awaits:
+    - alert_review
+    profile:
+      inline:
+        display_name: Tripwire hunter
+        crews:
+        - id: hunter
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 1.5
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          mcp_servers:
+          - name: webrobot
+            type: http
+            url: https://mcp-full.webrobot.eu/mcp
+            allow: all
+          system_prompt: 'You are a threat-intelligence analyst protecting one brand. You only use PASSIVE, public sources:
+            certificate transparency (crt.sh tool), public DNS (dns_lookup tool, DNS-over-HTTPS), newly registered domain
+            lists and public abuse feeds (collect pages through the WebRobot MCP, respecting each site''s terms). You NEVER
+            port-scan, probe, exploit or actively scan any server. Internet-wide scan data and passive DNS are used only if
+            a licensed provider feed is available to you; otherwise say they were not used.
+
+
+            Steps: 1) read_brands to get the brand''s domains, keywords and assets. 2) Search CT logs and the other sources
+            for lookalike domains (typosquats, homoglyphs, added keywords, new TLDs), phishing kits and impersonating servers
+            created since your last run (your memory holds what you already reported). 3) For each new indicator call add_indicator
+            with: domain_or_ip, kind (domain|ip|url), brand, first_seen (YYYY-MM-DD), registrar, hosting, certificate (issuer
+            and serial or fingerprint), similarity (0-100, how close to the brand), status "new", threat_level (low|medium|high|critical),
+            campaign (name), why (one or two sentences of evidence), hours_to_detection (hours from certificate or registration
+            time to now, if known). Never invent registrar, hosting or certificate values: leave them empty when unknown.
+            4) Cluster indicators that share registrar, hosting, certificate patterns, naming or kit into campaigns; call
+            save_campaign for each with name, brand, threat_level, indicator_count, summary and why. 5) For every high or
+            critical item or campaign call request_alert_review with a short evidence summary; an analyst must approve before
+            any alert goes out. 6) At the end call remember with the identifiers already reported. Write a final report starting
+            with "# <Brand> — threat watch <date>" and sections ## New indicators, ## Campaigns, ## Needs analyst review,
+            ## Sources used and not used. Include a ```chart block with threat counts per level. Real figures only.'
+    appTools:
+    - name: read_brands
+      description: Read the customer's brands, domains and assets
+      action: read
+      collection: brands
+      scope: user
+    - name: add_indicator
+      description: Record a new threat indicator
+      action: append
+      collection: indicators
+      scope: user
+    - name: save_campaign
+      description: Create or update a campaign
+      action: write
+      collection: campaigns
+      scope: user
+    - name: crtsh_search
+      description: Search certificate transparency via crt.sh, e.g. query q=%25.example.com&output=json
+      action: http
+      http:
+        method: GET
+        url: https://crt.sh/
+        attribution: crt.sh public CT search
+    - name: dns_lookup
+      description: Public DNS lookup via DNS-over-HTTPS, query name=<domain>&type=A
+      action: http
+      http:
+        method: GET
+        url: https://dns.google/resolve
+        attribution: Google Public DNS
+    output: markdown
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 1.5
+  templates:
+  - key: brand_watch
+    title: Brand watch
+    description: Daily watch of public sources for infrastructure impersonating one of your brands.
+    agent: hunter
+    params:
+    - name: brand
+      type: select
+      required: true
+      label: Brand
+      optionsFrom: collection:brands
+    goal: Watch the brand "{brand}" (instance {instance}). Today is {date}. Report only what is new since your last run. Write
+      in English.
+    schedule:
+      cron: 0 6 * * *
+      userCanChange: true
+    maxPerUser: 20
+    deliver:
+      to: owner
+      onlyIfNew: true
+      subject: Tripwire daily threat report — {title}
+  approvals:
+  - key: alert_review
+    title: High-threat alert review
+    description: An analyst confirms a high or critical item before the alert goes to the customer.
+    role: analyst
+    fields:
+    - summary
+    timeoutMinutes: 1440
+    onTimeout: reject
+  triggers:
+  - key: alert_approved
+    'on':
+      approval: alert_review
+      decision: approved
+    notify:
+      to:
+      - owner
+      - admins
+      subject: 'Tripwire alert: confirmed high-threat infrastructure'
+      body: An analyst confirmed a high-threat item targeting your brand. Open Tripwire to see the indicators, the campaign
+        and the recommended takedown.
+      link: threats
+  - key: takedown_update
+    'on':
+      collection: takedowns
+      op: update
+    notify:
+      to:
+      - owner
+      subject: 'Takedown update: {record.target}'
+      body: 'Your takedown request for {record.target} is now: {record.status}.'
+      link: takedowns
+  - key: takedown_new
+    'on':
+      collection: takedowns
+      op: insert
+    notify:
+      to:
+      - role:analyst
+      - admins
+      subject: 'New takedown request: {record.target}'
+      body: A customer requested a takedown of {record.target} ({record.kind}).
+      link: takedowns
+  data:
+    collections:
+    - name: brands
+      ownedBy: user
+      description: Brands, domains and assets the customer owns
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Brand
+      - name: domains
+        type: textarea
+        required: true
+        label: Domains (one per line)
+      - name: keywords
+        type: textarea
+        label: Keywords and product names
+      - name: assets
+        type: textarea
+        label: Other assets (apps, IP ranges, social handles)
+    - name: indicators
+      ownedBy: user
+      description: Attacker infrastructure indicators
+      retentionDays: 730
+      fields:
+      - name: domain_or_ip
+        type: text
+        required: true
+        label: Domain or IP
+      - name: kind
+        type: select
+        options:
+        - domain
+        - ip
+        - url
+      - name: brand
+        type: text
+      - name: first_seen
+        type: date
+        label: First seen
+      - name: registrar
+        type: text
+      - name: hosting
+        type: text
+      - name: certificate
+        type: text
+      - name: similarity
+        type: number
+        label: Similarity score
+      - name: threat_level
+        type: select
+        options:
+        - low
+        - medium
+        - high
+        - critical
+      - name: status
+        type: select
+        options:
+        - new
+        - reviewing
+        - confirmed
+        - takedown
+        - dismissed
+        default: new
+      - name: campaign
+        type: text
+      - name: why
+        type: textarea
+        label: Why
+      - name: hours_to_detection
+        type: number
+        label: Hours to detection
+      access:
+      - role: analyst
+        can:
+        - read
+        - write
+      - role: readonly
+    - name: campaigns
+      ownedBy: user
+      description: Clusters of related indicators
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: brand
+        type: text
+      - name: threat_level
+        type: select
+        options:
+        - low
+        - medium
+        - high
+        - critical
+      - name: indicator_count
+        type: number
+      - name: summary
+        type: textarea
+      - name: why
+        type: textarea
+      access:
+      - role: analyst
+        can:
+        - read
+        - write
+      - role: readonly
+    - name: takedowns
+      ownedBy: user
+      description: Takedown requests and their status
+      fields:
+      - name: target
+        type: text
+        required: true
+        label: Domain, IP or URL
+      - name: kind
+        type: select
+        options:
+        - phishing
+        - lookalike domain
+        - malware
+        - brand abuse
+        label: Type
+      - name: notes
+        type: textarea
+        label: Notes
+      - name: evidence
+        type: file
+        accept:
+        - pdf
+        - png
+        - jpg
+        label: Evidence
+      - name: status
+        type: select
+        options:
+        - requested
+        - submitted
+        - registrar_contacted
+        - taken_down
+        - rejected
+        default: requested
+      access:
+      - role: analyst
+        can:
+        - read
+        - write
+      - role: readonly
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Tripwire
+    sections:
+    - type: hero
+      band: true
+      eyebrow: Attacker infrastructure monitoring
+      title: Get warning **before** the attack launches.
+      text: Tripwire watches certificate transparency logs, public DNS, new domain registrations and abuse feeds for lookalike
+        domains, phishing kits and servers built to impersonate your brands.
+      actions:
+      - label: Sign in
+        href: /login
+        style: primary
+      - label: How it works
+        href: '#how'
+        style: ghost
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: List your brands
+        text: Add your brands, domains and assets.
+        badge: '1'
+      - title: We watch, passively
+        text: Scheduled agents scan public sources every day.
+        badge: '2'
+      - title: Campaigns and scores
+        text: Indicators are clustered into campaigns, scored and explained.
+        badge: '3'
+      - title: Analyst-reviewed alerts
+        text: High-threat items are reviewed by an analyst before you are alerted. Request takedowns in one click.
+        badge: '4'
+    - type: cards
+      id: sources
+      title: Sources
+      items:
+      - title: Certificate transparency
+        text: New certificates for lookalike names.
+      - title: Public DNS
+        text: Resolution of suspicious domains.
+      - title: New registrations and abuse feeds
+        text: Newly registered domains, phishing and malware feeds.
+      - title: Licensed scan data
+        text: Internet-wide scan data and passive DNS only where a provider licence exists. No active scanning by Tripwire.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: Per brand
+        text: £1,000 a month per brand monitored.
+        badge: £
+      - title: API feed
+        text: Indicators as a JSON feed with API keys, as an extra.
+        badge: API
+    - type: note
+      content: Tripwire uses passive, public sources only and does not actively scan third-party systems. Threat scores are
+        decision support and are reviewed by analysts before alerts.
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - user
+    - admin
+    - analyst
+    - readonly
+    sections:
+    - type: data
+      title: Threat overview
+      source: collection:indicators
+      display: kpi
+      kpis:
+      - label: Indicators
+        agg: count
+      - label: Avg similarity
+        agg: avg
+        field: similarity
+        format: number
+      - label: Avg hours to detection
+        agg: avg
+        field: hours_to_detection
+        format: number
+    - type: data
+      title: New threats per week
+      source: collection:indicators
+      display: chart
+      chart: bar
+      groupBy:
+        field: first_seen
+        bucket: week
+        aggs: []
+      fields:
+      - key: first_seen
+        label: Week
+      - key: count
+        label: New indicators
+    - type: data
+      title: Time to detection
+      source: collection:indicators
+      display: chart
+      chart: line
+      groupBy:
+        field: first_seen
+        bucket: month
+        aggs:
+        - key: hours
+          agg: avg
+          field: hours_to_detection
+      fields:
+      - key: first_seen
+        label: Month
+      - key: hours
+        label: Avg hours
+    - type: data
+      title: Latest high-threat
+      source: collection:indicators
+      display: table
+      filters:
+      - field: threat_level
+        op: '='
+        value: high
+      sort:
+        field: first_seen
+        dir: desc
+      limit: 10
+      fields:
+      - key: domain_or_ip
+        label: Indicator
+      - key: threat_level
+        format: badge
+      - key: campaign
+      - key: status
+        format: badge
+    - type: view
+      title: Campaigns
+      view: campaigns
+  - key: brand_new
+    type: form
+    title: Add a brand
+    collection: brands
+    roles:
+    - user
+    - admin
+    submit:
+      label: Save brand
+      message: Brand saved. Now start a watch for it.
+      redirect: watches
+  - key: brand_list
+    type: table
+    title: My brands
+    source: collection:brands
+    roles:
+    - user
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+      - key: domains
+      - key: keywords
+  - key: watches
+    type: instances
+    template: brand_watch
+    title: Brand watches
+    roles:
+    - user
+    - admin
+  - key: threats
+    type: table
+    title: Threats
+    source: collection:indicators
+    export: true
+    roles:
+    - user
+    - admin
+    - analyst
+    - readonly
+    data:
+      display: table
+      fields:
+      - key: domain_or_ip
+        label: Domain or IP
+      - key: first_seen
+        format: date
+      - key: registrar
+      - key: hosting
+      - key: certificate
+      - key: similarity
+        format: number
+      - key: threat_level
+        format: badge
+      - key: status
+        format: badge
+      - key: campaign
+      sort:
+        field: first_seen
+        dir: desc
+      limit: 200
+  - key: campaigns
+    type: cards
+    title: Campaigns
+    source: collection:campaigns
+    roles:
+    - user
+    - admin
+    - analyst
+    - readonly
+    data:
+      display: cards
+      fields:
+      - key: name
+      - key: threat_level
+        format: badge
+      - key: indicator_count
+        format: number
+      - key: summary
+      - key: why
+  - key: takedown_new
+    type: form
+    title: Request a takedown
+    collection: takedowns
+    roles:
+    - user
+    - admin
+    - analyst
+    submit:
+      label: Request takedown
+      message: Request sent. You can follow its status.
+      redirect: takedowns
+  - key: takedowns
+    type: table
+    title: Takedowns
+    source: collection:takedowns
+    export: true
+    roles:
+    - user
+    - admin
+    - analyst
+    - readonly
+    data:
+      display: table
+      fields:
+      - key: target
+      - key: kind
+      - key: status
+        format: badge
+      - key: notes
+      limit: 200
+  - key: review
+    type: approvals
+    title: Alert review
+    roles:
+    - analyst
+    - admin
+  - key: runs
+    type: history
+    title: Reports
+    source: run
+    roles:
+    - user
+    - admin
+    - analyst
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: account
+    type: account
+    title: Billing
+    roles:
+    - user
+    - admin
+  schedules: []
+  exports:
+  - path: /api/indicators
+    source: collection:indicators
+    format: json
+    access: token
+  notifications:
+    emailOnRunDone: false
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: brand
+      price: 1000
+      interval: month
+      label: Per brand monitoring
+      includes:
+      - Daily watch of one brand
+      - Campaigns, scoring and analyst-reviewed alerts
+      - Takedown requests
+      - Dashboards
+      roles:
+      - user
+      - admin
+    - key: api_feed
+      price: 500
+      interval: month
+      label: API feed (extra)
+      includes:
+      - Indicators via API feed with API keys
+      roles:
+      - user
+      - admin
+  extensions:
+  - key: per_brand_billing
+    description: The £1,000 per month is charged per brand (quantity = number of brands watched); the plan model charges one
+      flat subscription, so per-brand quantity billing and the API feed price (placeholder £500, set the real one) need configuring
+      in Stripe.
+  - key: slack_and_webhook_alerts
+    description: Alerts by email are supported. Slack and outbound webhook delivery are not available yet.
+  - key: api_keys
+    description: The indicator feed at /api/indicators uses the app token access; per-customer self-service API keys with
+      rotation are not available yet.
+  - key: licensed_scan_data
+    description: Internet-wide scan data and passive DNS require a provider licence and an API host; add the provider as an
+      org credential and http tool once licensed. Tripwire does no active scanning.
+  egress:
+    hosts:
+    - crt.sh
+    - dns.google
+    notes: 'crt.sh: public certificate transparency search, light use. dns.google: Google Public DNS-over-HTTPS, public resolver
+      within usage policy.'

@@ -1,0 +1,835 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: clipview
+  displayName: Clipview
+  tagline:
+    en: Asynchronous video interviews, screened fairly.
+    cy: Cyfweliadau fideo anghydamserol, wedi'u sgrinio'n deg.
+  description:
+    en: Recruiters build question sets, candidates answer in their own time, an AI agent scores transcripts against your rubric
+      with quotes, and people decide who moves forward.
+    cy: Mae recriwtwyr yn llunio cwestiynau, mae ymgeiswyr yn ateb pan fydd yn gyfleus, ac mae asiant AI yn sgorio trawsgrifiadau
+      yn erbyn eich rwbrig. Pobl sy'n penderfynu.
+  langs:
+  - en
+  - cy
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f2a44'
+      accent: '#e4572e'
+      background: '#f7f8fa'
+      foreground: '#161a22'
+    fonts:
+      body: Inter
+      display: Sora
+    wordmark:
+    - text: Clip
+      color: primary
+    - text: view
+      color: accent
+  header:
+    links:
+    - label:
+        en: How it works
+        cy: Sut mae'n gweithio
+      href: '#how'
+    - label:
+        en: Pricing
+        cy: Prisiau
+      href: '#pricing'
+    cta:
+      label:
+        en: Sign in
+        cy: Mewngofnodi
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      assignedBy: admin_emails
+    - key: user
+      label:
+        en: Recruiter, manager or candidate
+        cy: Recriwtiwr, rheolwr neu ymgeisydd
+      assignedBy: signup
+  limits:
+  - action: create:roles
+    max: 2
+    window: total
+    plans:
+      growth: 10
+      scale: -1
+  agents:
+  - key: scorer
+    role: main
+    description: Scores one candidate answer against the rubric, with quotes. Never decides who progresses.
+    output: json
+    writesTo:
+      collection: scores
+      parse: json_last
+    limits:
+      maxTurns: 4
+      maxBudgetUsd: 0.3
+    profile:
+      inline:
+        display_name: Clipview scorer
+        crews:
+        - id: scorer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 4
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You assist human reviewers of recorded job interviews. You receive a role title, a recruiter''s
+            rubric, the question and the candidate''s transcript. Score the transcript only against the rubric, from 1 to
+            5. Evidence only: each strength and concern must be backed by a short verbatim quote from the transcript. Ignore
+            accent, grammar of non-native speakers, appearance, age, gender, disability and any protected characteristic.
+            Never recommend hiring or rejecting: only humans decide. If the transcript is empty or too short, say so and give
+            score 0. Never invent quotes. Answer with ONE JSON object and nothing else: {"role_title":"…","candidate_email":"…","question":"…","score":number,"strengths":"…","concerns":"…","quotes":"…","members":[…copy
+            the members list you were given…]}. Write the text values in the language of the recruiter''s rubric.'
+  - key: digest
+    role: helper
+    description: Weekly digest for a manager of the candidates waiting for review.
+    output: markdown
+    limits:
+      maxTurns: 6
+      maxBudgetUsd: 0.3
+    appTools:
+    - name: read_scores
+      description: AI scores of the candidates on the roles of this user
+      action: read
+      collection: scores
+      scope: user
+    - name: read_reviews
+      description: Human reviews and decisions on the roles of this user
+      action: read
+      collection: reviews
+      scope: user
+    profile:
+      inline:
+        display_name: Clipview digest
+        crews:
+        - id: digest
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 6
+          max_budget_usd: 0.3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write a short weekly digest for a hiring manager. Start with "# Clipview digest — week of <date>".
+            Sections: ## Waiting for your review (candidates with an AI score but no human review yet, per role), ## Decisions
+            this week, ## Roles needing attention. Use read_scores and read_reviews. Under 250 words, real figures only. The
+            AI score is only a hint; never say a candidate should be hired or rejected.'
+  templates:
+  - key: manager_digest
+    title:
+      en: Weekly digest
+      cy: Crynodeb wythnosol
+    agent: digest
+    params:
+    - name: label
+      type: text
+      label:
+        en: Name
+        cy: Enw
+    goal: Write this week's digest for "{instance}". Today is {date}. Write in the language with ISO code {lang}.
+    schedule:
+      cron: 0 7 * * 1
+      userCanChange: true
+    maxPerUser: 2
+    deliver:
+      to: owner
+      onlyIfNew: true
+  data:
+    collections:
+    - name: roles
+      description: Roles (jobs) with the recruiter's rubric; members = emails of recruiters and managers working on it
+      ownedBy: user
+      fields:
+      - name: title
+        type: text
+        required: true
+        label:
+          en: Role
+          cy: Swydd
+      - name: employer
+        type: text
+        label:
+          en: Employer
+          cy: Cyflogwr
+      - name: description
+        type: textarea
+      - name: rubric
+        type: textarea
+        required: true
+        label:
+          en: Scoring rubric
+          cy: Rwbrig sgorio
+      - name: status
+        type: select
+        options:
+        - open
+        - closed
+      - name: members
+        type: array
+        label:
+          en: Team emails
+          cy: E-byst y tîm
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: questions
+      description: Question set per role
+      ownedBy: user
+      fields:
+      - name: role_title
+        type: text
+        required: true
+      - name: kind
+        type: select
+        required: true
+        options:
+        - video
+        - audio
+        - text
+        label:
+          en: Answer type
+          cy: Math o ateb
+      - name: prompt
+        type: textarea
+        required: true
+        label:
+          en: Question
+          cy: Cwestiwn
+      - name: think_seconds
+        type: number
+        label:
+          en: Thinking time (s)
+          cy: Amser meddwl (eil)
+      - name: max_seconds
+        type: number
+        label:
+          en: Max answer length (s)
+          cy: Hyd mwyaf (eil)
+      - name: retakes
+        type: number
+        label:
+          en: Retakes allowed
+          cy: Ailgynnig
+      - name: knockout
+        type: boolean
+        label:
+          en: Knock-out question
+          cy: Cwestiwn dileu
+      - name: knockout_expected
+        type: text
+        help:
+          en: Required answer for a knock-out question (e.g. yes)
+      - name: members
+        type: array
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: invitations
+      description: Invitations sent to candidates
+      ownedBy: user
+      fields:
+      - name: candidate_name
+        type: text
+        required: true
+      - name: candidate_email
+        type: email
+        required: true
+      - name: role_title
+        type: text
+        required: true
+      - name: deadline
+        type: date
+        required: true
+        label:
+          en: Complete by
+          cy: Cwblhau erbyn
+      - name: status
+        type: select
+        options:
+        - pending
+        - completed
+        default: pending
+      - name: members
+        type: array
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+    - name: answers
+      description: Candidate answers with consent and retention date
+      ownedBy: user
+      retentionDays: 180
+      fields:
+      - name: role_title
+        type: text
+        required: true
+      - name: candidate_email
+        type: email
+        required: true
+      - name: question
+        type: text
+        required: true
+      - name: answer_text
+        type: textarea
+        label:
+          en: Answer / transcript
+          cy: Ateb / trawsgrifiad
+      - name: practice
+        type: boolean
+        label:
+          en: This is a practice
+          cy: Ymarfer yw hwn
+      - name: consent
+        type: boolean
+        required: true
+        label:
+          en: I consent to my answers being recorded and reviewed, and deleted after the retention period
+          cy: Rwy'n cydsynio i gofnodi ac adolygu fy atebion, a'u dileu ar ôl y cyfnod cadw
+      - name: consent_at
+        type: date
+      - name: retention_until
+        type: date
+      - name: rubric
+        type: textarea
+      - name: members
+        type: array
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: scores
+      description: AI scores with quotes, written by the scorer; a hint for reviewers only
+      ownedBy: user
+      retentionDays: 180
+      fields:
+      - name: role_title
+        type: text
+      - name: candidate_email
+        type: email
+      - name: question
+        type: text
+      - name: score
+        type: number
+      - name: strengths
+        type: textarea
+      - name: concerns
+        type: textarea
+      - name: quotes
+        type: textarea
+      - name: members
+        type: array
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: reviews
+      description: Human ratings, comments and decisions
+      ownedBy: user
+      fields:
+      - name: role_title
+        type: text
+        required: true
+      - name: candidate_email
+        type: email
+        required: true
+      - name: rating
+        type: number
+        label:
+          en: Rating (1-5)
+          cy: Sgôr (1-5)
+      - name: comment
+        type: textarea
+        label:
+          en: Comment
+          cy: Sylw
+      - name: decision
+        type: select
+        options:
+        - pending
+        - advance
+        - hold
+        - reject
+        default: pending
+        label:
+          en: Decision
+          cy: Penderfyniad
+      - name: members
+        type: array
+      access:
+      - role: user
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      retentionDays: 365
+    - name: interviewers
+      description: People who run live interviews
+      ownedBy: shared
+      fields:
+      - name: name
+        type: text
+        required: true
+      - name: email
+        type: email
+    - name: interviews
+      description: Booked live interview slots
+      ownedBy: user
+      fields:
+      - name: notes
+        type: textarea
+  views:
+  - key: home
+    type: page
+    nav: false
+    sections:
+    - type: hero
+      title:
+        en: Interview more people, **in less time**.
+        cy: Cyfweld mwy o bobl, **mewn llai o amser**.
+      text:
+        en: Build a question set, send a link, and review recorded answers with AI-assisted scoring. People always make the
+          decision.
+        cy: Llunio cwestiynau, anfon dolen ac adolygu atebion wedi'u recordio gyda sgorio â chymorth AI. Pobl sy'n penderfynu
+          bob amser.
+      actions:
+      - label:
+          en: Sign in
+          cy: Mewngofnodi
+        href: /login
+        style: primary
+    - type: steps
+      id: how
+      title:
+        en: How it works
+        cy: Sut mae'n gweithio
+      items:
+      - title:
+          en: Build
+          cy: Llunio
+        text:
+          en: Video, audio or text questions, thinking time, answer length, retakes and knock-out questions.
+          cy: Cwestiynau fideo, sain neu destun, amser meddwl, hyd, ailgynnig a chwestiynau dileu.
+      - title:
+          en: Invite
+          cy: Gwahodd
+        text:
+          en: Candidates get an email link, practise first, then answer with consent recorded.
+          cy: Mae ymgeiswyr yn cael dolen, yn ymarfer, ac yn ateb gyda chydsyniad wedi'i gofnodi.
+      - title:
+          en: Review
+          cy: Adolygu
+        text:
+          en: AI scores against your rubric with quotes; your team rates and decides.
+          cy: Sgorio AI yn erbyn eich rwbrig gyda dyfyniadau; mae eich tîm yn graddio ac yn penderfynu.
+    - type: cards
+      id: pricing
+      title:
+        en: Pricing by active roles
+        cy: Prisiau yn ôl swyddi gweithredol
+      items:
+      - title: Starter — £49
+        text:
+          en: 2 active roles
+          cy: 2 swydd weithredol
+      - title: Growth — £149
+        text:
+          en: 10 active roles
+          cy: 10 swydd weithredol
+      - title: Scale — £399
+        text:
+          en: Unlimited roles
+          cy: Swyddi diderfyn
+    - type: note
+      content:
+        en: AI scores are a hint for reviewers. Only people decide who progresses.
+        cy: Awgrym i adolygwyr yw sgoriau AI. Pobl yn unig sy'n penderfynu pwy sy'n symud ymlaen.
+  - key: roles
+    type: table
+    title:
+      en: Roles
+      cy: Swyddi
+    source: collection:roles
+    export: true
+    data:
+      display: table
+      fields:
+      - key: title
+      - key: employer
+      - key: status
+        format: badge
+  - key: role_new
+    type: form
+    title:
+      en: New role
+      cy: Swydd newydd
+    collection: roles
+    submit:
+      label:
+        en: Create role
+        cy: Creu swydd
+      redirect: roles
+  - key: question_new
+    type: form
+    title:
+      en: Add question
+      cy: Ychwanegu cwestiwn
+    collection: questions
+    submit:
+      label:
+        en: Save question
+        cy: Cadw
+  - key: question_list
+    type: table
+    title:
+      en: Question sets
+      cy: Cwestiynau
+    source: collection:questions
+    data:
+      display: table
+      fields:
+      - key: role_title
+      - key: kind
+        format: badge
+      - key: prompt
+      - key: think_seconds
+      - key: max_seconds
+      - key: retakes
+      - key: knockout
+  - key: invite
+    type: form
+    title:
+      en: Invite candidate
+      cy: Gwahodd ymgeisydd
+    collection: invitations
+    submit:
+      label:
+        en: Send invitation
+        cy: Anfon gwahoddiad
+      message:
+        en: Invitation emailed.
+        cy: Gwahoddiad wedi'i anfon.
+  - key: invitations_list
+    type: table
+    title:
+      en: Invitations
+      cy: Gwahoddiadau
+    source: collection:invitations
+    data:
+      display: table
+      fields:
+      - key: candidate_name
+      - key: role_title
+      - key: deadline
+        format: date
+      - key: status
+        format: badge
+  - key: interview
+    type: form
+    title:
+      en: Your interview
+      cy: Eich cyfweliad
+    collection: answers
+    fields:
+    - role_title
+    - candidate_email
+    - question
+    - answer_text
+    - practice
+    - consent
+    submit:
+      label:
+        en: Submit answer
+        cy: Cyflwyno ateb
+      message:
+        en: Thank you. Your answer is saved.
+        cy: Diolch. Mae eich ateb wedi'i gadw.
+  - key: screening
+    type: table
+    title:
+      en: AI screening
+      cy: Sgrinio AI
+    source: collection:scores
+    data:
+      display: table
+      fields:
+      - key: role_title
+      - key: candidate_email
+      - key: question
+      - key: score
+        format: number
+      - key: strengths
+      - key: concerns
+      - key: quotes
+      sort:
+        field: score
+        dir: desc
+  - key: review_new
+    type: form
+    title:
+      en: Rate and decide
+      cy: Graddio a phenderfynu
+    collection: reviews
+    submit:
+      label:
+        en: Save review
+        cy: Cadw adolygiad
+  - key: review_list
+    type: table
+    title:
+      en: Reviews
+      cy: Adolygiadau
+    source: collection:reviews
+    export: true
+    data:
+      display: table
+      fields:
+      - key: role_title
+      - key: candidate_email
+      - key: rating
+        format: number
+      - key: decision
+        format: badge
+      - key: comment
+  - key: book
+    type: booking
+    title:
+      en: Book your live interview
+      cy: Archebu eich cyfweliad byw
+    collection: interviews
+    resources: collection:interviewers
+    fields:
+    - notes
+    slots:
+      days:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      from: 09:00
+      to: '17:00'
+      minutes: 30
+      tz: Europe/London
+      aheadDays: 21
+      minNoticeHours: 12
+      capacity: 1
+  - key: dashboard
+    type: page
+    title:
+      en: Dashboard
+      cy: Dangosfwrdd
+    sections:
+    - type: data
+      title:
+        en: Pipeline per role
+        cy: Pibell fesul swydd
+      source: collection:reviews
+      display: chart
+      chart: stacked
+      fields:
+      - key: role_title
+      - key: count
+      groupBy:
+        field: decision
+        aggs: []
+    - type: data
+      title:
+        en: Invitation completion
+        cy: Cwblhau gwahoddiadau
+      source: collection:invitations
+      display: bar
+      fields:
+      - key: status
+      - key: count
+      groupBy:
+        field: status
+        aggs: []
+    - type: data
+      title:
+        en: Reviews by week
+        cy: Adolygiadau yn ôl wythnos
+      source: collection:reviews
+      display: chart
+      chart: line
+      fields:
+      - key: createdAt
+      - key: count
+      groupBy:
+        field: createdAt
+        bucket: week
+        aggs:
+        - key: avg_rating
+          agg: avg
+          field: rating
+  - key: digests
+    type: instances
+    template: manager_digest
+    title:
+      en: Digests
+      cy: Crynodebau
+  - key: account
+    type: account
+    title:
+      en: Plan
+      cy: Cynllun
+    roles:
+    - user
+  triggers:
+  - key: invite_email
+    'on':
+      collection: invitations
+      op: insert
+    notify:
+      to:
+      - record.candidate_email
+      subject:
+        en: Your video interview for {record.role_title}
+        cy: Eich cyfweliad fideo ar gyfer {record.role_title}
+      body:
+        en: Hello {record.candidate_name}, you are invited to record your answers for {record.role_title} by {record.deadline}.
+          You can practise first. Sign in with this email address to start.
+        cy: Helo {record.candidate_name}, cewch eich gwahodd i recordio eich atebion ar gyfer {record.role_title} erbyn {record.deadline}.
+          Gallwch ymarfer yn gyntaf.
+      link: interview
+  - key: reminder
+    'on':
+      date:
+        collection: invitations
+        field: deadline
+        offsetDays: -2
+        hour: 8
+      where:
+        status: pending
+    notify:
+      to:
+      - record.candidate_email
+      subject:
+        en: 'Reminder: your interview for {record.role_title}'
+        cy: 'Nodyn atgoffa: eich cyfweliad ar gyfer {record.role_title}'
+      body:
+        en: You have not finished yet. Please complete by {record.deadline}.
+        cy: Nid ydych wedi gorffen eto. Cwblhewch erbyn {record.deadline}.
+      link: interview
+  - key: score_answer
+    'on':
+      collection: answers
+      op: insert
+    start:
+      agent: scorer
+    goal: 'Role: {record.role_title}
+
+      Candidate: {record.candidate_email}
+
+      Question: {record.question}
+
+      Rubric: {record.rubric}
+
+      Transcript: {record.answer_text}
+
+      Members: {record.members}
+
+      Score this answer against the rubric.'
+  - key: advance_invite
+    'on':
+      collection: reviews
+      op: update
+      where:
+        decision: advance
+    notify:
+      to:
+      - record.candidate_email
+      subject:
+        en: Next step for {record.role_title}
+        cy: Y cam nesaf ar gyfer {record.role_title}
+      body:
+        en: Thank you for your interview. Please book a live interview slot.
+        cy: Diolch am eich cyfweliad. Archebwch slot cyfweliad byw.
+      link: book
+  billing:
+    modes:
+    - subscription
+    currency: gbp
+    plans:
+    - key: starter
+      price: 49
+      interval: month
+      label: Starter
+      includes:
+      - 2 active roles
+    - key: growth
+      price: 149
+      interval: month
+      label: Growth
+      includes:
+      - 10 active roles
+    - key: scale
+      price: 399
+      interval: month
+      label: Scale
+      includes:
+      - Unlimited active roles
+  extensions:
+  - key: video_recording
+    description: 'Not available yet: recording video or audio in the browser or on phones, storing and playing it back, practice
+      mode with the camera, thinking-time and retake countdowns in the recorder, and automatic transcription. Today answers
+      are text (typed or a pasted transcript) in the answers collection; the question settings (think time, length, retakes)
+      are stored but not enforced by a recorder.'
+  - key: candidate_routing
+    description: 'Not available yet: attaching a candidate''s answers (members, rubric) to the role team from the invitation
+      link automatically. For now these fields must be prefilled by the link or set by staff; until then team access relies
+      on the members list.'
+  - key: knockout_rules
+    description: 'Knock-out questions are stored with the expected answer, but automatic rejection is not applied: a reviewer
+      decides.'
+  - key: retention_per_role
+    description: Retention is a fixed 180 days on answers and AI scores; a per-role period needs per-record retention.

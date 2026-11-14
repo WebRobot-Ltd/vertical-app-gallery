@@ -1,0 +1,925 @@
+apiVersion: webrobot.eu/v1alpha1
+kind: VerticalApp
+metadata:
+  slug: verbatim
+  displayName: Verbatim
+  tagline:
+    en: Open-ended answers, coded with statistical rigour.
+  description:
+    en: Upload survey answers, approve an AI-proposed coding frame, and get every answer coded with confidence scores, a human
+      review queue, and counts, significance tests and confidence intervals that are calculated, not guessed. Answers in English,
+      French, German and Spanish.
+  langs:
+  - en
+  defaultLang: en
+  timezone: Europe/London
+spec:
+  pattern: report
+  branding:
+    theme: light
+    palette:
+      primary: '#1f2a44'
+      accent: '#e07a3f'
+      background: '#f7f6f2'
+      foreground: '#1b1f24'
+    fonts:
+      body: Inter
+      display: Fraunces
+    wordmark:
+    - text: Verba
+      color: primary
+    - text: tim
+      color: accent
+    width: wide
+  header:
+    links:
+    - label: How it works
+      href: '#how'
+    - label: Rigour
+      href: '#rigour'
+    - label: Pricing
+      href: '#pricing'
+    cta:
+      label: Sign in
+      href: /login
+  auth:
+    method: magic_link
+    anonymous:
+      views:
+      - home
+    roles:
+    - key: admin
+      label: Admin
+      assignedBy: admin_emails
+    - key: owner
+      label: Project owner
+      assignedBy: signup
+    - key: coder
+      label: Coder (reviewer)
+      assignedBy: invite
+    - key: client
+      label: Client viewer
+      assignedBy: invite
+  limits:
+  - action: run
+    per: user
+    max: 20
+    window: day
+    roles:
+    - owner
+  agents:
+  - key: framer
+    role: main
+    when: task == 'setup'
+    description: Reads the uploaded file, stores the answers, proposes a coding frame and asks the researcher to approve it.
+    profile:
+      inline:
+        display_name: Verbatim frame builder
+        crews:
+        - id: framer
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 80
+          max_budget_usd: 3
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You are a senior survey-research coder. You receive the text of a CSV/Excel file with a respondent
+            ID column, an open-answer column and optional segment columns (age band, region, customer type). Answers may be
+            in English, French, German or Spanish.
+
+            Steps: 1) Identify the columns. 2) Save EVERY row with the tool append_responses (in batches): project, wave,
+            respondent_id, answer, lang (en/fr/de/es), age_band, region, customer_type, members (the project''s members list
+            if given). Never alter or drop answers. 3) Read a representative sample (at least 200 answers or all if fewer,
+            mixed across segments and languages) and propose a coding frame of 6-15 themes, written in English, mutually distinct,
+            plus a final theme ''other'' and ''no_answer''. Save each with append_themes: project, code (short snake_case),
+            name, definition, include_when, examples (2-3 verbatim quotes, original language), status ''proposed'', members.
+            4) Call request_frame_approval once with project and a summary. 5) Finish with a report: ''# Coding frame proposal
+            — <project>'', a table of themes (code, name, definition, example), sample size, language mix, data-quality notes
+            (blank answers, duplicates). State that the researcher can edit themes in the Themes page before approving. Never
+            invent answers or figures; do not count themes — counts are computed later by the app.'
+    goalTemplate: 'Project: {project}
+
+      Wave: {wave}
+
+      Expected number of answers: {answer_count}
+
+      Project languages: {languages}
+
+      {?data_file_text}File content:
+
+      {data_file_text}{/data_file_text}
+
+      {!data_file_text}No file text was extracted: tell the user to upload a CSV or Excel file.{/data_file_text}
+
+      Write the report in English.'
+    context:
+    - key: languages
+      from: collection:projects.languages
+    appTools:
+    - name: append_responses
+      description: Save survey answers as records
+      action: append
+      collection: responses
+      scope: user
+    - name: append_themes
+      description: Save a proposed theme of the coding frame
+      action: append
+      collection: themes
+      scope: user
+    - name: read_projects
+      description: Read the user's projects
+      action: read
+      collection: projects
+      scope: user
+    awaits:
+    - frame_approval
+    output: markdown
+    limits:
+      maxTurns: 80
+      maxBudgetUsd: 3
+  - key: coder
+    role: helper
+    description: Codes every answer against the approved frame with a confidence score.
+    profile:
+      inline:
+        display_name: Verbatim coder
+        crews:
+        - id: coder
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 300
+          max_budget_usd: 8
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You code open-ended survey answers. Read the approved themes (status ''approved'') of the project
+            named in the event, then read its responses in batches. For EVERY response write one coding record per assigned
+            theme with append_codings: project, wave, respondent_id, theme_code, confidence (0-1, honest: below 0.7 when the
+            answer is ambiguous, sarcastic, very short or mixes themes), needs_review (true if confidence < 0.7), status (''auto''
+            or ''pending'' when needs_review), quote (a verbatim excerpt of at most 200 characters, original language), age_band,
+            region, customer_type, members (copied from the response). An answer may have several themes; blank or meaningless
+            answers get ''no_answer''; answers fitting nothing get ''other''. Every respondent must get at least one coding.
+            Handle French, German and Spanish natively and keep the quote in the original language. Use only the approved
+            frame; never invent themes or change answers. Do not compute percentages. Finish with ''# Coding finished — <project>''
+            and a short summary of how many answers were processed and how many were queued for review (count only what you
+            wrote).'
+    goalTemplate: 'The coding frame was approved. Event: {event}
+
+      Code all responses of that project now.'
+    appTools:
+    - name: read_themes
+      description: Read the themes of the coding frame
+      action: read
+      collection: themes
+      scope: user
+    - name: read_responses
+      description: Read the survey answers
+      action: read
+      collection: responses
+      scope: user
+    - name: append_codings
+      description: Save the coding of an answer
+      action: append
+      collection: codings
+      scope: user
+    output: markdown
+    limits:
+      maxTurns: 300
+      maxBudgetUsd: 8
+  - key: analyst
+    role: analyst
+    when: task == 'report'
+    description: Writes a slide-ready report; every figure comes from the stats slot.
+    profile:
+      inline:
+        display_name: Verbatim analyst
+        crews:
+        - id: analyst
+          engine: agent_sdk
+          model: claude-sonnet-5-5
+          max_turns: 40
+          max_budget_usd: 2
+          permission_mode: bypassPermissions
+          disallowed_tools:
+          - Bash
+          - Read
+          - Write
+          - Edit
+          - Glob
+          - Grep
+          - NotebookEdit
+          - WebFetch
+          - WebSearch
+          system_prompt: 'You write slide-ready insight reports from coded open-ended answers. Read the project''s themes
+            (read_themes) and codings (read_codings, all pages; ignore rows with status ''rejected''). NEVER count, compute
+            percentages, intervals or p-values yourself. Call the tool stats ONCE per grouping with rows = [{respondent_id,
+            theme_code, group}] copied exactly from the coding records, where group is the value of the requested segment
+            field (or the wave). Use only the numbers it returns: share of respondents per theme, Wilson 95% confidence intervals,
+            pairwise differences with Bonferroni-adjusted p-values. Report a difference as significant only if the tool says
+            so; mention groups with small n (<30) as indicative only. Structure: ''# <Project> — open-ended analysis'' first;
+            ## Headlines (3-5 bullets); ## Theme frequencies (table + a chart block); ## Differences by segment (table with
+            CI and significance); ## Trend between waves when several waves exist; ## Quotes per theme (2 verbatim quotes
+            each, highest confidence, original language with an English gloss); ## Method and limits (coding by AI with a
+            human review queue, share of answers reviewed, tests used). Add charts as fenced ```chart blocks with JSON {"type":"bar","title":...,"labels":[...],"series":[{"name":...,"values":[...]}],"unit":"%"}.
+            Do not claim causes; correlation only.'
+    goalTemplate: 'Project: {project}
+
+      Compare by: {group_by_label} (field {group_by}).
+
+      {?wave}Only wave: {wave}.{/wave}
+
+      Write the report in English.'
+    appTools:
+    - name: read_themes
+      description: Read the themes of the coding frame
+      action: read
+      collection: themes
+      scope: user
+    - name: read_codings
+      description: Read the coded answers
+      action: read
+      collection: codings
+      scope: user
+    - name: stats
+      description: Counts, shares, Wilson 95% CIs and Bonferroni-adjusted pairwise tests from coded rows
+      action: call
+      slot: stats
+    output: markdown
+    limits:
+      maxTurns: 40
+      maxBudgetUsd: 2
+  inputForm:
+    title:
+      en: New task
+    fields:
+    - name: task
+      type: select
+      required: true
+      label:
+        en: What do you want to do?
+      default: setup
+      options:
+      - value: setup
+        label:
+          en: Upload answers and propose a coding frame
+      - value: report
+        label:
+          en: Generate an analysis report
+    - name: project
+      type: select
+      required: true
+      label:
+        en: Project
+      optionsFrom: collection:projects
+    - name: wave
+      type: text
+      label:
+        en: Survey wave (e.g. 2026-Q3)
+      help:
+        en: Required for uploads; optional filter for reports.
+    - name: data_file
+      type: file
+      accept:
+      - csv
+      - xlsx
+      maxMb: 15
+      visibleWhen: task == 'setup'
+      label:
+        en: CSV or Excel file
+      help:
+        en: 'Columns: respondent ID, open answer, optional segments (age band, region, customer type).'
+    - name: answer_count
+      type: number
+      visibleWhen: task == 'setup'
+      label:
+        en: Number of answers in the file
+      help:
+        en: £0.05 per answer (5 credits).
+    - name: group_by
+      type: select
+      visibleWhen: task == 'report'
+      label:
+        en: Compare by
+      default: age_band
+      options:
+      - value: age_band
+        label: Age band
+      - value: region
+        label: Region
+      - value: customer_type
+        label: Customer type
+      - value: wave
+        label: Survey wave
+  data:
+    collections:
+    - name: projects
+      ownedBy: user
+      description: Research projects; members are the emails of coders and client viewers
+      fields:
+      - name: name
+        type: text
+        required: true
+        label: Project name
+      - name: languages
+        type: multiselect
+        label: Answer languages
+        options:
+        - value: en
+          label: English
+        - value: fr
+          label: French
+        - value: de
+          label: German
+        - value: es
+          label: Spanish
+      - name: retention_days
+        type: number
+        required: true
+        label: Delete data after (days)
+      - name: members
+        type: array
+        label: Coders and client viewers (emails)
+      access:
+      - role: coder
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: client
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: responses
+      ownedBy: user
+      retentionDays: 365
+      description: Uploaded survey answers
+      fields:
+      - name: project
+        type: text
+      - name: wave
+        type: text
+      - name: respondent_id
+        type: text
+      - name: answer
+        type: textarea
+      - name: lang
+        type: text
+      - name: age_band
+        type: text
+      - name: region
+        type: text
+      - name: customer_type
+        type: text
+      - name: members
+        type: array
+      access:
+      - role: coder
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: themes
+      ownedBy: user
+      description: The coding frame
+      fields:
+      - name: project
+        type: text
+      - name: code
+        type: text
+        required: true
+      - name: name
+        type: text
+        required: true
+      - name: definition
+        type: textarea
+      - name: include_when
+        type: textarea
+      - name: examples
+        type: textarea
+      - name: status
+        type: select
+        options:
+        - proposed
+        - approved
+        - retired
+        default: proposed
+      - name: members
+        type: array
+      access:
+      - role: coder
+        where:
+          members: '{user.email}'
+        can:
+        - read
+      - role: client
+        where:
+          members: '{user.email}'
+        can:
+        - read
+    - name: codings
+      ownedBy: user
+      retentionDays: 365
+      description: One record per answer and theme, with confidence and review status
+      fields:
+      - name: project
+        type: text
+      - name: wave
+        type: text
+      - name: respondent_id
+        type: text
+      - name: theme_code
+        type: text
+        required: true
+      - name: confidence
+        type: number
+      - name: needs_review
+        type: boolean
+      - name: status
+        type: select
+        options:
+        - auto
+        - pending
+        - confirmed
+        - rejected
+        default: auto
+      - name: quote
+        type: textarea
+      - name: age_band
+        type: text
+      - name: region
+        type: text
+      - name: customer_type
+        type: text
+      - name: members
+        type: array
+      access:
+      - role: coder
+        where:
+          members: '{user.email}'
+        can:
+        - read
+        - write
+      - role: client
+        where:
+          members: '{user.email}'
+        can:
+        - read
+  approvals:
+  - key: frame_approval
+    title: Approve the coding frame
+    description: Coding starts only after the researcher approves the (edited) frame.
+    decidedBy: requester
+    fields:
+    - project
+  triggers:
+  - key: start_coding
+    description: Start coding when the frame is approved
+    'on':
+      approval: frame_approval
+      decision: approved
+    start:
+      agent: coder
+    goal: 'The coding frame was approved. Event: {event}. Code all responses of that project.'
+    asUser: true
+  slots:
+  - key: stats
+    description: Shares, Wilson 95% CIs and Bonferroni-adjusted two-proportion tests per theme and group
+    timeoutMs: 5000
+    example:
+      args:
+        rows:
+        - respondent_id: '1'
+          theme_code: price
+          group: 18-34
+        - respondent_id: '2'
+          theme_code: price
+          group: 35-54
+    code: "import math\n\ndef wilson(k, n, z=1.96):\n    if n == 0:\n        return [0.0, 0.0]\n    p = k / n\n    d = 1 +\
+      \ z * z / n\n    c = (p + z * z / (2 * n)) / d\n    h = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d\n \
+      \   return [round(100 * max(0.0, c - h), 1), round(100 * min(1.0, c + h), 1)]\n\ndef ztest(k1, n1, k2, n2):\n    if\
+      \ n1 == 0 or n2 == 0:\n        return 1.0\n    p = (k1 + k2) / (n1 + n2)\n    if p in (0.0, 1.0):\n        return 1.0\n\
+      \    se = math.sqrt(p * (1 - p) * (1 / n1 + 1 / n2))\n    z = (k1 / n1 - k2 / n2) / se\n    return math.erfc(abs(z)\
+      \ / math.sqrt(2))\n\ndef main(input):\n    a = input.get('args') or {}\n    rows = a.get('rows') or []\n    groups =\
+      \ {}\n    themes = {}\n    for r in rows:\n        g = str(r.get('group', 'all'))\n        rid = str(r.get('respondent_id'))\n\
+      \        t = str(r.get('theme_code'))\n        groups.setdefault(g, set()).add(rid)\n        themes.setdefault(t, {}).setdefault(g,\
+      \ set()).add(rid)\n    names = sorted(groups)\n    n = {g: len(groups[g]) for g in names}\n    pairs = max(1, len(names)\
+      \ * (len(names) - 1) // 2)\n    out = []\n    for t in sorted(themes):\n        per = {}\n        for g in names:\n\
+      \            k = len(themes[t].get(g, ()))\n            per[g] = {'k': k, 'n': n[g], 'pct': round(100 * k / n[g], 1),\
+      \ 'ci95': wilson(k, n[g])}\n        tests = []\n        for i in range(len(names)):\n            for j in range(i +\
+      \ 1, len(names)):\n                x, y = names[i], names[j]\n                p = ztest(per[x]['k'], n[x], per[y]['k'],\
+      \ n[y])\n                adj = min(1.0, p * pairs)\n                tests.append({'a': x, 'b': y, 'diff_pp': round(per[x]['pct']\
+      \ - per[y]['pct'], 1), 'p': round(p, 4), 'p_adj': round(adj, 4), 'significant': adj < 0.05, 'small_n': min(n[x], n[y])\
+      \ < 30})\n        total = len(set().union(*themes[t].values()))\n        tot_n = sum(n.values())\n        out.append({'theme':\
+      \ t, 'overall_pct': round(100 * total / tot_n, 1) if tot_n else 0, 'overall_ci95': wilson(total, tot_n), 'by_group':\
+      \ per, 'tests': tests})\n    return {'respondents_per_group': n, 'themes': out, 'method': 'Share of respondents per\
+      \ theme; Wilson 95% CI; two-proportion z-test, Bonferroni-adjusted over group pairs'}\n"
+  views:
+  - key: home
+    type: page
+    nav: false
+    title: Verbatim
+    sections:
+    - type: hero
+      title: Open-ended answers, coded with **statistical rigour**.
+      text: Upload your survey answers. An AI agent proposes a coding frame, you approve it, every answer is coded with a
+        confidence score, and every number is calculated, not generated.
+      actions:
+      - label: Start a project
+        href: /login
+        style: primary
+      note: English interface. Codes answers in English, French, German and Spanish.
+    - type: steps
+      id: how
+      title: How it works
+      items:
+      - title: Upload
+        text: CSV or Excel with respondent ID, answer and optional segments.
+        badge: 📄
+      - title: Approve the frame
+        text: The agent proposes themes with definitions and examples. You edit and approve.
+        badge: ✅
+      - title: Code and review
+        text: Every answer gets one or more themes with a confidence score. Low-confidence answers go to your coders.
+        badge: 🧑‍🔬
+      - title: Report
+        text: Dashboards, cross-tabs, wave trends, quotes, CSV export and a slide-ready report.
+        badge: 📊
+    - type: cards
+      id: rigour
+      title: Numbers you can defend
+      items:
+      - title: Calculated, not guessed
+        text: Counts and shares come from the data; tests are computed by fixed code, never by the model.
+      - title: Significance and intervals
+        text: Wilson 95% confidence intervals and Bonferroni-adjusted tests between segments and waves.
+      - title: Private by organisation
+        text: Each organisation sees only its own projects. Clients see final dashboards only. Data is deleted automatically.
+    - type: cards
+      id: pricing
+      title: Pricing
+      items:
+      - title: Pay per project
+        text: £0.05 per answer, in prepaid credits.
+      - title: Studio
+        text: £299 a month for unlimited-style use within a generous monthly allowance.
+    - type: note
+      content: 'AI coding can be wrong: low-confidence answers are queued for human review. Decision support for research
+        teams.'
+  - key: new_project
+    type: form
+    title: New project
+    collection: projects
+    roles:
+    - owner
+    - admin
+    submit:
+      label: Create project
+      message: Project created. Now upload your answers.
+      redirect: new_task
+  - key: new_task
+    type: new_run
+    title: Upload / report
+    roles:
+    - owner
+    - admin
+  - key: projects
+    type: table
+    title: Projects
+    source: collection:projects
+    roles:
+    - owner
+    - coder
+    - admin
+    data:
+      display: table
+      fields:
+      - key: name
+        label: Project
+      - key: retention_days
+        label: Retention (days)
+  - key: approvals
+    type: approvals
+    title: Approvals
+    roles:
+    - owner
+    - admin
+  - key: themes
+    type: table
+    title: Coding frame
+    source: collection:themes
+    roles:
+    - owner
+    - coder
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: code
+        label: Code
+      - key: name
+        label: Theme
+      - key: definition
+        label: Definition
+      - key: status
+        label: Status
+        format: badge
+  - key: theme_edit
+    type: form
+    title: Edit theme
+    collection: themes
+    edit: true
+    nav: false
+    roles:
+    - owner
+    - admin
+    submit:
+      label: Save theme
+      message: Theme saved.
+      redirect: themes
+  - key: theme_add
+    type: form
+    title: Add theme
+    collection: themes
+    roles:
+    - owner
+    - admin
+    submit:
+      label: Add theme
+      message: Theme added.
+      redirect: themes
+  - key: review_queue
+    type: table
+    title: Review queue
+    source: collection:codings
+    roles:
+    - owner
+    - coder
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: respondent_id
+        label: Respondent
+      - key: theme_code
+        label: Theme
+      - key: confidence
+        label: Confidence
+        format: number
+      - key: quote
+        label: Answer
+      - key: status
+        label: Status
+        format: badge
+      filters:
+      - field: status
+        op: '='
+        value: pending
+      sort:
+        field: confidence
+        dir: asc
+      limit: 200
+  - key: review_form
+    type: form
+    title: Review coding
+    collection: codings
+    edit: true
+    nav: false
+    fields:
+    - theme_code
+    - status
+    roles:
+    - owner
+    - coder
+    - admin
+    submit:
+      label: Save review
+      message: Review saved.
+      redirect: review_queue
+  - key: dashboard
+    type: page
+    title: Dashboard
+    roles:
+    - owner
+    - coder
+    - client
+    - admin
+    sections:
+    - type: data
+      title: Theme frequencies
+      source: collection:codings
+      display: chart
+      chart: bar
+      fields:
+      - key: theme_code
+        label: Theme
+      - key: n
+        label: Mentions
+      groupBy:
+        field: theme_code
+        aggs:
+        - key: n
+          agg: count
+        - key: avg_conf
+          agg: avg
+          field: confidence
+      filters:
+      - field: status
+        op: '!='
+        value: rejected
+    - type: data
+      title: Trend between waves
+      source: collection:codings
+      display: chart
+      chart: line
+      fields:
+      - key: wave
+        label: Wave
+      - key: n
+        label: Coded mentions
+      groupBy:
+        field: wave
+        aggs:
+        - key: n
+          agg: count
+    - type: data
+      title: By age band
+      source: collection:codings
+      display: table
+      fields:
+      - key: age_band
+        label: Age band
+      - key: n
+        label: Mentions
+      groupBy:
+        field: age_band
+        aggs:
+        - key: n
+          agg: count
+        minCount: 5
+    - type: data
+      title: By region
+      source: collection:codings
+      display: table
+      fields:
+      - key: region
+        label: Region
+      - key: n
+        label: Mentions
+      groupBy:
+        field: region
+        aggs:
+        - key: n
+          agg: count
+        minCount: 5
+    - type: data
+      title: By customer type
+      source: collection:codings
+      display: table
+      fields:
+      - key: customer_type
+        label: Customer type
+      - key: n
+        label: Mentions
+      groupBy:
+        field: customer_type
+        aggs:
+        - key: n
+          agg: count
+        minCount: 5
+    - type: data
+      title: Example quotes
+      source: collection:codings
+      display: cards
+      fields:
+      - key: theme_code
+        label: Theme
+        format: badge
+      - key: quote
+        label: Quote
+      - key: confidence
+        label: Confidence
+        format: number
+      filters:
+      - field: confidence
+        op: '>='
+        value: 0.85
+      sort:
+        field: theme_code
+        dir: asc
+      limit: 60
+  - key: coded_data
+    type: table
+    title: Coded data (CSV)
+    source: collection:codings
+    roles:
+    - owner
+    - coder
+    - admin
+    export: true
+    data:
+      display: table
+      fields:
+      - key: respondent_id
+        label: Respondent
+      - key: wave
+        label: Wave
+      - key: theme_code
+        label: Theme
+      - key: confidence
+        label: Confidence
+        format: number
+      - key: status
+        label: Status
+        format: badge
+      - key: age_band
+        label: Age
+      - key: region
+        label: Region
+      - key: customer_type
+        label: Type
+      - key: quote
+        label: Answer
+      limit: 200
+  - key: runs
+    type: history
+    title: My reports
+    source: run
+    roles:
+    - owner
+    - admin
+  - key: report
+    type: report
+    source: run
+    printable: true
+    nav: false
+  - key: account
+    type: account
+    title: Credits and plan
+    roles:
+    - owner
+  billing:
+    modes:
+    - credits
+    - subscription
+    currency: gbp
+    signupCredits: 200
+    costs:
+      agent:framer:
+        perUnit:
+          field: answer_count
+          credits: 5
+          min: 100
+    packs:
+    - key: project_small
+      credits: 10000
+      price: 100
+      label: 2,000 answers (£0.05 each)
+    - key: project_large
+      credits: 50000
+      price: 500
+      label: 10,000 answers (£0.05 each)
+    plans:
+    - key: studio
+      price: 299
+      interval: month
+      label: Studio
+      credits: 600000
+      creditsReset: monthly
+      roles:
+      - owner
+      includes:
+      - Monthly allowance of 120,000 coded answers
+      - All dashboards, exports and reports
+  notifications:
+    emailOnRunDone: true
+  extensions:
+  - key: per_project_retention
+    description: Retention is set per project in the project form (retention_days), but automatic deletion currently applies
+      a platform-wide collection limit of 365 days on answers and codings; per-project deletion dates are not yet enforceable
+      from the manifest.
+  - key: segment_crosstab_in_db
+    description: The dashboard aggregates one field at a time (theme, wave, one segment); full theme-by-segment cross-tabs
+      with significance tests are produced in the analyst report through the stats slot, not as a live two-way table.
+  - key: spreadsheet_slides_export
+    description: Slide-ready output is the printable report with chart blocks (PDF/print); native PPTX export and chart image
+      download are not available yet.
